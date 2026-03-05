@@ -1,6 +1,7 @@
 Take these files:
--  update the header of biblio to look more browser
--like with the book search bar in the middle where you can open the book or audiobook of choice directly from the search bar. Add books bar in the header should also just be a + sign with similar design to the safari new tab button but rounded square instead of circular. The settings should follow the same Idea, just a cog wheel/gear in the top righthand side of the screen. 
+- 
+- update the header of biblio to look more browser
+- like with the book search bar in the middle where you can open the book or audiobook of choice directly from the search bar. Add books bar in the header should also just be a + sign with similar design to the safari new tab button but rounded square instead of circular. The settings should follow the same Idea, just a cog wheel/gear in the top righthand side of the screen. 
 - In the settings under the library tab allow for users to go to the Gutenberg project website to download new books. 
 - Make the folder connection button in the settings tab work and store the information about the folder to be referred to. 
 - Take the image from the ePub3 and ePub file to show as the book cover. 
@@ -8,3 +9,4 @@ Take these files:
 - Get rid of the add book button in the Library section and rename the library section to just say Library. 
 - Add a second tab in the Body section that says audiobooks for the audiobooks that the user adds.
 - In the two page view mode make it so that there is a line separating the two page views.
+- Get rid of Chaper formatting in the title chapter dropdown for non-chapter chapters, or whatever doesn't say chapter.
