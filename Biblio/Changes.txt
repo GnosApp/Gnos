@@ -1,32 +1,39 @@
 Take these files:
 ---
 **New features**
-- Add the biblio svg as the favicon for the website.
 Main page view: 
-- Don't have the book search change what books are displayed on the main page, just show the books within the search bar suggestions as currently functions.
+- In the three dots dropdown add the option to summarize the book, this will either use the local llm or a quick search in with the format Summary of {book title, book author} in their search engine.
 Reader View:
-- Allow for dynamic page filling and addition of pages with the text depending on the font size so that none of the text is accidentally removed or clips outside of the pages, this is the only real bug and needs fixing so focus on this. Thank you.
-- Allow for the user to look up page numbers in the chapter search bar.
-- Within a page where notes are added add a bookmark icon next to the beginning of the text where the note was made originally.
-- When a note is selected from the icon in the header allow the user to jump to the page with text that says jummp to page after the text that shows the date the note was created.
+- When the audio icon is clicked, change it so that instead of files being pulled up add an audio playback system under the page that says there is no tts or audio playback downloaded if there is no tts or audioplayback detected.
+- Within a page where notes are added add a bookmark icon next to the beginning of the text where the note was made originally, it should responsively update in real-time and be within the margin instead of displacing the text.
+- Change the jump to page button to be in the {page #} format and have that number be a button where when clicked it takes you to the page, this should be directly to the left of the date the note was made, when clicked it should jump you to that page with the selected text highlighted.
+- When words are highlighted the user should be given the opption to highlight the words, summarize, add note, or play audio.
 Settings:
-- Within the progress indicator on most read books in the settings screen, accurately reflect the current progress of the book.
-   - Add a times read listing within the text next to the amount of pages read.
-- Allow for the user to connect to an ollama api local llm to assist in the summarization of the text, if none are selected use a free ai summarization api to provide a short and concise summarization of the text.
-
+- Add a times read listing next to the amount of pages read within the most read books section.
 
 ---
 Bugs and Issues:
-- Fix error in adding new books to biblio as it isn't letting me do so.
 Main Page View:
-- Nothing
+- If the reader has no audiobooks downloaded show that along with the audio files that are accepted in the audiobooks tab.
 Reader View:
-- Update translation process only use the sentence of the word, one sentence forwards, and one sentence backwards as the context for the translation.
-- Fix the way that the Underline Current Line feature works so that it only underlines the word that are rendered inline with the highlighted word.
+- Make the settings in the reader view update quicker as sometimes they require the user to change pages in order to update.
+Specifcally:
+   - Two page spread
+   - highlight word on hover
+   - underline current line
+- Fix the way that the Underline Current Line feature works so that it more accurately detects the line the user is on.
+- Fix how the user looks up page numbers in the chapter search bar, it should show along with chapter search options just underneath.
+ex. Search = 68
+   - Result -> Chapter 68
+   - Result -> Page 68
+- Refer to a more accurate translator as it's translations are often wrong or irrelevant keep the context window.
+- **Biggest Issues** Fix the way pages are rendered with words within the page viewport to dynamically adjust the amount of pages so that no words are clipping through the bottom and all pages are consistent in size. This should be quick in realtime so there is no lag when changing font sizes.
 Settings:
-- 
+- When no llm is loaded say that no llm is loaded
+- When reloading the folder check for any duplicate epub files or title names so as to not duplicate books that are already loaded.
 
 Maybe add these options later (More complex):
 - Custom "Libraries" so that users can organize their books better either by genre or by tags or other custom options.
 - Porting over books from other apps.
 - Log-in and authentication.
+- TTS integration for the text that can begin from specifc words when clicked on.

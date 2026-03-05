@@ -456,11 +456,15 @@ button { font-family: inherit; }
   cursor: default;
 }
 
-/* Accessibility: underline current line */
-.reader-card.underline-line .reader-page p:hover,
-.reader-card.underline-line p:hover {
+/* Accessibility: underline current line - highlight hovered word's line via JS */
+.reader-card.underline-line .word.same-line {
   text-decoration: underline;
-  text-decoration-color: rgba(56,139,253,0.5);
+  text-decoration-color: rgba(56,139,253,0.55);
+  text-underline-offset: 3px;
+}
+.reader-card.underline-line .word:hover {
+  text-decoration: underline;
+  text-decoration-color: rgba(56,139,253,0.55);
   text-underline-offset: 3px;
 }
 
@@ -595,3 +599,21 @@ button { font-family: inherit; }
 .note-item-meta { font-size: 10px; color: var(--textDim); margin-top: 3px; display: flex; justify-content: space-between; }
 .note-item-delete { background: none; border: none; color: var(--textDim); cursor: pointer; font-size: 11px; padding: 0; }
 .note-item-delete:hover { color: #f85149; }
+
+/* Bookmark icon in reader */
+.note-bookmark-icon {
+  display: inline-flex;
+  align-items: flex-start;
+  margin-right: 4px;
+  vertical-align: top;
+  cursor: default;
+  opacity: 0.85;
+  flex-shrink: 0;
+  position: relative;
+  top: 1px;
+}
+.note-bookmark-icon:hover { opacity: 1; }
+
+/* Note jump link */
+.note-item-jump { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 11px; padding: 0; }
+.note-item-jump:hover { text-decoration: underline; }
