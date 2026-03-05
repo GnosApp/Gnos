@@ -1,10 +1,49 @@
 // ============================================================================
 // STORAGE POLYFILL & CONSTANTS
 // ============================================================================
+const DB_NAME = "BiblioDB";
+const STORE_NAME = "keyval";
+
+const initDB = () => new Promise((resolve, reject) => {
+  const req = indexedDB.open(DB_NAME, 1);
+  req.onupgradeneeded = () => req.result.createObjectStore(STORE_NAME);
+  req.onsuccess = () => resolve(req.result);
+  req.onerror = () => reject(req.error);
+});
+
 window.storage = window.storage || {
-  get: async (k) => { const v = localStorage.getItem(k); return v !== null ? { value: v } : null; },
-  set: async (k, v) => { localStorage.setItem(k, v); return { value: v }; },
-  delete: async (k) => localStorage.removeItem(k)
+  _db: null,
+  async getDB() {
+    if (!this._db) this._db = await initDB();
+    return this._db;
+  },
+  async get(k) {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, "readonly");
+      const req = tx.objectStore(STORE_NAME).get(k);
+      req.onsuccess = () => resolve(req.result !== undefined ? { value: req.result } : null);
+      req.onerror = () => reject(req.error);
+    });
+  },
+  async set(k, v) {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, "readwrite");
+      const req = tx.objectStore(STORE_NAME).put(v, k);
+      req.onsuccess = () => resolve({ value: v });
+      req.onerror = () => reject(req.error);
+    });
+  },
+  async delete(k) {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, "readwrite");
+      const req = tx.objectStore(STORE_NAME).delete(k);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  }
 };
 
 const CHUNK_SIZE = 100;
@@ -61,6 +100,8 @@ const state = {
   // Session tracking
   sessionStart: null,
   sessionBookId: null,
+  // Notes: { bookId: [{id, quote, text, page, createdAt}] }
+  notes: {},
 };
 
 // ============================================================================
@@ -123,38 +164,155 @@ function countWords(str) {
   return n;
 }
 
-function getWordsPerPage() {
-  const cardPadH = 88; // 44*2
-  const cardPadW = 112; // 56*2
-  const headerH = 52;
-  const footerH = 64;
-  const outerPadH = 28;
-  const maxW = state.twoPage
-    ? Math.min(window.innerWidth - 48, 1280) / 2 - cardPadW - 40
-    : Math.min(window.innerWidth - 48, 680) - cardPadW;
-  const maxH = window.innerHeight - headerH - footerH - outerPadH - cardPadH;
-  const charArea = (state.fontSize * 0.6) * (state.fontSize * state.lineSpacing);
-  const chars = (maxW * maxH) / charArea;
-  return Math.max(100, Math.floor(chars / 6));
+// ============================================================================
+// PIXEL-ACCURATE PAGE LAYOUT (like Apple Books / Kindle)
+// ============================================================================
+let _measureEl = null;
+
+function ensureMeasureEl() {
+  if (_measureEl && document.body.contains(_measureEl)) return _measureEl;
+  _measureEl = document.createElement("div");
+  _measureEl.setAttribute("aria-hidden", "true");
+  _measureEl.style.cssText = "position:fixed;visibility:hidden;pointer-events:none;top:-9999px;left:0;z-index:-1;overflow:hidden;";
+  document.body.appendChild(_measureEl);
+  return _measureEl;
 }
 
-function splitParaByWords(text, maxWords) {
-  if (countWords(text) <= maxWords) return [text];
-  const sentenceRe = /[^.!?]+[.!?]+["\u2019\u201d]?\s*/g;
-  const sentences = text.match(sentenceRe) || [];
-  if (sentences.length <= 1) {
-    const words = text.split(/\s+/); const chunks = [];
-    for (let i = 0; i < words.length; i += maxWords) chunks.push(words.slice(i, i + maxWords).join(" "));
-    return chunks.length ? chunks : [text];
+function getPageDimensions() {
+  const cardPadH = 88, cardPadW = 112, headerH = 52, footerH = 64, outerPadH = 28, outerPadW = 48;
+  const maxCardW = state.twoPage ? 1280 : 680;
+  const cardW = Math.min(window.innerWidth - outerPadW, maxCardW);
+  const colW = state.twoPage ? cardW / 2 - cardPadW - 40 : cardW - cardPadW;
+  const pageH = window.innerHeight - headerH - footerH - outerPadH - cardPadH;
+  return { colW: Math.max(180, colW), pageH: Math.max(180, pageH) };
+}
+
+function measureBlockH(text, type) {
+  const mel = ensureMeasureEl();
+  const { colW } = getPageDimensions();
+  mel.style.width = `${colW}px`;
+  mel.style.fontFamily = state.fontFamily;
+  const el = document.createElement("p");
+  if (type === "heading") {
+    el.style.cssText = `margin:0;font-size:${Math.round(state.fontSize*1.4)}px;font-weight:700;line-height:1.25;word-break:break-word;`;
+  } else if (type === "subheading") {
+    el.style.cssText = `margin:0;font-size:${Math.round(state.fontSize*1.15)}px;font-weight:600;line-height:1.35;word-break:break-word;`;
+  } else {
+    el.style.cssText = `margin:0;font-size:${state.fontSize}px;line-height:${state.lineSpacing};text-align:justify;word-break:break-word;hyphens:auto;`;
   }
-  const chunks = []; let buf = "", bufW = 0;
-  for (const s of sentences) {
-    const sw = countWords(s);
-    if (bufW > 0 && bufW + sw > maxWords) { chunks.push(buf.trimEnd()); buf = ""; bufW = 0; }
-    buf += s; bufW += sw;
+  el.textContent = text;
+  mel.innerHTML = "";
+  mel.appendChild(el);
+  const h = el.getBoundingClientRect().height;
+  return h > 0 ? Math.ceil(h) : null; // return null if measurement failed
+}
+
+// Estimate words per page using simple geometry (used as fallback)
+function estimateWordsPerPage() {
+  const { colW, pageH } = getPageDimensions();
+  const charW = state.fontSize * 0.52;
+  const lineH = state.fontSize * state.lineSpacing;
+  const charsPerLine = Math.max(1, Math.floor(colW / charW));
+  const linesPerPage = Math.max(1, Math.floor(pageH / lineH));
+  return Math.max(80, Math.floor((charsPerLine / 5.5) * linesPerPage * 0.88));
+}
+
+function splitBlocksIntoPages(blocks) {
+  // Try pixel-accurate layout first; fall back to word-count if measurements fail
+  const { pageH } = getPageDimensions();
+  const safeH = Math.floor(pageH * 0.97);
+  const PARA_GAP = Math.round(state.fontSize * 0.45);
+  const minLineH = Math.ceil(state.fontSize * state.lineSpacing);
+
+  // Quick measurement test to see if DOM measurement is available
+  const testH = measureBlockH("test word", "para");
+  const canMeasure = testH !== null && testH > 0;
+
+  if (!canMeasure) {
+    // Fallback: word-count based splitting
+    const wpp = estimateWordsPerPage();
+    const pages = []; let cur = [], curWords = 0, isChap = false;
+    const flush = () => { if (cur.length) { pages.push(cur); cur = []; curWords = 0; isChap = false; } };
+    for (const block of blocks) {
+      if (block.type === "heading") { flush(); cur.push(block); isChap = true; continue; }
+      if (block.type === "subheading") { if (isChap && curWords === 0) cur.push(block); else { flush(); cur.push(block); isChap = true; } continue; }
+      if (isChap) flush();
+      const words = block.text.split(/\s+/).filter(Boolean);
+      let wi = 0;
+      while (wi < words.length) {
+        const take = Math.min(wpp - curWords, words.length - wi);
+        if (take <= 0) { flush(); continue; }
+        cur.push({ type: "para", text: words.slice(wi, wi + take).join(" ") });
+        curWords += take; wi += take;
+        if (curWords >= wpp) flush();
+      }
+    }
+    flush();
+    return pages.length > 0 ? pages : [[{ type: "para", text: "" }]];
   }
-  if (buf.trim()) chunks.push(buf.trim());
-  return chunks.length ? chunks : [text];
+
+  // Pixel-accurate splitting via DOM measurement
+  const pages = [];
+  let cur = [], curH = 0, isChapterPage = false;
+
+  const flush = () => {
+    if (cur.length > 0) { pages.push(cur); cur = []; curH = 0; isChapterPage = false; }
+  };
+
+  for (const block of blocks) {
+    if (block.type === "heading") {
+      flush(); cur.push(block); isChapterPage = true; continue;
+    }
+    if (block.type === "subheading") {
+      if (isChapterPage && curH === 0) { cur.push(block); }
+      else { flush(); cur.push(block); isChapterPage = true; }
+      continue;
+    }
+    if (isChapterPage) flush();
+
+    const words = block.text.split(/\s+/).filter(Boolean);
+    let wi = 0;
+    let safetyLimit = words.length * 3; // prevent any possible infinite loop
+
+    while (wi < words.length && safetyLimit-- > 0) {
+      const gap = cur.length > 0 ? PARA_GAP : 0;
+      const available = safeH - curH - gap;
+
+      if (available < minLineH) {
+        if (cur.length > 0) { flush(); continue; }
+        // Even on empty page there's no space — just push one word and move on
+        cur.push({ type: "para", text: words[wi] });
+        curH += minLineH;
+        wi++;
+        flush();
+        continue;
+      }
+
+      // Binary search for max words fitting in available height
+      let lo = 1, hi = words.length - wi, best = 0;
+      while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        const h = measureBlockH(words.slice(wi, wi + mid).join(" "), "para") ?? (mid * minLineH / 5);
+        if (h <= available) { best = mid; lo = mid + 1; }
+        else { hi = mid - 1; }
+      }
+
+      if (best === 0) {
+        if (cur.length > 0) { flush(); continue; }
+        best = 1; // force at least 1 word
+      }
+
+      const chunk = words.slice(wi, wi + best).join(" ");
+      const chunkH = measureBlockH(chunk, "para") ?? minLineH;
+      cur.push({ type: "para", text: chunk });
+      curH += gap + chunkH;
+      wi += best;
+
+      if (safeH - curH < minLineH && wi < words.length) flush();
+    }
+  }
+  flush();
+  return pages.length > 0 ? pages : [[{ type: "para", text: "" }]];
 }
 
 function htmlToBlocks(html) {
@@ -195,24 +353,6 @@ function htmlToBlocks(html) {
   flush(); return blocks;
 }
 
-function splitBlocksIntoPages(blocks, wordsPerPage) {
-  const pages = []; let cur = [], curWords = 0, isChapterPage = false;
-  const flush = () => { if (cur.length > 0) { pages.push(cur); cur = []; curWords = 0; isChapterPage = false; } };
-
-  for (const block of blocks) {
-    if (block.type === "heading") { flush(); cur.push(block); isChapterPage = true; continue; }
-    if (block.type === "subheading") { if (isChapterPage && curWords === 0) { cur.push(block); } else { flush(); cur.push(block); isChapterPage = true; } continue; }
-    if (isChapterPage) flush();
-    const parts = splitParaByWords(block.text, wordsPerPage);
-    for (const part of parts) {
-      const pw = countWords(part);
-      if (pw >= wordsPerPage) { if (cur.length > 0) flush(); cur.push({ type: "para", text: part }); flush(); continue; }
-      if (curWords > 0 && curWords + pw > wordsPerPage) flush();
-      cur.push({ type: "para", text: part }); curWords += pw;
-    }
-  }
-  flush(); return pages.length > 0 ? pages : [[{ type: "para", text: "" }]];
-}
 
 function deriveChaptersFromPages(pages) {
   const chapters = [];
@@ -270,7 +410,7 @@ async function parseEpub(file) {
   const epubAuthor = authorM ? decodeEntities(authorM[1].trim()) : "";
 
   const manifest = {};
-  let m, itemRe = /<item\s([^>]+?)\/?>((?:<\/item>)?)/gi;
+  let m, itemRe = /<item\s([^>]+?)\/?>/gi;
   while ((m = itemRe.exec(opfXml)) !== null) {
     const id = getAttr(m[1], "id"), href = getAttr(m[1], "href");
     if (id && href) manifest[id] = { href, type: getAttr(m[1], "media-type") || "", props: getAttr(m[1], "properties") || "" };
@@ -311,7 +451,7 @@ async function parseEpub(file) {
   } catch(e) { /* cover extraction failed, use gradient */ }
 
   const spineHrefs = [];
-  const itemrefRe = /<itemref\s([^>]+?)\/?>((?:<\/itemref>)?)/gi;
+  const itemrefRe = /<itemref\s([^>]+?)\/?>/gi;
   while ((m = itemrefRe.exec(opfXml)) !== null) {
     const idref = getAttr(m[1], "idref"); if (!idref || !manifest[idref]) continue;
     const item = manifest[idref], t = item.type.toLowerCase(), ext = item.href.split(".").pop().toLowerCase();
@@ -325,13 +465,12 @@ async function parseEpub(file) {
   }));
 
   const allPages = [];
-  const dynamicWordsPerPage = getWordsPerPage();
-  
+
   for (const f of rawFiles) {
     if (!f) continue;
     const blocks = htmlToBlocks(f.html);
     if (!blocks.some((b) => b.text.trim().length > 5)) continue;
-    for (const pg of splitBlocksIntoPages(blocks, dynamicWordsPerPage)) allPages.push(pg);
+    for (const pg of splitBlocksIntoPages(blocks)) allPages.push(pg);
   }
 
   if (allPages.length === 0) throw new Error("Could not extract any text");
@@ -443,6 +582,13 @@ async function initApp() {
   renderLibrary();
   renderStreakDots();
 
+  // Load saved notes
+  const notesData = await window.storage.get("reader_notes");
+  if (notesData) { try { state.notes = JSON.parse(notesData.value); } catch {} }
+
+  // Initialize text selection toolbar
+  initSelectionToolbar();
+
   // Library search with results dropdown
   const searchInput = document.getElementById("library-search");
   searchInput.oninput = (e) => {
@@ -498,6 +644,7 @@ async function initApp() {
   document.getElementById("tap-zone-next").onclick = nextPage;
   document.getElementById("btn-toggle-audio").onclick = toggleAudio;
   document.getElementById("btn-upload-audio").onclick = () => document.getElementById("audio-input").click();
+  document.getElementById("btn-reader-notes").onclick = openNotesViewer;
   document.getElementById("btn-reader-settings").onclick = () => document.getElementById("reader-settings-panel").classList.toggle("hidden");
   document.getElementById("btn-chapter-drop").onclick = () => {
     document.getElementById("chapter-dropdown").classList.toggle("hidden");
@@ -682,10 +829,14 @@ function createBookCard(book) {
       </button>
     </div>
     <div class="context-menu hidden">
-      <button class="ctx-item lookup-btn">
+      <button class="ctx-item lookup-book-btn">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="6.5" cy="6.5" r="4" stroke="currentColor" stroke-width="1.5"/><line x1="9.8" y1="9.8" x2="14" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-        Look up book & author
+        Look up ${book.title.length > 22 ? book.title.slice(0,22)+'…' : book.title}
       </button>
+      ${book.author ? `<button class="ctx-item lookup-author-btn">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="5.5" r="2.5" stroke="currentColor" stroke-width="1.4"/><path d="M2.5 13c0-2.485 2.462-4.5 5.5-4.5s5.5 2.015 5.5 4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        Look up ${book.author.length > 20 ? book.author.slice(0,20)+'…' : book.author}
+      </button>` : ''}
       <button class="ctx-item reset-btn">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 8a5 5 0 1 1 1 3.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><polyline points="1,5 3,8 6,6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         Reset progress
@@ -701,17 +852,44 @@ function createBookCard(book) {
   const menu = el.querySelector(".context-menu");
   el.querySelector(".btn-dots").onclick = (e) => {
     e.stopPropagation();
+    // Close all other menus first
     document.querySelectorAll(".context-menu").forEach(m => { if (m !== menu) m.classList.add("hidden"); });
+    const wasHidden = menu.classList.contains("hidden");
     menu.classList.toggle("hidden");
+    if (wasHidden) {
+      // Smart positioning: measure available space and position above or below
+      const btnRect = e.currentTarget.getBoundingClientRect();
+      // Show temporarily to measure size
+      menu.style.top = "-9999px"; menu.style.left = "-9999px";
+      const menuH = menu.offsetHeight || 170;
+      const menuW = menu.offsetWidth || 215;
+      const spaceBelow = window.innerHeight - btnRect.bottom - 8;
+      const spaceAbove = btnRect.top - 8;
+      // Horizontal: center on button, clamp to viewport
+      let left = btnRect.left + btnRect.width / 2 - menuW / 2;
+      left = Math.max(8, Math.min(left, window.innerWidth - menuW - 8));
+      menu.style.left = `${left}px`;
+      if (spaceBelow >= menuH || spaceBelow >= spaceAbove) {
+        // Open downward
+        menu.style.top = `${btnRect.bottom + 6}px`;
+        menu.style.bottom = "auto";
+      } else {
+        // Open upward
+        menu.style.bottom = `${window.innerHeight - btnRect.top + 6}px`;
+        menu.style.top = "auto";
+      }
+    }
   };
   el.querySelector(".reset-btn").onclick = (e) => { e.stopPropagation(); resetBookProgress(book.id); menu.classList.add("hidden"); };
   el.querySelector(".delete-btn").onclick = (e) => { e.stopPropagation(); deleteBook(book.id); menu.classList.add("hidden"); };
-  el.querySelector(".lookup-btn").onclick = (e) => {
-    e.stopPropagation();
-    menu.classList.add("hidden");
-    const query = book.author ? `${book.title} ${book.author}` : book.title;
-    window.open(`https://www.google.com/search?q=${encodeURIComponent(query + " book")}`, "_blank");
-  };
+  el.querySelector(".lookup-book-btn")?.addEventListener("click", (e) => {
+    e.stopPropagation(); menu.classList.add("hidden");
+    window.open(`https://www.google.com/search?q=${encodeURIComponent(book.title + " book")}`, "_blank");
+  });
+  el.querySelector(".lookup-author-btn")?.addEventListener("click", (e) => {
+    e.stopPropagation(); menu.classList.add("hidden");
+    window.open(`https://www.google.com/search?q=${encodeURIComponent(book.author + " author")}`, "_blank");
+  });
 
   return el;
 }
@@ -877,8 +1055,364 @@ function buildReaderSettings() {
 function wrapWordsInSpans(text) {
   return text.split(/(\s+)/).map(token => {
     if (/\s/.test(token)) return token;
-    return `<span class="word">${token}</span>`;
+    const clean = token.replace(/[^\w'-]/g, "");
+    return `<span class="word" data-word="${clean}">${token}</span>`;
   }).join("");
+}
+
+// ============================================================================
+// TEXT SELECTION TOOLBAR (Summarize + Add Note)
+// ============================================================================
+let _selToolbarEl = null;
+let _notePanelEl = null;
+let _summaryPopupEl = null;
+let _selectionTimer = null;
+
+// Notes stored in state
+if (!state.notes) state.notes = {}; // { bookId: [{id, quote, text, page, createdAt}] }
+
+function removeSelToolbar() {
+  if (_selToolbarEl) { _selToolbarEl.remove(); _selToolbarEl = null; }
+}
+function removeNotePanel() {
+  if (_notePanelEl) { _notePanelEl.remove(); _notePanelEl = null; }
+}
+function removeSummaryPopup() {
+  if (_summaryPopupEl) { _summaryPopupEl.remove(); _summaryPopupEl = null; }
+}
+
+function initSelectionToolbar() {
+  document.addEventListener("selectionchange", () => {
+    clearTimeout(_selectionTimer);
+    _selectionTimer = setTimeout(() => {
+      if (state.view !== "reader") return;
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) { return; }
+      const text = sel.toString().trim();
+      if (text.length < 3) { removeSelToolbar(); return; }
+
+      // Only show if within reader card
+      const card = document.getElementById("reader-card");
+      if (!card) return;
+      try {
+        const range = sel.getRangeAt(0);
+        if (!card.contains(range.commonAncestorContainer)) { removeSelToolbar(); return; }
+        showSelectionToolbar(text, range);
+      } catch {}
+    }, 250);
+  });
+}
+
+function showSelectionToolbar(selectedText, range) {
+  removeSelToolbar();
+  const rect = range.getBoundingClientRect();
+  if (!rect.width && !rect.height) return;
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "selection-toolbar";
+  _selToolbarEl = toolbar;
+
+  toolbar.innerHTML = `
+    <button class="sel-btn" id="sel-summarize">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="1" y="3" width="14" height="2" rx="1" fill="currentColor" opacity=".7"/><rect x="1" y="7" width="10" height="2" rx="1" fill="currentColor" opacity=".9"/><rect x="1" y="11" width="7" height="2" rx="1" fill="currentColor" opacity=".6"/></svg>
+      Summarize
+    </button>
+    <button class="sel-btn" id="sel-add-note">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M2 2h12v10H8l-4 3V2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><line x1="5" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><line x1="5" y1="9" x2="9" y2="9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      Add Note
+    </button>
+  `;
+  document.body.appendChild(toolbar);
+
+  // Position above the selection, centered
+  const tbW = toolbar.offsetWidth || 180;
+  const tbH = toolbar.offsetHeight || 36;
+  let left = rect.left + rect.width / 2 - tbW / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - tbW - 8));
+  let top = rect.top - tbH - 10;
+  if (top < 8) top = rect.bottom + 10;
+
+  toolbar.style.left = `${left}px`;
+  toolbar.style.top = `${top}px`;
+
+  toolbar.querySelector("#sel-summarize").onclick = (e) => {
+    e.stopPropagation();
+    const currentSel = window.getSelection();
+    const txt = currentSel && !currentSel.isCollapsed ? currentSel.toString().trim() : selectedText;
+    removeSelToolbar();
+    showSummaryPopup(txt, rect);
+  };
+  toolbar.querySelector("#sel-add-note").onclick = (e) => {
+    e.stopPropagation();
+    const currentSel = window.getSelection();
+    const txt = currentSel && !currentSel.isCollapsed ? currentSel.toString().trim() : selectedText;
+    removeSelToolbar();
+    showAddNotePanel(txt, rect);
+  };
+}
+
+async function showSummaryPopup(text, anchorRect) {
+  removeSummaryPopup();
+  const popup = document.createElement("div");
+  popup.className = "summary-popup";
+  _summaryPopupEl = popup;
+
+  const excerpt = text.length > 120 ? text.slice(0, 120) + "…" : text;
+  popup.innerHTML = `
+    <div class="summary-popup-header">
+      <span class="summary-popup-title">✦ AI Summary</span>
+      <button class="summary-popup-close">×</button>
+    </div>
+    <div class="summary-popup-quote">"${excerpt}"</div>
+    <div class="summary-popup-body" id="summary-body">
+      <span class="summary-loading">Summarizing…</span>
+    </div>
+  `;
+  document.body.appendChild(popup);
+
+  const popW = popup.offsetWidth || 340;
+  const popH = popup.offsetHeight || 180;
+  let left = anchorRect.left + anchorRect.width / 2 - popW / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - popW - 8));
+  let top = anchorRect.bottom + 10;
+  if (top + popH > window.innerHeight - 8) top = anchorRect.top - popH - 10;
+  if (top < 8) top = 8;
+  popup.style.left = `${left}px`;
+  popup.style.top = `${top}px`;
+
+  popup.querySelector(".summary-popup-close").onclick = () => removeSummaryPopup();
+
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 180,
+        messages: [{ role: "user", content: `Summarize this passage from a book in 2–3 concise sentences:\n\n"${text}"` }]
+      })
+    });
+    const data = await res.json();
+    const summary = data?.content?.[0]?.text || "Could not generate summary.";
+    const body = document.getElementById("summary-body");
+    if (body) body.innerHTML = `<p style="margin:0;">${summary}</p>`;
+  } catch {
+    const body = document.getElementById("summary-body");
+    if (body) body.innerHTML = `<span style="color:var(--textDim);font-size:12px;">Summary unavailable.</span>`;
+  }
+}
+
+function showAddNotePanel(selectedText, anchorRect) {
+  removeNotePanel();
+  if (!state.activeBook) return;
+
+  const panel = document.createElement("div");
+  panel.className = "note-add-panel";
+  _notePanelEl = panel;
+
+  const excerpt = selectedText.length > 90 ? selectedText.slice(0, 90) + "…" : selectedText;
+  panel.innerHTML = `
+    <div class="note-panel-header">
+      <span class="note-panel-title">Add Note</span>
+      <button class="note-panel-close">×</button>
+    </div>
+    <div class="note-panel-quote">"${excerpt}"</div>
+    <div class="note-panel-body">
+      <textarea class="note-textarea" placeholder="Write your note…" rows="3"></textarea>
+      <div class="note-panel-actions">
+        <button class="note-cancel-btn">Cancel</button>
+        <button class="note-save-btn">Save Note</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(panel);
+
+  // Position near selection
+  const panW = panel.offsetWidth || 320;
+  const panH = panel.offsetHeight || 180;
+  let left = anchorRect.left + anchorRect.width / 2 - panW / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - panW - 8));
+  let top = anchorRect.bottom + 10;
+  if (top + panH > window.innerHeight - 8) top = anchorRect.top - panH - 10;
+  if (top < 8) top = 8;
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
+
+  panel.querySelector(".note-panel-close").onclick = () => removeNotePanel();
+  panel.querySelector(".note-cancel-btn").onclick = () => removeNotePanel();
+  panel.querySelector(".note-save-btn").onclick = () => {
+    const noteText = panel.querySelector(".note-textarea").value.trim();
+    if (!noteText) { panel.querySelector(".note-textarea").focus(); return; }
+    // Store note
+    if (!state.notes) state.notes = {};
+    if (!state.notes[state.activeBook.id]) state.notes[state.activeBook.id] = [];
+    state.notes[state.activeBook.id].push({
+      id: `note_${Date.now()}`,
+      quote: selectedText.slice(0, 200),
+      text: noteText,
+      page: state.currentPage,
+      createdAt: new Date().toISOString()
+    });
+    window.storage.set("reader_notes", JSON.stringify(state.notes));
+    removeNotePanel();
+    showToast(true, "Note saved");
+    setTimeout(hideToast, 1200);
+  };
+  setTimeout(() => panel.querySelector(".note-textarea")?.focus(), 60);
+}
+
+// ============================================================================
+// WORD LOOKUP POPUP
+// ============================================================================
+let _wordPopupEl = null;
+
+function removeWordPopup() {
+  if (_wordPopupEl) { _wordPopupEl.remove(); _wordPopupEl = null; }
+}
+
+function extractSentenceAround(fullText, word) {
+  // Find sentences containing the word and return the best one
+  const sentences = fullText.match(/[^.!?]+[.!?]+["'\u2019\u201d]?\s*/g) || [fullText];
+  const wl = word.toLowerCase();
+  for (const s of sentences) {
+    if (s.toLowerCase().includes(wl)) return s.trim();
+  }
+  // Fallback: grab ~80 chars around the word
+  const idx = fullText.toLowerCase().indexOf(wl);
+  if (idx === -1) return word;
+  return fullText.slice(Math.max(0, idx - 50), idx + word.length + 50).trim();
+}
+
+function showWordPopup(word, anchorEl) {
+  removeWordPopup();
+  if (!word) return;
+
+  // Grab surrounding sentence for context-aware translation
+  const para = anchorEl.closest("p");
+  const sentenceCtx = para ? extractSentenceAround(para.textContent || "", word) : word;
+
+  const popup = document.createElement("div");
+  popup.className = "word-popup";
+  _wordPopupEl = popup;
+
+  popup.innerHTML = `
+    <div class="word-popup-actions">
+      <button class="word-popup-btn" id="wp-define">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/><line x1="5" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><line x1="5" y1="9" x2="9" y2="9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        Define
+      </button>
+      <button class="word-popup-btn" id="wp-translate">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M2 4h6M5 2v2M3 7c0 1.5 1 2.5 2.5 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M9 6l3 8M11 10h2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Translate
+      </button>
+    </div>
+    <div class="word-popup-result" id="wp-result">
+      <div class="wp-word">${word}</div>
+      <div class="wp-def" style="color:var(--textDim); font-style:italic; font-size:11px;">Click Define or Translate</div>
+    </div>
+  `;
+
+  document.body.appendChild(popup);
+
+  // Position popup near the word
+  const rect = anchorEl.getBoundingClientRect();
+  let top = rect.bottom + 6, left = rect.left;
+  if (left + 310 > window.innerWidth) left = window.innerWidth - 318;
+  if (top + 200 > window.innerHeight) top = rect.top - 208;
+  popup.style.top = `${top}px`;
+  popup.style.left = `${left}px`;
+
+  popup.querySelector("#wp-define").onclick = async () => {
+    const res = document.getElementById("wp-result");
+    res.innerHTML = `<div class="wp-loading">Looking up "${word}"…</div>`;
+    try {
+      const r = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word.toLowerCase())}`);
+      if (!r.ok) throw new Error("not found");
+      const data = await r.json();
+      const entry = data[0];
+      const meaning = entry?.meanings?.[0];
+      const def = meaning?.definitions?.[0]?.definition || "No definition found.";
+      const pos = meaning?.partOfSpeech || "";
+      const phonetic = entry?.phonetic || "";
+      res.innerHTML = `
+        <div class="wp-word">${entry?.word || word} <span style="font-size:11px;color:var(--textDim);font-weight:400;">${phonetic}</span></div>
+        ${pos ? `<div class="wp-pos">${pos}</div>` : ""}
+        <div class="wp-def">${def}</div>
+      `;
+    } catch {
+      res.innerHTML = `<div class="wp-error">No definition found for "${word}".</div>`;
+    }
+  };
+
+  popup.querySelector("#wp-translate").onclick = () => {
+    const res = document.getElementById("wp-result");
+    const langs = [
+      ["es","Spanish"],["fr","French"],["de","German"],["it","Italian"],
+      ["pt","Portuguese"],["ja","Japanese"],["zh","Chinese"],["ko","Korean"],
+      ["ru","Russian"],["ar","Arabic"],["hi","Hindi"],["nl","Dutch"],
+    ];
+    res.innerHTML = `
+      <div style="font-size:10px;color:var(--textDim);font-style:italic;margin-bottom:6px;padding:4px 6px;background:var(--surfaceAlt);border-radius:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${sentenceCtx}">
+        Context: "${sentenceCtx.slice(0,65)}${sentenceCtx.length>65?"…":""}"
+      </div>
+      <div class="word-popup-translate-row">
+        <select id="wp-lang-select">
+          ${langs.map(([code, name]) => `<option value="${code}">${name}</option>`).join("")}
+        </select>
+        <button class="word-popup-btn" id="wp-do-translate" style="flex:none;padding:5px 10px;border-radius:5px;border:1px solid var(--border);">Go</button>
+      </div>
+      <div id="wp-trans-result" class="wp-def" style="color:var(--textDim); font-style:italic; margin-top:4px;">Select a language above.</div>
+    `;
+    res.querySelector("#wp-do-translate").onclick = async () => {
+      const lang = res.querySelector("#wp-lang-select").value;
+      const out = res.querySelector("#wp-trans-result");
+      out.innerHTML = `<span class="wp-loading">Translating…</span>`;
+      try {
+        // Use full sentence context for accurate translation, extract the word translation
+        const textToTranslate = sentenceCtx.length > 6 ? sentenceCtx : word;
+        const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=en|${lang}`);
+        const d = await r.json();
+        const translatedSentence = d?.responseData?.translatedText || "";
+        const quality = parseInt(d?.responseData?.match || "0");
+
+        // Also get a single-word fallback translation for reference
+        let wordOnly = "";
+        if (textToTranslate !== word) {
+          try {
+            const r2 = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(word)}&langpair=en|${lang}`);
+            const d2 = await r2.json();
+            const t = d2?.responseData?.translatedText || "";
+            if (t && t.toLowerCase() !== word.toLowerCase()) wordOnly = t;
+          } catch {}
+        }
+
+        if (translatedSentence && translatedSentence.toLowerCase() !== textToTranslate.toLowerCase()) {
+          out.style.fontStyle = "normal";
+          out.innerHTML = `
+            ${wordOnly ? `<div style="margin-bottom:6px;"><strong style="color:var(--text);font-size:14px;">${wordOnly}</strong> <span style="font-size:10px;color:var(--textDim);">(word)</span></div>` : ""}
+            <div style="font-size:11px;color:var(--textMuted);line-height:1.55;border-left:2px solid var(--accent);padding-left:7px;font-style:italic;">${translatedSentence}</div>
+            ${quality < 75 ? `<div style="font-size:9px;color:var(--textDim);margin-top:4px;">⚠ Low confidence translation</div>` : ""}
+          `;
+        } else {
+          out.innerHTML = `<span class="wp-error">Translation unavailable for this language.</span>`;
+        }
+      } catch {
+        out.innerHTML = `<span class="wp-error">Translation failed. Check your connection.</span>`;
+      }
+    };
+  };
+}
+
+function attachWordClickListeners(container) {
+  container.querySelectorAll(".word[data-word]").forEach(span => {
+    span.style.cursor = "pointer";
+    span.onclick = (e) => {
+      e.stopPropagation();
+      const word = span.dataset.word;
+      if (!word || word.length < 2) return;
+      showWordPopup(word, span);
+    };
+  });
 }
 
 function constructPageDOM(pageData, wrapWords) {
@@ -931,13 +1465,16 @@ function constructPageDOM(pageData, wrapWords) {
 }
 
 function renderPage() {
+  removeWordPopup();
+  removeSelToolbar();
+  removeSummaryPopup();
+  removeNotePanel();
   const page1 = state.pages[state.currentPage];
   const page2 = state.twoPage ? state.pages[state.currentPage + 1] : null;
   const card = document.getElementById("reader-card");
   card.innerHTML = "";
 
   card.classList.toggle("two-page", state.twoPage);
-
   applyAccessibilityClasses();
 
   if (!page1) return;
@@ -945,19 +1482,18 @@ function renderPage() {
   const wrapW = state.highlightWords;
 
   if (state.twoPage) {
-    card.appendChild(constructPageDOM(page1, wrapW));
+    const p1 = constructPageDOM(page1, wrapW);
+    card.appendChild(p1);
     const divider = document.createElement("div");
     divider.className = "page-divider";
     card.appendChild(divider);
-    if (page2) {
-      card.appendChild(constructPageDOM(page2, wrapW));
-    } else {
-      const empty = document.createElement("div");
-      empty.className = "reader-page";
-      card.appendChild(empty);
-    }
+    const p2 = page2 ? constructPageDOM(page2, wrapW) : (() => { const e = document.createElement("div"); e.className="reader-page"; return e; })();
+    card.appendChild(p2);
+    if (wrapW) { attachWordClickListeners(p1); attachWordClickListeners(p2); }
   } else {
-    card.appendChild(constructPageDOM(page1, wrapW));
+    const p1 = constructPageDOM(page1, wrapW);
+    card.appendChild(p1);
+    if (wrapW) attachWordClickListeners(p1);
   }
 }
 
@@ -1073,8 +1609,6 @@ async function handleFileUpload(e) {
   if (!files.length) return;
   showToast(true, "Processing…");
 
-  const dynamicWordsPerPage = getWordsPerPage();
-
   for (const file of files) {
     if (file.name.startsWith(".") || (!/\.(txt|md|epub3?)$/i.test(file.name))) continue;
 
@@ -1092,7 +1626,7 @@ async function handleFileUpload(e) {
         format = /\.md$/i.test(file.name) ? "md" : "txt";
         const text = await readFileAsText(file);
         bookTitle = file.name.replace(/\.(txt|md)$/i,"").replace(/[_-]/g," ");
-        bookPages = splitBlocksIntoPages(textToBlocks(text), dynamicWordsPerPage);
+        bookPages = splitBlocksIntoPages(textToBlocks(text));
         chapters = deriveChaptersFromPages(bookPages);
       }
 
@@ -1130,7 +1664,6 @@ async function handleFolderSelect(e) {
 
   // Process the files
   showToast(true, `Loading ${state.connectedFolder.fileCount} files from "${folderName}"...`);
-  const dynamicWordsPerPage = getWordsPerPage();
 
   for (const file of files) {
     if (file.name.startsWith(".") || (!/\.(txt|md|epub3?)$/i.test(file.name))) continue;
@@ -1150,7 +1683,7 @@ async function handleFolderSelect(e) {
         format = /\.md$/i.test(file.name) ? "md" : "txt";
         const text = await readFileAsText(file);
         bookTitle = file.name.replace(/\.(txt|md)$/i,"").replace(/[_-]/g," ");
-        bookPages = splitBlocksIntoPages(textToBlocks(text), dynamicWordsPerPage);
+        bookPages = splitBlocksIntoPages(textToBlocks(text));
         chapters = deriveChaptersFromPages(bookPages);
       }
       const id = `book_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
@@ -1280,8 +1813,9 @@ function switchModalTab(tabId) {
     const folderHtml = state.connectedFolder
       ? `<div class="folder-connected">
            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M1 4a1 1 0 0 1 1-1h4l1 2h7a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-           <span class="folder-path">${state.connectedFolder.name} (${state.connectedFolder.fileCount} books)</span>
-           <button style="background:none;border:none;color:var(--textDim);cursor:pointer;font-size:12px;" id="btn-disconnect-folder">✕</button>
+           <span class="folder-path">${state.connectedFolder.name} (${state.connectedFolder.fileCount} files)</span>
+           <button style="background:none;border:none;color:var(--textDim);cursor:pointer;font-size:12px;padding:2px 4px;" title="Open folder" id="btn-open-folder">↗</button>
+           <button style="background:none;border:none;color:var(--textDim);cursor:pointer;font-size:12px;padding:2px 4px;" title="Disconnect" id="btn-disconnect-folder">✕</button>
          </div>`
       : "";
 
@@ -1303,11 +1837,16 @@ function switchModalTab(tabId) {
         <button id="btn-import-lib" class="btn primary" style="flex:1; justify-content:center;">↑ Import</button>
       </div>
 
-      <div class="section-label" style="margin-top:18px;">CONNECTED FOLDER</div>
+      <div style="display:flex; align-items:center; gap:8px; margin-top:18px; margin-bottom:8px;">
+        <div class="section-label" style="margin:0;">CONNECTED FOLDERS</div>
+        <button id="btn-reload-folder" title="Reload folder & import new books" style="background:none;border:1px solid var(--border);border-radius:5px;color:var(--textMuted);cursor:pointer;padding:3px 6px;font-size:12px;display:flex;align-items:center;transition:all 0.15s;" onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--textMuted)'">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 8a5 5 0 1 1 1 3.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><polyline points="1,5 3,8 6,6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
       ${folderHtml}
-      <div style="display:flex; gap:10px;">
-        <button id="btn-settings-add-book" class="btn secondary" style="flex:1; justify-content:center;">+ Add Books</button>
+      <div style="display:flex; gap:10px; margin-top:8px;">
         <button id="btn-settings-add-folder" class="btn primary" style="flex:1; justify-content:center;">⊞ Connect Folder</button>
+        <button id="btn-settings-add-book" class="btn secondary" style="flex:1; justify-content:center;">+ Add Books</button>
       </div>
     `;
 
@@ -1320,6 +1859,21 @@ function switchModalTab(tabId) {
     body.querySelector("#btn-import-lib").onclick = () => document.getElementById("lib-import-input").click();
     body.querySelector("#btn-settings-add-book").onclick = () => document.getElementById("file-input").click();
     body.querySelector("#btn-settings-add-folder").onclick = () => document.getElementById("folder-input").click();
+    body.querySelector("#btn-reload-folder")?.addEventListener("click", () => {
+      if (state.connectedFolder) {
+        // Re-trigger folder picker to reload
+        document.getElementById("folder-input").click();
+      } else {
+        document.getElementById("folder-input").click();
+      }
+    });
+    body.querySelector("#btn-open-folder")?.addEventListener("click", () => {
+      // Web can't directly open a folder in file explorer, but we can show the folder name
+      // and offer to re-browse it
+      if (state.connectedFolder) {
+        alert(`Folder: "${state.connectedFolder.name}"\n\nBrowsers cannot open local folders directly for security reasons. Use "Connect Folder" to re-browse it and import any new books.`);
+      }
+    });
     body.querySelector("#btn-disconnect-folder")?.addEventListener("click", () => {
       state.connectedFolder = null; savePreferences(); switchModalTab("library");
     });
@@ -1435,16 +1989,16 @@ function renderProfile() {
     </div>
 
     <div class="profile-section-title">Reading Activity — Last 12 Weeks</div>
-    <div class="heatmap-grid" style="grid-template-columns: repeat(12, 1fr); grid-template-rows: repeat(7, 12px);">
+    <div class="heatmap-grid">
       ${heatmapDays.map(d => `<div class="heatmap-cell" data-level="${d.level}" title="${d.key}: ${Math.round(d.mins)} min"></div>`).join("")}
     </div>
     <div class="heatmap-legend">
       <span>Less</span>
       <div class="heatmap-legend-cell" style="background:var(--surfaceAlt);border:1px solid var(--borderSubtle)"></div>
-      <div class="heatmap-legend-cell" data-level="1" style="background:rgba(56,139,253,0.25)"></div>
-      <div class="heatmap-legend-cell" data-level="2" style="background:rgba(56,139,253,0.5)"></div>
-      <div class="heatmap-legend-cell" data-level="3" style="background:rgba(56,139,253,0.75)"></div>
-      <div class="heatmap-legend-cell" data-level="4" style="background:var(--accent)"></div>
+      <div class="heatmap-legend-cell" style="background:rgba(56,139,253,0.25)"></div>
+      <div class="heatmap-legend-cell" style="background:rgba(56,139,253,0.5)"></div>
+      <div class="heatmap-legend-cell" style="background:rgba(56,139,253,0.75)"></div>
+      <div class="heatmap-legend-cell" style="background:var(--accent)"></div>
       <span>More</span>
     </div>
 
@@ -1473,6 +2027,49 @@ function renderProfile() {
   `;
 }
 
+function openNotesViewer() {
+  if (!state.activeBook) return;
+  // Toggle - if already open close it
+  if (_notePanelEl && document.body.contains(_notePanelEl)) { removeNotePanel(); return; }
+  const notes = (state.notes && state.notes[state.activeBook.id]) || [];
+  const panel = document.createElement("div");
+  panel.className = "notes-viewer-panel";
+  _notePanelEl = panel;
+
+  panel.innerHTML = `
+    <div class="note-panel-header">
+      <span class="note-panel-title">Notes (${notes.length})</span>
+      <button class="note-panel-close">×</button>
+    </div>
+    <div class="notes-scroll">
+      ${notes.length === 0
+        ? `<div style="padding:24px 16px;text-align:center;color:var(--textDim);font-size:13px;line-height:1.6;">No notes yet.<br><span style="font-size:11px;">Highlight text in the reader to add notes.</span></div>`
+        : notes.slice().reverse().map(n => `
+          <div class="note-item">
+            <div class="note-item-quote">"${n.quote.slice(0,80)}${n.quote.length>80?"…":""}"</div>
+            <div class="note-item-text">${n.text}</div>
+            <div class="note-item-meta">
+              <span>Page ${n.page + 1} · ${new Date(n.createdAt).toLocaleDateString()}</span>
+              <button class="note-item-delete" data-id="${n.id}">Delete</button>
+            </div>
+          </div>
+        `).join("")}
+    </div>
+  `;
+  document.body.appendChild(panel);
+  panel.querySelector(".note-panel-close").onclick = () => removeNotePanel();
+  panel.querySelectorAll(".note-item-delete").forEach(btn => {
+    btn.onclick = () => {
+      const id = btn.dataset.id;
+      if (state.notes[state.activeBook.id]) {
+        state.notes[state.activeBook.id] = state.notes[state.activeBook.id].filter(n => n.id !== id);
+        window.storage.set("reader_notes", JSON.stringify(state.notes));
+      }
+      openNotesViewer();
+    };
+  });
+}
+
 // ============================================================================
 // CLICK OUTSIDE CLOSERS
 // ============================================================================
@@ -1482,6 +2079,10 @@ document.addEventListener("mousedown", (e) => {
   const searchDrop = document.getElementById("search-results-dropdown");
   const ctxMenus = document.querySelectorAll(".context-menu");
 
+  if (_wordPopupEl && !_wordPopupEl.contains(e.target) && !e.target.classList.contains("word")) removeWordPopup();
+  if (_selToolbarEl && !_selToolbarEl.contains(e.target)) removeSelToolbar();
+  if (_summaryPopupEl && !_summaryPopupEl.contains(e.target)) removeSummaryPopup();
+  if (_notePanelEl && !_notePanelEl.contains(e.target) && e.target.id !== "btn-reader-notes") removeNotePanel();
   if (panel && !panel.classList.contains("hidden") && !panel.contains(e.target) && e.target.id !== "btn-reader-settings") panel.classList.add("hidden");
   if (drop && !drop.classList.contains("hidden") && !drop.contains(e.target) && !document.getElementById("btn-chapter-drop")?.contains(e.target)) drop.classList.add("hidden");
   if (searchDrop && !searchDrop.classList.contains("hidden") && !searchDrop.contains(e.target) && !document.getElementById("library-search")?.contains(e.target)) closeSearchDropdown();

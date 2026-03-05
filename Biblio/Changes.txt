@@ -1,22 +1,32 @@
 Take these files:
+---
+**New features**
+- Add the biblio svg as the favicon for the website.
 Main page view: 
-- Center the reading streak in the middle of the page and make the text not bolded and the circles and text smaller so that it is less distracting. 
-- Make it so that the dots for the reader view fill from right to left not left to right.
-- Separate the Look up Author and Look up Book functions, and have them show the name of the author in a Look up {Author Name} format (ex. Look up Herman Melville) do the same for the book.
+- Don't have the book search change what books are displayed on the main page, just show the books within the search bar suggestions as currently functions.
 Reader View:
-- When loading the book for the first time look for when words go off of the page and if there are any that do so make a new page. 
-- Stop limiting the pages to just one paragraph a page, it is okay if a paragraph has to split to cross two pages.
-- When a user clicks on a highlighted word bring up options to define or translate the word, which would then bring up a translation and definition from a dictionary and translating dictionary.
+- Allow for dynamic page filling and addition of pages with the text depending on the font size so that none of the text is accidentally removed or clips outside of the pages, this is the only real bug and needs fixing so focus on this. Thank you.
+- Allow for the user to look up page numbers in the chapter search bar.
+- Within a page where notes are added add a bookmark icon next to the beginning of the text where the note was made originally.
+- When a note is selected from the icon in the header allow the user to jump to the page with text that says jummp to page after the text that shows the date the note was created.
 Settings:
-- Make it so that the user can access their connected folder from the settings opening up the folder in their file explorer app. 
-- Change text that says connected folder to say connected folders.
-- Add a reload button with just an icon next to the connected folders text that allows Biblio to check the connected folders and automatically upload any new books detected on reload.
-  - Do this folder check every time that Biblio is opened and add books that weren't there before.
-- Switch the position of the add new book and connected folders button.
-- Fix the view grid of the last twelve weeks stats, show them to be more evenly spaced and not so far apart per week.
+- Within the progress indicator on most read books in the settings screen, accurately reflect the current progress of the book.
+   - Add a times read listing within the text next to the amount of pages read.
+- Allow for the user to connect to an ollama api local llm to assist in the summarization of the text, if none are selected use a free ai summarization api to provide a short and concise summarization of the text.
+
+
+---
 Bugs and Issues:
 - Fix error in adding new books to biblio as it isn't letting me do so.
+Main Page View:
+- Nothing
+Reader View:
+- Update translation process only use the sentence of the word, one sentence forwards, and one sentence backwards as the context for the translation.
+- Fix the way that the Underline Current Line feature works so that it only underlines the word that are rendered inline with the highlighted word.
+Settings:
+- 
 
-
-Maybe add these options later:
+Maybe add these options later (More complex):
 - Custom "Libraries" so that users can organize their books better either by genre or by tags or other custom options.
+- Porting over books from other apps.
+- Log-in and authentication.
