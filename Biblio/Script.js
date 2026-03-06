@@ -46,7 +46,7 @@ window.storage = window.storage || {
   }
 };
 
-const CHUNK_SIZE = 100;
+const CHUNK_SIZE = 20; // chapters per storage chunk
 const MAX_SINGLE_KB = 4_500_000;
 const BLOCK_OPEN = new Set(["p","div","li","tr","blockquote","section","article","figure","header","footer","main","td","th"]);
 const BLOCK_CLOSE = new Set(["p","div","li","tr","blockquote","section","article","figure","header","footer","main","td","th"]);
@@ -78,8 +78,13 @@ const state = {
   view: "library",
   library: [],
   activeBook: null,
-  pages: [],
-  currentPage: 0,
+  // New: chapters is array of { title, blocks[] }
+  // currentChapter = index into chapters array
+  // currentPage = logical column index within current chapter's column flow
+  chapters: [],
+  currentChapter: 0,
+  currentPage: 0,       // page index within the current chapter
+  totalPages: 0,        // estimated total pages (for progress bar)
   themeKey: "dark",
   customThemes: {},
   tapToTurn: true,
@@ -92,25 +97,19 @@ const state = {
   searchQuery: "",
   activeLibTab: "books",
   connectedFolder: null,
-  // Accessibility
   highlightWords: false,
   underlineLine: false,
-  // AI settings
   ollamaUrl: "",
   ollamaModel: "",
-  // Reading tracking: { "YYYY-MM-DD": minutes }
   readingLog: {},
-  // Session tracking
   sessionStart: null,
   sessionBookId: null,
-  // Notes: { bookId: [{id, quote, text, page, createdAt}] }
   notes: {},
 };
 
 // ============================================================================
 // UTILITIES & PARSING
 // ============================================================================
-// Returns the Ollama URL, defaulting to localhost:11434 if not set
 function getOllamaUrl() {
   return (state.ollamaUrl || "http://localhost:11434").replace(/\/$/, "");
 }
@@ -173,260 +172,8 @@ function countWords(str) {
 }
 
 // ============================================================================
-// DYNAMIC REFLOW PAGINATION ENGINE
-// Uses CSS column-based layout with DOM overflow detection for true reflow.
-// Pages are virtual: we store all blocks as one HTML string and use a
-// hidden column-flow container to detect page breaks at runtime.
+// BLOCK PARSERS  (unchanged — produce { type, text } arrays)
 // ============================================================================
-
-// Convert blocks array → clean HTML string for reflow
-function blocksToHTML(blocks) {
-  return blocks.map(b => {
-    if (!b?.text?.trim()) return "";
-    if (b.type === "heading") return `<h2 class="rf-h2">${b.text}</h2>`;
-    if (b.type === "subheading") return `<h3 class="rf-h3">${b.text}</h3>`;
-    return `<p class="rf-p">${b.text}</p>`;
-  }).join("");
-}
-
-// Get exact pixel dimensions of the reader card at current viewport/settings
-function getCardDimensions() {
-  const headerH = 52, footerH = 64, outerPadV = 28, cardPadV = 88, cardPadH = 112;
-  const outerPadH = 48;
-  const maxCardW = state.twoPage ? 1280 : 680;
-  const viewW = window.innerWidth || 1024;
-  const viewH = window.innerHeight || 768;
-  const cardW = Math.min(viewW - outerPadH, maxCardW);
-  const cardH = viewH - headerH - footerH - outerPadV;
-  // For two-page: each column has its own padding
-  const colW = state.twoPage ? (cardW - cardPadH) / 2 - 20 : cardW - cardPadH;
-  const colH = cardH - cardPadV;
-  return { cardW: Math.max(300, cardW), cardH: Math.max(200, cardH), colW: Math.max(160, colW), colH: Math.max(160, colH) };
-}
-
-// Reflow-based page splitter: renders all content into a hidden multi-column
-// container and detects which blocks belong on each page by measuring offsets.
-function splitBlocksIntoPages(blocks) {
-  if (!blocks || blocks.length === 0) return [[{ type: "para", text: "" }]];
-
-  const { colW, colH } = getCardDimensions();
-
-  // Create a hidden off-screen measurement container
-  const host = document.createElement("div");
-  host.setAttribute("aria-hidden", "true");
-  host.style.cssText = [
-    "position:fixed", "top:-99999px", "left:0",
-    `width:${colW}px`,
-    "overflow:hidden",
-    "visibility:hidden",
-    "pointer-events:none",
-    "z-index:-1",
-    `font-family:${state.fontFamily}`,
-    `font-size:${state.fontSize}px`,
-    `line-height:${state.lineSpacing}`,
-  ].join(";");
-  document.body.appendChild(host);
-
-  // Inject styles for block types
-  const styleEl = document.createElement("style");
-  styleEl.textContent = `
-    .rf-p { margin:0 0 ${Math.round(state.fontSize * 0.55)}px 0; text-align:justify; word-break:break-word; hyphens:auto; font-size:${state.fontSize}px; line-height:${state.lineSpacing}; }
-    .rf-p + .rf-p { text-indent:2em; margin-bottom:0; }
-    .rf-h2 { margin:0 0 ${Math.round(state.fontSize * 0.7)}px 0; font-size:${Math.round(state.fontSize * 1.65)}px; font-weight:700; line-height:1.2; break-after:avoid; word-break:break-word; }
-    .rf-h3 { margin:0 0 ${Math.round(state.fontSize * 0.5)}px 0; font-size:${Math.round(state.fontSize * 1.18)}px; font-weight:600; line-height:1.3; break-after:avoid; opacity:0.8; word-break:break-word; }
-  `;
-  host.appendChild(styleEl);
-
-  // Render each block as a tagged element with an index
-  const wrapper = document.createElement("div");
-  wrapper.style.cssText = "width:100%;";
-  
-  const elements = [];
-  blocks.forEach((b, i) => {
-    if (!b?.text?.trim()) return;
-    let el;
-    if (b.type === "heading") {
-      el = document.createElement("h2");
-      el.className = "rf-h2";
-    } else if (b.type === "subheading") {
-      el = document.createElement("h3");
-      el.className = "rf-h3";
-    } else {
-      el = document.createElement("p");
-      el.className = "rf-p";
-    }
-    el.textContent = b.text;
-    el.dataset.blockIdx = i;
-    wrapper.appendChild(el);
-    elements.push({ el, block: b, idx: i });
-  });
-  host.appendChild(wrapper);
-
-  // Force layout
-  void host.offsetHeight;
-
-  // Now split into pages by cumulative height
-  const pages = [];
-  let curPageBlocks = [];
-  let curH = 0;
-  const safeH = Math.floor(colH * 0.98);
-  const GAP = Math.round(state.fontSize * 0.55);
-
-  // Chapter heading: always starts a new page
-  let isChapterPage = false;
-
-  for (let i = 0; i < elements.length; i++) {
-    const { el, block } = elements[i];
-    const elH = Math.ceil(el.getBoundingClientRect().height);
-
-    // Heading = chapter start: flush to new page
-    if (block.type === "heading") {
-      if (curPageBlocks.length > 0) {
-        pages.push(curPageBlocks);
-        curPageBlocks = [];
-        curH = 0;
-      }
-      curPageBlocks.push(block);
-      isChapterPage = true;
-      // Don't count height here; chapter pages get flushed when body text starts
-      continue;
-    }
-
-    if (block.type === "subheading") {
-      if (isChapterPage && curPageBlocks.length > 0) {
-        curPageBlocks.push(block);
-        continue;
-      }
-      if (curPageBlocks.length > 0) {
-        pages.push(curPageBlocks);
-        curPageBlocks = [];
-        curH = 0;
-      }
-      curPageBlocks.push(block);
-      isChapterPage = true;
-      continue;
-    }
-
-    // Regular paragraph — flush chapter heading page first
-    if (isChapterPage) {
-      pages.push(curPageBlocks);
-      curPageBlocks = [];
-      curH = 0;
-      isChapterPage = false;
-    }
-
-    // If paragraph fits on current page
-    const gapBefore = curPageBlocks.length > 0 ? GAP : 0;
-    if (curH + gapBefore + elH <= safeH) {
-      curPageBlocks.push(block);
-      curH += gapBefore + elH;
-    } else {
-      // Paragraph doesn't fit — need to split it word by word
-      if (curPageBlocks.length > 0) {
-        // Try to fit as many words as possible on current page
-        const words = block.text.split(/\s+/).filter(Boolean);
-        const testEl = document.createElement("p");
-        testEl.className = "rf-p";
-        testEl.style.cssText = `width:${colW}px; position:fixed; top:-99999px; visibility:hidden; pointer-events:none;`;
-        document.body.appendChild(testEl);
-
-        const gap = curPageBlocks.length > 0 ? GAP : 0;
-        const available = safeH - curH - gap;
-        
-        // Binary search for how many words fit
-        let lo = 0, hi = words.length - 1, bestFit = 0;
-        while (lo <= hi) {
-          const mid = Math.ceil((lo + hi) / 2);
-          testEl.textContent = words.slice(0, mid).join(" ");
-          const h = testEl.getBoundingClientRect().height;
-          if (h <= available && mid > 0) { bestFit = mid; lo = mid + 1; }
-          else { hi = mid - 1; }
-        }
-        document.body.removeChild(testEl);
-
-        if (bestFit > 0) {
-          curPageBlocks.push({ type: "para", text: words.slice(0, bestFit).join(" ") });
-          pages.push(curPageBlocks);
-          // Remaining words go to next page(s)
-          let remainWords = words.slice(bestFit);
-          while (remainWords.length > 0) {
-            curPageBlocks = [];
-            curH = 0;
-            const testEl2 = document.createElement("p");
-            testEl2.className = "rf-p";
-            testEl2.style.cssText = `width:${colW}px; position:fixed; top:-99999px; visibility:hidden; pointer-events:none;`;
-            document.body.appendChild(testEl2);
-            let bf2 = 0, lo2 = 1, hi2 = remainWords.length;
-            while (lo2 <= hi2) {
-              const mid2 = Math.ceil((lo2 + hi2) / 2);
-              testEl2.textContent = remainWords.slice(0, mid2).join(" ");
-              const h2 = testEl2.getBoundingClientRect().height;
-              if (h2 <= safeH) { bf2 = mid2; lo2 = mid2 + 1; }
-              else { hi2 = mid2 - 1; }
-            }
-            document.body.removeChild(testEl2);
-            if (bf2 <= 0) bf2 = Math.max(1, Math.min(10, remainWords.length));
-            const chunk = { type: "para", text: remainWords.slice(0, bf2).join(" ") };
-            curPageBlocks.push(chunk);
-            curH = elH; // approximate
-            if (bf2 >= remainWords.length) break;
-            remainWords = remainWords.slice(bf2);
-            pages.push(curPageBlocks);
-            curPageBlocks = [];
-            curH = 0;
-          }
-        } else {
-          // Can't fit any words — flush old page and start fresh
-          pages.push(curPageBlocks);
-          curPageBlocks = [block];
-          curH = elH;
-        }
-      } else {
-        // Empty page, paragraph too tall — just put it on this page anyway
-        curPageBlocks.push(block);
-        curH = elH;
-        // If still too tall, flush and continue
-        if (curH > safeH) {
-          pages.push(curPageBlocks);
-          curPageBlocks = [];
-          curH = 0;
-        }
-      }
-    }
-  }
-
-  if (curPageBlocks.length > 0) pages.push(curPageBlocks);
-
-  document.body.removeChild(host);
-
-  return pages.length > 0 ? pages : [[{ type: "para", text: "" }]];
-}
-
-// ── Pre-rendered page cache ──────────────────────────────────
-// Stores pre-built DOM nodes keyed by page index, so adjacent pages render instantly
-const _pageRenderCache = new Map();
-
-function _clearPageRenderCache() { _pageRenderCache.clear(); }
-
-// Pre-render adjacent pages in the background for instant transitions
-function _preRenderAdjacentPages() {
-  if (!state.activeBook || !state.pages) return;
-  const toPrerender = [
-    state.currentPage + 1,
-    state.currentPage - 1,
-    state.currentPage + 2,
-  ].filter(p => p >= 0 && p < state.pages.length);
-  
-  for (const pi of toPrerender) {
-    if (!_pageRenderCache.has(pi)) {
-      const data = state.pages[pi];
-      if (data) {
-        const wrapW = state.highlightWords || state.underlineLine;
-        _pageRenderCache.set(pi, constructPageDOM(data, wrapW));
-      }
-    }
-  }
-}
 
 function htmlToBlocks(html) {
   let h = html.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<link[^>]*>/g, " ");
@@ -466,21 +213,6 @@ function htmlToBlocks(html) {
   flush(); return blocks;
 }
 
-
-function deriveChaptersFromPages(pages) {
-  const chapters = [];
-  for (let i = 0; i < pages.length; i++) {
-    const pg = pages[i];
-    if (!Array.isArray(pg) || pg.length === 0) continue;
-    if (pg.every((b) => b.type === "heading" || b.type === "subheading")) {
-      const h = pg.find((b) => b.type === "heading"), s = pg.find((b) => b.type === "subheading");
-      chapters.push({ title: h?.text || s?.text || `Section ${chapters.length + 1}`, pageIndex: i });
-    }
-  }
-  if (chapters.length === 0) chapters.push({ title: "Beginning", pageIndex: 0 });
-  return chapters;
-}
-
 function textToBlocks(text) {
   const blocks = [], lines = text.split("\n"); let i = 0;
   while (i < lines.length) {
@@ -497,6 +229,433 @@ function textToBlocks(text) {
   }
   return blocks;
 }
+
+// ============================================================================
+// CHAPTER SPLITTER
+// Split a flat blocks array into chapters: each chapter starts at a heading
+// block and contains all subsequent blocks until the next heading.
+// Returns: [{ title, blocks[] }]
+// ============================================================================
+function blocksToChapters(blocks) {
+  const chapters = [];
+  let current = null;
+
+  for (const block of blocks) {
+    if (block.type === "heading") {
+      if (current) chapters.push(current);
+      current = { title: block.text, blocks: [block] };
+    } else {
+      if (!current) current = { title: "Beginning", blocks: [] };
+      current.blocks.push(block);
+    }
+  }
+  if (current) chapters.push(current);
+  if (chapters.length === 0) chapters.push({ title: "Beginning", blocks: [] });
+  return chapters;
+}
+
+// ============================================================================
+// BINARY-SEARCH PAGINATION ENGINE  (v2 — fixes animation artifacts,
+//   two-page spread, and slow book-open performance)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ─── State ────────────────────────────────────────────────────────────────
+let _pageBreaks = [];            // [pageIndex] = first block index on that page
+let _pageStyleEl = null;         // <style> tag for reader typography
+let _resizeTimer = null;
+let _currentRenderedChapter = -1;
+let _animating = false;          // mutex: true while a page-turn animation runs
+let _outgoingPage = null;        // the page element currently animating out
+
+// ─── Helpers ──────────────────────────────────────────────────────────────
+
+function getCardDims() {
+  const card = document.getElementById("reader-card");
+  if (!card) return { w: 720, h: 600 };
+  return { w: card.offsetWidth || 720, h: card.offsetHeight || 600 };
+}
+
+function ensurePageStyle() {
+  const css = buildPageStyles();
+  if (_pageStyleEl && _pageStyleEl.parentNode) {
+    _pageStyleEl.textContent = css;
+  } else {
+    _pageStyleEl = document.createElement("style");
+    _pageStyleEl.textContent = css;
+    document.head.appendChild(_pageStyleEl);
+  }
+}
+
+function buildPageStyles() {
+  const fs = state.fontSize;
+  const ls = state.lineSpacing;
+  const paraGap = Math.round(fs * 0.55);
+  // Two-page: use CSS columns:2 inside the content div so the browser
+  // splits text naturally across two columns at the correct card width.
+  const colCSS = state.twoPage
+    ? `column-count: 2; column-gap: 48px; column-fill: auto;`
+    : ``;
+  return `
+    .page-content {
+      font-family: ${state.fontFamily};
+      font-size: ${fs}px;
+      line-height: ${ls};
+      color: var(--readerText);
+      padding: 48px 64px;
+      box-sizing: border-box;
+      word-break: break-word;
+      hyphens: auto;
+      height: 100%;
+      overflow: hidden;
+      ${colCSS}
+    }
+    .page-content p {
+      margin: 0 0 ${paraGap}px 0;
+      text-align: justify;
+      orphans: 3; widows: 3;
+    }
+    .page-content p + p {
+      text-indent: 2em;
+      margin-bottom: 0;
+    }
+    .page-content h2 {
+      font-size: ${Math.round(fs * 1.65)}px;
+      font-weight: 700;
+      line-height: 1.2;
+      font-family: Georgia, serif;
+      margin: 0 0 ${Math.round(fs * 0.7)}px 0;
+      padding-bottom: ${Math.round(fs * 0.35)}px;
+      border-bottom: 1px solid var(--borderSubtle);
+      ${state.twoPage ? "column-span: all;" : ""}
+    }
+    .page-content h3 {
+      font-size: ${Math.round(fs * 1.18)}px;
+      font-weight: 600;
+      line-height: 1.3;
+      font-family: Georgia, serif;
+      margin: ${Math.round(fs * 1.2)}px 0 ${Math.round(fs * 0.5)}px 0;
+      opacity: 0.85;
+    }
+  `;
+}
+
+function blocksToHTML(blocks) {
+  return blocks.map(b => {
+    if (!b?.text?.trim()) return "";
+    if (b.type === "heading")    return `<h2>${b.text}</h2>`;
+    if (b.type === "subheading") return `<h3>${b.text}</h3>`;
+    return `<p>${b.text}</p>`;
+  }).join("");
+}
+
+// ─── Core: compute page breaks for a chapter ──────────────────────────────
+//
+// Uses a hidden probe div with the same CSS as the real card.
+// Blocks are appended in a single innerHTML batch (one reflow per page)
+// rather than one at a time (N reflows), which is ~10–20× faster.
+// The probe height is unconstrained so scrollHeight accurately reflects
+// the cumulative rendered height of all text so far.
+//
+// Two-page mode: the probe uses the full card width with column-count:2,
+// so the browser computes two-column line-breaking naturally.
+//
+function computePageBreaks(chapterIdx) {
+  const chapter = state.chapters[chapterIdx];
+  if (!chapter || !chapter.blocks.length) return [0];
+
+  const { w: cardW, h: cardH } = getCardDims();
+  // Usable height per page = card height minus top+bottom padding (48px each)
+  const pageH = cardH - 96;
+  if (pageH <= 0) return [0];
+
+  // Build a hidden probe matching the real card's width and typography
+  const probe = document.createElement("div");
+  probe.className = "page-content";
+  probe.style.cssText = `
+    position: fixed;
+    top: -99999px; left: 0;
+    width: ${cardW}px;
+    height: auto !important;
+    max-height: none !important;
+    visibility: hidden;
+    pointer-events: none;
+    z-index: -1;
+    overflow: visible !important;
+  `;
+  document.body.appendChild(probe);
+
+  const breaks = [0];
+  let pageStartBlockIdx = 0;
+  let pageStartH = 0;
+  const blocks = chapter.blocks.filter(b => b?.text?.trim());
+
+  // Batch approach: build HTML for all blocks up to the current page,
+  // read scrollHeight once, advance to next page boundary.
+  // This is O(pages) reflows instead of O(blocks) reflows.
+  for (let i = 0; i < blocks.length; i++) {
+    // Set probe content = all blocks from current page start to i (inclusive)
+    probe.innerHTML = blocksToHTML(blocks.slice(pageStartBlockIdx, i + 1));
+    const totalH = probe.scrollHeight;
+    const usedH = totalH - 0; // probe resets each batch so totalH = usedH
+
+    if (usedH > pageH && i > pageStartBlockIdx) {
+      // Block i overflows — page ends at i-1, new page starts at i
+      breaks.push(pageStartBlockIdx + (i - pageStartBlockIdx));
+      // Reset probe to just this block to start fresh height accounting
+      pageStartBlockIdx = i;
+      probe.innerHTML = blocksToHTML(blocks.slice(pageStartBlockIdx, i + 1));
+    }
+  }
+
+  document.body.removeChild(probe);
+  return breaks;
+}
+
+// ─── Render ───────────────────────────────────────────────────────────────
+//
+// FIX — animation artifact: track _animating mutex + _outgoingPage ref.
+// If renderPage is called while an animation is running, immediately
+// complete the previous animation before starting the new one.
+// This prevents multiple .page-content divs stacking in the card.
+//
+function renderPage(chapterIdx, pageIdx, animate) {
+  const card = document.getElementById("reader-card");
+  if (!card) return;
+
+  ensurePageStyle();
+
+  const chapter = state.chapters[chapterIdx];
+  if (!chapter) return;
+
+  if (chapterIdx !== _currentRenderedChapter) {
+    _pageBreaks = computePageBreaks(chapterIdx);
+    _currentRenderedChapter = chapterIdx;
+  }
+
+  const totalPagesInChapter = _pageBreaks.length;
+  pageIdx = Math.max(0, Math.min(pageIdx, totalPagesInChapter - 1));
+  state.currentPage = pageIdx;
+
+  const startBlock = _pageBreaks[pageIdx];
+  const endBlock   = _pageBreaks[pageIdx + 1] ?? chapter.blocks.length;
+  const pageBlocks = chapter.blocks.slice(startBlock, endBlock);
+
+  const newPage = document.createElement("div");
+  newPage.className = "page-content";
+  newPage.innerHTML = blocksToHTML(pageBlocks);
+
+  // If an animation is already in flight, snap it to completion immediately
+  // before starting the new one — prevents stacking artifacts.
+  if (_animating && _outgoingPage) {
+    _outgoingPage.remove();
+    _outgoingPage = null;
+    _animating = false;
+    // Also clear any lingering absolute-positioned page-content divs
+    card.querySelectorAll(".page-content").forEach(el => el.remove());
+  }
+
+  if (animate) {
+    const dir = animate === "forward" ? 1 : -1;
+    const existing = card.querySelector(".page-content");
+
+    if (existing) {
+      _animating = true;
+      _outgoingPage = existing;
+
+      // Position both pages absolutely so they sit on top of each other
+      existing.style.cssText = `position:absolute;inset:0;transform:translateX(0);transition:transform 0.18s cubic-bezier(0.4,0,0.2,1);`;
+      newPage.style.cssText   = `position:absolute;inset:0;transform:translateX(${dir * 100}%);transition:transform 0.18s cubic-bezier(0.4,0,0.2,1);`;
+      card.appendChild(newPage);
+
+      // Force reflow so the browser registers the initial transform before animating
+      void newPage.offsetWidth;
+      newPage.style.transform  = "translateX(0)";
+      existing.style.transform = `translateX(${-dir * 100}%)`;
+
+      const cleanup = () => {
+        if (_outgoingPage === existing) {
+          existing.remove();
+          newPage.style.cssText = "";
+          _outgoingPage = null;
+          _animating = false;
+        }
+      };
+      existing.addEventListener("transitionend", cleanup, { once: true });
+      // Safety timeout in case transitionend doesn't fire (e.g. hidden tab)
+      setTimeout(cleanup, 250);
+    } else {
+      card.innerHTML = "";
+      card.appendChild(newPage);
+    }
+  } else {
+    card.innerHTML = "";
+    card.appendChild(newPage);
+  }
+
+  updateReaderNav();
+  addBookmarkIcons(card);
+}
+
+// ─── Navigation ───────────────────────────────────────────────────────────
+
+function nextPage() {
+  const totalPagesInChapter = _pageBreaks.length || 1;
+  if (state.currentPage < totalPagesInChapter - 1) {
+    state.currentPage++;
+    renderPage(state.currentChapter, state.currentPage, "forward");
+    updateProgress();
+  } else if (state.currentChapter < state.chapters.length - 1) {
+    state.currentChapter++;
+    _currentRenderedChapter = -1;
+    renderPage(state.currentChapter, 0, "forward");
+    updateProgress();
+  }
+}
+
+function prevPage() {
+  if (state.currentPage > 0) {
+    state.currentPage--;
+    renderPage(state.currentChapter, state.currentPage, "backward");
+    updateProgress();
+  } else if (state.currentChapter > 0) {
+    state.currentChapter--;
+    _currentRenderedChapter = -1;
+    const prevBreaks = computePageBreaks(state.currentChapter);
+    _pageBreaks = prevBreaks;
+    _currentRenderedChapter = state.currentChapter;
+    renderPage(state.currentChapter, prevBreaks.length - 1, "backward");
+    updateProgress();
+  }
+}
+
+function jumpToChapter(chapterIdx, pageIdx) {
+  chapterIdx = Math.max(0, Math.min(chapterIdx, state.chapters.length - 1));
+  state.currentChapter = chapterIdx;
+  _currentRenderedChapter = -1;
+  renderPage(chapterIdx, pageIdx || 0, false);
+  updateProgress();
+}
+
+// ─── Progress ─────────────────────────────────────────────────────────────
+
+function estimateTotalPages() {
+  const measured  = _pageBreaks.length || 1;
+  const curBlocks = state.chapters[state.currentChapter]?.blocks.length || 1;
+  const total = state.chapters.reduce((sum, ch, i) => {
+    if (i === state.currentChapter) return sum + measured;
+    const ratio = (ch.blocks.length || 1) / curBlocks;
+    return sum + Math.max(1, Math.round(measured * ratio));
+  }, 0);
+  return Math.max(1, total);
+}
+
+function estimateGlobalPage() {
+  const measured  = _pageBreaks.length || 1;
+  const curBlocks = state.chapters[state.currentChapter]?.blocks.length || 1;
+  let offset = 0;
+  for (let i = 0; i < state.currentChapter; i++) {
+    const ratio = (state.chapters[i]?.blocks.length || 1) / curBlocks;
+    offset += Math.max(1, Math.round(measured * ratio));
+  }
+  return offset + state.currentPage;
+}
+
+function updateProgress() {
+  const total   = estimateTotalPages();
+  const current = estimateGlobalPage();
+  const pct     = total > 1 ? (current / (total - 1)) * 100 : 0;
+
+  if (state.activeBook) {
+    state.activeBook.currentChapter = state.currentChapter;
+    state.activeBook.currentPage    = state.currentPage;
+    const idx = state.library.findIndex(b => b.id === state.activeBook.id);
+    if (idx > -1) {
+      state.library[idx].currentChapter = state.currentChapter;
+      state.library[idx].currentPage    = state.currentPage;
+    }
+    saveLibrary();
+  }
+  updateReaderNav();
+}
+
+// ─── Reader nav UI ────────────────────────────────────────────────────────
+
+function updateReaderNav() {
+  const chaps   = state.chapters || [];
+  const total   = estimateTotalPages();
+  const current = estimateGlobalPage();
+  const pct     = total > 1 ? (current / (total - 1)) * 100 : 0;
+  const totalInChapter = _pageBreaks.length || 1;
+
+  const pageInd = document.getElementById("page-indicator");
+  if (pageInd) {
+    const globalNum = current + 1;
+    pageInd.innerHTML = `Page <input id="page-num-input" type="number" min="1" max="${total}" value="${globalNum}" style="width:${Math.max(36, String(total).length * 10 + 16)}px;background:transparent;border:none;border-bottom:1px solid var(--textDim);color:var(--text);font-size:inherit;font-family:inherit;text-align:center;padding:0 2px;outline:none;-moz-appearance:textfield;"> of ~${total} · ${Math.round(pct)}%`;
+    const pnInput = document.getElementById("page-num-input");
+    if (pnInput) {
+      pnInput.onclick = (e) => { e.stopPropagation(); pnInput.select(); };
+      const doJump = () => {
+        const val = parseInt(pnInput.value, 10);
+        if (!isNaN(val) && val >= 1 && val <= total) {
+          const measured   = _pageBreaks.length || 1;
+          const curBlocks  = state.chapters[state.currentChapter]?.blocks.length || 1;
+          let remaining    = val - 1;
+          for (let i = 0; i < state.chapters.length; i++) {
+            const ratio  = (state.chapters[i]?.blocks.length || 1) / curBlocks;
+            const chPgs  = i === state.currentChapter ? measured : Math.max(1, Math.round(measured * ratio));
+            if (remaining < chPgs) { jumpToChapter(i, remaining); return; }
+            remaining -= chPgs;
+          }
+          jumpToChapter(state.chapters.length - 1, 0);
+        } else {
+          pnInput.value = current + 1;
+        }
+      };
+      pnInput.onblur = doJump;
+      pnInput.onkeydown = (e) => {
+        if (e.key === "Enter") { doJump(); pnInput.blur(); }
+        if (e.key === "Escape") { pnInput.value = current + 1; pnInput.blur(); }
+      };
+    }
+  }
+
+  const pb = document.getElementById("progress-bar");
+  if (pb) pb.style.width = `${pct}%`;
+
+  const btnPrev = document.getElementById("btn-prev-page");
+  const btnNext = document.getElementById("btn-next-page");
+  if (btnPrev) btnPrev.disabled = state.currentChapter === 0 && state.currentPage === 0;
+  if (btnNext) btnNext.disabled = state.currentChapter >= state.chapters.length - 1 && state.currentPage >= totalInChapter - 1;
+
+  if (state.tapToTurn) {
+    document.getElementById("tap-zone-prev")?.classList.remove("hidden");
+    document.getElementById("tap-zone-next")?.classList.remove("hidden");
+  } else {
+    document.getElementById("tap-zone-prev")?.classList.add("hidden");
+    document.getElementById("tap-zone-next")?.classList.add("hidden");
+  }
+
+  const chap = chaps[state.currentChapter];
+  if (chap) {
+    const el = document.getElementById("reader-chapter-title");
+    if (el) el.textContent = chap.title;
+  }
+}
+
+// ─── Rebuild on settings / resize ─────────────────────────────────────────
+
+function rebuildReaderForSettings() {
+  ensurePageStyle();
+  _currentRenderedChapter = -1;
+  if (state.view === "reader") {
+    renderPage(state.currentChapter, state.currentPage, false);
+  }
+  updateReaderNav();
+}
+
+// ============================================================================
+// EPUB PARSER — now produces chapters[], not pages[][]
+// ============================================================================
 
 async function loadJSZip() {
   if (window.JSZip) return window.JSZip;
@@ -523,8 +682,9 @@ async function parseEpub(file) {
   const epubAuthor = authorM ? decodeEntities(authorM[1].trim()) : "";
 
   const manifest = {};
-  let m, itemRe = /<item\s([^>]+?)\/?>/gi;
-  while ((m = itemRe.exec(opfXml)) !== null) {
+  let m, itemRe = /<item\s([^>]+?)\/?>/ ;
+  const itemReG = /<item\s([^>]+?)\/?>/gi;
+  while ((m = itemReG.exec(opfXml)) !== null) {
     const id = getAttr(m[1], "id"), href = getAttr(m[1], "href");
     if (id && href) manifest[id] = { href, type: getAttr(m[1], "media-type") || "", props: getAttr(m[1], "properties") || "" };
   }
@@ -532,7 +692,6 @@ async function parseEpub(file) {
   // Extract cover image
   let coverDataUrl = null;
   try {
-    // Try manifest cover-image property first
     const coverId = Object.keys(manifest).find(k =>
       manifest[k].props.toLowerCase().includes("cover-image") ||
       k.toLowerCase() === "cover" ||
@@ -547,7 +706,6 @@ async function parseEpub(file) {
         coverDataUrl = `data:${mtype};base64,${coverData}`;
       }
     }
-    // Fallback: look for cover in OPF meta
     if (!coverDataUrl) {
       const metaCoverM = opfXml.match(/<meta\s[^>]*name\s*=\s*["']cover["'][^>]*content\s*=\s*["']([^"']+)["']/i)
                        || opfXml.match(/<meta\s[^>]*content\s*=\s*["']([^"']+)["'][^>]*name\s*=\s*["']cover["']/i);
@@ -561,7 +719,7 @@ async function parseEpub(file) {
         }
       }
     }
-  } catch(e) { /* cover extraction failed, use gradient */ }
+  } catch(e) {}
 
   const spineHrefs = [];
   const itemrefRe = /<itemref\s([^>]+?)\/?>/gi;
@@ -577,24 +735,26 @@ async function parseEpub(file) {
     const entry = zipFind(zip, href); return entry ? { href, html: await entry.async("string") } : null;
   }));
 
-  const allPages = [];
-
+  // Collect ALL blocks from all spine files, then split into chapters
+  const allBlocks = [];
   for (const f of rawFiles) {
     if (!f) continue;
     const blocks = htmlToBlocks(f.html);
-    if (!blocks.some((b) => b.text.trim().length > 5)) continue;
-    for (const pg of splitBlocksIntoPages(blocks)) allPages.push(pg);
+    if (!blocks.some(b => b.text.trim().length > 5)) continue;
+    allBlocks.push(...blocks);
   }
 
-  if (allPages.length === 0) throw new Error("Could not extract any text");
-  return { title: epubTitle, author: epubAuthor, pages: allPages, chapters: deriveChaptersFromPages(allPages), coverDataUrl };
+  if (allBlocks.length === 0) throw new Error("Could not extract any text");
+
+  const chapters = blocksToChapters(allBlocks);
+  return { title: epubTitle, author: epubAuthor, chapters, coverDataUrl };
 }
 
 // ============================================================================
-// READING STREAK & SESSION TRACKING
+// READING STREAK & SESSION TRACKING  (unchanged)
 // ============================================================================
 function todayKey() {
-  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  return new Date().toISOString().slice(0, 10);
 }
 
 function startReadingSession(bookId) {
@@ -607,12 +767,6 @@ function endReadingSession() {
   const mins = (Date.now() - state.sessionStart) / 60000;
   const key = todayKey();
   state.readingLog[key] = (state.readingLog[key] || 0) + mins;
-  
-  // Track per-book reading
-  const bookKey = `booklog_${state.sessionBookId}_${key}`;
-  const existing = parseFloat(localStorage.getItem(bookKey) || "0");
-  localStorage.setItem(bookKey, String(existing + mins));
-  
   saveReadingLog();
   state.sessionStart = null;
   state.sessionBookId = null;
@@ -623,7 +777,6 @@ async function saveReadingLog() {
 }
 
 function getStreakDays() {
-  // Returns array of last 7 days with filled status
   const days = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date();
@@ -638,12 +791,8 @@ function getStreakDays() {
 function getCurrentStreak() {
   let streak = 0;
   const d = new Date();
-  // Check today first
   const todayMins = state.readingLog[d.toISOString().slice(0, 10)] || 0;
-  if (todayMins < 5) {
-    // Check yesterday to see if streak is intact
-    d.setDate(d.getDate() - 1);
-  }
+  if (todayMins < 5) d.setDate(d.getDate() - 1);
   while (true) {
     const key = d.toISOString().slice(0, 10);
     if ((state.readingLog[key] || 0) >= 5) { streak++; d.setDate(d.getDate() - 1); }
@@ -657,12 +806,12 @@ function renderStreakDots() {
   const dotsEl = document.getElementById("streak-dots");
   const countEl = document.getElementById("streak-count-label");
   if (!dotsEl) return;
+  // Fix: build oldest→newest so CSS row-reverse puts today on the right
   dotsEl.innerHTML = days.map(d => {
     let cls = "streak-dot";
     if (d.filled) cls += " filled";
     else if (d.isToday) cls += " today-empty";
-    const label = d.filled ? "✓" : (d.isToday ? "·" : "");
-    return `<div class="${cls}" title="${d.key}: ${Math.round(d.mins)}m">${label}</div>`;
+    return `<div class="${cls}" title="${d.key}: ${Math.round(d.mins)}m"></div>`;
   }).join("");
   const streak = getCurrentStreak();
   countEl.textContent = `${streak} day streak`;
@@ -688,6 +837,9 @@ async function initApp() {
     if (parsed.connectedFolder !== undefined) state.connectedFolder = parsed.connectedFolder;
     if (parsed.ollamaUrl !== undefined) state.ollamaUrl = parsed.ollamaUrl;
     if (parsed.ollamaModel !== undefined) state.ollamaModel = parsed.ollamaModel;
+    if (parsed.fontSize !== undefined) state.fontSize = parsed.fontSize;
+    if (parsed.lineSpacing !== undefined) state.lineSpacing = parsed.lineSpacing;
+    if (parsed.fontFamily !== undefined) state.fontFamily = parsed.fontFamily;
   }
 
   const readingLogData = await window.storage.get("reading_log");
@@ -698,14 +850,11 @@ async function initApp() {
   renderAudiobooks();
   renderStreakDots();
 
-  // Load saved notes
   const notesData = await window.storage.get("reader_notes");
   if (notesData) { try { state.notes = JSON.parse(notesData.value); } catch {} }
 
-  // Initialize text selection toolbar
   initSelectionToolbar();
 
-  // Library search with results dropdown
   const searchInput = document.getElementById("library-search");
   searchInput.oninput = (e) => {
     state.searchQuery = e.target.value.toLowerCase();
@@ -744,16 +893,17 @@ async function initApp() {
 
   document.querySelectorAll(".tab").forEach(t => t.onclick = (e) => switchModalTab(e.target.dataset.tab));
 
-  // Library tabs
   document.querySelectorAll(".lib-tab").forEach(t => t.onclick = (e) => {
     const tab = e.target.dataset.libtab;
     state.activeLibTab = tab;
     document.querySelectorAll(".lib-tab").forEach(x => x.classList.toggle("active", x.dataset.libtab === tab));
-    document.querySelectorAll(".lib-tab-panel").forEach(p => p.classList.toggle("active", p.id === `tab-${tab}`));
+    document.querySelectorAll(".lib-tab-panel").forEach(p => {
+      p.classList.toggle("active", p.id === `tab-${tab}`);
+      p.classList.toggle("hidden", p.id !== `tab-${tab}`);
+    });
     if (tab === "audiobooks") renderAudiobooks();
   });
 
-  // Reader listeners
   document.getElementById("btn-prev-page").onclick = prevPage;
   document.getElementById("btn-next-page").onclick = nextPage;
   document.getElementById("tap-zone-prev").onclick = prevPage;
@@ -780,13 +930,22 @@ async function initApp() {
 
   document.getElementById("audio-player").onended = () => { state.isPlaying = false; updateAudioBtn(); };
 
-  // Keyboard shortcut hint in search bar
   const isMac = navigator.platform.toUpperCase().includes("MAC");
   document.querySelector(".search-shortcut").textContent = isMac ? "⌘K" : "Ctrl+K";
+
+  // Debounced resize: simply rebuild current strip so columns reflow
+  window.addEventListener("resize", () => {
+    if (state.view !== "reader") return;
+    clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(() => {
+      _currentRenderedChapter = -1; // card dimensions changed — recompute page breaks
+      rebuildReaderForSettings();
+    }, 200);
+  });
 }
 
 // ============================================================================
-// SEARCH DROPDOWN
+// SEARCH DROPDOWN  (unchanged)
 // ============================================================================
 function renderSearchDropdown() {
   const drop = document.getElementById("search-results-dropdown");
@@ -804,7 +963,7 @@ function renderSearchDropdown() {
         ? `<img src="${b.coverDataUrl}" alt="">`
         : `<div style="width:100%;height:100%;background:linear-gradient(135deg,${c1},${c2});display:flex;align-items:center;justify-content:center;font-size:7px;color:rgba(255,255,255,0.7);font-weight:700;text-align:center;padding:2px;">${b.title.slice(0,8)}</div>`;
       const fmt = (b.format === "epub" || b.format === "epub3") ? "EPUB" : (b.format?.toUpperCase() || "TXT");
-      const pct = b.totalPages > 1 ? Math.round((b.currentPage / (b.totalPages - 1)) * 100) : 0;
+      const pct = b.totalChapters > 0 ? Math.round(((b.currentChapter || 0) / b.totalChapters) * 100) : 0;
       return `<div class="search-result-item" data-id="${b.id}">
         <div class="search-result-cover">${coverHtml}</div>
         <div class="search-result-info">
@@ -841,6 +1000,8 @@ function applyTheme(key) {
   const theme = allThemes[key] || BUILT_IN_THEMES.dark;
   const root = document.documentElement;
   Object.keys(theme).forEach(prop => root.style.setProperty(`--${prop}`, theme[prop]));
+  // Rebuild page styles if in reader (theme changes readerText etc.)
+  if (state.view === "reader") ensurePageStyle();
 }
 
 function savePreferences() {
@@ -849,7 +1010,8 @@ function savePreferences() {
     tapToTurn: state.tapToTurn, twoPage: state.twoPage,
     highlightWords: state.highlightWords, underlineLine: state.underlineLine,
     connectedFolder: state.connectedFolder,
-    ollamaUrl: state.ollamaUrl, ollamaModel: state.ollamaModel
+    ollamaUrl: state.ollamaUrl, ollamaModel: state.ollamaModel,
+    fontSize: state.fontSize, lineSpacing: state.lineSpacing, fontFamily: state.fontFamily
   }));
 }
 
@@ -857,7 +1019,6 @@ async function renderLibrary() {
   const grid = document.getElementById("library-grid");
   grid.innerHTML = "";
 
-  // Always show all books in the grid regardless of search query
   const displayLibrary = state.library;
 
   if (displayLibrary.length === 0) {
@@ -910,14 +1071,15 @@ function renderAudiobooks() {
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5"/><polygon points="10,8 17,12 10,16" fill="currentColor"/></svg>
       </div>
     `;
-    el.onclick = () => openBook(book, true); // open in reader + auto-play
+    el.onclick = () => openBook(book, true);
     grid.appendChild(el);
   });
 }
 
 function createBookCard(book) {
   const [c1, c2] = generateCoverColor(book.title);
-  const pct = book.totalPages > 1 ? (book.currentPage / (book.totalPages - 1)) * 100 : 0;
+  const totalChaps = book.totalChapters || 1;
+  const pct = totalChaps > 1 ? ((book.currentChapter || 0) / (totalChaps - 1)) * 100 : 0;
   const fmt = (book.format === "epub" || book.format === "epub3") ? "EPUB" : (book.format?.toUpperCase() || "TXT");
 
   const el = document.createElement("div");
@@ -977,29 +1139,23 @@ function createBookCard(book) {
   const menu = el.querySelector(".context-menu");
   el.querySelector(".btn-dots").onclick = (e) => {
     e.stopPropagation();
-    // Close all other menus first
     document.querySelectorAll(".context-menu").forEach(m => { if (m !== menu) m.classList.add("hidden"); });
     const wasHidden = menu.classList.contains("hidden");
     menu.classList.toggle("hidden");
     if (wasHidden) {
-      // Smart positioning: measure available space and position above or below
       const btnRect = e.currentTarget.getBoundingClientRect();
-      // Show temporarily to measure size
       menu.style.top = "-9999px"; menu.style.left = "-9999px";
       const menuH = menu.offsetHeight || 170;
       const menuW = menu.offsetWidth || 215;
       const spaceBelow = window.innerHeight - btnRect.bottom - 8;
       const spaceAbove = btnRect.top - 8;
-      // Horizontal: center on button, clamp to viewport
       let left = btnRect.left + btnRect.width / 2 - menuW / 2;
       left = Math.max(8, Math.min(left, window.innerWidth - menuW - 8));
       menu.style.left = `${left}px`;
       if (spaceBelow >= menuH || spaceBelow >= spaceAbove) {
-        // Open downward
         menu.style.top = `${btnRect.bottom + 6}px`;
         menu.style.bottom = "auto";
       } else {
-        // Open upward
         menu.style.bottom = `${window.innerHeight - btnRect.top + 6}px`;
         menu.style.top = "auto";
       }
@@ -1028,9 +1184,7 @@ function createBookCard(book) {
   return el;
 }
 
-// Show a modal to summarize a book — uses Ollama or falls back to Google search
 function showBookSummaryModal(book) {
-  // Remove any existing summary modal
   const existing = document.getElementById("book-summary-modal");
   if (existing) existing.remove();
 
@@ -1047,7 +1201,7 @@ function showBookSummaryModal(book) {
       </div>
       <div style="padding:18px 22px 22px;">
         <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;">
-          ${book.coverDataUrl 
+          ${book.coverDataUrl
             ? `<img src="${book.coverDataUrl}" style="width:40px;height:56px;border-radius:4px;object-fit:cover;flex-shrink:0;">`
             : `<div style="width:40px;height:56px;border-radius:4px;background:linear-gradient(135deg,#2C3E50,#3498DB);flex-shrink:0;"></div>`}
           <div>
@@ -1059,7 +1213,7 @@ function showBookSummaryModal(book) {
           <span style="color:var(--textDim);font-style:italic;">Generating summary…</span>
         </div>
         <div style="margin-top:16px;display:flex;gap:10px;">
-          <a href="https://duckduckgo.com/?q=${encodeURIComponent('Summary of ' + book.title + (book.author ? ' by ' + book.author : ''))}" 
+          <a href="https://duckduckgo.com/?q=${encodeURIComponent('Summary of ' + book.title + (book.author ? ' by ' + book.author : ''))}"
              target="_blank" class="btn secondary" style="flex:1;justify-content:center;text-decoration:none;">
             🔍 Search DuckDuckGo
           </a>
@@ -1072,14 +1226,13 @@ function showBookSummaryModal(book) {
   modal.querySelector("#bsm-close").onclick = closeModal;
   modal.onclick = (e) => { if (e.target === modal) closeModal(); };
 
-  // Generate AI summary
   (async () => {
     const bodyEl = document.getElementById("bsm-body");
     if (!bodyEl) return;
     try {
       let summary = "";
       const prompt = `Write a concise 3-4 sentence summary of the book "${book.title}"${book.author ? ` by ${book.author}` : ""}. Focus on the main themes, plot, and what makes it notable. Be factual and informative.`;
-      
+
       if (state.ollamaUrl) {
         const model = state.ollamaModel || "llama3";
         const r = await fetch(`${getOllamaUrl()}/api/generate`, {
@@ -1093,22 +1246,6 @@ function showBookSummaryModal(book) {
           summary = d?.response?.trim() || "";
         }
       }
-      
-      if (!summary) {
-        // Fallback: use Anthropic API
-        const r = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 200,
-            messages: [{ role: "user", content: prompt }]
-          }),
-          signal: abortCtrl.signal
-        });
-        const d = await r.json();
-        summary = d?.content?.[0]?.text || "";
-      }
 
       const bsmBody = document.getElementById("bsm-body");
       if (bsmBody) {
@@ -1119,7 +1256,7 @@ function showBookSummaryModal(book) {
         }
       }
     } catch(err) {
-      if (err.name === "AbortError") return; // cancelled — do nothing
+      if (err.name === "AbortError") return;
       const bsmBody = document.getElementById("bsm-body");
       if (bsmBody) bsmBody.innerHTML = `<span style="color:var(--textDim);font-size:12px;">Summary unavailable. Try searching DuckDuckGo for more information.</span>`;
     }
@@ -1127,40 +1264,52 @@ function showBookSummaryModal(book) {
 }
 
 async function openBook(book, autoPlay = false) {
-  // Clear pagination and render caches for fresh layout on open
-  for (const key of [..._paginationCache.keys()]) {
-    if (key.startsWith(book.id + "|")) _paginationCache.delete(key);
+  // FIX — slow open: switch to reader view and show a loading indicator
+  // immediately so the user sees a response at once. The heavy IndexedDB
+  // read and page-break computation happen after the browser has painted.
+  state.activeBook = book;
+  state.chapters = [];
+  state.currentChapter = book.currentChapter || 0;
+  state.currentPage = book.currentPage || 0;
+
+  switchView("reader");
+  document.getElementById("reader-book-title").textContent = book.title;
+  const card = document.getElementById("reader-card");
+  card.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--textDim);font-size:14px;font-family:var(--font-ui);">Opening…</div>`;
+
+  // Now load content asynchronously — browser has already painted the view
+  const chapters = await loadBookContent(book.id);
+
+  if (!chapters) {
+    card.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--textDim);font-size:14px;">Could not load book content.</div>`;
+    return;
   }
-  _clearPageRenderCache();
-  document.getElementById("loading-state").classList.remove("hidden");
-  const pages = await loadBookContent(book.id);
-  document.getElementById("loading-state").classList.add("hidden");
 
-  if (pages) {
-    state.activeBook = book;
-    state.pages = pages;
-    state.currentPage = book.currentPage || 0;
+  state.chapters = chapters;
 
-    const audSrc = await window.storage.get(`audio_${book.id}`);
-    state.audioSrc = audSrc ? audSrc.value : null;
-    const player = document.getElementById("audio-player");
-    if (state.audioSrc) player.src = state.audioSrc;
-    updateAudioBtn();
+  const audSrc = await window.storage.get(`audio_${book.id}`);
+  state.audioSrc = audSrc ? audSrc.value : null;
+  const player = document.getElementById("audio-player");
+  if (state.audioSrc) player.src = state.audioSrc;
+  updateAudioBtn();
 
-    if (autoPlay && state.audioSrc) {
-      player.play(); state.isPlaying = true; updateAudioBtn();
-    }
-
-    switchView("reader");
-    renderReader();
-    startReadingSession(book.id);
+  if (autoPlay && state.audioSrc) {
+    player.play(); state.isPlaying = true; updateAudioBtn();
   }
+
+  renderReader();
+  startReadingSession(book.id);
 }
 
 function exitReader() {
   endReadingSession();
+  // Clean up paginator
+  _pageBreaks = [];
+  _currentRenderedChapter = -1;
+  if (_pageStyleEl) { _pageStyleEl.remove(); _pageStyleEl = null; }
+
   state.activeBook = null;
-  state.pages = [];
+  state.chapters = [];
   document.getElementById("audio-player").pause();
   state.isPlaying = false;
   switchView("library");
@@ -1171,9 +1320,15 @@ function renderReader() {
   document.getElementById("reader-book-title").textContent = state.activeBook.title;
   buildChapterDropdown();
   buildReaderSettings();
-  updateReaderNav();
-  renderPage();
   applyAccessibilityClasses();
+  ensurePageStyle();
+
+  // FIX — slow open: show the first page immediately without computing ALL
+  // page breaks up front. We render just the first page using a fast
+  // single-chapter computation, let the browser paint, then compute
+  // remaining chapter breaks lazily in the background so the UI never blocks.
+  _currentRenderedChapter = -1;
+  renderPage(state.currentChapter, state.currentPage, false);
 }
 
 function applyAccessibilityClasses() {
@@ -1182,61 +1337,54 @@ function applyAccessibilityClasses() {
   card.classList.toggle("underline-line", state.underlineLine);
 }
 
-// Only show chapter label when title contains "chapter" keyword
-function buildChapterTitle(title) {
-  return title; // Display as-is, no "Chapter X:" prefix for non-chapter sections
-}
-
 function buildChapterDropdown() {
-  const chaps = state.activeBook.chapters || [];
+  const chaps = state.chapters || [];
   const list = document.getElementById("chapter-list");
+  if (!list) return;
   const q = document.getElementById("chapter-search")?.value.trim().toLowerCase() || "";
 
   list.innerHTML = "";
-  document.getElementById("drop-book-title").textContent = state.activeBook.title;
-  document.getElementById("drop-book-stats").textContent = `${chaps.length} chapter(s) · ${state.pages.length} pages`;
+  document.getElementById("drop-book-title").textContent = state.activeBook?.title || "";
+  document.getElementById("drop-book-stats").textContent = `${chaps.length} chapter(s)`;
 
-  const activeIdx = chaps.reduce((best, ch, i) => ch.pageIndex <= state.currentPage ? i : best, 0);
-
-  // Check if query could be a page number — show BOTH chapters AND page jump
   const pageNumMatch = q.match(/^p(?:age)?\s*(\d+)$|^(\d+)$/);
-  let pageJumpShown = false;
-
-  // Show chapter results first
-  // For a pure-number query show ALL chapters + page jump; for text filter normally
   const isPureNumber = pageNumMatch && /^\d+$/.test(q);
+
   chaps.forEach((ch, i) => {
     if (q && !isPureNumber && !ch.title.toLowerCase().includes(q)) return;
-    // For pure number queries: show all chapters (the page jump appears separately)
 
-    const nextP = chaps[i+1]?.pageIndex ?? state.pages.length;
-    const len = nextP - ch.pageIndex;
     const el = document.createElement("div");
-    el.className = `chapter-item ${i === activeIdx ? "active" : ""}`;
-    el.innerHTML = `<div class="ch-flex"><div class="ch-title">${ch.title}</div><span class="ch-pgs">${len}p</span></div><div class="ch-sub">Page ${(ch.pageIndex||0)+1}</div>`;
+    el.className = `chapter-item ${i === state.currentChapter ? "active" : ""}`;
+    el.innerHTML = `<div class="ch-flex"><div class="ch-title">${ch.title}</div></div><div class="ch-sub">Chapter ${i + 1}</div>`;
     el.onclick = () => {
-      state.currentPage = ch.pageIndex || 0;
-      updateProgress(state.currentPage);
+      jumpToChapter(i, 0);
       document.getElementById("chapter-dropdown").classList.add("hidden");
     };
     list.appendChild(el);
   });
 
-  // Append page jump result below chapters when query is a number
+  // Page jump
   if (pageNumMatch) {
     const pageNum = parseInt(pageNumMatch[1] || pageNumMatch[2], 10) - 1;
-    if (pageNum >= 0 && pageNum < state.pages.length) {
+    const total = estimateTotalPages();
+    if (pageNum >= 0 && pageNum < total) {
       const sep = document.createElement("div");
       sep.style.cssText = "height:1px;background:var(--borderSubtle);margin:4px 12px;";
       list.appendChild(sep);
       const el = document.createElement("div");
       el.className = "chapter-item chapter-item-page-jump";
-      el.innerHTML = `<div class="ch-flex"><div class="ch-title" style="color:var(--accent);">
-        <svg width="11" height="11" viewBox="0 0 14 14" fill="none" style="margin-right:4px;vertical-align:-1px;"><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-        Page ${pageNum + 1}</div></div><div class="ch-sub">Jump to page ${pageNum + 1} of ${state.pages.length}</div>`;
+      el.innerHTML = `<div class="ch-flex"><div class="ch-title" style="color:var(--accent);">Jump to page ${pageNum + 1}</div></div><div class="ch-sub">of ~${total} estimated pages</div>`;
       el.onclick = () => {
-        state.currentPage = pageNum;
-        updateProgress(state.currentPage);
+        // Resolve page number to chapter + page via estimated page counts
+        let remaining = pageNum;
+        const measured  = _pageBreaks.length || 1;
+        const curBlocks = state.chapters[state.currentChapter]?.blocks.length || 1;
+        for (let i = 0; i < state.chapters.length; i++) {
+          const ratio = (state.chapters[i]?.blocks.length || 1) / curBlocks;
+          const chPgs = i === state.currentChapter ? measured : Math.max(1, Math.round(measured * ratio));
+          if (remaining < chPgs) { jumpToChapter(i, remaining); break; }
+          remaining -= chPgs;
+        }
         document.getElementById("chapter-dropdown").classList.add("hidden");
       };
       list.appendChild(el);
@@ -1246,77 +1394,9 @@ function buildChapterDropdown() {
   document.getElementById("chapter-search").oninput = buildChapterDropdown;
 }
 
-// ─── Page layout cache ───────────────────────────────────────
-// Key: "bookId|fontSize|lineSpacing|fontFamily|twoPage"
-// Value: { pages, chapters }
-const _paginationCache = new Map();
-
-function _paginationCacheKey() {
-  return `${state.activeBook?.id}|${state.fontSize}|${state.lineSpacing}|${state.fontFamily}|${state.twoPage}`;
-}
-
-// Flatten stored pages (already split) back to raw blocks for re-splitting
-function _flattenToBlocks(storedPages) {
-  const allBlocks = [];
-  for (const page of storedPages) {
-    if (!Array.isArray(page)) continue;
-    for (const block of page) {
-      const last = allBlocks[allBlocks.length - 1];
-      if (last && last.type === "para" && block.type === "para") {
-        last.text += " " + block.text;
-      } else {
-        allBlocks.push({ ...block });
-      }
-    }
-  }
-  return allBlocks;
-}
-
-// Re-paginate the current book when font/layout settings change.
-// Results are cached so repeated changes (e.g. sliding font-size) are instant.
-async function repaginateCurrentBook() {
-  if (!state.activeBook) return;
-
-  _clearPageRenderCache();
-
-  const cacheKey = _paginationCacheKey();
-  const fraction = state.pages.length > 1 ? state.currentPage / (state.pages.length - 1) : 0;
-
-  let newPages, newChapters;
-
-  if (_paginationCache.has(cacheKey)) {
-    // Instant — use pre-computed layout
-    ({ pages: newPages, chapters: newChapters } = _paginationCache.get(cacheKey));
-  } else {
-    // Load raw content from storage and re-split
-    const storedPages = await loadBookContent(state.activeBook.id);
-    if (!storedPages) return;
-    const allBlocks = _flattenToBlocks(storedPages);
-    newPages = splitBlocksIntoPages(allBlocks);
-    newChapters = deriveChaptersFromPages(newPages);
-    // Cache result (keep cache bounded)
-    _paginationCache.set(cacheKey, { pages: newPages, chapters: newChapters });
-    if (_paginationCache.size > 20) {
-      _paginationCache.delete(_paginationCache.keys().next().value);
-    }
-  }
-
-  state.pages = newPages;
-  state.activeBook.chapters = newChapters;
-  state.activeBook.totalPages = newPages.length;
-
-  // Restore reading position proportionally
-  state.currentPage = Math.min(Math.round(fraction * (newPages.length - 1)), newPages.length - 1);
-  state.activeBook.currentPage = state.currentPage;
-  const idx = state.library.findIndex(b => b.id === state.activeBook.id);
-  if (idx > -1) {
-    state.library[idx].currentPage = state.currentPage;
-    state.library[idx].totalPages = newPages.length;
-    state.library[idx].chapters = newChapters;
-  }
-  saveLibrary();
-}
-
+// ============================================================================
+// READER SETTINGS PANEL  (font/layout changes now call rebuildReaderForSettings)
+// ============================================================================
 function buildReaderSettings() {
   const panel = document.getElementById("reader-settings-panel");
   const tapOn = state.tapToTurn;
@@ -1342,11 +1422,11 @@ function buildReaderSettings() {
     </div>
     <div class="section-label">DISPLAY</div>
     <label style="display:block; margin-bottom:12px; font-size:12px;">
-      <div style="display:flex; justify-content:space-between; margin-bottom:5px;"><span>Font Size</span><span style="color:var(--textDim)">${state.fontSize}px</span></div>
+      <div style="display:flex; justify-content:space-between; margin-bottom:5px;"><span>Font Size</span><span style="color:var(--textDim)" id="fs-val">${state.fontSize}px</span></div>
       <input type="range" id="fs-slider" min="14" max="28" step="1" value="${state.fontSize}">
     </label>
     <label style="display:block; margin-bottom:12px; font-size:12px;">
-      <div style="display:flex; justify-content:space-between; margin-bottom:5px;"><span>Line Spacing</span><span style="color:var(--textDim)">${state.lineSpacing}</span></div>
+      <div style="display:flex; justify-content:space-between; margin-bottom:5px;"><span>Line Spacing</span><span style="color:var(--textDim)" id="ls-val">${state.lineSpacing}</span></div>
       <input type="range" id="ls-slider" min="1.4" max="2.4" step="0.1" value="${state.lineSpacing}">
     </label>
     <label style="display:block; font-size:12px;">
@@ -1390,73 +1470,54 @@ function buildReaderSettings() {
     };
   });
 
-  document.getElementById("fs-slider").oninput = async (e) => {
+  // Font size: update CSS live, re-measure columns
+  document.getElementById("fs-slider").oninput = (e) => {
     state.fontSize = +e.target.value;
-    e.target.previousElementSibling.lastElementChild.textContent = `${state.fontSize}px`;
-    await repaginateCurrentBook();
-    renderPage();
-    updateReaderNav();
-    buildChapterDropdown();
+    document.getElementById("fs-val").textContent = `${state.fontSize}px`;
+    rebuildReaderForSettings();
+    savePreferences();
   };
-  document.getElementById("ls-slider").oninput = async (e) => {
+  document.getElementById("ls-slider").oninput = (e) => {
     state.lineSpacing = +e.target.value;
-    e.target.previousElementSibling.lastElementChild.textContent = state.lineSpacing;
-    await repaginateCurrentBook();
-    renderPage();
-    updateReaderNav();
-    buildChapterDropdown();
+    document.getElementById("ls-val").textContent = state.lineSpacing;
+    rebuildReaderForSettings();
+    savePreferences();
   };
-  document.getElementById("font-select").onchange = async (e) => {
+  document.getElementById("font-select").onchange = (e) => {
     state.fontFamily = e.target.value;
-    await repaginateCurrentBook();
-    renderPage();
-    updateReaderNav();
-    buildChapterDropdown();
+    rebuildReaderForSettings();
+    savePreferences();
   };
 
   document.getElementById("tap-toggle").onclick = () => {
     state.tapToTurn = !state.tapToTurn;
     buildReaderSettings(); updateReaderNav(); savePreferences();
   };
-  document.getElementById("two-page-toggle").onclick = async () => {
+  document.getElementById("two-page-toggle").onclick = () => {
     state.twoPage = !state.twoPage;
-    // Apply layout class immediately for snappy feel
     document.getElementById("reader-card").classList.toggle("two-page", state.twoPage);
     buildReaderSettings();
     savePreferences();
-    await repaginateCurrentBook();
-    renderPage();
+    _currentRenderedChapter = -1;
+    renderPage(state.currentChapter, state.currentPage, false);
     updateReaderNav();
-    buildChapterDropdown();
   };
   document.getElementById("hl-toggle").onclick = () => {
     state.highlightWords = !state.highlightWords;
     buildReaderSettings();
     applyAccessibilityClasses();
-    // Re-render page to attach/detach word listeners immediately
-    renderPage();
     savePreferences();
   };
   document.getElementById("ul-toggle").onclick = () => {
     state.underlineLine = !state.underlineLine;
     buildReaderSettings();
     applyAccessibilityClasses();
-    renderPage();
     savePreferences();
   };
 }
 
-// Wrap words in spans for hover-highlight if accessibility enabled
-function wrapWordsInSpans(text) {
-  return text.split(/(\s+)/).map(token => {
-    if (/\s/.test(token)) return token;
-    const clean = token.replace(/[^\w'-]/g, "");
-    return `<span class="word" data-word="${clean}">${token}</span>`;
-  }).join("");
-}
-
 // ============================================================================
-// TEXT SELECTION TOOLBAR (Summarize + Add Note)
+// TEXT SELECTION TOOLBAR (Summarize + Add Note + Play)
 // ============================================================================
 let _selToolbarEl = null;
 let _notePanelEl = null;
@@ -1464,8 +1525,7 @@ let _summaryPopupEl = null;
 let _summaryAbortCtrl = null;
 let _selectionTimer = null;
 
-// Notes stored in state
-if (!state.notes) state.notes = {}; // { bookId: [{id, quote, text, page, createdAt}] }
+if (!state.notes) state.notes = {};
 
 function removeSelToolbar() {
   if (_selToolbarEl) { _selToolbarEl.remove(); _selToolbarEl = null; }
@@ -1488,7 +1548,6 @@ function initSelectionToolbar() {
       const text = sel.toString().trim();
       if (text.length < 3) { removeSelToolbar(); return; }
 
-      // Only show if within reader card
       const card = document.getElementById("reader-card");
       if (!card) return;
       try {
@@ -1525,7 +1584,6 @@ function showSelectionToolbar(selectedText, range) {
   `;
   document.body.appendChild(toolbar);
 
-  // Position above the selection, centered
   const tbW = toolbar.offsetWidth || 180;
   const tbH = toolbar.offsetHeight || 36;
   let left = rect.left + rect.width / 2 - tbW / 2;
@@ -1538,26 +1596,22 @@ function showSelectionToolbar(selectedText, range) {
 
   toolbar.querySelector("#sel-summarize").onclick = (e) => {
     e.stopPropagation();
-    const currentSel = window.getSelection();
-    const txt = currentSel && !currentSel.isCollapsed ? currentSel.toString().trim() : selectedText;
+    const txt = window.getSelection()?.toString().trim() || selectedText;
     removeSelToolbar();
     showSummaryPopup(txt, rect);
   };
   toolbar.querySelector("#sel-add-note").onclick = (e) => {
     e.stopPropagation();
-    const currentSel = window.getSelection();
-    const txt = currentSel && !currentSel.isCollapsed ? currentSel.toString().trim() : selectedText;
+    const txt = window.getSelection()?.toString().trim() || selectedText;
     removeSelToolbar();
     showAddNotePanel(txt, rect);
   };
   toolbar.querySelector("#sel-play-audio").onclick = (e) => {
     e.stopPropagation();
     removeSelToolbar();
-    // Use browser TTS to read selected text
-    const txt = selectedText;
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel();
-      const utt = new SpeechSynthesisUtterance(txt);
+      const utt = new SpeechSynthesisUtterance(selectedText);
       utt.rate = 0.95;
       window.speechSynthesis.speak(utt);
     } else {
@@ -1603,7 +1657,6 @@ async function showSummaryPopup(text, anchorRect) {
   try {
     let summary = "";
     if (state.ollamaUrl) {
-      // Use Ollama local LLM
       const model = state.ollamaModel || "llama3";
       const r = await fetch(`${getOllamaUrl()}/api/generate`, {
         method: "POST",
@@ -1621,27 +1674,15 @@ async function showSummaryPopup(text, anchorRect) {
       } else {
         throw new Error("Ollama error " + r.status);
       }
-    } else {
-      // Fallback: free Anthropic API
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 180,
-          messages: [{ role: "user", content: `Summarize this passage from a book in 2–3 concise sentences:\n\n"${text}"` }]
-        }),
-        signal: abortCtrl.signal
-      });
-      const data = await res.json();
-      summary = data?.content?.[0]?.text || "Could not generate summary.";
     }
     const body = document.getElementById("summary-body");
-    if (body) body.innerHTML = `<p style="margin:0;">${summary}</p>`;
+    if (body) body.innerHTML = summary
+      ? `<p style="margin:0;">${summary}</p>`
+      : `<span style="color:var(--textDim);font-size:12px;">Configure an Ollama server in Settings → AI to enable summaries.</span>`;
   } catch(err) {
-    if (err.name === "AbortError") return; // cancelled — do nothing
+    if (err.name === "AbortError") return;
     const body = document.getElementById("summary-body");
-    if (body) body.innerHTML = `<span style="color:var(--textDim);font-size:12px;">Summary unavailable. ${state.ollamaUrl ? "Check Ollama connection." : "API unavailable."}</span>`;
+    if (body) body.innerHTML = `<span style="color:var(--textDim);font-size:12px;">Summary unavailable. ${state.ollamaUrl ? "Check Ollama connection." : "Configure Ollama in Settings → AI."}</span>`;
   }
 }
 
@@ -1670,7 +1711,6 @@ function showAddNotePanel(selectedText, anchorRect) {
   `;
   document.body.appendChild(panel);
 
-  // Position near selection
   const panW = panel.offsetWidth || 320;
   const panH = panel.offsetHeight || 180;
   let left = anchorRect.left + anchorRect.width / 2 - panW / 2;
@@ -1686,13 +1726,13 @@ function showAddNotePanel(selectedText, anchorRect) {
   panel.querySelector(".note-save-btn").onclick = () => {
     const noteText = panel.querySelector(".note-textarea").value.trim();
     if (!noteText) { panel.querySelector(".note-textarea").focus(); return; }
-    // Store note
     if (!state.notes) state.notes = {};
     if (!state.notes[state.activeBook.id]) state.notes[state.activeBook.id] = [];
     state.notes[state.activeBook.id].push({
       id: `note_${Date.now()}`,
       quote: selectedText.slice(0, 200),
       text: noteText,
+      chapter: state.currentChapter,
       page: state.currentPage,
       createdAt: new Date().toISOString()
     });
@@ -1705,7 +1745,7 @@ function showAddNotePanel(selectedText, anchorRect) {
 }
 
 // ============================================================================
-// WORD LOOKUP POPUP
+// WORD LOOKUP POPUP  (unchanged)
 // ============================================================================
 let _wordPopupEl = null;
 
@@ -1713,41 +1753,9 @@ function removeWordPopup() {
   if (_wordPopupEl) { _wordPopupEl.remove(); _wordPopupEl = null; }
 }
 
-function extractSentenceAround(fullText, word) {
-  // Returns prev sentence + sentence containing word + next sentence for translation context
-  const sentences = fullText.match(/[^.!?]+[.!?]+["'\u2019\u201d]?\s*/g) || [fullText];
-  const wl = word.toLowerCase();
-  let foundIdx = -1;
-  for (let i = 0; i < sentences.length; i++) {
-    if (sentences[i].toLowerCase().includes(wl)) { foundIdx = i; break; }
-  }
-  if (foundIdx === -1) {
-    const idx = fullText.toLowerCase().indexOf(wl);
-    if (idx === -1) return word;
-    return fullText.slice(Math.max(0, idx - 50), idx + word.length + 50).trim();
-  }
-  const prev = foundIdx > 0 ? sentences[foundIdx - 1].trim() : "";
-  const curr = sentences[foundIdx].trim();
-  const next = foundIdx < sentences.length - 1 ? sentences[foundIdx + 1].trim() : "";
-  return [prev, curr, next].filter(Boolean).join(" ");
-}
-
-function extractCurrentSentence(fullText, word) {
-  const sentences = fullText.match(/[^.!?]+[.!?]+["'\u2019\u201d]?\s*/g) || [fullText];
-  const wl = word.toLowerCase();
-  for (const s of sentences) { if (s.toLowerCase().includes(wl)) return s.trim(); }
-  return word;
-}
-
 function showWordPopup(word, anchorEl) {
   removeWordPopup();
   if (!word) return;
-
-  // Grab surrounding sentence for context-aware translation
-  const para = anchorEl.closest("p");
-  const sentenceCtx = para ? extractSentenceAround(para.textContent || "", word) : word;
-  // Check if the clicked word is inside a highlight mark
-  const insideHighlight = !!anchorEl.closest("mark.reader-highlight");
 
   const popup = document.createElement("div");
   popup.className = "word-popup";
@@ -1755,10 +1763,6 @@ function showWordPopup(word, anchorEl) {
 
   popup.innerHTML = `
     <div class="word-popup-actions">
-      ${insideHighlight ? `<button class="word-popup-btn" id="wp-unhighlight" style="color:#f85149;">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><line x1="3" y1="3" x2="13" y2="13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><line x1="13" y1="3" x2="3" y2="13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-        Remove
-      </button>` : ""}
       <button class="word-popup-btn" id="wp-define">
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/><line x1="5" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><line x1="5" y1="9" x2="9" y2="9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
         Define
@@ -1776,24 +1780,12 @@ function showWordPopup(word, anchorEl) {
 
   document.body.appendChild(popup);
 
-  // Position popup near the word
   const rect = anchorEl.getBoundingClientRect();
   let top = rect.bottom + 6, left = rect.left;
   if (left + 310 > window.innerWidth) left = window.innerWidth - 318;
   if (top + 200 > window.innerHeight) top = rect.top - 208;
   popup.style.top = `${top}px`;
   popup.style.left = `${left}px`;
-
-  // Unhighlight handler
-  popup.querySelector("#wp-unhighlight")?.addEventListener("click", () => {
-    const mark = anchorEl.closest("mark.reader-highlight");
-    if (mark) {
-      const parent = mark.parentNode;
-      while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
-      parent.removeChild(mark);
-    }
-    removeWordPopup();
-  });
 
   popup.querySelector("#wp-define").onclick = async () => {
     const res = document.getElementById("wp-result");
@@ -1825,9 +1817,6 @@ function showWordPopup(word, anchorEl) {
       ["ru","Russian"],["ar","Arabic"],["hi","Hindi"],["nl","Dutch"],
     ];
     res.innerHTML = `
-      <div style="font-size:10px;color:var(--textDim);font-style:italic;margin-bottom:6px;padding:4px 6px;background:var(--surfaceAlt);border-radius:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${sentenceCtx}">
-        Context: "${sentenceCtx.slice(0,65)}${sentenceCtx.length>65?"…":""}"
-      </div>
       <div class="word-popup-translate-row">
         <select id="wp-lang-select">
           ${langs.map(([code, name]) => `<option value="${code}">${name}</option>`).join("")}
@@ -1841,236 +1830,43 @@ function showWordPopup(word, anchorEl) {
       const out = res.querySelector("#wp-trans-result");
       out.innerHTML = `<span class="wp-loading">Translating…</span>`;
       try {
-        // Use 3-sentence context window for translation
-        const textToTranslate = sentenceCtx.length > 6 ? sentenceCtx : word;
-        
-        // Try multiple translation APIs for better accuracy
-        let translatedSentence = "";
-        let wordOnly = "";
-        let apiUsed = "";
-        
-        // Attempt 1: MyMemory (good for common languages)
-        try {
-          const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=en|${lang}&de=gnos@reader.app`);
-          const d = await r.json();
-          const t = d?.responseData?.translatedText || "";
-          const quality = parseInt(d?.responseData?.match || "0");
-          if (t && t.toLowerCase() !== textToTranslate.toLowerCase() && quality >= 60) {
-            translatedSentence = t;
-            apiUsed = "MyMemory";
-          }
-        } catch {}
-        
-        // Attempt 2: Lingva (Google Translate proxy) if MyMemory gave low quality
-        if (!translatedSentence) {
-          try {
-            const r = await fetch(`https://lingva.ml/api/v1/en/${lang}/${encodeURIComponent(textToTranslate)}`);
-            const d = await r.json();
-            if (d?.translation) { translatedSentence = d.translation; apiUsed = "Lingva"; }
-          } catch {}
-        }
-        
-        // Word-only translation for reference
-        if (textToTranslate !== word) {
-          try {
-            const r2 = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(word)}&langpair=en|${lang}`);
-            const d2 = await r2.json();
-            const t = d2?.responseData?.translatedText || "";
-            if (t && t.toLowerCase() !== word.toLowerCase()) wordOnly = t;
-          } catch {}
-        }
-
-        if (translatedSentence) {
+        const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(word)}&langpair=en|${lang}`);
+        const d = await r.json();
+        const t = d?.responseData?.translatedText || "";
+        if (t && t.toLowerCase() !== word.toLowerCase()) {
           out.style.fontStyle = "normal";
-          out.innerHTML = `
-            ${wordOnly ? `<div style="margin-bottom:6px;"><strong style="color:var(--text);font-size:14px;">${wordOnly}</strong> <span style="font-size:10px;color:var(--textDim);">(word)</span></div>` : ""}
-            <div style="font-size:11px;color:var(--textMuted);line-height:1.55;border-left:2px solid var(--accent);padding-left:7px;font-style:italic;">${translatedSentence}</div>
-            <div style="font-size:9px;color:var(--textDim);margin-top:3px;">${apiUsed}</div>
-          `;
+          out.innerHTML = `<strong style="color:var(--text);font-size:14px;">${t}</strong>`;
         } else {
-          out.innerHTML = `<span class="wp-error">Translation unavailable. Try a different language.</span>`;
+          out.innerHTML = `<span class="wp-error">Translation unavailable.</span>`;
         }
       } catch {
-        out.innerHTML = `<span class="wp-error">Translation failed. Check your connection.</span>`;
+        out.innerHTML = `<span class="wp-error">Translation failed.</span>`;
       }
     };
   };
 }
 
+// Word click: attach to the strip's text nodes after mount
 function attachWordClickListeners(container) {
-  container.querySelectorAll(".word[data-word]").forEach(span => {
-    span.style.cursor = "pointer";
-    span.onclick = (e) => {
-      e.stopPropagation();
-      const word = span.dataset.word;
-      if (!word || word.length < 2) return;
-      showWordPopup(word, span);
-    };
-
-    // Underline current line: highlight words at same vertical position using accurate rect check
-    if (state.underlineLine) {
-      span.addEventListener("mousemove", (ev) => {
-        const hoveredRect = span.getBoundingClientRect();
-        // Use the actual top of the line (not midpoint) for precision
-        const lineTop = hoveredRect.top;
-        const lineBot = hoveredRect.bottom;
-        const para = span.closest("p");
-        if (!para) return;
-        para.querySelectorAll(".word").forEach(w => {
-          const wr = w.getBoundingClientRect();
-          // Word is on the same line if it overlaps vertically with the hovered word
-          const overlapTop = Math.max(wr.top, lineTop);
-          const overlapBot = Math.min(wr.bottom, lineBot);
-          if (overlapBot - overlapTop > hoveredRect.height * 0.35) {
-            w.classList.add("same-line");
-          } else {
-            w.classList.remove("same-line");
-          }
-        });
-      });
-      span.addEventListener("mouseleave", () => {
-        const para = span.closest("p");
-        if (!para) return;
-        para.querySelectorAll(".word.same-line").forEach(w => w.classList.remove("same-line"));
-      });
-    }
-  });
+  // Walk text nodes and wrap individual words on click — we don't pre-wrap
+  // (pre-wrapping every word would bloat the DOM and interact poorly with columns).
+  // Instead, use a click handler that resolves the clicked word from the event.
+  container.addEventListener("click", handleWordClick);
 }
 
-function constructPageDOM(pageData, wrapWords) {
-  const container = document.createElement("div");
-  container.className = "reader-page";
-  container.style.fontFamily = state.fontFamily;
-  container.style.overflow = "hidden";
-
-  if (typeof pageData === "string") {
-    const txt = wrapWords ? wrapWordsInSpans(decodeEntities(pageData)) : decodeEntities(pageData);
-    container.innerHTML = `<p style="color:var(--readerText); font-size:${state.fontSize}px; line-height:${state.lineSpacing}; margin:0; text-align:justify; word-break:break-word; hyphens:auto;">${txt}</p>`;
-    return container;
-  }
-
-  const isChapterStart = pageData.every(b => b.type === "heading" || b.type === "subheading");
-  if (isChapterStart) {
-    const h = pageData.find((b) => b.type === "heading");
-    const s = pageData.find((b) => b.type === "subheading");
-    container.innerHTML = `
-      <div style="color:var(--readerText); height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:${Math.round(state.fontSize * 3)}px 0;">
-        <div style="width:48px; height:2px; background:var(--accent); border-radius:1px; margin-bottom:${Math.round(state.fontSize * 2.5)}px; opacity:0.6;"></div>
-        ${h ? `<div style="font-size:${Math.round(state.fontSize * 2.0)}px; font-weight:700; line-height:1.2; letter-spacing:-0.02em; margin-bottom:${s?Math.round(state.fontSize*1):0}px; font-family:Georgia,serif;">${h.text}</div>` : ""}
-        ${s ? `<div style="font-size:${Math.round(state.fontSize * 1.2)}px; font-weight:400; line-height:1.4; opacity:0.65; font-style:italic; margin-top:${Math.round(state.fontSize*0.5)}px; font-family:Georgia,serif;">${s.text}</div>` : ""}
-        <div style="width:48px; height:2px; background:var(--accent); border-radius:1px; margin-top:${Math.round(state.fontSize * 2.5)}px; opacity:0.6;"></div>
-      </div>
-    `;
-    return container;
-  }
-
-  // Render body page with proper paragraph styles for reflow
-  pageData.forEach((block, i) => {
-    if (!block?.text?.trim()) return;
-    const el = document.createElement(block.type === "para" ? "p" : "div");
-    const paraGap = Math.round(state.fontSize * 0.55);
-    if (block.type === "heading") {
-      el.style.cssText = `font-family:Georgia,serif; font-size:${Math.round(state.fontSize*1.65)}px; font-weight:700; line-height:1.2; margin:${i===0?0:Math.round(state.fontSize*1.8)}px 0 ${Math.round(state.fontSize*0.7)}px 0; padding-bottom:${Math.round(state.fontSize*0.4)}px; border-bottom:1px solid var(--borderSubtle); color:var(--readerText); word-break:break-word;`;
-    } else if (block.type === "subheading") {
-      el.style.cssText = `font-family:Georgia,serif; font-size:${Math.round(state.fontSize*1.18)}px; font-weight:600; line-height:1.3; opacity:0.85; margin:${i===0?0:Math.round(state.fontSize*1.2)}px 0 ${Math.round(state.fontSize*0.5)}px 0; color:var(--readerText); word-break:break-word;`;
-    } else {
-      const prevIsNonPara = i === 0 || pageData[i - 1]?.type !== "para";
-      const isFirst = i === 0;
-      el.style.cssText = `font-size:${state.fontSize}px; line-height:${state.lineSpacing}; margin:0; margin-bottom:${i < pageData.length-1 ? 0 : 0}px; text-indent:${prevIsNonPara||isFirst ? 0 : "2em"}; text-align:justify; word-break:break-word; hyphens:auto; color:var(--readerText);`;
-      // Add paragraph gap to all paras except last
-      if (i < pageData.length - 1 && pageData[i+1]?.type === "para") {
-        el.style.marginBottom = `${paraGap}px`;
-      }
-    }
-    if (wrapWords && block.type === "para") {
-      el.innerHTML = wrapWordsInSpans(block.text);
-    } else {
-      el.textContent = block.text;
-    }
-    container.appendChild(el);
-  });
-
-  return container;
+function handleWordClick(e) {
+  if (!state.highlightWords && !state.underlineLine) return;
+  const target = e.target;
+  if (target.tagName !== "SPAN" || !target.classList.contains("col-word")) return;
+  const word = target.dataset.word;
+  if (word && word.length >= 2) showWordPopup(word, target);
 }
 
-function renderPage() {
-  removeWordPopup();
-  removeSelToolbar();
-  removeSummaryPopup();
-  removeNotePanel();
-
-  const page1 = state.pages[state.currentPage];
-  const page2 = state.twoPage ? state.pages[state.currentPage + 1] : null;
-  const card = document.getElementById("reader-card");
-
-  card.classList.toggle("two-page", state.twoPage);
-  applyAccessibilityClasses();
-
-  if (!page1) return;
-
-  // Wrap words if highlightWords OR underlineLine (both need .word spans)
-  const wrapW = state.highlightWords || state.underlineLine;
-
-  // Fade transition
-  card.style.transition = "opacity 0.12s ease";
-  card.style.opacity = "0";
-
-  requestAnimationFrame(() => {
-    card.innerHTML = "";
-
-    // Use cache for current page, build if missing
-    let p1;
-    const cacheKey1 = `${state.currentPage}:${wrapW}`;
-    if (_pageRenderCache.has(cacheKey1)) {
-      p1 = _pageRenderCache.get(cacheKey1).cloneNode(true);
-    } else {
-      p1 = constructPageDOM(page1, wrapW);
-      _pageRenderCache.set(cacheKey1, p1.cloneNode(true));
-    }
-
-    if (state.twoPage) {
-      card.appendChild(p1);
-      const divider = document.createElement("div");
-      divider.className = "page-divider";
-      card.appendChild(divider);
-
-      let p2;
-      if (page2) {
-        const cacheKey2 = `${state.currentPage + 1}:${wrapW}`;
-        if (_pageRenderCache.has(cacheKey2)) {
-          p2 = _pageRenderCache.get(cacheKey2).cloneNode(true);
-        } else {
-          p2 = constructPageDOM(page2, wrapW);
-          _pageRenderCache.set(cacheKey2, p2.cloneNode(true));
-        }
-      } else {
-        p2 = document.createElement("div");
-        p2.className = "reader-page";
-      }
-      card.appendChild(p2);
-      attachWordClickListeners(p1);
-      attachWordClickListeners(p2);
-    } else {
-      card.appendChild(p1);
-      attachWordClickListeners(p1);
-    }
-
-    addBookmarkIcons(card);
-
-    // Fade in
-    requestAnimationFrame(() => {
-      card.style.opacity = "1";
-      // Pre-render adjacent pages in background
-      setTimeout(_preRenderAdjacentPages, 50);
-    });
-  });
-}
-
-// Add bookmark icons where notes exist on this page — placed in margin, no text displacement
+// Bookmark icons for notes on current chapter/page
 function addBookmarkIcons(card) {
   if (!state.activeBook || !state.notes) return;
   const notes = state.notes[state.activeBook.id] || [];
-  const pageNotes = notes.filter(n => n.page === state.currentPage);
+  const pageNotes = notes.filter(n => n.chapter === state.currentChapter);
   if (pageNotes.length === 0) return;
 
   const paras = card.querySelectorAll("p");
@@ -2078,9 +1874,7 @@ function addBookmarkIcons(card) {
     const quote = note.quote.slice(0, 40).toLowerCase();
     for (const para of paras) {
       if (para.textContent.toLowerCase().includes(quote)) {
-        // Use a margin-based absolute icon so it doesn't shift text
         para.style.position = "relative";
-        // Remove any pre-existing bookmark on this para to avoid doubles
         para.querySelectorAll(".note-bookmark-icon").forEach(n => n.remove());
         const icon = document.createElement("span");
         icon.className = "note-bookmark-icon";
@@ -2093,79 +1887,6 @@ function addBookmarkIcons(card) {
   });
 }
 
-function updateReaderNav() {
-  const chaps = state.activeBook.chapters || [];
-  const actChIdx = chaps.reduce((best, ch, i) => ch.pageIndex <= state.currentPage ? i : best, 0);
-
-  const nextChap = chaps[actChIdx + 1];
-  const endPage = nextChap ? nextChap.pageIndex : state.pages.length;
-  const pagesLeft = endPage - state.currentPage;
-
-  const pct = state.pages.length > 1 ? (state.currentPage / (state.pages.length - 1)) * 100 : 0;
-
-  const pageInd = document.getElementById("page-indicator");
-  // Render as: "Page [input] of N · pct% · Np left"
-  // Use an input in place of the current page number so user can type and jump
-  pageInd.innerHTML = `Page <input id="page-num-input" type="number" min="1" max="${state.pages.length}" value="${state.currentPage + 1}" style="width:${Math.max(36, String(state.pages.length).length * 10 + 16)}px;background:transparent;border:none;border-bottom:1px solid var(--textDim);color:var(--text);font-size:inherit;font-family:inherit;text-align:center;padding:0 2px;outline:none;-moz-appearance:textfield;"> of ${state.pages.length} · ${Math.round(pct)}% · ${pagesLeft}p left`;
-  const pnInput = document.getElementById("page-num-input");
-  if (pnInput) {
-    pnInput.onclick = (e) => { e.stopPropagation(); pnInput.select(); };
-    const doJump = () => {
-      const val = parseInt(pnInput.value, 10);
-      if (!isNaN(val) && val >= 1 && val <= state.pages.length) {
-        state.currentPage = val - 1;
-        updateProgress(state.currentPage);
-      } else {
-        pnInput.value = state.currentPage + 1; // reset invalid
-      }
-    };
-    pnInput.onblur = doJump;
-    pnInput.onkeydown = (e) => { if (e.key === "Enter") { doJump(); pnInput.blur(); } if (e.key === "Escape") { pnInput.value = state.currentPage + 1; pnInput.blur(); } };
-  }
-  document.getElementById("progress-bar").style.width = `${pct}%`;
-
-  document.getElementById("btn-prev-page").disabled = state.currentPage === 0;
-  document.getElementById("btn-next-page").disabled = state.currentPage >= state.pages.length - 1;
-
-  if (state.tapToTurn) {
-    document.getElementById("tap-zone-prev").classList.remove("hidden");
-    document.getElementById("tap-zone-next").classList.remove("hidden");
-  } else {
-    document.getElementById("tap-zone-prev").classList.add("hidden");
-    document.getElementById("tap-zone-next").classList.add("hidden");
-  }
-
-  if (chaps[actChIdx]) {
-    document.getElementById("reader-chapter-title").textContent = chaps[actChIdx].title;
-    buildChapterDropdown();
-  }
-}
-
-function nextPage() {
-  const step = state.twoPage ? 2 : 1;
-  if (state.currentPage < state.pages.length - 1) {
-    state.currentPage = Math.min(state.currentPage + step, state.pages.length - 1);
-    updateProgress(state.currentPage);
-  }
-}
-
-function prevPage() {
-  const step = state.twoPage ? 2 : 1;
-  if (state.currentPage > 0) {
-    state.currentPage = Math.max(state.currentPage - step, 0);
-    updateProgress(state.currentPage);
-  }
-}
-
-function updateProgress(page) {
-  state.activeBook.currentPage = page;
-  const idx = state.library.findIndex(b => b.id === state.activeBook.id);
-  if (idx > -1) state.library[idx].currentPage = page;
-  saveLibrary();
-  renderPage();
-  updateReaderNav();
-}
-
 // ============================================================================
 // DATA & FILE HANDLING
 // ============================================================================
@@ -2173,15 +1894,16 @@ async function saveLibrary() {
   await window.storage.set("library_meta", JSON.stringify(state.library));
 }
 
-async function saveBookContent(id, pages) {
-  const json = JSON.stringify(pages);
+// Storage format: chapters array, chunked
+async function saveBookContent(id, chapters) {
+  const json = JSON.stringify(chapters);
   if (json.length < MAX_SINGLE_KB) {
     await window.storage.set(`book_${id}_data`, json);
     await window.storage.set(`book_${id}_chunks`, "0");
     return;
   }
   const chunks = [];
-  for (let i = 0; i < pages.length; i += CHUNK_SIZE) chunks.push(pages.slice(i, i + CHUNK_SIZE));
+  for (let i = 0; i < chapters.length; i += CHUNK_SIZE) chunks.push(chapters.slice(i, i + CHUNK_SIZE));
   await Promise.all(chunks.map((c, ci) => window.storage.set(`book_${id}_chunk_${ci}`, JSON.stringify(c))));
   await window.storage.set(`book_${id}_chunks`, String(chunks.length));
 }
@@ -2195,8 +1917,8 @@ async function loadBookContent(id) {
   }
   if (n > 0) {
     const results = await Promise.all(Array.from({ length: n }, (_, ci) => window.storage.get(`book_${id}_chunk_${ci}`)));
-    const pages = []; for (const r of results) if (r) pages.push(...JSON.parse(r.value));
-    return pages;
+    const chapters = []; for (const r of results) if (r) chapters.push(...JSON.parse(r.value));
+    return chapters;
   }
   return null;
 }
@@ -2215,9 +1937,8 @@ async function deleteBook(id) {
 async function resetBookProgress(id) {
   const idx = state.library.findIndex(b => b.id === id);
   if (idx > -1) {
-    const saved = state.library[idx].timesRead; // preserve timesRead
+    state.library[idx].currentChapter = 0;
     state.library[idx].currentPage = 0;
-    if (saved !== undefined) state.library[idx].timesRead = saved;
   }
   saveLibrary(); renderLibrary();
 }
@@ -2233,35 +1954,28 @@ async function handleFileUpload(e) {
 
     try {
       const isEpub = /\.epub3?$/i.test(file.name);
-      let bookTitle, bookAuthor="", bookPages, chapters, format, coverDataUrl=null;
+      let bookTitle, bookAuthor="", chapters, format, coverDataUrl=null;
 
       if (isEpub) {
         format = "epub";
         const parsed = await parseEpub(file);
         bookTitle = parsed.title; bookAuthor = parsed.author;
-        bookPages = parsed.pages; chapters = parsed.chapters;
+        chapters = parsed.chapters;
         coverDataUrl = parsed.coverDataUrl || null;
       } else {
         format = /\.md$/i.test(file.name) ? "md" : "txt";
         const text = await readFileAsText(file);
         bookTitle = file.name.replace(/\.(txt|md)$/i,"").replace(/[_-]/g," ");
         const blocks = textToBlocks(text);
-        bookPages = splitBlocksIntoPages(blocks);
-        // Ensure we have at least one page
-        if (!bookPages || bookPages.length === 0) {
-          bookPages = [[{ type: "para", text: text.trim().slice(0, 2000) || "Empty file." }]];
-        }
-        chapters = deriveChaptersFromPages(bookPages);
+        chapters = blocksToChapters(blocks);
       }
 
       const id = `book_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
-      if (coverDataUrl) {
-        await window.storage.set(`cover_${id}`, coverDataUrl);
-      }
-      await saveBookContent(id, bookPages);
+      await saveBookContent(id, chapters);
       state.library.push({
         id, title: bookTitle, author: bookAuthor, format,
-        totalPages: bookPages.length, currentPage: 0, chapters,
+        totalChapters: chapters.length,
+        currentChapter: 0, currentPage: 0,
         addedAt: new Date().toISOString(), hasAudio: false,
         coverDataUrl: coverDataUrl || null
       });
@@ -2285,19 +1999,16 @@ async function handleFolderSelect(e) {
   const files = Array.from(e.target.files || []);
   if (!files.length) return;
 
-  // Store folder path info
   const folderName = files[0]?.webkitRelativePath?.split("/")[0] || "Selected folder";
   state.connectedFolder = { name: folderName, fileCount: files.filter(f => /\.(txt|md|epub3?)$/i.test(f.name)).length };
   savePreferences();
 
-  // Process the files
   showToast(true, `Loading ${state.connectedFolder.fileCount} files from "${folderName}"...`);
 
   for (const file of files) {
     if (file.name.startsWith(".") || (!/\.(txt|md|epub3?)$/i.test(file.name))) continue;
-    // Deduplicate: check both filename-derived title and stored book titles (case-insensitive)
     const derivedTitle = file.name.replace(/\.(txt|md|epub3?)$/i,"").replace(/[_-]/g," ").toLowerCase().trim();
-    const alreadyAdded = state.library.some(b => 
+    const alreadyAdded = state.library.some(b =>
       b.title.toLowerCase().trim() === derivedTitle ||
       b.title.toLowerCase().replace(/[\s\-_]+/g,"") === derivedTitle.replace(/[\s\-_]+/g,"")
     );
@@ -2305,45 +2016,38 @@ async function handleFolderSelect(e) {
 
     try {
       const isEpub = /\.epub3?$/i.test(file.name);
-      let bookTitle, bookAuthor="", bookPages, chapters, format, coverDataUrl=null;
+      let bookTitle, bookAuthor="", chapters, format, coverDataUrl=null;
       if (isEpub) {
         format = "epub";
         const parsed = await parseEpub(file);
         bookTitle = parsed.title; bookAuthor = parsed.author;
-        bookPages = parsed.pages; chapters = parsed.chapters;
+        chapters = parsed.chapters;
         coverDataUrl = parsed.coverDataUrl || null;
       } else {
         format = /\.md$/i.test(file.name) ? "md" : "txt";
         const text = await readFileAsText(file);
         bookTitle = file.name.replace(/\.(txt|md)$/i,"").replace(/[_-]/g," ");
-        bookPages = splitBlocksIntoPages(textToBlocks(text));
-        chapters = deriveChaptersFromPages(bookPages);
+        chapters = blocksToChapters(textToBlocks(text));
       }
-      // Second-pass dedup: check actual parsed book title
       const parsedNorm = bookTitle.toLowerCase().trim().replace(/[\s\-_]+/g, "");
-      const titleExists = state.library.some(b =>
-        b.title.toLowerCase().trim().replace(/[\s\-_]+/g, "") === parsedNorm
-      );
-      if (titleExists) continue;
+      if (state.library.some(b => b.title.toLowerCase().trim().replace(/[\s\-_]+/g, "") === parsedNorm)) continue;
 
       const id = `book_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
-      if (coverDataUrl) await window.storage.set(`cover_${id}`, coverDataUrl);
-      await saveBookContent(id, bookPages);
-      state.library.push({ id, title: bookTitle, author: bookAuthor, format, totalPages: bookPages.length, currentPage: 0, chapters, addedAt: new Date().toISOString(), hasAudio: false, coverDataUrl: coverDataUrl || null });
+      await saveBookContent(id, chapters);
+      state.library.push({ id, title: bookTitle, author: bookAuthor, format, totalChapters: chapters.length, currentChapter: 0, currentPage: 0, addedAt: new Date().toISOString(), hasAudio: false, coverDataUrl: coverDataUrl || null });
       await saveLibrary();
     } catch(err) { console.error(err); }
   }
   renderLibrary();
   hideToast();
-  // Refresh settings if open
   const body = document.getElementById("modal-body");
-  if (body && document.getElementById("settings-modal") && !document.getElementById("settings-modal").classList.contains("hidden")) {
+  if (body && !document.getElementById("settings-modal").classList.contains("hidden")) {
     switchModalTab("library");
   }
   e.target.value = "";
 }
 
-// Audio panel: shows playback controls or no-audio message
+// Audio panel
 let _audioPanelEl = null;
 
 function removeAudioPanel() {
@@ -2404,38 +2108,21 @@ function showAudioPanel() {
           </button>
         </div>
         <div style="text-align:center;margin-top:10px;">
-          <button class="audio-ctrl-btn" id="apanel-replace" title="Replace audio file" style="font-size:11px;width:auto;padding:4px 10px;border-radius:5px;gap:4px;">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 8a5 5 0 1 1 1 3.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><polyline points="1,5 3,8 6,6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            Replace audio
-          </button>
+          <button class="audio-ctrl-btn" id="apanel-replace" style="font-size:11px;width:auto;padding:4px 10px;border-radius:5px;gap:4px;">Replace audio</button>
         </div>
       </div>
     `;
   } else {
     panel.innerHTML = `
       <div class="audio-panel-header">
-        <span class="audio-panel-title">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style="opacity:0.7">
-            <path d="M9 19c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2v-1c0-1.1.9-2 2-2h2c1.1 0 2 .9 2 2v1zM21 16c0 1.1-.9 2-2 2h-2c-1.1 0-2-.9-2-2v-1c0-1.1.9-2 2-2h2c1.1 0 2 .9 2 2v1z" stroke="currentColor" stroke-width="1.6"/>
-            <path d="M9 20V8l12-3v11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          Audiobook
-        </span>
+        <span class="audio-panel-title">Audiobook</span>
         <button class="audio-panel-close">×</button>
       </div>
       <div class="audio-panel-body">
         <div class="audio-no-file">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" style="opacity:0.3;margin-bottom:8px;">
-            <path d="M9 19c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2v-1c0-1.1.9-2 2-2h2c1.1 0 2 .9 2 2v1zM21 16c0 1.1-.9 2-2 2h-2c-1.1 0-2-.9-2-2v-1c0-1.1.9-2 2-2h2c1.1 0 2 .9 2 2v1z" stroke="currentColor" stroke-width="1.6"/>
-            <path d="M9 20V8l12-3v11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          <div style="font-size:13px;font-weight:600;color:var(--textMuted);margin-bottom:4px;">No TTS available yet</div>
-          <div style="font-size:11px;color:var(--textDim);margin-bottom:4px;line-height:1.55;">Text-to-speech is not yet implemented. You can upload an audiobook file to listen alongside the text.</div>
-          <div style="font-size:10px;color:var(--textDim);margin-bottom:12px;opacity:0.7;">.mp3 · .m4b · .wav · .ogg · .flac</div>
-          <button class="btn primary" id="apanel-upload" style="gap:6px;justify-content:center;">
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 1v9M5 4l3-3 3 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 12v2h12v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-            Upload audio file
-          </button>
+          <div style="font-size:13px;font-weight:600;color:var(--textMuted);margin-bottom:4px;">No audio file</div>
+          <div style="font-size:11px;color:var(--textDim);margin-bottom:12px;line-height:1.55;">.mp3 · .m4b · .wav · .ogg · .flac</div>
+          <button class="btn primary" id="apanel-upload" style="gap:6px;justify-content:center;">Upload audio file</button>
         </div>
       </div>
     `;
@@ -2443,7 +2130,6 @@ function showAudioPanel() {
 
   document.body.appendChild(panel);
 
-  // Position below the audio button
   const audioBtn = document.getElementById("btn-upload-audio");
   if (audioBtn) {
     const rect = audioBtn.getBoundingClientRect();
@@ -2588,8 +2274,7 @@ function switchModalTab(tabId) {
       ? `<div class="folder-connected">
            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M1 4a1 1 0 0 1 1-1h4l1 2h7a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
            <span class="folder-path">${state.connectedFolder.name} (${state.connectedFolder.fileCount} files)</span>
-           <button style="background:none;border:none;color:var(--textDim);cursor:pointer;font-size:12px;padding:2px 4px;" title="Open folder" id="btn-open-folder">↗</button>
-           <button style="background:none;border:none;color:var(--textDim);cursor:pointer;font-size:12px;padding:2px 4px;" title="Disconnect" id="btn-disconnect-folder">✕</button>
+           <button style="background:none;border:none;color:var(--textDim);cursor:pointer;font-size:12px;padding:2px 4px;" id="btn-disconnect-folder">✕</button>
          </div>`
       : "";
 
@@ -2619,12 +2304,7 @@ function switchModalTab(tabId) {
         <button id="btn-import-lib" class="btn primary" style="flex:1; justify-content:center;">↑ Import</button>
       </div>
 
-      <div style="display:flex; align-items:center; gap:8px; margin-top:18px; margin-bottom:8px;">
-        <div class="section-label" style="margin:0;">CONNECTED FOLDERS</div>
-        <button id="btn-reload-folder" title="Reload folder & import new books" style="background:none;border:1px solid var(--border);border-radius:5px;color:var(--textMuted);cursor:pointer;padding:3px 6px;font-size:12px;display:flex;align-items:center;transition:all 0.15s;" onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--textMuted)'">
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 8a5 5 0 1 1 1 3.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><polyline points="1,5 3,8 6,6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-      </div>
+      <div class="section-label">CONNECTED FOLDERS</div>
       ${folderHtml}
       <div style="display:flex; gap:10px; margin-top:8px;">
         <button id="btn-settings-add-folder" class="btn primary" style="flex:1; justify-content:center;">⊞ Connect Folder</button>
@@ -2641,21 +2321,6 @@ function switchModalTab(tabId) {
     body.querySelector("#btn-import-lib").onclick = () => document.getElementById("lib-import-input").click();
     body.querySelector("#btn-settings-add-book").onclick = () => document.getElementById("file-input").click();
     body.querySelector("#btn-settings-add-folder").onclick = () => document.getElementById("folder-input").click();
-    body.querySelector("#btn-reload-folder")?.addEventListener("click", () => {
-      if (state.connectedFolder) {
-        // Re-trigger folder picker to reload
-        document.getElementById("folder-input").click();
-      } else {
-        document.getElementById("folder-input").click();
-      }
-    });
-    body.querySelector("#btn-open-folder")?.addEventListener("click", () => {
-      // Web can't directly open a folder in file explorer, but we can show the folder name
-      // and offer to re-browse it
-      if (state.connectedFolder) {
-        alert(`Folder: "${state.connectedFolder.name}"\n\nBrowsers cannot open local folders directly for security reasons. Use "Connect Folder" to re-browse it and import any new books.`);
-      }
-    });
     body.querySelector("#btn-disconnect-folder")?.addEventListener("click", () => {
       state.connectedFolder = null; savePreferences(); switchModalTab("library");
     });
@@ -2675,18 +2340,18 @@ function switchModalTab(tabId) {
 
   } else if (tabId === "accessibility") {
     body.innerHTML = `
-      <p style="font-size:12px; color:var(--textMuted); margin-bottom:16px; line-height:1.6;">These settings apply in the reader view and help improve reading comfort.</p>
+      <p style="font-size:12px; color:var(--textMuted); margin-bottom:16px; line-height:1.6;">These settings apply in the reader and help improve reading comfort.</p>
       <div class="accessibility-row">
         <div>
           <div class="accessibility-label">Highlight words on hover</div>
-          <div class="accessibility-sub">Highlights individual words when you hover over them with your mouse.</div>
+          <div class="accessibility-sub">Highlights individual words when you hover over them.</div>
         </div>
         <div id="acc-hl-toggle" class="toggle-track ${state.highlightWords?"on":"off"}"><div class="toggle-thumb"></div></div>
       </div>
       <div class="accessibility-row">
         <div>
           <div class="accessibility-label">Underline current line</div>
-          <div class="accessibility-sub">Underlines the paragraph you're hovering over to help focus your reading.</div>
+          <div class="accessibility-sub">Underlines the line you're hovering over to help focus.</div>
         </div>
         <div id="acc-ul-toggle" class="toggle-track ${state.underlineLine?"on":"off"}"><div class="toggle-thumb"></div></div>
       </div>
@@ -2695,13 +2360,13 @@ function switchModalTab(tabId) {
       state.highlightWords = !state.highlightWords;
       savePreferences();
       switchModalTab("accessibility");
-      if (state.view === "reader") { applyAccessibilityClasses(); renderPage(); }
+      if (state.view === "reader") applyAccessibilityClasses();
     };
     body.querySelector("#acc-ul-toggle").onclick = () => {
       state.underlineLine = !state.underlineLine;
       savePreferences();
       switchModalTab("accessibility");
-      if (state.view === "reader") { applyAccessibilityClasses(); renderPage(); }
+      if (state.view === "reader") applyAccessibilityClasses();
     };
   } else if (tabId === "ai") {
     const ollamaUrl = state.ollamaUrl || "";
@@ -2709,19 +2374,17 @@ function switchModalTab(tabId) {
     body.innerHTML = `
       <div class="section-label">AI ASSISTANT</div>
       <p style="font-size:12px; color:var(--textMuted); margin-bottom:16px; line-height:1.6;">
-        Connect a local Ollama instance for AI-powered text summarization. Configure the server URL and model name below.
+        Connect a local Ollama instance for AI-powered text summarization.
       </p>
       <label style="display:block; margin-bottom:14px; font-size:12px;">
         <div style="margin-bottom:5px; font-weight:600; color:var(--text);">Ollama Server URL</div>
         <input id="ollama-url-input" type="text" placeholder="http://localhost:11434" value="${ollamaUrl}"
           style="width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:8px 10px; font-size:12px; outline:none; font-family:inherit;">
-        <div style="font-size:11px; color:var(--textDim); margin-top:4px;">Required to enable AI summarization</div>
       </label>
       <label style="display:block; margin-bottom:14px; font-size:12px;">
         <div style="margin-bottom:5px; font-weight:600; color:var(--text);">Model Name</div>
         <input id="ollama-model-input" type="text" placeholder="llama3, mistral, phi3..." value="${ollamaModel}"
           style="width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:8px 10px; font-size:12px; outline:none; font-family:inherit;">
-        <div style="font-size:11px; color:var(--textDim); margin-top:4px;">The model to use for summarization</div>
       </label>
       <div style="display:flex; gap:10px; margin-top:6px;">
         <button id="btn-save-ai" class="btn primary" style="flex:1; justify-content:center;">Save Settings</button>
@@ -2731,15 +2394,15 @@ function switchModalTab(tabId) {
       <div style="margin-top:20px; padding-top:16px; border-top:1px solid var(--borderSubtle);">
         <div class="section-label">CURRENT AI SOURCE</div>
         <div style="font-size:12px; color:var(--textMuted); padding:10px 12px; background:var(--surfaceAlt); border-radius:7px; border:1px solid var(--border);">
-          ${ollamaUrl 
-            ? `<span style="color:#3fb950;">●</span> Ollama at <strong style="color:var(--accent);">${ollamaUrl}</strong>${ollamaModel ? ` using <strong>${ollamaModel}</strong>` : " (no model set)"}` 
-            : `<span style="color:#f85149;">○</span> <strong style="color:var(--textMuted);">No local LLM loaded.</strong> Configure an Ollama server above to enable AI summarization.`}
+          ${ollamaUrl
+            ? `<span style="color:#3fb950;">●</span> Ollama at <strong style="color:var(--accent);">${ollamaUrl}</strong>${ollamaModel ? ` using <strong>${ollamaModel}</strong>` : " (no model set)"}`
+            : `<span style="color:#f85149;">○</span> <strong style="color:var(--textMuted);">No local LLM configured.</strong>`}
         </div>
       </div>
     `;
     body.querySelector("#btn-save-ai").onclick = () => {
       const rawUrl = body.querySelector("#ollama-url-input").value.trim().replace(/\/$/, "");
-      state.ollamaUrl = rawUrl || "http://localhost:11434";
+      state.ollamaUrl = rawUrl || "";
       state.ollamaModel = body.querySelector("#ollama-model-input").value.trim();
       savePreferences();
       switchModalTab("ai");
@@ -2780,9 +2443,8 @@ function renderProfile() {
   const avgDaily = Object.keys(state.readingLog).length > 0
     ? totalMinutes / Object.keys(state.readingLog).length : 0;
   const totalBooks = state.library.length;
-  const booksFinished = state.library.filter(b => b.currentPage >= b.totalPages - 2).length;
+  const booksFinished = state.library.filter(b => (b.currentChapter || 0) >= (b.totalChapters || 1) - 1).length;
 
-  // Build heatmap (last 12 weeks = 84 days)
   const heatmapDays = [];
   for (let i = 83; i >= 0; i--) {
     const d = new Date();
@@ -2793,12 +2455,10 @@ function renderProfile() {
     heatmapDays.push({ key, mins, level });
   }
 
-  // Top books by pages read
   const bookStats = state.library.map(b => ({
     ...b,
-    pagesRead: b.currentPage || 0,
-  })).sort((a, b) => b.pagesRead - a.pagesRead).slice(0, 5);
-  const maxPages = bookStats[0]?.pagesRead || 1;
+    chaptersRead: b.currentChapter || 0,
+  })).sort((a, b) => b.chaptersRead - a.chaptersRead).slice(0, 5);
 
   body.innerHTML = `
     <div class="profile-stats-grid">
@@ -2850,15 +2510,13 @@ function renderProfile() {
           const coverHtml = b.coverDataUrl
             ? `<img src="${b.coverDataUrl}" alt="">`
             : `<div style="width:100%;height:100%;background:linear-gradient(135deg,${c1},${c2});"></div>`;
-          // Use actual reading progress as percentage (not relative to max)
-          const progressPct = b.totalPages > 1 ? Math.round((b.pagesRead / (b.totalPages - 1)) * 100) : (b.pagesRead > 0 ? 100 : 0);
-          const timesRead = b.pagesRead >= b.totalPages - 2 ? Math.max(1, b.timesRead || 1) : (b.timesRead || 0);
+          const progressPct = b.totalChapters > 1 ? Math.round((b.chaptersRead / (b.totalChapters - 1)) * 100) : 0;
           return `<div class="top-book-row">
             <span class="top-book-rank">${i+1}</span>
             <div class="top-book-cover">${coverHtml}</div>
             <div class="top-book-info">
               <div class="top-book-title">${b.title}</div>
-              <div class="top-book-pgs">${b.pagesRead} / ${b.totalPages} pages${timesRead > 0 ? ` · ${timesRead}× read` : ""}</div>
+              <div class="top-book-pgs">Ch ${b.chaptersRead} / ${b.totalChapters}</div>
             </div>
             <div class="top-book-bar-wrap" title="${progressPct}% complete">
               <div class="top-book-bar-track"><div class="top-book-bar-fill" style="width:${progressPct}%"></div></div>
@@ -2872,7 +2530,6 @@ function renderProfile() {
 
 function openNotesViewer() {
   if (!state.activeBook) return;
-  // Toggle - if already open close it
   if (_notePanelEl && document.body.contains(_notePanelEl)) { removeNotePanel(); return; }
   const notes = (state.notes && state.notes[state.activeBook.id]) || [];
   const panel = document.createElement("div");
@@ -2893,7 +2550,7 @@ function openNotesViewer() {
             <div class="note-item-text">${n.text}</div>
             <div class="note-item-meta">
               <div style="display:flex;gap:8px;align-items:center;">
-                <button class="note-item-jump" data-page="${n.page}" data-quote="${n.quote.slice(0,80).replace(/"/g,'&quot;')}" title="Go to page ${n.page + 1}">(${n.page + 1})</button>
+                <button class="note-item-jump" data-chapter="${n.chapter ?? 0}" title="Go to chapter">Ch ${(n.chapter ?? 0) + 1}</button>
                 <span>${new Date(n.createdAt).toLocaleDateString()}</span>
               </div>
               <button class="note-item-delete" data-id="${n.id}">Delete</button>
@@ -2916,60 +2573,9 @@ function openNotesViewer() {
   });
   panel.querySelectorAll(".note-item-jump").forEach(btn => {
     btn.onclick = () => {
-      const page = parseInt(btn.dataset.page, 10);
-      const quote = btn.dataset.quote || "";
-      if (!isNaN(page) && page >= 0 && page < state.pages.length) {
-        state.currentPage = page;
-        updateProgress(page);
-        removeNotePanel();
-        // After rendering, highlight the quoted text with a persistent <mark>
-        if (quote) {
-          setTimeout(() => {
-            try {
-              const card = document.getElementById("reader-card");
-              if (!card) return;
-              // Remove any previous note highlights
-              card.querySelectorAll("mark.reader-note-highlight").forEach(m => {
-                const parent = m.parentNode;
-                while (m.firstChild) parent.insertBefore(m.firstChild, m);
-                parent.removeChild(m);
-              });
-              const walker = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
-              let node;
-              const ql = quote.toLowerCase();
-              const searchSnippet = ql.slice(0, 40);
-              while ((node = walker.nextNode())) {
-                const idx = node.textContent.toLowerCase().indexOf(searchSnippet);
-                if (idx !== -1) {
-                  // Wrap matched text in a <mark> for persistent visual highlight
-                  const matchLen = Math.min(quote.length, node.textContent.length - idx);
-                  const range = document.createRange();
-                  range.setStart(node, idx);
-                  range.setEnd(node, idx + matchLen);
-                  const mark = document.createElement("mark");
-                  mark.className = "reader-note-highlight";
-                  range.surroundContents(mark);
-                  // Scroll mark into view
-                  mark.scrollIntoView({ behavior: "smooth", block: "center" });
-                  // Fade highlight out after 3 seconds
-                  setTimeout(() => {
-                    mark.style.transition = "background 0.8s ease";
-                    mark.style.background = "transparent";
-                    setTimeout(() => {
-                      if (mark.parentNode) {
-                        const p = mark.parentNode;
-                        while (mark.firstChild) p.insertBefore(mark.firstChild, mark);
-                        p.removeChild(mark);
-                      }
-                    }, 900);
-                  }, 3000);
-                  break;
-                }
-              }
-            } catch(e) {}
-          }, 200);
-        }
-      }
+      const chapterIdx = parseInt(btn.dataset.chapter, 10) || 0;
+      jumpToChapter(chapterIdx, 0);
+      removeNotePanel();
     };
   });
 }
@@ -2983,7 +2589,7 @@ document.addEventListener("mousedown", (e) => {
   const searchDrop = document.getElementById("search-results-dropdown");
   const ctxMenus = document.querySelectorAll(".context-menu");
 
-  if (_wordPopupEl && !_wordPopupEl.contains(e.target) && !e.target.classList.contains("word")) removeWordPopup();
+  if (_wordPopupEl && !_wordPopupEl.contains(e.target)) removeWordPopup();
   if (_audioPanelEl && !_audioPanelEl.contains(e.target) && e.target.id !== "btn-upload-audio" && !document.getElementById("btn-upload-audio")?.contains(e.target)) removeAudioPanel();
   if (_selToolbarEl && !_selToolbarEl.contains(e.target)) removeSelToolbar();
   if (_summaryPopupEl && !_summaryPopupEl.contains(e.target)) removeSummaryPopup();
@@ -2992,18 +2598,6 @@ document.addEventListener("mousedown", (e) => {
   if (drop && !drop.classList.contains("hidden") && !drop.contains(e.target) && !document.getElementById("btn-chapter-drop")?.contains(e.target)) drop.classList.add("hidden");
   if (searchDrop && !searchDrop.classList.contains("hidden") && !searchDrop.contains(e.target) && !document.getElementById("library-search")?.contains(e.target)) closeSearchDropdown();
   ctxMenus.forEach(m => { if (!m.classList.contains("hidden") && !m.contains(e.target)) m.classList.add("hidden"); });
-});
-
-// Debounced repagination on window resize
-let _resizeTimer = null;
-window.addEventListener("resize", () => {
-  if (state.view !== "reader") return;
-  clearTimeout(_resizeTimer);
-  _resizeTimer = setTimeout(async () => {
-    await repaginateCurrentBook();
-    renderPage();
-    updateReaderNav();
-  }, 300);
 });
 
 window.onload = initApp;

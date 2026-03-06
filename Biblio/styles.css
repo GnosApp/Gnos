@@ -146,6 +146,8 @@ button { font-family: inherit; }
 .lib-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 .lib-tab-panel { display: none; }
 .lib-tab-panel.active { display: block; }
+/* Tab panels use JS to toggle both .active and .hidden — ensure active wins */
+.lib-tab-panel.active.hidden { display: block !important; }
 
 .library-header-text { display: flex; align-items: baseline; gap: 10px; margin-bottom: 20px; }
 .library-header-text h1 { font-size: 20px; font-weight: 700; font-family: var(--font-serif); margin: 0; letter-spacing: -0.4px; }
@@ -162,7 +164,7 @@ button { font-family: inherit; }
 }
 .streak-section { display: flex; align-items: center; gap: 9px; justify-content: center; }
 .streak-label { font-size: 10px; font-weight: 400; color: var(--textDim); letter-spacing: 0.04em; }
-.streak-dots { display: flex; gap: 5px; flex-direction: row-reverse; }
+.streak-dots { display: flex; gap: 5px; flex-direction: row; }
 .streak-dot {
   width: 13px; height: 13px; border-radius: 50%;
   border: 1.5px solid var(--border); background: var(--surfaceAlt);
@@ -407,78 +409,117 @@ button { font-family: inherit; }
 .settings-panel input[type=range] { width: 100%; accent-color: var(--accent); }
 .settings-panel select { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 12px; }
 
-/* Reader main - fills window, no scroll */
+/* === READER MAIN & CARD (CSS-columns engine) === */
+
+/*
+ * Professional approach: reader-main fills ALL space between header and footer.
+ * The card IS the reading surface — no outer padding, no gaps.
+ * The strip uses concrete pixel widths, not percentages, so the browser
+ * has unambiguous layout information before column flow begins.
+ */
 .reader-main {
-  flex: 1; display: flex; justify-content: center; align-items: flex-start;
-  padding: 28px 24px 0; overflow: hidden;
-}
-.reader-card {
-  width: 100%; max-width: 680px;
-  background: var(--readerCard); border-radius: 12px;
-  padding: 44px 56px;
-  box-shadow: 0 4px 40px rgba(0,0,0,0.12);
-  border: 1px solid var(--borderSubtle);
-  color: var(--readerText);
-  /* Height = viewport minus header(52) minus footer(~64) minus padding(56) */
-  height: calc(100vh - 52px - 64px - 56px);
+  flex: 1;
+  display: flex;
   overflow: hidden;
-}
-.reader-card.two-page {
-  max-width: 1280px;
-  display: grid;
-  grid-template-columns: 1fr 1px 1fr;
-  gap: 0;
-  padding-left: 0;
-  padding-right: 0;
-}
-.reader-card.two-page > .reader-page {
-  padding: 44px 40px;
-  overflow: hidden;
-  height: 100%;
-  min-height: 0;
-}
-.reader-card.two-page > .page-divider {
-  background: var(--borderSubtle);
-  width: 1px;
-  align-self: stretch;
+  /* No padding — card fills all available space */
 }
 
-.tap-zone { position: fixed; top: 52px; bottom: 64px; width: 15%; max-width: 100px; z-index: 10; display: flex; align-items: center; opacity: 0; transition: opacity 0.15s; }
+.reader-card {
+  flex: 1;
+  background: var(--readerCard);
+  border-radius: 0;
+  padding: 0;
+  border: none;
+  border-left: 1px solid var(--borderSubtle);
+  border-right: 1px solid var(--borderSubtle);
+  color: var(--readerText);
+  /* Fill exactly the space between header (52px) and footer (64px) */
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+  /* Centre the column(s) with auto margins when below max-width */
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+/* Two-page widens the card */
+.reader-card.two-page {
+  max-width: 1400px;
+}
+
+/*
+ * The page content container fills the card naturally.
+ * No column strips, no transform tricks.
+ * Typography (font, size, padding) is injected by JS ensurePageStyle().
+ */
+.page-content {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Tap zones — relative to the full reader area */
+.tap-zone {
+  position: fixed;
+  top: 52px;
+  bottom: 64px;
+  width: 12%;
+  max-width: 80px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
 .tap-zone.left { left: 0; justify-content: flex-start; padding-left: 8px; cursor: w-resize; }
 .tap-zone.right { right: 0; justify-content: flex-end; padding-right: 8px; cursor: e-resize; }
 .tap-zone:hover { opacity: 1; }
-.tap-icon { width: 32px; height: 32px; border-radius: 50%; background: var(--surface); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,0.2); color: var(--textMuted); }
+.tap-icon {
+  width: 32px; height: 32px; border-radius: 50%;
+  background: var(--surface); border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2); color: var(--textMuted);
+}
 
-.reader-footer { flex-shrink: 0; background: var(--headerBg); border-top: 1px solid var(--borderSubtle); padding: 10px 24px 14px; z-index: 40; }
-.footer-nav { display: flex; align-items: center; justify-content: space-between; max-width: 800px; margin: 0 auto 8px; position: relative; }
-.page-indicator { font-size: 12px; color: var(--textDim); position: absolute; left: 50%; transform: translateX(-50%); white-space: nowrap; }
+/* Footer */
+.reader-footer {
+  flex-shrink: 0;
+  background: var(--headerBg);
+  border-top: 1px solid var(--borderSubtle);
+  padding: 10px 24px 14px;
+  z-index: 40;
+}
+.footer-nav {
+  display: flex; align-items: center; justify-content: space-between;
+  max-width: 800px; margin: 0 auto 8px; position: relative;
+}
+.page-indicator {
+  font-size: 12px; color: var(--textDim);
+  position: absolute; left: 50%; transform: translateX(-50%);
+  white-space: nowrap;
+}
 .progress-track { max-width: 800px; margin: 0 auto; height: 3px; background: var(--progressTrack); border-radius: 2px; overflow: hidden; }
 .progress-bar { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accentSecondary)); border-radius: 2px; transition: width 0.3s; width: 0%; }
 
-/* Accessibility: word highlight on hover */
-.reader-card.highlight-words .reader-page p .word:hover,
-.reader-card.highlight-words p .word:hover {
+/* Accessibility: word highlight */
+.reader-card.highlight-words .page-content .col-word:hover {
   background: rgba(56,139,253,0.22);
   border-radius: 2px;
   cursor: default;
 }
 
-/* Accessibility: underline current line - highlight hovered word's line via JS */
-.reader-card.underline-line .word.same-line {
+/* Accessibility: underline current line */
+.reader-card.underline-line .page-content .col-word.same-line {
   text-decoration: underline;
   text-decoration-color: rgba(56,139,253,0.55);
   text-underline-offset: 3px;
 }
-.reader-card.underline-line .word:hover {
+.reader-card.underline-line .page-content .col-word:hover {
   text-decoration: underline;
   text-decoration-color: rgba(56,139,253,0.55);
   text-underline-offset: 3px;
-}
-
-/* Reader page content overflow hidden */
-.reader-page {
-  overflow: hidden;
-  height: 100%;
 }
 /* === WORD LOOKUP POPUP === */
 .word-popup {
