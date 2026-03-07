@@ -373,7 +373,12 @@ button { font-family: inherit; }
 .text-logo { font-size: 18px; font-weight: 800; letter-spacing: -0.6px; color: var(--text); font-family: var(--font-serif); background: none; border: none; cursor: pointer; padding: 4px 6px; border-radius: 6px; transition: background 0.15s; }
 .text-logo:hover { background: var(--surfaceAlt); }
 
-.chapter-nav-wrapper { position: relative; text-align: center; }
+/* True-center the chapter button regardless of left/right item widths.
+   Absolute positioning takes it out of flex flow so it's always at 50%. */
+.chapter-nav-wrapper {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  text-align: center; z-index: 1;
+}
 .btn-chapter { background: none; border: 1px solid transparent; border-radius: 7px; padding: 5px 10px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px; transition: all 0.15s; }
 .btn-chapter:hover, .btn-chapter.active { background: var(--surfaceAlt); border-color: var(--border); }
 .title-row { display: flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 600; color: var(--text); }
@@ -454,10 +459,38 @@ button { font-family: inherit; }
  */
 .page-content {
   width: 100%;
-  height: 100%;
   box-sizing: border-box;
   overflow: hidden;
   position: relative;
+}
+
+/* Two-page spread: flex row containing two equal-width page-content divs. */
+.page-spread {
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  position: relative;
+}
+.page-spread .page-content {
+  flex: 1;
+  width: 50%;
+  min-width: 0;
+}
+
+/* Two-page centre divider — pure CSS, zero JS.
+ * Apple Books and Kindle Web both use this exact technique:
+ * a pseudo-element on the card container draws the gutter line.
+ * position:absolute keeps it out of the content flow entirely. */
+.reader-card.two-page::after {
+  content: "";
+  position: absolute;
+  top: 32px;
+  bottom: 32px;
+  left: 50%;
+  width: 1px;
+  background: var(--borderSubtle);
+  pointer-events: none;
+  z-index: 10;
 }
 
 /* Tap zones — relative to the full reader area */
@@ -502,6 +535,13 @@ button { font-family: inherit; }
 }
 .progress-track { max-width: 800px; margin: 0 auto; height: 3px; background: var(--progressTrack); border-radius: 2px; overflow: hidden; }
 .progress-bar { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accentSecondary)); border-radius: 2px; transition: width 0.3s; width: 0%; }
+#chapter-progress-info { display: none; }
+
+/* Library drag-and-drop */
+.book-card-container[draggable="true"] { cursor: grab; }
+.book-card-container[draggable="true"]:active { cursor: grabbing; }
+.book-card-container.drag-ghost { opacity: 0.35; transition: opacity 0.1s; }
+.book-card-container.drag-over { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: 10px; }
 
 /* Accessibility: word highlight */
 .reader-card.highlight-words .page-content .col-word:hover {
@@ -598,6 +638,9 @@ button { font-family: inherit; }
 }
 .summary-popup-body { padding: 12px 14px; font-size: 13px; color: var(--text); line-height: 1.65; min-height: 60px; }
 .summary-loading { color: var(--textDim); font-style: italic; font-size: 12px; }
+.ai-loading-bar { width: 100%; height: 2px; background: var(--borderSubtle); border-radius: 2px; overflow: hidden; margin-bottom: 10px; }
+.ai-loading-fill { height: 100%; width: 40%; background: linear-gradient(90deg, var(--accent), var(--accentSecondary)); border-radius: 2px; animation: ai-slide 1.2s ease-in-out infinite; }
+@keyframes ai-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(350%); } }
 
 /* === ADD NOTE PANEL === */
 .note-add-panel {
@@ -648,35 +691,39 @@ button { font-family: inherit; }
 .note-item-delete { background: none; border: none; color: var(--textDim); cursor: pointer; font-size: 11px; padding: 0; }
 .note-item-delete:hover { color: #f85149; }
 
-/* Bookmark icon in reader — sits in the left margin, no text displacement */
-.note-bookmark-icon {
-  position: absolute;
-  left: -22px;
-  top: 3px;
-  display: inline-flex;
-  align-items: flex-start;
-  cursor: default;
-  opacity: 0.8;
-  pointer-events: auto;
-  z-index: 2;
+/* Annotated paragraph — left accent border, no absolute positioning */
+.note-marked-para {
+  border-left: 3px solid var(--accent) !important;
+  padding-left: 10px !important;
+  cursor: help;
 }
-.note-bookmark-icon:hover { opacity: 1; }
+.note-marked-para:hover { border-left-color: var(--accentSecondary) !important; }
+
+/* Chapter context label above quote in notes viewer */
+.note-item-context {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--textDim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 3px;
+}
 
 /* Note jump link — styled as {pg#} badge */
 .note-item-jump {
-  background: rgba(56,139,253,0.12);
-  border: 1px solid rgba(56,139,253,0.3);
+  background: none;
+  border: none;
   color: var(--accent);
   cursor: pointer;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 1px 6px;
-  border-radius: 4px;
+  font-size: 11px;
   font-family: var(--font-ui);
-  letter-spacing: 0.02em;
-  transition: all 0.12s;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  opacity: 0.8;
+  transition: opacity 0.1s;
 }
-.note-item-jump:hover { background: rgba(56,139,253,0.22); border-color: var(--accent); }
+.note-item-jump:hover { opacity: 1; }
 /* === AUDIO PANEL === */
 .audio-panel {
   position: fixed; z-index: 650;

@@ -99,6 +99,7 @@ const state = {
   connectedFolder: null,
   highlightWords: false,
   underlineLine: false,
+  justifyText: true,
   ollamaUrl: "",
   ollamaModel: "",
   readingLog: {},
@@ -162,17 +163,8 @@ function generateCoverColor(title) {
   return pairs[Math.abs(h) % pairs.length];
 }
 
-function countWords(str) {
-  let n = 0, inW = false;
-  for (let i = 0; i < str.length; i++) {
-    const ws = str.charCodeAt(i) <= 32;
-    if (!ws && !inW) { n++; inW = true; } else if (ws) inW = false;
-  }
-  return n;
-}
-
 // ============================================================================
-// BLOCK PARSERS  (unchanged — produce { type, text } arrays)
+// BLOCK PARSERS  (produce { type, text } arrays from HTML or plain text)
 // ============================================================================
 
 function htmlToBlocks(html) {
@@ -260,19 +252,25 @@ function blocksToChapters(blocks) {
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // ─── State ────────────────────────────────────────────────────────────────
-let _pageBreaks = [];            // [pageIndex] = first block index on that page
+let _pageBreaks = [];            // [pageIndex] = first expanded-block index on that page
 let _pageStyleEl = null;         // <style> tag for reader typography
 let _resizeTimer = null;
 let _currentRenderedChapter = -1;
 let _animating = false;          // mutex: true while a page-turn animation runs
 let _outgoingPage = null;        // the page element currently animating out
+let _chapterBreaksCache = {};    // chapterIdx → _pageBreaks array (cached after first compute)
+let _lazyComputeGen = 0;         // incremented on every settings change to cancel stale workers
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 function getCardDims() {
   const card = document.getElementById("reader-card");
   if (!card) return { w: 720, h: 600 };
-  return { w: card.offsetWidth || 720, h: card.offsetHeight || 600 };
+  // clientWidth excludes borders — the card has 1px left+right borders.
+  // offsetWidth would include those 2px, making the probe 2px too wide and
+  // causing it to underestimate content height (fitting more per page than renders).
+  // clientHeight == offsetHeight here since the card has no top/bottom borders.
+  return { w: card.clientWidth || 720, h: card.offsetHeight || 600 };
 }
 
 function ensurePageStyle() {
@@ -290,124 +288,312 @@ function buildPageStyles() {
   const fs = state.fontSize;
   const ls = state.lineSpacing;
   const paraGap = Math.round(fs * 0.55);
-  // Two-page: use CSS columns:2 inside the content div so the browser
-  // splits text naturally across two columns at the correct card width.
-  const colCSS = state.twoPage
-    ? `column-count: 2; column-gap: 48px; column-fill: auto;`
-    : ``;
+  // No column-count here. Two-page is handled by rendering two consecutive
+  // single-column page-content divs side by side in renderPage.
+  // Probe and display must use identical layout or measurements will be wrong.
   return `
     .page-content {
       font-family: ${state.fontFamily};
       font-size: ${fs}px;
       line-height: ${ls};
       color: var(--readerText);
-      padding: 48px 64px;
+      padding: 36px 64px;
       box-sizing: border-box;
       word-break: break-word;
       hyphens: auto;
       height: 100%;
       overflow: hidden;
-      ${colCSS}
+      text-rendering: optimizeLegibility;
     }
     .page-content p {
       margin: 0 0 ${paraGap}px 0;
-      text-align: justify;
+      text-align: ${state.justifyText !== false ? "justify" : "left"};
+      text-align-last: left;
+      hanging-punctuation: first last;
+      font-feature-settings: "kern" 1, "liga" 1, "onum" 1;
       orphans: 3; widows: 3;
     }
     .page-content p + p {
       text-indent: 2em;
       margin-bottom: 0;
     }
+    .page-content h2 + p,
+    .page-content h3 + p {
+      text-indent: 0;
+    }
     .page-content h2 {
       font-size: ${Math.round(fs * 1.65)}px;
       font-weight: 700;
       line-height: 1.2;
       font-family: Georgia, serif;
-      margin: 0 0 ${Math.round(fs * 0.7)}px 0;
-      padding-bottom: ${Math.round(fs * 0.35)}px;
-      border-bottom: 1px solid var(--borderSubtle);
-      ${state.twoPage ? "column-span: all;" : ""}
+      margin: 0 0 ${Math.round(fs * 0.5)}px 0;
+      letter-spacing: -0.01em;
     }
     .page-content h3 {
-      font-size: ${Math.round(fs * 1.18)}px;
-      font-weight: 600;
-      line-height: 1.3;
+      font-size: ${Math.round(fs * 1.1)}px;
+      font-weight: 400;
+      line-height: 1.4;
       font-family: Georgia, serif;
-      margin: ${Math.round(fs * 1.2)}px 0 ${Math.round(fs * 0.5)}px 0;
-      opacity: 0.85;
+      margin: 0 0 ${Math.round(fs * 0.4)}px 0;
+      opacity: 0.72;
+      letter-spacing: 0.02em;
+      font-style: italic;
+    }
+    .page-content.chapter-title-page {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+    }
+    .page-content.chapter-title-page h2,
+    .page-content.chapter-title-page h3 {
+      width: 100%;
+      text-align: center;
+    }
+    .page-content.chapter-title-page h2 {
+      margin-bottom: ${Math.round(fs * 0.3)}px;
+    }
+    .page-content.chapter-title-page h3 {
+      margin-bottom: 0;
+    }
+    .page-content.cover-page {
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--readerCard);
+    }
+    .page-content.cover-page img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      display: block;
+      border-radius: 4px;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.32);
     }
   `;
 }
 
 function blocksToHTML(blocks) {
   return blocks.map(b => {
-    if (!b?.text?.trim()) return "";
+    if (!b?.text?.trim() && b?.type !== "cover") return "";
+    if (b.type === "cover")      return `<img src="${b.src}" alt="Book cover">`;
     if (b.type === "heading")    return `<h2>${b.text}</h2>`;
     if (b.type === "subheading") return `<h3>${b.text}</h3>`;
     return `<p>${b.text}</p>`;
   }).join("");
 }
 
+function blocksToDisplayHTML(blocks) {
+  return blocks.map(b => {
+    if (!b?.text?.trim() && b?.type !== "cover") return "";
+    if (b.type === "cover")      return `<img src="${b.src}" alt="Book cover">`;
+    if (b.type === "heading")    return `<h2>${b.text}</h2>`;
+    if (b.type === "subheading") return `<h3>${b.text}</h3>`;
+    const wrapped = b.text.replace(/(\S+)/g, (w) => {
+      const clean = w.replace(/[^a-zA-Z'\u2019-]/g, "");
+      return `<span class="col-word" data-word="${clean}">${w}</span>`;
+    });
+    return `<p>${wrapped}</p>`;
+  }).join("");
+}
+
 // ─── Core: compute page breaks for a chapter ──────────────────────────────
 //
-// Uses a hidden probe div with the same CSS as the real card.
-// Blocks are appended in a single innerHTML batch (one reflow per page)
-// rather than one at a time (N reflows), which is ~10–20× faster.
-// The probe height is unconstrained so scrollHeight accurately reflects
-// the cumulative rendered height of all text so far.
+// Zero-padding probe measures pure text height per block.
+// In two-page mode the probe width is half the card (one column's width).
+// Page breaks are always single-column — renderPage places two consecutive
+// pages side-by-side for the spread view.
 //
-// Two-page mode: the probe uses the full card width with column-count:2,
-// so the browser computes two-column line-breaking naturally.
+// Long paragraphs that exceed a full page height are split at word boundaries
+// using binary search, matching how Kindle and Apple Books handle them.
 //
 function computePageBreaks(chapterIdx) {
   const chapter = state.chapters[chapterIdx];
   if (!chapter || !chapter.blocks.length) return [0];
 
   const { w: cardW, h: cardH } = getCardDims();
-  // Usable height per page = card height minus top+bottom padding (48px each)
-  const pageH = cardH - 96;
-  if (pageH <= 0) return [0];
 
-  // Build a hidden probe matching the real card's width and typography
+  const PAD_V = 36;
+  const PAD_H = 64;
+  const colW = state.twoPage
+    ? Math.floor(cardW / 2) - PAD_H * 2
+    : cardW - PAD_H * 2;
+  const pageH = cardH - PAD_V * 2;
+  if (pageH <= 0 || colW <= 0) return [0];
+
+  const fs = state.fontSize;
+  const paraGap = Math.round(fs * 0.55);
+  const textAlign = state.justifyText !== false ? "justify" : "left";
+
   const probe = document.createElement("div");
-  probe.className = "page-content";
   probe.style.cssText = `
-    position: fixed;
-    top: -99999px; left: 0;
-    width: ${cardW}px;
-    height: auto !important;
-    max-height: none !important;
-    visibility: hidden;
-    pointer-events: none;
-    z-index: -1;
-    overflow: visible !important;
+    position: fixed; top: 0; left: -9999px;
+    width: ${colW}px; height: auto; padding: 0; margin: 0; border: none;
+    opacity: 0; pointer-events: none; z-index: -1; overflow: visible;
+    font-family: ${state.fontFamily}; font-size: ${fs}px;
+    line-height: ${state.lineSpacing}; word-break: break-word;
+    hyphens: auto; box-sizing: border-box;
   `;
+  const probeStyle = document.createElement("style");
+  probeStyle.textContent = `
+    .gnos-probe p  { margin: 0 0 ${paraGap}px 0; text-align: ${textAlign};
+                     text-align-last: left;
+                     font-feature-settings: "kern" 1, "liga" 1, "onum" 1; }
+    .gnos-probe p + p { text-indent: 2em; margin-bottom: 0; }
+    .gnos-probe h2 { font-size: ${Math.round(fs * 1.65)}px; font-weight: 700;
+                     line-height: 1.2; margin: 0 0 ${Math.round(fs * 0.5)}px 0; }
+    .gnos-probe h3 { font-size: ${Math.round(fs * 1.1)}px; font-weight: 400;
+                     line-height: 1.4;
+                     margin: 0 0 ${Math.round(fs * 0.4)}px 0; }
+  `;
+  document.head.appendChild(probeStyle);
+  probe.className = "gnos-probe";
   document.body.appendChild(probe);
 
-  const breaks = [0];
-  let pageStartBlockIdx = 0;
-  let pageStartH = 0;
-  const blocks = chapter.blocks.filter(b => b?.text?.trim());
+  // Measure the true rendered height of content in the probe.
+  // scrollHeight includes the bottom margin of the last child, which causes
+  // the paginator to trigger overflow one block too early, adding ~10% extra pages.
+  // We instead measure the bottom edge of the last rendered child relative to
+  // the probe's top — this is the actual ink height with no trailing margin.
+  function probeHeight() {
+    const last = probe.lastElementChild;
+    if (!last) return 0;
+    const probeTop = probe.getBoundingClientRect().top;
+    return last.getBoundingClientRect().bottom - probeTop;
+  }
+  // Returns [firstPart, remainder] where firstPart fills the page to the last
+  // complete line, with no orphan words (single word alone on the last line).
+  function splitParaAtPageBoundary(text, prefixBlocks) {
+    const words = text.split(" ");
+    let lo = 1, hi = words.length - 1, bestSplit = 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const testBlocks = [...prefixBlocks, { type: "para", text: words.slice(0, mid).join(" ") }];
+      probe.innerHTML = blocksToHTML(testBlocks);
+      if (probeHeight() <= pageH) { bestSplit = mid; lo = mid + 1; }
+      else { hi = mid - 1; }
+    }
 
-  // Batch approach: build HTML for all blocks up to the current page,
-  // read scrollHeight once, advance to next page boundary.
-  // This is O(pages) reflows instead of O(blocks) reflows.
-  for (let i = 0; i < blocks.length; i++) {
-    // Set probe content = all blocks from current page start to i (inclusive)
-    probe.innerHTML = blocksToHTML(blocks.slice(pageStartBlockIdx, i + 1));
-    const totalH = probe.scrollHeight;
-    const usedH = totalH - 0; // probe resets each batch so totalH = usedH
+    // Anti-orphan: check whether the last word landed alone on its own line.
+    // Render with bestSplit words, measure height. Render with bestSplit-1 words.
+    // If height drops, the last word was on its own line — move it to the next page.
+    //
+    // This requires the probe to be within the browser's visible Y range so that
+    // Chromium actually computes layout (it skips layout for position:fixed elements
+    // entirely above/below the viewport, making all rects return 0). The probe is
+    // now at top:0; left:-9999px so Y measurements are always correct.
+    if (bestSplit === 1 && prefixBlocks.length > 0) {
+      bestSplit = 0;
+    } else if (bestSplit >= 2) {
+      probe.innerHTML = blocksToHTML([...prefixBlocks, { type: "para", text: words.slice(0, bestSplit).join(" ") }]);
+      const hFull = probeHeight();
+      probe.innerHTML = blocksToHTML([...prefixBlocks, { type: "para", text: words.slice(0, bestSplit - 1).join(" ") }]);
+      const hShort = probeHeight();
+      if (hFull > hShort) {
+        if (bestSplit - 1 >= 2) { bestSplit--; }
+        else if (prefixBlocks.length > 0) { bestSplit = 0; }
+      }
+    }
 
-    if (usedH > pageH && i > pageStartBlockIdx) {
-      // Block i overflows — page ends at i-1, new page starts at i
-      breaks.push(pageStartBlockIdx + (i - pageStartBlockIdx));
-      // Reset probe to just this block to start fresh height accounting
-      pageStartBlockIdx = i;
-      probe.innerHTML = blocksToHTML(blocks.slice(pageStartBlockIdx, i + 1));
+    return [
+      words.slice(0, bestSplit).join(" "),
+      words.slice(bestSplit).join(" ")
+    ];
+  }
+
+  // Build a clean working copy of blocks for this computation. Must be rebuilt
+  // from chapter.blocks on every call — never reuse a previous _expanded,
+  // because split fragments from a prior call would be split again on the next
+  // recompute, doubling the page count each time settings change.
+  const expanded = [];
+  for (const b of chapter.blocks) {
+    if (!b?.text?.trim() && b?.type !== "cover") continue;
+    expanded.push({ ...b }); // shallow copy so splice/mutation never touches originals
+  }
+
+  const breaks = [0]; // index into expanded[]
+  let pageBlocks = [];
+  let pageIsHeadingOnly = false;
+
+  for (let i = 0; i < expanded.length; i++) {
+    const b = expanded[i];
+    const isHeading = b.type === "heading" || b.type === "subheading";
+
+    if (isHeading && pageBlocks.length > 0 && !pageIsHeadingOnly) {
+      breaks.push(i);
+      pageBlocks = [];
+      pageIsHeadingOnly = false;
+    } else if (!isHeading && pageIsHeadingOnly) {
+      breaks.push(i);
+      pageBlocks = [];
+      pageIsHeadingOnly = false;
+    }
+
+    pageBlocks.push(b);
+    pageIsHeadingOnly = pageBlocks.every(
+      bl => bl.type === "heading" || bl.type === "subheading"
+    );
+
+    probe.innerHTML = blocksToHTML(pageBlocks);
+
+    if (probeHeight() > pageH) {
+      if (b.type === "para" && b.text.split(" ").length > 2) {
+        // The page overflows. If this is the only block, split it solo.
+        // If there are other blocks already, split it with their context so
+        // whatever fits of this paragraph stays on the current page and the
+        // remainder starts the next — filling the page to the last line.
+        //
+        // This is how Apple Books and Kindle fill pages: they never move a
+        // whole paragraph to the next page if any part of it fits. Every
+        // paragraph that crosses a page boundary is split at a word boundary.
+        const prefixForSplit = pageBlocks.length > 1
+          ? pageBlocks.slice(0, -1)   // blocks already committed to this page
+          : [];
+        const [first, rest] = splitParaAtPageBoundary(b.text, prefixForSplit);
+        if (first && rest) {
+          expanded.splice(i + 1, 0, { type: "para", text: rest, continued: true });
+          expanded[i] = { ...b, text: first };
+          pageBlocks[pageBlocks.length - 1] = expanded[i];
+          breaks.push(i + 1);
+          pageBlocks = [];
+          pageIsHeadingOnly = false;
+        } else if (pageBlocks.length > 1) {
+          // Split yielded nothing (e.g. even one word overflows with context) —
+          // fall back to moving the block to a fresh page and splitting there.
+          breaks.push(i);
+          pageBlocks = [b];
+          probe.innerHTML = blocksToHTML(pageBlocks);
+          if (probeHeight() > pageH) {
+            const [f2, r2] = splitParaAtPageBoundary(b.text, []);
+            if (f2 && r2) {
+              expanded.splice(i + 1, 0, { type: "para", text: r2, continued: true });
+              expanded[i] = { ...b, text: f2 };
+              pageBlocks[0] = expanded[i];
+              breaks.push(i + 1);
+              pageBlocks = [];
+            }
+          }
+          pageIsHeadingOnly = false;
+        }
+        // else single short paragraph that can't be split — let it stand
+      } else if (pageBlocks.length > 1) {
+        // Non-paragraph block (heading) overflowed — move it to the next page.
+        breaks.push(i);
+        pageBlocks = [b];
+        pageIsHeadingOnly = b.type === "heading" || b.type === "subheading";
+        probe.innerHTML = blocksToHTML(pageBlocks);
+      }
+      // Single non-para block that's too tall: let it stand rather than loop
     }
   }
 
   document.body.removeChild(probe);
+  probeStyle.remove();
+  // Store the final expanded list (with any split fragments) back on the chapter
+  // so renderPage can slice it. This is always overwritten on the next recompute.
+  chapter._expanded = expanded;
   return breaks;
 }
 
@@ -428,7 +614,12 @@ function renderPage(chapterIdx, pageIdx, animate) {
   if (!chapter) return;
 
   if (chapterIdx !== _currentRenderedChapter) {
-    _pageBreaks = computePageBreaks(chapterIdx);
+    if (_chapterBreaksCache[chapterIdx]) {
+      _pageBreaks = _chapterBreaksCache[chapterIdx];
+    } else {
+      _pageBreaks = computePageBreaks(chapterIdx);
+      _chapterBreaksCache[chapterIdx] = _pageBreaks;
+    }
     _currentRenderedChapter = chapterIdx;
   }
 
@@ -436,72 +627,132 @@ function renderPage(chapterIdx, pageIdx, animate) {
   pageIdx = Math.max(0, Math.min(pageIdx, totalPagesInChapter - 1));
   state.currentPage = pageIdx;
 
-  const startBlock = _pageBreaks[pageIdx];
-  const endBlock   = _pageBreaks[pageIdx + 1] ?? chapter.blocks.length;
-  const pageBlocks = chapter.blocks.slice(startBlock, endBlock);
+  // ── Build the new surface ────────────────────────────────────────────────
+  // In two-page mode we render two consecutive single-column pages side by
+  // side inside a flex wrapper. Each column is a normal .page-content div —
+  // the same element the probe measured — so display and measurement match
+  // exactly. This is how Kindle, epub.js, and Readium implement two-page:
+  // two independent page slots, not CSS columns on a single element.
+  //
+  // In single-page mode the wrapper is just one .page-content div.
 
-  const newPage = document.createElement("div");
-  newPage.className = "page-content";
-  newPage.innerHTML = blocksToHTML(pageBlocks);
+  function makePageDiv(pIdx) {
+    const source  = chapter._expanded || chapter.blocks;
+    const startBlock = _pageBreaks[pIdx];
+    const endBlock   = _pageBreaks[pIdx + 1] ?? source.length;
+    const blocks     = source.slice(startBlock, endBlock);
+    const div = document.createElement("div");
+    div.className = "page-content";
+    // Set an explicit pixel height rather than relying on height:100%.
+    // Safari has a known bug where height:100% fails to resolve correctly
+    // when no ancestor in the chain has an explicit pixel height — only
+    // flex:1 heights. The symptom: page-content expands to its content
+    // height and text overflows the card boundary into the footer.
+    // An explicit pixel height removes all ambiguity and overflow:hidden
+    // then clips exactly at the right boundary.
+    div.style.height = card.offsetHeight + "px";
+    div.innerHTML = blocksToDisplayHTML(blocks);
+    const nonEmpty = blocks.filter(b => b?.text?.trim() || b?.type === "cover");
+    if (nonEmpty.length > 0) {
+      if (nonEmpty.every(b => b.type === "cover")) {
+        div.classList.add("cover-page");
+      } else if (nonEmpty.every(b => b.type === "heading" || b.type === "subheading")) {
+        div.classList.add("chapter-title-page");
+      }
+    }
+    if (nonEmpty[0]?.continued) {
+      const firstP = div.querySelector("p");
+      if (firstP) firstP.style.textIndent = "0";
+    }
+    return div;
+  }
 
-  // If an animation is already in flight, snap it to completion immediately
-  // before starting the new one — prevents stacking artifacts.
+  const cardH = card.offsetHeight;
+  let newSurface;
+  if (state.twoPage) {
+    newSurface = document.createElement("div");
+    newSurface.className = "page-spread";
+    newSurface.style.height = cardH + "px"; // explicit height for same reason
+    const leftPage  = makePageDiv(pageIdx);
+    const rightPage = pageIdx + 1 < totalPagesInChapter
+      ? makePageDiv(pageIdx + 1)
+      : (() => {
+          const e = document.createElement("div");
+          e.className = "page-content";
+          e.style.height = cardH + "px";
+          return e;
+        })();
+    newSurface.appendChild(leftPage);
+    newSurface.appendChild(rightPage);
+  } else {
+    newSurface = makePageDiv(pageIdx);
+  }
+
+  // ── Snap any in-flight animation before starting a new one ───────────────
   if (_animating && _outgoingPage) {
     _outgoingPage.remove();
     _outgoingPage = null;
     _animating = false;
-    // Also clear any lingering absolute-positioned page-content divs
-    card.querySelectorAll(".page-content").forEach(el => el.remove());
+    card.querySelectorAll(".page-content, .page-spread").forEach(el => el.remove());
   }
 
+  // ── Animate: cross-fade for all modes ────────────────────────────────────
+  // A fade keeps the centre divider perfectly static and works equally well
+  // at any card width. Apple Books uses fade on spreads; Kindle uses fade
+  // on everything. The slide animation caused content to visually cross the
+  // centre line in two-page mode, so we now use fade universally.
   if (animate) {
-    const dir = animate === "forward" ? 1 : -1;
-    const existing = card.querySelector(".page-content");
-
+    const existing = card.querySelector(".page-content, .page-spread");
     if (existing) {
       _animating = true;
       _outgoingPage = existing;
 
-      // Position both pages absolutely so they sit on top of each other
-      existing.style.cssText = `position:absolute;inset:0;transform:translateX(0);transition:transform 0.18s cubic-bezier(0.4,0,0.2,1);`;
-      newPage.style.cssText   = `position:absolute;inset:0;transform:translateX(${dir * 100}%);transition:transform 0.18s cubic-bezier(0.4,0,0.2,1);`;
-      card.appendChild(newPage);
-
-      // Force reflow so the browser registers the initial transform before animating
-      void newPage.offsetWidth;
-      newPage.style.transform  = "translateX(0)";
-      existing.style.transform = `translateX(${-dir * 100}%)`;
+      newSurface.style.cssText = "position:absolute;inset:0;opacity:0;transition:opacity 0.18s ease;";
+      card.appendChild(newSurface);
+      void newSurface.offsetWidth; // force reflow before transition
+      existing.style.cssText  = "position:absolute;inset:0;opacity:1;transition:opacity 0.18s ease;";
+      existing.style.opacity  = "0";
+      newSurface.style.opacity = "1";
 
       const cleanup = () => {
         if (_outgoingPage === existing) {
           existing.remove();
-          newPage.style.cssText = "";
+          newSurface.style.cssText = "";
           _outgoingPage = null;
           _animating = false;
         }
       };
       existing.addEventListener("transitionend", cleanup, { once: true });
-      // Safety timeout in case transitionend doesn't fire (e.g. hidden tab)
-      setTimeout(cleanup, 250);
+      setTimeout(cleanup, 260); // safety in case transitionend doesn't fire
     } else {
       card.innerHTML = "";
-      card.appendChild(newPage);
+      card.appendChild(newSurface);
     }
   } else {
     card.innerHTML = "";
-    card.appendChild(newPage);
+    card.appendChild(newSurface);
   }
 
   updateReaderNav();
   addBookmarkIcons(card);
+  card.removeEventListener("click", handleWordClick);
+  card.removeEventListener("mouseover", handleWordMouseover);
+  card.addEventListener("click", handleWordClick);
+  card.addEventListener("mouseover", handleWordMouseover);
 }
 
 // ─── Navigation ───────────────────────────────────────────────────────────
 
 function nextPage() {
+  const step = state.twoPage ? 2 : 1;
   const totalPagesInChapter = _pageBreaks.length || 1;
-  if (state.currentPage < totalPagesInChapter - 1) {
-    state.currentPage++;
+  if (state.currentPage + step <= totalPagesInChapter - 1) {
+    state.currentPage += step;
+    renderPage(state.currentChapter, state.currentPage, "forward");
+    updateProgress();
+  } else if (state.currentPage < totalPagesInChapter - 1) {
+    // In two-page mode, snap to last page rather than skipping chapter
+    state.currentPage = totalPagesInChapter - 1;
     renderPage(state.currentChapter, state.currentPage, "forward");
     updateProgress();
   } else if (state.currentChapter < state.chapters.length - 1) {
@@ -513,9 +764,15 @@ function nextPage() {
 }
 
 function prevPage() {
-  if (state.currentPage > 0) {
-    state.currentPage--;
+  const step = state.twoPage ? 2 : 1;
+  if (state.currentPage >= step) {
+    state.currentPage -= step;
     renderPage(state.currentChapter, state.currentPage, "backward");
+    updateProgress();
+  } else if (state.currentPage > 0) {
+    // Snap to page 0 rather than going negative
+    state.currentPage = 0;
+    renderPage(state.currentChapter, 0, "backward");
     updateProgress();
   } else if (state.currentChapter > 0) {
     state.currentChapter--;
@@ -523,7 +780,11 @@ function prevPage() {
     const prevBreaks = computePageBreaks(state.currentChapter);
     _pageBreaks = prevBreaks;
     _currentRenderedChapter = state.currentChapter;
-    renderPage(state.currentChapter, prevBreaks.length - 1, "backward");
+    // Land on last even-indexed page for clean spread alignment
+    const lastPage = state.twoPage
+      ? Math.floor((prevBreaks.length - 1) / 2) * 2
+      : prevBreaks.length - 1;
+    renderPage(state.currentChapter, lastPage, "backward");
     updateProgress();
   }
 }
@@ -538,24 +799,18 @@ function jumpToChapter(chapterIdx, pageIdx) {
 
 // ─── Progress ─────────────────────────────────────────────────────────────
 
+// ─── Page counting — exact from cache ─────────────────────────────────────
+// All chapter breaks are computed before the reader opens, so these functions
+// always return exact values — no estimation, no block-ratio extrapolation.
+
 function estimateTotalPages() {
-  const measured  = _pageBreaks.length || 1;
-  const curBlocks = state.chapters[state.currentChapter]?.blocks.length || 1;
-  const total = state.chapters.reduce((sum, ch, i) => {
-    if (i === state.currentChapter) return sum + measured;
-    const ratio = (ch.blocks.length || 1) / curBlocks;
-    return sum + Math.max(1, Math.round(measured * ratio));
-  }, 0);
-  return Math.max(1, total);
+  return Math.max(1, Object.values(_chapterBreaksCache).reduce((s, b) => s + b.length, 0));
 }
 
 function estimateGlobalPage() {
-  const measured  = _pageBreaks.length || 1;
-  const curBlocks = state.chapters[state.currentChapter]?.blocks.length || 1;
   let offset = 0;
   for (let i = 0; i < state.currentChapter; i++) {
-    const ratio = (state.chapters[i]?.blocks.length || 1) / curBlocks;
-    offset += Math.max(1, Math.round(measured * ratio));
+    offset += (_chapterBreaksCache[i]?.length || 1);
   }
   return offset + state.currentPage;
 }
@@ -566,12 +821,16 @@ function updateProgress() {
   const pct     = total > 1 ? (current / (total - 1)) * 100 : 0;
 
   if (state.activeBook) {
-    state.activeBook.currentChapter = state.currentChapter;
-    state.activeBook.currentPage    = state.currentPage;
+    // Subtract 1 from currentChapter when saving — chapter 0 is the injected
+    // cover page which is not part of the stored chapter list.
+    const savedChapter = Math.max(0, state.currentChapter - 1);
+    const savedPage    = state.currentChapter === 0 ? 0 : state.currentPage;
+    state.activeBook.currentChapter = savedChapter;
+    state.activeBook.currentPage    = savedPage;
     const idx = state.library.findIndex(b => b.id === state.activeBook.id);
     if (idx > -1) {
-      state.library[idx].currentChapter = state.currentChapter;
-      state.library[idx].currentPage    = state.currentPage;
+      state.library[idx].currentChapter = savedChapter;
+      state.library[idx].currentPage    = savedPage;
     }
     saveLibrary();
   }
@@ -590,19 +849,22 @@ function updateReaderNav() {
   const pageInd = document.getElementById("page-indicator");
   if (pageInd) {
     const globalNum = current + 1;
-    pageInd.innerHTML = `Page <input id="page-num-input" type="number" min="1" max="${total}" value="${globalNum}" style="width:${Math.max(36, String(total).length * 10 + 16)}px;background:transparent;border:none;border-bottom:1px solid var(--textDim);color:var(--text);font-size:inherit;font-family:inherit;text-align:center;padding:0 2px;outline:none;-moz-appearance:textfield;"> of ~${total} · ${Math.round(pct)}%`;
+    const _isCv=(state.chapters||[])[state.currentChapter]?.title==="_cover_";
+    const _cb=_chapterBreaksCache[state.currentChapter];
+    const _ct=_cb?_cb.length:(_pageBreaks.length||1);
+    const _pl=_ct-state.currentPage-1;
+    const _st=state.twoPage?2:1;
+    const _lft=_isCv?"":`${_pl<=0?" · last page":_pl===_st?" · 1 pg left":` · ${_pl} pgs left`}`;
+    pageInd.innerHTML=`Page <input id="page-num-input" type="number" min="1" max="${total}" value="${globalNum}" style="width:${Math.max(36,String(total).length*10+16)}px;background:transparent;border:none;border-bottom:1px solid var(--textDim);color:var(--text);font-size:inherit;font-family:inherit;text-align:center;padding:0 2px;outline:none;-moz-appearance:textfield;"> of ${total} · ${Math.round(pct)}%${_lft}`;
     const pnInput = document.getElementById("page-num-input");
     if (pnInput) {
       pnInput.onclick = (e) => { e.stopPropagation(); pnInput.select(); };
       const doJump = () => {
         const val = parseInt(pnInput.value, 10);
         if (!isNaN(val) && val >= 1 && val <= total) {
-          const measured   = _pageBreaks.length || 1;
-          const curBlocks  = state.chapters[state.currentChapter]?.blocks.length || 1;
-          let remaining    = val - 1;
+          let remaining = val - 1;
           for (let i = 0; i < state.chapters.length; i++) {
-            const ratio  = (state.chapters[i]?.blocks.length || 1) / curBlocks;
-            const chPgs  = i === state.currentChapter ? measured : Math.max(1, Math.round(measured * ratio));
+            const chPgs = _chapterBreaksCache[i]?.length || 1;
             if (remaining < chPgs) { jumpToChapter(i, remaining); return; }
             remaining -= chPgs;
           }
@@ -646,9 +908,14 @@ function updateReaderNav() {
 
 function rebuildReaderForSettings() {
   ensurePageStyle();
+  // Recompute all chapter breaks synchronously — font/size/justify change
+  // invalidates every page position in the book. This takes ~100–300ms for
+  // a full novel, matching Kindle's behaviour on font size change.
+  recomputeAllChapterBreaks();
   _currentRenderedChapter = -1;
   if (state.view === "reader") {
     renderPage(state.currentChapter, state.currentPage, false);
+    buildChapterDropdown(); // refresh page numbers in dropdown
   }
   updateReaderNav();
 }
@@ -735,18 +1002,152 @@ async function parseEpub(file) {
     const entry = zipFind(zip, href); return entry ? { href, html: await entry.async("string") } : null;
   }));
 
-  // Collect ALL blocks from all spine files, then split into chapters
-  const allBlocks = [];
-  for (const f of rawFiles) {
-    if (!f) continue;
-    const blocks = htmlToBlocks(f.html);
-    if (!blocks.some(b => b.text.trim().length > 5)) continue;
-    allBlocks.push(...blocks);
+  // ── Parse navigation TOC (NCX or EPUB3 nav) for chapter titles ───────────
+  // NCX format (EPUB2):
+  //   <navPoint><navLabel><text>Chapter Title</text></navLabel>
+  //             <content src="chapter01.xhtml#anchor"/></navPoint>
+  // EPUB3 nav format:
+  //   <nav epub:type="toc"><ol><li><a href="chapter01.xhtml">Title</a></li></ol></nav>
+  //
+  const tocEntries = [];
+
+  const parseNcx = (xml) => {
+    const navPointRe = /<navPoint[\s\S]*?<\/navPoint>/gi;
+    let np;
+    while ((np = navPointRe.exec(xml)) !== null) {
+      const textM = np[0].match(/<text[^>]*>([\s\S]*?)<\/text>/i);
+      const srcM  = np[0].match(/<content[^>]+src=["']([^"']+)["']/i);
+      if (!textM || !srcM) continue;
+      const title    = decodeEntities(textM[1].replace(/<[^>]+>/g, "").trim());
+      const raw      = srcM[1];
+      const hi       = raw.indexOf("#");
+      const base     = (hi === -1 ? raw : raw.slice(0, hi)).split("/").pop().split("?")[0];
+      const fragment = hi === -1 ? "" : raw.slice(hi + 1);
+      if (title && base) tocEntries.push({ title, base, fragment });
+    }
+  };
+
+  const parseNav = (xml) => {
+    const re = /<a\s[^>]*href=["']([^"'][^"']*?)["'][^>]*>([\s\S]*?)<\/a>/gi;
+    let mm;
+    while ((mm = re.exec(xml)) !== null) {
+      const raw = mm[1];
+      if (!raw || raw.startsWith("?")) continue;
+      const hi       = raw.indexOf("#");
+      const base     = (hi === -1 ? raw : raw.slice(0, hi)).split("/").pop().split("?")[0];
+      const fragment = hi === -1 ? "" : raw.slice(hi + 1);
+      const title    = decodeEntities(mm[2].replace(/<[^>]+>/g, "").trim());
+      if (title && base) tocEntries.push({ title, base, fragment });
+    }
+  };
+
+  try {
+    const navId = Object.keys(manifest).find(k => manifest[k].props.includes("nav"));
+    const ncxId = Object.keys(manifest).find(k =>
+      manifest[k].type.includes("ncx") || manifest[k].href.endsWith(".ncx"));
+
+    // Try EPUB3 nav first, then NCX — parse BOTH so we get the most titles
+    if (navId) {
+      const navHref = resolveHref(opfDir, manifest[navId].href);
+      const navEntry = navHref ? zipFind(zip, navHref) : null;
+      if (navEntry) parseNav(await navEntry.async("string"));
+    }
+    if (ncxId) {
+      const ncxHref = resolveHref(opfDir, manifest[ncxId].href);
+      const ncxEntry = ncxHref ? zipFind(zip, ncxHref) : null;
+      if (ncxEntry) parseNcx(await ncxEntry.async("string"));
+    }
+  } catch(e) { /* nav parse failure is non-fatal */ }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // ── Build chapters using the TOC as the sole authority ───────────────────
+  // Apple Books and Kindle both use this model: the NCX/nav TOC is the
+  // definitive list of navigable chapters. Every spine file that is NOT
+  // directly referenced in the TOC gets appended to the preceding chapter —
+  // it is front matter, back matter, an epigraph file, a title-page file, etc.
+  // Files that appear between two TOC entries are absorbed into the first one.
+  //
+  // This eliminates the pattern of: title page → epigraph page → title page
+  // which arose from EPUB publishers splitting one logical chapter into
+  // a "title file" (h2 + maybe an epigraph) and a "content file" (h2 + text).
+  // When we only create chapter boundaries at TOC entries, that structure
+  // collapses into a single chapter with a correct title page.
+
+  const _seenToc = new Set();
+  const _uEntries = tocEntries.filter(e => { const k = e.base+"\x00"+e.fragment; return _seenToc.has(k)?false:(_seenToc.add(k),true); });
+  const tocByFile = {};
+  for (const e of _uEntries) { if (!tocByFile[e.base]) tocByFile[e.base]=[]; tocByFile[e.base].push({title:e.title,fragment:e.fragment}); }
+  const tocBasenames = new Set(Object.keys(tocByFile));
+  const hasToc = tocBasenames.size > 0;
+
+  function splitHtmlAtFragments(html, entries) {
+    const positions = entries.map(({fragment}) => {
+      if (!fragment) return 0;
+      const re = new RegExp(`id=["']?${fragment.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}["']?[\\s>]`,"i");
+      const m = re.exec(html); if (!m) return -1;
+      let p = m.index; while (p > 0 && html[p] !== "<") p--; return p;
+    });
+    return entries.map(({title},i) => {
+      const start = positions[i]===-1?(i===0?0:(positions[i-1]??0)):positions[i];
+      const end = i<entries.length-1?(positions[i+1]===-1?html.length:positions[i+1]):html.length;
+      return {title, html:html.slice(Math.max(0,start),end)};
+    });
+  }
+  function makeChapterBlocks(blocks,title) {
+    const norm=s=>s.toLowerCase().replace(/[^a-z0-9]/g,"");
+    if (blocks[0]?.type==="heading"||blocks[0]?.type==="subheading") return blocks;
+    const fp=blocks[0];
+    if (fp?.type==="para"&&norm(fp.text)===norm(title)) return [{type:"subheading",text:fp.text},...blocks.slice(1)];
+    return [{type:"subheading",text:title},...blocks];
   }
 
-  if (allBlocks.length === 0) throw new Error("Could not extract any text");
+  const chapters = [];
+  let partNum = 0;
 
-  const chapters = blocksToChapters(allBlocks);
+  for (const f of rawFiles) {
+    if (!f) continue;
+    const base = f.href.split("/").pop().split("?")[0];
+    const isTocFile = hasToc ? tocBasenames.has(base) : true;
+    const fileEntries = tocByFile[base] || [];
+    if (!isTocFile && chapters.length > 0) {
+      const last = chapters[chapters.length-1];
+      last.blocks = [...last.blocks, ...htmlToBlocks(f.html)];
+      continue;
+    }
+    if (fileEntries.length > 1) {
+      for (const {title, html:ph} of splitHtmlAtFragments(f.html, fileEntries)) {
+        const blocks = htmlToBlocks(ph);
+        if (!blocks.some(b=>b.text?.trim().length>5)) continue;
+        chapters.push({title, blocks:makeChapterBlocks(blocks,title)});
+      }
+      continue;
+    }
+    const blocks = htmlToBlocks(f.html);
+    if (!blocks.some(b=>b.text?.trim().length>5)) continue;
+    const tocTitle = fileEntries[0]?.title;
+    const firstHeading = blocks.find(b=>b.type==="heading"||b.type==="subheading");
+    const title = tocTitle||firstHeading?.text||`Part ${++partNum}`;
+    chapters.push({title, blocks:makeChapterBlocks(blocks,title)});
+  }
+
+  // Fallback: if TOC was empty and we got no chapters, re-run without TOC filter
+  if (chapters.length === 0) {
+    for (const f of rawFiles) {
+      if (!f) continue;
+      const blocks = htmlToBlocks(f.html);
+      if (!blocks.some(b => b.text?.trim().length > 5)) continue;
+      const base = f.href.split("/").pop().split("?")[0];
+      const firstHeading = blocks.find(b => b.type === "heading" || b.type === "subheading");
+      const title = firstHeading?.text || `Part ${++partNum}`;
+      const startsWithHeading = blocks[0]?.type === "heading" || blocks[0]?.type === "subheading";
+      const chapterBlocks = startsWithHeading ? blocks : [{ type: "subheading", text: title }, ...blocks];
+      chapters.push({ title, blocks: chapterBlocks });
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  if (chapters.length === 0) throw new Error("Could not extract any text");
+
   return { title: epubTitle, author: epubAuthor, chapters, coverDataUrl };
 }
 
@@ -778,6 +1179,8 @@ async function saveReadingLog() {
 
 function getStreakDays() {
   const days = [];
+  // i = 6 → oldest day (leftmost), i = 0 → today (rightmost).
+  // Reads chronologically left-to-right: oldest → yesterday → today.
   for (let i = 6; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
@@ -834,6 +1237,7 @@ async function initApp() {
     if (parsed.twoPage !== undefined) state.twoPage = parsed.twoPage;
     if (parsed.highlightWords !== undefined) state.highlightWords = parsed.highlightWords;
     if (parsed.underlineLine !== undefined) state.underlineLine = parsed.underlineLine;
+    if (parsed.justifyText !== undefined) state.justifyText = parsed.justifyText;
     if (parsed.connectedFolder !== undefined) state.connectedFolder = parsed.connectedFolder;
     if (parsed.ollamaUrl !== undefined) state.ollamaUrl = parsed.ollamaUrl;
     if (parsed.ollamaModel !== undefined) state.ollamaModel = parsed.ollamaModel;
@@ -913,9 +1317,17 @@ async function initApp() {
   document.getElementById("btn-reader-notes").onclick = openNotesViewer;
   document.getElementById("btn-reader-settings").onclick = () => document.getElementById("reader-settings-panel").classList.toggle("hidden");
   document.getElementById("btn-chapter-drop").onclick = () => {
-    document.getElementById("chapter-dropdown").classList.toggle("hidden");
-    document.getElementById("chapter-search").value = "";
-    buildChapterDropdown();
+    const drop = document.getElementById("chapter-dropdown");
+    const isOpening = drop.classList.contains("hidden");
+    drop.classList.toggle("hidden");
+    if (isOpening) {
+      const searchEl = document.getElementById("chapter-search");
+      searchEl.value = "";
+      // Wire search handler once here, not inside buildChapterDropdown
+      searchEl.oninput = buildChapterDropdown;
+      buildChapterDropdown();
+      requestAnimationFrame(() => searchEl.focus());
+    }
   };
 
   window.addEventListener("keydown", (e) => {
@@ -1009,6 +1421,7 @@ function savePreferences() {
     themeKey: state.themeKey, customThemes: state.customThemes,
     tapToTurn: state.tapToTurn, twoPage: state.twoPage,
     highlightWords: state.highlightWords, underlineLine: state.underlineLine,
+    justifyText: state.justifyText,
     connectedFolder: state.connectedFolder,
     ollamaUrl: state.ollamaUrl, ollamaModel: state.ollamaModel,
     fontSize: state.fontSize, lineSpacing: state.lineSpacing, fontFamily: state.fontFamily
@@ -1030,8 +1443,15 @@ async function renderLibrary() {
     document.getElementById("library-count").textContent = `${displayLibrary.length} book${displayLibrary.length !== 1 ? "s" : ""}`;
   }
 
-  displayLibrary.forEach(book => {
+  let _dragSrc = null;
+  displayLibrary.forEach((book, idx) => {
     const el = createBookCard(book);
+    el.draggable = true;
+    el.addEventListener("dragstart", (e) => { _dragSrc=idx; e.dataTransfer.effectAllowed="move"; requestAnimationFrame(()=>el.classList.add("drag-ghost")); });
+    el.addEventListener("dragend", () => { el.classList.remove("drag-ghost"); grid.querySelectorAll(".drag-over").forEach(c=>c.classList.remove("drag-over")); });
+    el.addEventListener("dragover", (e) => { e.preventDefault(); if (_dragSrc!==idx){grid.querySelectorAll(".drag-over").forEach(c=>c.classList.remove("drag-over"));el.classList.add("drag-over");} });
+    el.addEventListener("dragleave", () => el.classList.remove("drag-over"));
+    el.addEventListener("drop", (e) => { e.preventDefault(); el.classList.remove("drag-over"); if (_dragSrc===null||_dragSrc===idx) return; const[m]=state.library.splice(_dragSrc,1); state.library.splice(idx,0,m); _dragSrc=null; saveLibrary(); renderLibrary(); });
     grid.appendChild(el);
   });
   renderStreakDots();
@@ -1231,14 +1651,14 @@ function showBookSummaryModal(book) {
     if (!bodyEl) return;
     try {
       let summary = "";
-      const prompt = `Write a concise 3-4 sentence summary of the book "${book.title}"${book.author ? ` by ${book.author}` : ""}. Focus on the main themes, plot, and what makes it notable. Be factual and informative.`;
+      const prompt = `In 4 sentences or fewer, summarize "${book.title}"${book.author ? ` by ${book.author}` : ""}. Cover themes, plot and significance. Reply with only the summary.`;
 
       if (state.ollamaUrl) {
         const model = state.ollamaModel || "llama3";
         const r = await fetch(`${getOllamaUrl()}/api/generate`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model, prompt, stream: false }),
+          body: JSON.stringify({ model, prompt, stream: false, keep_alive: "10m" }),
           signal: abortCtrl.signal
         });
         if (r.ok) {
@@ -1264,9 +1684,6 @@ function showBookSummaryModal(book) {
 }
 
 async function openBook(book, autoPlay = false) {
-  // FIX — slow open: switch to reader view and show a loading indicator
-  // immediately so the user sees a response at once. The heavy IndexedDB
-  // read and page-break computation happen after the browser has painted.
   state.activeBook = book;
   state.chapters = [];
   state.currentChapter = book.currentChapter || 0;
@@ -1274,18 +1691,73 @@ async function openBook(book, autoPlay = false) {
 
   switchView("reader");
   document.getElementById("reader-book-title").textContent = book.title;
-  const card = document.getElementById("reader-card");
-  card.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--textDim);font-size:14px;font-family:var(--font-ui);">Opening…</div>`;
 
-  // Now load content asynchronously — browser has already painted the view
+  // ── Cover loading screen ──────────────────────────────────────────────────
+  // Show the book's cover (or gradient fallback) with a spinner while
+  // IndexedDB loads. Fades in immediately so the user sees a response at once.
+  const card = document.getElementById("reader-card");
+  const [c1, c2] = generateCoverColor(book.title);
+  const coverHTML = book.coverDataUrl
+    ? `<img src="${book.coverDataUrl}" style="max-width:220px;max-height:300px;
+         object-fit:contain;border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,0.35);
+         display:block;">`
+    : `<div style="width:160px;height:220px;border-radius:8px;
+         background:linear-gradient(135deg,${c1},${c2});
+         box-shadow:0 8px 40px rgba(0,0,0,0.3);display:flex;align-items:flex-end;
+         padding:14px;box-sizing:border-box;">
+         <span style="color:rgba(255,255,255,0.9);font-size:13px;font-weight:700;
+           font-family:Georgia,serif;line-height:1.3;">${book.title}</span>
+       </div>`;
+
+  const loadScreen = document.createElement("div");
+  loadScreen.style.cssText = `display:flex;flex-direction:column;align-items:center;
+    justify-content:center;height:100%;gap:24px;opacity:0;
+    transition:opacity 0.3s ease;background:var(--readerCard);`;
+  loadScreen.innerHTML = `
+    ${coverHTML}
+    <div style="display:flex;align-items:center;gap:8px;color:var(--textDim);font-size:12px;font-family:var(--font-ui);">
+      <div class="spinner"></div>
+      <span>Loading…</span>
+    </div>`;
+  card.innerHTML = "";
+  card.appendChild(loadScreen);
+
+  // Wait for two animation frames — the first commits the DOM mutation,
+  // the second guarantees the browser has actually painted the opacity:0 state.
+  // Only after that do we set opacity:1 (triggering the CSS transition) and
+  // start the IndexedDB load. Without this, the load completes so quickly that
+  // the browser batches both opacity changes into a single frame and the
+  // transition never renders.
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  loadScreen.style.opacity = "1";
+
+  // Record when the cover became visible so we can enforce a minimum display time
+  const coverVisibleAt = Date.now();
+
+  // Load content — browser has already painted the cover screen
   const chapters = await loadBookContent(book.id);
 
   if (!chapters) {
-    card.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--textDim);font-size:14px;">Could not load book content.</div>`;
+    card.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;
+      height:100%;color:var(--textDim);font-size:14px;">Could not load book content.</div>`;
     return;
   }
 
-  state.chapters = chapters;
+  // ── Inject a cover page as the first chapter ──────────────────────────────
+  // This gives readers the tactile feel of opening a physical book.
+  // We only inject it on first open (currentChapter === 0 and currentPage === 0)
+  // so returning readers land back at their reading position.
+  const coverChapter = {
+    title: "_cover_",
+    blocks: [{ type: "cover", text: "", src: book.coverDataUrl || "" }]
+  };
+  state.chapters = [coverChapter, ...chapters];
+
+  // If this is a returning reader, offset chapter index by 1 to account for
+  // the injected cover chapter
+  if (book.currentChapter > 0 || book.currentPage > 0) {
+    state.currentChapter = (book.currentChapter || 0) + 1;
+  }
 
   const audSrc = await window.storage.get(`audio_${book.id}`);
   state.audioSrc = audSrc ? audSrc.value : null;
@@ -1297,8 +1769,44 @@ async function openBook(book, autoPlay = false) {
     player.play(); state.isPlaying = true; updateAudioBtn();
   }
 
+  // Enforce a minimum 1.5 s of cover screen visibility so the user always
+  // sees it, even on fast devices where loadBookContent is near-instant.
+  const elapsed = Date.now() - coverVisibleAt;
+  const MIN_COVER_MS = 1500;
+  if (elapsed < MIN_COVER_MS) {
+    await new Promise(r => setTimeout(r, MIN_COVER_MS - elapsed));
+  }
+
+  // Fade out the loading screen, then render
+  loadScreen.style.opacity = "0";
+  await new Promise(r => setTimeout(r, 300));
+
+  // ── Compute all chapter page breaks ───────────────────────────────────────
+  // We compute every chapter's page breaks NOW, while the loading screen is
+  // still visible. This is the same approach Kindle and Apple Books use:
+  // reflow everything upfront so the reader always opens with exact page
+  // counts — no estimation, no "~", no jumps as background work completes.
+  //
+  // A typical novel (~300 chapters) takes 100–300ms. We already have a
+  // 1.5 s loading screen, so this is invisible to the user.
+  _chapterBreaksCache = {};
+  _lazyComputeGen++;
+  document.getElementById("reader-card").classList.toggle("two-page", state.twoPage);
+  for (let i = 0; i < state.chapters.length; i++) {
+    _chapterBreaksCache[i] = computePageBreaks(i);
+  }
+
   renderReader();
   startReadingSession(book.id);
+  warmUpOllama();
+}
+
+function warmUpOllama() {
+  if (!state.ollamaUrl) return;
+  fetch(`${getOllamaUrl()}/api/generate`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: state.ollamaModel || "llama3", prompt: "", keep_alive: "10m", stream: false })
+  }).catch(() => {});
 }
 
 function exitReader() {
@@ -1306,6 +1814,8 @@ function exitReader() {
   // Clean up paginator
   _pageBreaks = [];
   _currentRenderedChapter = -1;
+  _chapterBreaksCache = {};
+  _lazyComputeGen++;
   if (_pageStyleEl) { _pageStyleEl.remove(); _pageStyleEl = null; }
 
   state.activeBook = null;
@@ -1321,6 +1831,7 @@ function renderReader() {
   buildChapterDropdown();
   buildReaderSettings();
   applyAccessibilityClasses();
+  document.getElementById("reader-card").classList.toggle("two-page", state.twoPage);
   ensurePageStyle();
 
   // FIX — slow open: show the first page immediately without computing ALL
@@ -1344,18 +1855,56 @@ function buildChapterDropdown() {
   const q = document.getElementById("chapter-search")?.value.trim().toLowerCase() || "";
 
   list.innerHTML = "";
+  const realChapCount = chaps.filter(c => c.title !== "_cover_").length;
   document.getElementById("drop-book-title").textContent = state.activeBook?.title || "";
-  document.getElementById("drop-book-stats").textContent = `${chaps.length} chapter(s)`;
+  document.getElementById("drop-book-stats").textContent = `${realChapCount} chapter(s)`;
+
+  // Build a global page number map from the breaks cache.
+  // For chapters not yet computed, we leave page start as "?" so the user
+  // always sees real numbers once computed rather than unreliable estimates.
+  let globalPageStart = 0;
+  const chapterStartPages = []; // chapterStartPages[i] = global page number where chapter i starts
+  for (let i = 0; i < chaps.length; i++) {
+    chapterStartPages[i] = globalPageStart;
+    const cached = _chapterBreaksCache[i];
+    if (cached) {
+      globalPageStart += cached.length;
+    } else {
+      // Mark remaining as unknown — will update once computed
+      for (let j = i; j < chaps.length; j++) chapterStartPages[j] = null;
+      break;
+    }
+  }
 
   const pageNumMatch = q.match(/^p(?:age)?\s*(\d+)$|^(\d+)$/);
   const isPureNumber = pageNumMatch && /^\d+$/.test(q);
+  const queryNum = isPureNumber ? parseInt(q, 10) : null;
 
   chaps.forEach((ch, i) => {
+    if (i === 0 && ch.title === "_cover_") return;
+
+    // Text search: filter by title substring
     if (q && !isPureNumber && !ch.title.toLowerCase().includes(q)) return;
 
+    // Number search: show chapters whose 1-based index matches OR whose title
+    // contains the number string — always show all for empty query
+    if (isPureNumber && queryNum !== null) {
+      const chapterNum = i; // cover=0, first real chapter=1
+      const titleMatch = ch.title.toLowerCase().includes(q);
+      if (chapterNum !== queryNum && !titleMatch) return;
+    }
+
+    const displayNum = i;
+    const pgStart = chapterStartPages[i];
+    const pgLabel = pgStart != null ? `p. ${pgStart + 1}` : "";
     const el = document.createElement("div");
     el.className = `chapter-item ${i === state.currentChapter ? "active" : ""}`;
-    el.innerHTML = `<div class="ch-flex"><div class="ch-title">${ch.title}</div></div><div class="ch-sub">Chapter ${i + 1}</div>`;
+    el.innerHTML = `
+      <div class="ch-flex">
+        <div class="ch-title">${ch.title}</div>
+        ${pgLabel ? `<div style="font-size:11px;color:var(--textDim);margin-left:8px;flex-shrink:0;">${pgLabel}</div>` : ""}
+      </div>
+      <div class="ch-sub">Chapter ${displayNum}</div>`;
     el.onclick = () => {
       jumpToChapter(i, 0);
       document.getElementById("chapter-dropdown").classList.add("hidden");
@@ -1363,25 +1912,27 @@ function buildChapterDropdown() {
     list.appendChild(el);
   });
 
-  // Page jump
+  // Page jump — shown for any numeric query alongside chapter results
   if (pageNumMatch) {
     const pageNum = parseInt(pageNumMatch[1] || pageNumMatch[2], 10) - 1;
-    const total = estimateTotalPages();
-    if (pageNum >= 0 && pageNum < total) {
+    const knownTotal = chapterStartPages.at(-1) != null
+      ? (chapterStartPages.at(-1) || 0) + (_chapterBreaksCache[chaps.length - 1]?.length || 1)
+      : estimateTotalPages();
+    if (pageNum >= 0 && pageNum < knownTotal) {
       const sep = document.createElement("div");
       sep.style.cssText = "height:1px;background:var(--borderSubtle);margin:4px 12px;";
       list.appendChild(sep);
       const el = document.createElement("div");
-      el.className = "chapter-item chapter-item-page-jump";
-      el.innerHTML = `<div class="ch-flex"><div class="ch-title" style="color:var(--accent);">Jump to page ${pageNum + 1}</div></div><div class="ch-sub">of ~${total} estimated pages</div>`;
+      el.className = "chapter-item";
+      el.innerHTML = `
+        <div class="ch-flex">
+          <div class="ch-title" style="color:var(--accent);">Go to page ${pageNum + 1}</div>
+        </div>
+        <div class="ch-sub">of ${knownTotal} pages total</div>`;
       el.onclick = () => {
-        // Resolve page number to chapter + page via estimated page counts
         let remaining = pageNum;
-        const measured  = _pageBreaks.length || 1;
-        const curBlocks = state.chapters[state.currentChapter]?.blocks.length || 1;
-        for (let i = 0; i < state.chapters.length; i++) {
-          const ratio = (state.chapters[i]?.blocks.length || 1) / curBlocks;
-          const chPgs = i === state.currentChapter ? measured : Math.max(1, Math.round(measured * ratio));
+        for (let i = 0; i < chaps.length; i++) {
+          const chPgs = _chapterBreaksCache[i]?.length || 1;
           if (remaining < chPgs) { jumpToChapter(i, remaining); break; }
           remaining -= chPgs;
         }
@@ -1391,7 +1942,20 @@ function buildChapterDropdown() {
     }
   }
 
-  document.getElementById("chapter-search").oninput = buildChapterDropdown;
+  // Note: chapter-search oninput is wired once at dropdown open time, not here.
+}
+
+// Recompute all chapter page breaks synchronously.
+// Called after font size / line spacing / justify / two-page changes.
+// Takes ~100–300ms for a full novel — fast enough to do inline after a
+// slider release, matching how Kindle handles font size changes.
+function recomputeAllChapterBreaks() {
+  _chapterBreaksCache = {};
+  _lazyComputeGen++;
+  const chaps = state.chapters || [];
+  for (let i = 0; i < chaps.length; i++) {
+    _chapterBreaksCache[i] = computePageBreaks(i);
+  }
 }
 
 // ============================================================================
@@ -1403,6 +1967,7 @@ function buildReaderSettings() {
   const twoOn = state.twoPage;
   const hlOn = state.highlightWords;
   const ulOn = state.underlineLine;
+  const justOn = state.justifyText !== false;
 
   panel.innerHTML = `
     <div class="section-label">THEME</div>
@@ -1443,6 +2008,10 @@ function buildReaderSettings() {
         <div style="font-size:12px; font-weight:500;">Tap margins to turn</div>
         <div id="tap-toggle" class="toggle-track ${tapOn?"on":"off"}"><div class="toggle-thumb"></div></div>
       </label>
+      <label style="display:flex; align-items:center; justify-content:space-between; cursor:pointer; margin-bottom:10px;">
+        <div style="font-size:12px; font-weight:500;">Justify text</div>
+        <div id="justify-toggle" class="toggle-track ${justOn?"on":"off"}"><div class="toggle-thumb"></div></div>
+      </label>
       <label style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;">
         <div style="font-size:12px; font-weight:500;">Two-page spread</div>
         <div id="two-page-toggle" class="toggle-track ${twoOn?"on":"off"}"><div class="toggle-thumb"></div></div>
@@ -1474,14 +2043,30 @@ function buildReaderSettings() {
   document.getElementById("fs-slider").oninput = (e) => {
     state.fontSize = +e.target.value;
     document.getElementById("fs-val").textContent = `${state.fontSize}px`;
-    rebuildReaderForSettings();
-    savePreferences();
+    ensurePageStyle(); _currentRenderedChapter = -1;
+    renderPage(state.currentChapter, state.currentPage, false);
+  };
+  document.getElementById("fs-slider").onchange = (e) => {
+    state.fontSize = +e.target.value;
+    const anchor = (_pageBreaks||[])[state.currentPage]??0;
+    ensurePageStyle(); recomputeAllChapterBreaks(); _currentRenderedChapter = -1; buildChapterDropdown();
+    const nb = _chapterBreaksCache[state.currentChapter]||[0];
+    let pg=0; for (let i=nb.length-1;i>=0;i--) { if (nb[i]<=anchor){pg=i;break;} }
+    state.currentPage=pg; renderPage(state.currentChapter,pg,false); updateReaderNav(); savePreferences();
   };
   document.getElementById("ls-slider").oninput = (e) => {
     state.lineSpacing = +e.target.value;
     document.getElementById("ls-val").textContent = state.lineSpacing;
-    rebuildReaderForSettings();
-    savePreferences();
+    ensurePageStyle(); _currentRenderedChapter = -1;
+    renderPage(state.currentChapter, state.currentPage, false);
+  };
+  document.getElementById("ls-slider").onchange = (e) => {
+    state.lineSpacing = +e.target.value;
+    const anchor = (_pageBreaks||[])[state.currentPage]??0;
+    ensurePageStyle(); recomputeAllChapterBreaks(); _currentRenderedChapter = -1; buildChapterDropdown();
+    const nb = _chapterBreaksCache[state.currentChapter]||[0];
+    let pg=0; for (let i=nb.length-1;i>=0;i--) { if (nb[i]<=anchor){pg=i;break;} }
+    state.currentPage=pg; renderPage(state.currentChapter,pg,false); updateReaderNav(); savePreferences();
   };
   document.getElementById("font-select").onchange = (e) => {
     state.fontFamily = e.target.value;
@@ -1493,14 +2078,25 @@ function buildReaderSettings() {
     state.tapToTurn = !state.tapToTurn;
     buildReaderSettings(); updateReaderNav(); savePreferences();
   };
+  document.getElementById("justify-toggle").onclick = () => {
+    state.justifyText = !state.justifyText;
+    const tog = document.getElementById("justify-toggle");
+    if (tog) { tog.classList.toggle("on", state.justifyText!==false); tog.classList.toggle("off", state.justifyText===false); }
+    savePreferences();
+    _currentRenderedChapter = -1;
+    setTimeout(() => rebuildReaderForSettings(), 220);
+  };
   document.getElementById("two-page-toggle").onclick = () => {
     state.twoPage = !state.twoPage;
     document.getElementById("reader-card").classList.toggle("two-page", state.twoPage);
-    buildReaderSettings();
     savePreferences();
+    // Recompute page breaks for the new column width, then re-render.
+    ensurePageStyle();
     _currentRenderedChapter = -1;
     renderPage(state.currentChapter, state.currentPage, false);
     updateReaderNav();
+    // Rebuild settings panel in background after paint so the toggle label updates
+    requestAnimationFrame(() => buildReaderSettings());
   };
   document.getElementById("hl-toggle").onclick = () => {
     state.highlightWords = !state.highlightWords;
@@ -1521,6 +2117,7 @@ function buildReaderSettings() {
 // ============================================================================
 let _selToolbarEl = null;
 let _notePanelEl = null;
+let _notesViewerEl = null;
 let _summaryPopupEl = null;
 let _summaryAbortCtrl = null;
 let _selectionTimer = null;
@@ -1532,6 +2129,9 @@ function removeSelToolbar() {
 }
 function removeNotePanel() {
   if (_notePanelEl) { _notePanelEl.remove(); _notePanelEl = null; }
+}
+function removeNotesViewer() {
+  if (_notesViewerEl) { _notesViewerEl.remove(); _notesViewerEl = null; }
 }
 function removeSummaryPopup() {
   if (_summaryAbortCtrl) { _summaryAbortCtrl.abort(); _summaryAbortCtrl = null; }
@@ -1663,7 +2263,8 @@ async function showSummaryPopup(text, anchorRect) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model,
-          prompt: `Summarize this passage from a book in 2–3 concise sentences:\n\n"${text}"\n\nSummary:`,
+          prompt: `Summarize this passage in 4 sentences or fewer. Reply with only the summary: "${text.split(" ").slice(0,200).join(" ")}"`,
+          keep_alive: "10m",
           stream: false
         }),
         signal: abortCtrl.signal
@@ -1740,6 +2341,8 @@ function showAddNotePanel(selectedText, anchorRect) {
     removeNotePanel();
     showToast(true, "Note saved");
     setTimeout(hideToast, 1200);
+    const _nc = document.getElementById("reader-card");
+    if (_nc) addBookmarkIcons(_nc);
   };
   setTimeout(() => panel.querySelector(".note-textarea")?.focus(), 60);
 }
@@ -1846,41 +2449,46 @@ function showWordPopup(word, anchorEl) {
   };
 }
 
-// Word click: attach to the strip's text nodes after mount
-function attachWordClickListeners(container) {
-  // Walk text nodes and wrap individual words on click — we don't pre-wrap
-  // (pre-wrapping every word would bloat the DOM and interact poorly with columns).
-  // Instead, use a click handler that resolves the clicked word from the event.
-  container.addEventListener("click", handleWordClick);
-}
-
 function handleWordClick(e) {
-  if (!state.highlightWords && !state.underlineLine) return;
   const target = e.target;
   if (target.tagName !== "SPAN" || !target.classList.contains("col-word")) return;
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed && sel.toString().trim().length > 1) return;
   const word = target.dataset.word;
   if (word && word.length >= 2) showWordPopup(word, target);
+}
+
+function handleWordMouseover(e) {
+  if (!state.underlineLine) return;
+  const target = e.target;
+  if (target.tagName !== "SPAN" || !target.classList.contains("col-word")) return;
+  const page = target.closest(".page-content");
+  if (!page) return;
+  const targetTop = target.getBoundingClientRect().top;
+  page.querySelectorAll(".col-word.same-line").forEach(s => s.classList.remove("same-line"));
+  page.querySelectorAll(".col-word").forEach(s => {
+    if (Math.abs(s.getBoundingClientRect().top - targetTop) < 4) s.classList.add("same-line");
+  });
 }
 
 // Bookmark icons for notes on current chapter/page
 function addBookmarkIcons(card) {
   if (!state.activeBook || !state.notes) return;
+  // Clear all existing markers first (handles deletions + re-renders)
+  card.querySelectorAll(".note-marked-para").forEach(p => {
+    p.classList.remove("note-marked-para");
+    p.removeAttribute("title");
+  });
   const notes = state.notes[state.activeBook.id] || [];
   const pageNotes = notes.filter(n => n.chapter === state.currentChapter);
   if (pageNotes.length === 0) return;
-
   const paras = card.querySelectorAll("p");
   pageNotes.forEach(note => {
     const quote = note.quote.slice(0, 40).toLowerCase();
     for (const para of paras) {
       if (para.textContent.toLowerCase().includes(quote)) {
-        para.style.position = "relative";
-        para.querySelectorAll(".note-bookmark-icon").forEach(n => n.remove());
-        const icon = document.createElement("span");
-        icon.className = "note-bookmark-icon";
-        icon.title = note.text;
-        icon.innerHTML = `<svg width="10" height="14" viewBox="0 0 11 14" fill="none"><path d="M1 1h9v12l-4.5-3L1 13V1z" fill="var(--accent)" stroke="var(--accent)" stroke-width="1" stroke-linejoin="round"/></svg>`;
-        para.insertBefore(icon, para.firstChild);
+        para.classList.add("note-marked-para");
+        para.title = note.text;
         break;
       }
     }
@@ -2442,7 +3050,9 @@ function renderProfile() {
   const totalMinutes = Object.values(state.readingLog).reduce((a, b) => a + b, 0);
   const avgDaily = Object.keys(state.readingLog).length > 0
     ? totalMinutes / Object.keys(state.readingLog).length : 0;
-  const totalBooks = state.library.length;
+  const todayMins = Math.round((state.readingLog[todayKey()] || 0) +
+    // Add the in-progress session so the counter updates in real time
+    (state.sessionStart ? (Date.now() - state.sessionStart) / 60000 : 0));
   const booksFinished = state.library.filter(b => (b.currentChapter || 0) >= (b.totalChapters || 1) - 1).length;
 
   const heatmapDays = [];
@@ -2471,8 +3081,8 @@ function renderProfile() {
         <div class="profile-stat-label">Avg Min / Day</div>
       </div>
       <div class="profile-stat-card">
-        <div class="profile-stat-value">${totalBooks}</div>
-        <div class="profile-stat-label">Books</div>
+        <div class="profile-stat-value">${todayMins}</div>
+        <div class="profile-stat-label">Min Today</div>
       </div>
       <div class="profile-stat-card">
         <div class="profile-stat-value">${booksFinished}</div>
@@ -2530,11 +3140,11 @@ function renderProfile() {
 
 function openNotesViewer() {
   if (!state.activeBook) return;
-  if (_notePanelEl && document.body.contains(_notePanelEl)) { removeNotePanel(); return; }
+  if (_notesViewerEl && document.body.contains(_notesViewerEl)) { removeNotesViewer(); return; }
   const notes = (state.notes && state.notes[state.activeBook.id]) || [];
   const panel = document.createElement("div");
   panel.className = "notes-viewer-panel";
-  _notePanelEl = panel;
+  _notesViewerEl = panel;
 
   panel.innerHTML = `
     <div class="note-panel-header">
@@ -2544,23 +3154,26 @@ function openNotesViewer() {
     <div class="notes-scroll">
       ${notes.length === 0
         ? `<div style="padding:24px 16px;text-align:center;color:var(--textDim);font-size:13px;line-height:1.6;">No notes yet.<br><span style="font-size:11px;">Highlight text in the reader to add notes.</span></div>`
-        : notes.slice().reverse().map(n => `
+        : notes.slice().reverse().map(n => {
+            const chapTitle = (state.chapters && state.chapters[n.chapter ?? 0]?.title) || `Chapter ${(n.chapter ?? 0) + 1}`;
+            return `
           <div class="note-item">
+            <div class="note-item-context">${chapTitle}</div>
             <div class="note-item-quote">"${n.quote.slice(0,80)}${n.quote.length>80?"…":""}"</div>
             <div class="note-item-text">${n.text}</div>
             <div class="note-item-meta">
+              <span>${new Date(n.createdAt).toLocaleDateString()}</span>
               <div style="display:flex;gap:8px;align-items:center;">
-                <button class="note-item-jump" data-chapter="${n.chapter ?? 0}" title="Go to chapter">Ch ${(n.chapter ?? 0) + 1}</button>
-                <span>${new Date(n.createdAt).toLocaleDateString()}</span>
+                <button class="note-item-jump" data-chapter="${n.chapter ?? 0}" data-page="${n.page ?? 0}" title="Jump to passage">Go to passage</button>
+                <button class="note-item-delete" data-id="${n.id}">Delete</button>
               </div>
-              <button class="note-item-delete" data-id="${n.id}">Delete</button>
             </div>
-          </div>
-        `).join("")}
+          </div>`;
+          }).join("")}
     </div>
   `;
   document.body.appendChild(panel);
-  panel.querySelector(".note-panel-close").onclick = () => removeNotePanel();
+  panel.querySelector(".note-panel-close").onclick = () => removeNotesViewer();
   panel.querySelectorAll(".note-item-delete").forEach(btn => {
     btn.onclick = () => {
       const id = btn.dataset.id;
@@ -2568,14 +3181,19 @@ function openNotesViewer() {
         state.notes[state.activeBook.id] = state.notes[state.activeBook.id].filter(n => n.id !== id);
         window.storage.set("reader_notes", JSON.stringify(state.notes));
       }
+      // Refresh bookmark icons on the live reader card
+      const card = document.getElementById("reader-card");
+      if (card) addBookmarkIcons(card);
+      removeNotesViewer();
       openNotesViewer();
     };
   });
   panel.querySelectorAll(".note-item-jump").forEach(btn => {
     btn.onclick = () => {
       const chapterIdx = parseInt(btn.dataset.chapter, 10) || 0;
-      jumpToChapter(chapterIdx, 0);
-      removeNotePanel();
+      const pageIdx    = parseInt(btn.dataset.page, 10)    || 0;
+      removeNotesViewer();
+      jumpToChapter(chapterIdx, pageIdx);
     };
   });
 }
@@ -2593,7 +3211,8 @@ document.addEventListener("mousedown", (e) => {
   if (_audioPanelEl && !_audioPanelEl.contains(e.target) && e.target.id !== "btn-upload-audio" && !document.getElementById("btn-upload-audio")?.contains(e.target)) removeAudioPanel();
   if (_selToolbarEl && !_selToolbarEl.contains(e.target)) removeSelToolbar();
   if (_summaryPopupEl && !_summaryPopupEl.contains(e.target)) removeSummaryPopup();
-  if (_notePanelEl && !_notePanelEl.contains(e.target) && e.target.id !== "btn-reader-notes") removeNotePanel();
+  if (_notePanelEl && !_notePanelEl.contains(e.target)) removeNotePanel();
+  if (_notesViewerEl && !_notesViewerEl.contains(e.target) && e.target.id !== "btn-reader-notes") removeNotesViewer();
   if (panel && !panel.classList.contains("hidden") && !panel.contains(e.target) && e.target.id !== "btn-reader-settings") panel.classList.add("hidden");
   if (drop && !drop.classList.contains("hidden") && !drop.contains(e.target) && !document.getElementById("btn-chapter-drop")?.contains(e.target)) drop.classList.add("hidden");
   if (searchDrop && !searchDrop.classList.contains("hidden") && !searchDrop.contains(e.target) && !document.getElementById("library-search")?.contains(e.target)) closeSearchDropdown();

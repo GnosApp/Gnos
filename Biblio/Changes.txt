@@ -1,24 +1,23 @@
 Fix all Bugs first before adding new features, polish matters
 Bugs and fixes:
-- Clicking text does not bring up the define and translate options.
-- Hightlight words on hover toggle does not currently work, same thing with the underline line on hover.
-- Re-aligning the pages until next chapter text to be next to the percentage that is displayed.
-- Ai usage for summaries takes too long, shorten the length it takes to load a summary by making the prompt as small as possible universally, Lowering the token limit and temperature and having a lower top_p if that is best practice.
-- Notes are still not working as intended.
+
+Secondary:
+
 
 New Features:
-- Allow for boks to be moved around within the library tab on a grid
+
 
 
 
 
 Maybe add these options later (More complex):
-- Custom "Libraries" so that users can organize their books better either by genre or by tags or other custom options.
-- Porting over books from other apps.
-- Log-in and authentication.
-- Syncing audiobook progress to the pages of the book. 
-- TTS integration for the text that can begin from specifc words when clicked on.
+- Custom "Libraries" so that users can organize their books better either by genre or by tags or other custom options. (Convinience feature, not sure if it's necessary)
+- Porting over books from other apps. (Might not be possible)
+- Log-in and authentication. (Firebase or Supabase)
+Complex:
+- Syncing audiobook progress to the pages of the book. (Possibly the hardest version)
+- TTS integration for the text that can begin from specifc words when clicked on. ()
 
 
 For porting to tauri:
-Help me get through the process of formatting this to work with Tauri after my fixes have been made
+Help me get through the process of formatting this to work with Tauri. To allow for the app to be deployed on mac, linux, windows, and ios apps.
