@@ -326,7 +326,7 @@ button { font-family: inherit; }
 .audio-album-overlay-title {
   font-size: 11px; font-weight: 700; color: #fff;
   font-family: var(--font-serif); line-height: 1.25;
-  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical;
   text-shadow: 0 1px 4px rgba(0,0,0,0.6);
 }
 .audio-album-overlay-artist {
@@ -978,7 +978,7 @@ mark.reader-note-highlight {
 /* Page indicator inline input — hide spinner arrows */
 #page-indicator input[type=number]::-webkit-inner-spin-button,
 #page-indicator input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-#page-indicator input[type=number] { -moz-appearance: textfield; }
+#page-indicator input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 
 /* Chapter page-jump item special style */
 .chapter-item-page-jump { background: rgba(56,139,253,0.04); }
@@ -1139,7 +1139,7 @@ mark.reader-note-highlight {
   font-size: 9px; color: rgba(255,255,255,0.5);
   margin-top: 6px; line-height: 1.4;
   overflow: hidden; display: -webkit-box;
-  -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical;
 }
 
 /* Decorative ruled lines at bottom */
@@ -1219,11 +1219,13 @@ mark.reader-note-highlight {
 
 /* Title bar */
 
-/* ── Notebook search bar ──────────────────────────────────────────────────── */
+/* ── Notebook search bar — exact match to .search-bar ───────────────────────── */
 .nb-search-bar {
-  display: flex; align-items: center; gap: 6px;
-  background: var(--surfaceAlt); border: 1px solid var(--border);
-  border-radius: 8px; padding: 5px 10px;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--surfaceAlt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px;
   width: 100%; flex: 1; position: relative;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
@@ -1234,9 +1236,11 @@ mark.reader-note-highlight {
   color: var(--text); font-size: 13px; font-family: var(--font-ui);
   flex: 1; min-width: 0;
 }
-#nb-search-input::placeholder { color: var(--textDim); opacity: 0.6; }
+#nb-search-input::placeholder { color: var(--textMuted); }
 .nb-search-status {
-  font-size: 11px; color: var(--textDim); white-space: nowrap; flex-shrink: 0;
+  font-size: 10px; color: var(--textDisabled); white-space: nowrap; flex-shrink: 0;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 5px;
 }
 .nb-search-nav { display: flex; gap: 2px; }
 .nb-search-btn {
@@ -1248,22 +1252,24 @@ mark.reader-note-highlight {
 .nb-search-btn:hover { background: var(--hover); color: var(--text); }
 .nb-search-close-btn { font-size: 16px; opacity: 0.6; }
 
-/* Search result dropdown in notebook — positioned under the wrapper */
+/* Search result dropdown — matches library .search-dropdown exactly */
 .nb-search-results {
   position: absolute; top: calc(100% + 6px); left: 0; right: 0;
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 10px; z-index: 400; overflow: hidden;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.45);
-  max-height: 320px; overflow-y: auto;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+  max-height: 360px; overflow-y: auto;
 }
 .nb-search-results.hidden { display: none; }
 .nb-search-result-item {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 9px 14px; cursor: pointer; gap: 10px;
-  transition: background 0.1s;
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; cursor: pointer;
+  transition: background 0.12s; border: none; background: none;
+  color: var(--text); width: 100%; text-align: left;
 }
-.nb-search-result-item:hover { background: var(--hover); }
-.nb-sr-label { font-size: 13px; font-weight: 500; color: var(--text); }
+.nb-search-result-item:hover, .nb-search-result-item.hover { background: var(--hover); }
+.nb-sr-icon { font-size: 14px; flex-shrink: 0; opacity: 0.7; }
+.nb-sr-label { font-size: 13px; font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nb-sr-sub { font-size: 11px; color: var(--textDim); flex-shrink: 0; }
 
 /* Find-in-page highlights */
@@ -1574,19 +1580,21 @@ mark.nb-find-mark-active {
   caret-color: var(--accent);
   min-height: 1.75em;
   padding: 1px 0;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 .nb-block:hover { background: rgba(255,255,255,0.02); border-radius: 3px; }
 /* No per-block placeholder — only the editor container shows one */
 
-/* Block in raw edit mode (focused) — keep same font, just light bg */
+/* Block in raw edit mode (focused) — no indent, subtle bg */
 .nb-block.nb-raw {
   font-family: var(--font-ui, system-ui, sans-serif);
   font-size: 15px;
   background: rgba(56,139,253,0.04);
   border-radius: 4px;
-  padding: 2px 6px;
+  padding: 2px 0;   /* ← no left indent on the active line */
   color: var(--text);
+  text-indent: 0;
 }
 
 /* Heading sizes in raw edit mode via data-btype */
@@ -2144,4 +2152,135 @@ mark.nb-find-mark-active {
   .ap-sidebar { display: none; }
   .ap-cover { width: 160px; height: 160px; }
   .ap-track-title { font-size: 18px; }
+}
+/* AudiobookCard uses book-card-container root — wire hover for audio cover */
+.book-card-container:hover .audio-album-cover {
+  transform: translateY(-6px) scale(1.02);
+  box-shadow: 5px 14px 30px rgba(0,0,0,0.5);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   Gnos Sidebar — Notion/Obsidian-style slide-in panel
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* Backdrop */
+.gnos-sidebar-backdrop {
+  position: fixed; inset: 0; z-index: 1199;
+  background: rgba(0,0,0,0);
+  pointer-events: none;
+  transition: background 0.22s ease;
+}
+.gnos-sidebar-backdrop.open {
+  background: rgba(0,0,0,0.35);
+  pointer-events: all;
+}
+
+/* Panel */
+.gnos-sidebar {
+  position: fixed; top: 0; left: 0; bottom: 0;
+  width: 240px;
+  background: var(--headerBg, var(--surface));
+  border-right: 1px solid var(--border);
+  z-index: 1200;
+  display: flex; flex-direction: column;
+  transform: translateX(-100%);
+  transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: none;
+  overflow: hidden;
+}
+.gnos-sidebar.open {
+  transform: translateX(0);
+  box-shadow: 4px 0 32px rgba(0,0,0,0.28);
+}
+
+/* Header */
+.gnos-sidebar-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 14px;
+  height: 50px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.gnos-sidebar-logo {
+  font-size: 16px; font-weight: 800;
+  color: var(--text); letter-spacing: -0.5px;
+  font-family: var(--font-serif, Georgia, serif);
+  user-select: none;
+}
+.gnos-sidebar-close {
+  width: 26px; height: 26px; border-radius: 6px;
+  background: none; border: none; cursor: pointer;
+  color: var(--textDim); display: flex; align-items: center; justify-content: center;
+  transition: background 0.12s, color 0.12s;
+}
+.gnos-sidebar-close:hover { background: var(--hover); color: var(--text); }
+
+/* Sections */
+.gnos-sidebar-section { padding: 8px 0; }
+.gnos-sidebar-section-label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--textDim);
+  padding: 4px 16px 6px; user-select: none;
+  font-family: var(--font-ui, system-ui);
+}
+.gnos-sidebar-divider {
+  height: 1px; background: var(--border);
+  margin: 4px 0;
+}
+
+/* Nav items */
+.gnos-sidebar-item {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 7px 12px 7px 14px;
+  background: none; border: none; cursor: pointer;
+  color: var(--textMuted); text-align: left; border-radius: 0;
+  font-size: 13px; font-family: var(--font-ui, system-ui);
+  font-weight: 500; line-height: 1;
+  transition: background 0.1s, color 0.1s;
+  position: relative;
+}
+.gnos-sidebar-item:hover {
+  background: var(--hover); color: var(--text);
+}
+.gnos-sidebar-item.active {
+  background: rgba(56,139,253,0.1); color: var(--accent);
+  font-weight: 600;
+}
+.gnos-sidebar-item-icon {
+  display: flex; align-items: center; justify-content: center;
+  width: 20px; flex-shrink: 0; opacity: 0.7;
+}
+.gnos-sidebar-item.active .gnos-sidebar-item-icon { opacity: 1; }
+.gnos-sidebar-item-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gnos-sidebar-item-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); flex-shrink: 0;
+}
+
+/* ── Sidebar toggle button (used in all view headers) ─────────────────────── */
+.gnos-sidebar-toggle {
+  width: 32px; height: 32px; border-radius: 7px;
+  background: none; border: none; cursor: pointer;
+  color: var(--textDim); display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; transition: background 0.12s, color 0.12s;
+}
+.gnos-sidebar-toggle:hover { background: var(--hover); color: var(--text); }
+
+/* ── Library header: logo area replacing the old filter dropdown ──────────── */
+.lib-logo-area {
+  display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+}
+.lib-gnos-logo {
+  font-size: 16px; font-weight: 800;
+  color: var(--text); letter-spacing: -0.5px;
+  font-family: var(--font-serif, Georgia, serif);
+  user-select: none; padding: 0 2px;
+}
+
+/* ── Reader / Notebook header: logo area ─────────────────────────────────── */
+.reader-header-logo {
+  display: flex; align-items: center; gap: 2px; flex-shrink: 0;
+}
+.nb-header-logo-area {
+  display: flex; align-items: center; gap: 2px; flex-shrink: 0;
 }

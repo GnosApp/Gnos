@@ -746,8 +746,10 @@ function renderPage(chapterIdx, pageIdx, animate) {
   addBookmarkIcons(card);
   card.removeEventListener("click", handleWordClick);
   card.removeEventListener("mouseover", handleWordMouseover);
+  card.removeEventListener("contextmenu", handleWordRightClick);
   card.addEventListener("click", handleWordClick);
   card.addEventListener("mouseover", handleWordMouseover);
+  card.addEventListener("contextmenu", handleWordRightClick);
 }
 
 // ─── Navigation ───────────────────────────────────────────────────────────
@@ -1386,6 +1388,13 @@ async function initApp() {
     document.getElementById("lib-context-menu").classList.add("hidden");
     document.getElementById("audio-input").click();
   };
+  const ctxFolderBtn = document.getElementById("lib-ctx-add-audio-folder");
+  if (ctxFolderBtn) {
+    ctxFolderBtn.onclick = () => {
+      document.getElementById("lib-context-menu").classList.add("hidden");
+      document.getElementById("audiobook-folder-input").click();
+    };
+  }
   document.getElementById("btn-settings").onclick = () => openModal("settings-modal");
   document.getElementById("btn-close-settings").onclick = () => closeModal("settings-modal");
   document.getElementById("btn-exit-reader").onclick = exitReader;
@@ -1437,7 +1446,6 @@ async function initApp() {
   document.getElementById("tap-zone-prev").onclick = prevPage;
   document.getElementById("tap-zone-next").onclick = nextPage;
   document.getElementById("btn-toggle-audio").onclick = toggleAudio;
-  document.getElementById("btn-upload-audio").onclick = () => showAudioPanel();
   document.getElementById("btn-reader-notes").onclick = openNotesViewer;
   document.getElementById("btn-read-aloud").onclick = startReadAloud;
   _ttsWireBar();
@@ -1608,10 +1616,11 @@ function switchLibTab(tab) {
     p.classList.toggle("active", p.id === `tab-${tab}`);
     p.classList.toggle("hidden", p.id !== `tab-${tab}`);
   });
-  if (tab === "library")     renderLibraryAll();
-  if (tab === "notebooks")   renderNotebooks();
-  if (tab === "audiobooks")  renderAudiobooks();
-  if (tab === "collections") renderCollections();
+  if (tab === "library")     { renderLibraryAll(); }
+  if (tab === "books")       { renderLibrary(); }
+  if (tab === "notebooks")   { renderNotebooks(); }
+  if (tab === "audiobooks")  { renderAudiobooks(); }
+  if (tab === "collections") { renderCollections(); }
 }
 
 function applyTheme(key) {
@@ -1653,16 +1662,49 @@ function renderLibraryAll() {
   }
   if (empty) empty.classList.add("hidden");
 
+  let _dragSrc = null;
+  const allCards = [];
+
   // Books & audiobooks
-  books.forEach(book => {
+  books.forEach((book, idx) => {
     const el = createBookCard(book);
+    el.draggable = true;
+    el.addEventListener("dragstart", (e) => { _dragSrc = { type:'book', idx }; e.dataTransfer.effectAllowed="move"; requestAnimationFrame(()=>el.classList.add("drag-ghost")); });
+    el.addEventListener("dragend", () => { el.classList.remove("drag-ghost"); grid.querySelectorAll(".drag-over").forEach(c=>c.classList.remove("drag-over")); });
+    el.addEventListener("dragover", (e) => { e.preventDefault(); if (!_dragSrc || (_dragSrc.type==='book' && _dragSrc.idx===idx)) return; grid.querySelectorAll(".drag-over").forEach(c=>c.classList.remove("drag-over")); el.classList.add("drag-over"); });
+    el.addEventListener("dragleave", () => el.classList.remove("drag-over"));
+    el.addEventListener("drop", (e) => {
+      e.preventDefault(); el.classList.remove("drag-over");
+      if (!_dragSrc || (_dragSrc.type==='book' && _dragSrc.idx===idx)) return;
+      if (_dragSrc.type === 'book') {
+        const [m] = state.library.splice(_dragSrc.idx, 1); state.library.splice(idx, 0, m);
+        saveLibrary();
+      }
+      _dragSrc = null; renderLibraryAll(); renderLibrary();
+    });
     grid.appendChild(el);
+    allCards.push(el);
   });
 
   // Notebooks — render as book-card-style tiles
-  notebooks.forEach(nb => {
+  notebooks.forEach((nb, idx) => {
     const el = _createNotebookLibCard(nb);
+    el.draggable = true;
+    el.addEventListener("dragstart", (e) => { _dragSrc = { type:'nb', idx }; e.dataTransfer.effectAllowed="move"; requestAnimationFrame(()=>el.classList.add("drag-ghost")); });
+    el.addEventListener("dragend", () => { el.classList.remove("drag-ghost"); grid.querySelectorAll(".drag-over").forEach(c=>c.classList.remove("drag-over")); });
+    el.addEventListener("dragover", (e) => { e.preventDefault(); if (!_dragSrc || (_dragSrc.type==='nb' && _dragSrc.idx===idx)) return; grid.querySelectorAll(".drag-over").forEach(c=>c.classList.remove("drag-over")); el.classList.add("drag-over"); });
+    el.addEventListener("dragleave", () => el.classList.remove("drag-over"));
+    el.addEventListener("drop", (e) => {
+      e.preventDefault(); el.classList.remove("drag-over");
+      if (!_dragSrc || (_dragSrc.type==='nb' && _dragSrc.idx===idx)) return;
+      if (_dragSrc.type === 'nb') {
+        const [m] = state.notebooks.splice(_dragSrc.idx, 1); state.notebooks.splice(idx, 0, m);
+        saveNotebooksMeta();
+      }
+      _dragSrc = null; renderLibraryAll(); renderNotebooks();
+    });
     grid.appendChild(el);
+    allCards.push(el);
   });
 }
 
@@ -1762,31 +1804,34 @@ async function openStandaloneAudioPlayer(book) {
   _apChapCache = {};
   _apSpeed     = 1;
 
+  // Switch view first so all audio-player-view elements are in DOM
+  switchView('audio-player');
+
   // ── Titles ──────────────────────────────────────────────────────────────
-  document.getElementById('ap-track-title').textContent  = book.title  || 'Audiobook';
-  document.getElementById('ap-track-author').textContent = book.author || '';
+  const titleEl  = document.getElementById('ap-track-title');
+  const authorEl = document.getElementById('ap-track-author');
+  if (titleEl)  titleEl.textContent  = book.title  || 'Audiobook';
+  if (authorEl) authorEl.textContent = book.author || '';
 
   // ── Cover art + blurred background ──────────────────────────────────────
   const coverImg  = document.getElementById('ap-cover-img');
   const coverPh   = document.getElementById('ap-cover-placeholder');
-  const bgBlur    = document.getElementById('ap-bg-blur');
+  const bgBlur    = document.getElementById('ap-bg-blur'); // optional element
   if (book.coverDataUrl) {
-    coverImg.src = book.coverDataUrl;
-    coverImg.classList.remove('hidden');
-    coverPh.style.display = 'none';
-    bgBlur.style.backgroundImage = `url('${book.coverDataUrl}')`;
+    if (coverImg) { coverImg.src = book.coverDataUrl; coverImg.classList.remove('hidden'); }
+    if (coverPh)  coverPh.style.display = 'none';
+    if (bgBlur)   bgBlur.style.backgroundImage = `url('${book.coverDataUrl}')`;
   } else {
     const [c1, c2] = generateCoverColor(book.title || '');
-    coverImg.classList.add('hidden');
-    coverPh.style.display = '';
-    bgBlur.style.background = `linear-gradient(135deg,${c1},${c2})`;
+    if (coverImg) coverImg.classList.add('hidden');
+    if (coverPh)  coverPh.style.display = '';
+    if (bgBlur)   bgBlur.style.background = `linear-gradient(135deg,${c1},${c2})`;
   }
 
   // ── Chapter sidebar ──────────────────────────────────────────────────────
   _apRenderChapterList();
 
-  // ── Switch to view & wire once ───────────────────────────────────────────
-  switchView('audio-player');
+  // ── Wire controls once ───────────────────────────────────────────────────
   if (!_apWired) { _apWireControls(); _apWired = true; }
   await _apLoadChapter(_apChapIdx);
 }
@@ -2052,8 +2097,9 @@ async function handleAudiobookFolderUpload(e) {
       const file = audioFiles[i];
       // Update toast progress
       if (i % 3 === 0) showToast(true, `Saving track ${i + 1} / ${audioFiles.length}…`);
-      // Store as Blob for memory efficiency with large files
-      await window.storage.set(`audiochap_${id}_${i}`, file);
+      // Store as data URL (storage API only supports text/JSON)
+      const dataUrl = await readFileAsDataURL(file);
+      await window.storage.set(`audiochap_${id}_${i}`, dataUrl);
       const chapTitle = file.name
         .replace(/\.(mp3|m4b|m4a|wav|ogg|flac|aac|opus)$/i, '')
         .replace(/[_-]/g, ' ')
@@ -2140,8 +2186,40 @@ function renderAudiobooks() {
   const audioBooks = state.library.filter(b => b.hasAudio || b.type === 'audio');
   if (!audioBooks.length) { if (empty) empty.classList.remove("hidden"); return; }
   if (empty) empty.classList.add("hidden");
+
+  let _dragSrcId = null;
   audioBooks.forEach(book => {
     const card = _createAudioAlbumCard(book);
+    // Drag events on each audiobook card
+    card.addEventListener('dragstart', (e) => {
+      _dragSrcId = book.id;
+      e.dataTransfer.effectAllowed = 'move';
+      requestAnimationFrame(() => card.classList.add('drag-ghost'));
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('drag-ghost');
+      grid.querySelectorAll('.drag-over').forEach(c => c.classList.remove('drag-over'));
+    });
+    card.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (_dragSrcId !== book.id) {
+        grid.querySelectorAll('.drag-over').forEach(c => c.classList.remove('drag-over'));
+        card.classList.add('drag-over');
+      }
+    });
+    card.addEventListener('dragleave', () => card.classList.remove('drag-over'));
+    card.addEventListener('drop', (e) => {
+      e.preventDefault();
+      card.classList.remove('drag-over');
+      if (!_dragSrcId || _dragSrcId === book.id) return;
+      const srcIdx = state.library.findIndex(b => b.id === _dragSrcId);
+      const dstIdx = state.library.findIndex(b => b.id === book.id);
+      if (srcIdx === -1 || dstIdx === -1) return;
+      const [moved] = state.library.splice(srcIdx, 1);
+      state.library.splice(dstIdx, 0, moved);
+      _dragSrcId = null;
+      saveLibrary(); renderAudiobooks(); renderLibraryAll();
+    });
     grid.appendChild(card);
   });
 }
@@ -2151,23 +2229,19 @@ function _createAudioAlbumCard(book) {
   const chapCount = book.audioChapters ? book.audioChapters.length : 1;
   const el = document.createElement("div");
   el.className = "audiobook-album-card";
+  el.draggable = true;
 
   const coverInner = book.coverDataUrl
     ? `<img src="${book.coverDataUrl}" alt="${escapeHtml(book.title)}">`
-    : `<div class="audio-album-icon"><svg width="44" height="44" viewBox="0 0 24 24" fill="none"><path d="M9 18c0 1.66-1.34 3-3 3H4c-1.66 0-3-1.34-3-3v-1c0-1.66 1.34-3 3-3h2c1.66 0 3 1.34 3 3v1zM22 15c0 1.66-1.34 3-3 3h-2c-1.66 0-3-1.34-3-3v-1c0-1.66 1.34-3 3-3h2c1.66 0 3 1.34 3 3v1z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M9 19V8l13-3v10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>`;
+    : `<div class="audio-album-icon"><svg width="40" height="40" viewBox="0 0 24 24" fill="none"><path d="M9 18c0 1.66-1.34 3-3 3H4c-1.66 0-3-1.34-3-3v-1c0-1.66 1.34-3 3-3h2c1.66 0 3 1.34 3 3v1zM22 15c0 1.66-1.34 3-3 3h-2c-1.66 0-3-1.34-3-3v-1c0-1.66 1.34-3 3-3h2c1.66 0 3 1.34 3 3v1z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M9 19V8l13-3v10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>`;
 
   el.innerHTML = `
     <div class="audio-album-cover" style="--c1:${c1};--c2:${c2}">
       ${coverInner}
-      <div class="audio-album-text-overlay">
+      ${!book.coverDataUrl ? `<div class="audio-album-text-overlay">
         <div class="audio-album-overlay-title">${escapeHtml(book.title)}</div>
         ${book.author ? `<div class="audio-album-overlay-artist">${escapeHtml(book.author)}</div>` : ''}
-      </div>
-      <div class="audio-album-play-overlay">
-        <button class="audio-album-play-btn" title="Play">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><polygon points="6,4 20,12 6,20" fill="currentColor"/></svg>
-        </button>
-      </div>
+      </div>` : ''}
       <div class="audio-album-prog">
         <div class="audio-album-prog-fill" style="width:${book.currentChapter && book.totalChapters > 1 ? Math.round((book.currentChapter / (book.totalChapters - 1)) * 100) : 0}%"></div>
       </div>
@@ -2175,8 +2249,7 @@ function _createAudioAlbumCard(book) {
     <div class="book-meta">
       <div class="meta-text">
         <div class="meta-title">${escapeHtml(book.title)}</div>
-        ${book.author ? `<div class="meta-author">${escapeHtml(book.author)}</div>` : ''}
-        ${chapCount > 1 ? `<div class="meta-author">${chapCount} chapters</div>` : ''}
+        <div class="meta-author">${book.author ? escapeHtml(book.author) : (chapCount > 1 ? `${chapCount} chapters` : 'Audiobook')}</div>
       </div>
       <button class="btn-dots" title="Options">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/></svg>
@@ -2185,39 +2258,53 @@ function _createAudioAlbumCard(book) {
   `;
 
   const openPlayer = () => book.type === 'audio' ? openStandaloneAudioPlayer(book) : openBook(book, true);
-  el.querySelector('.audio-album-cover').onclick = (e) => {
-    if (e.target.closest('.audio-album-play-btn')) return;
-    openPlayer();
-  };
-  el.querySelector('.audio-album-play-btn').onclick = openPlayer;
+  el.querySelector('.audio-album-cover').onclick = openPlayer;
 
-  el.querySelector('.btn-dots').onclick = (ev) => {
+  const dotsBtn = el.querySelector('.btn-dots');
+  const showMenu = (ev) => {
     ev.stopPropagation();
     const items = [
       { label: 'Play', action: openPlayer },
-      { label: 'Delete', danger: true, action: () => {
+      { label: 'Edit Title / Author', action: () => {
+        const newTitle = prompt('Title:', book.title);
+        if (newTitle === null) return;
+        const newAuthor = prompt('Author:', book.author || '');
+        if (newAuthor === null) return;
+        book.title = newTitle.trim() || book.title;
+        book.author = newAuthor.trim();
+        saveLibrary(); renderAudiobooks(); renderLibraryAll();
+      }},
+      { label: 'Delete', danger: true, action: async () => {
         if (!confirm('Delete this audiobook?')) return;
         state.library = state.library.filter(b => b.id !== book.id);
-        window.storage.delete('audiodata_' + book.id);
+        // Delete single audio file or all chapter files
+        if (book.format === 'audiofolder' && book.audioChapters) {
+          for (let i = 0; i < book.audioChapters.length; i++) {
+            await window.storage.delete(`audiochap_${book.id}_${i}`);
+          }
+          await window.storage.delete(`audiochaps_${book.id}`);
+        } else {
+          await window.storage.delete('audiodata_' + book.id);
+        }
         saveLibrary(); renderAudiobooks(); renderLibraryAll();
       }}
     ];
     _showCardMenu(ev.clientX, ev.clientY, items);
   };
+  dotsBtn.onclick = showMenu;
 
   el.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    const items = [
-      { label: 'Play', action: openPlayer },
-      { label: 'Delete', danger: true, action: () => {
-        if (!confirm('Delete this audiobook?')) return;
-        state.library = state.library.filter(b => b.id !== book.id);
-        window.storage.delete('audiodata_' + book.id);
-        saveLibrary(); renderAudiobooks(); renderLibraryAll();
-      }}
-    ];
-    _showCardMenu(e.clientX, e.clientY, items);
+    showMenu(e);
   });
+
+  // Drag-and-drop
+  el.addEventListener('dragstart', (e) => {
+    el._dragData = book.id;
+    e.dataTransfer.effectAllowed = 'move';
+    requestAnimationFrame(() => el.classList.add('drag-ghost'));
+  });
+  el.addEventListener('dragend', () => el.classList.remove('drag-ghost'));
 
   return el;
 }
@@ -2454,6 +2541,8 @@ async function openBook(book, autoPlay = false) {
       <span>Loading…</span>
     </div>`;
   card.innerHTML = "";
+  // Force single-page during loading so the cover is never shown in two-page layout
+  card.classList.remove("two-page");
   card.appendChild(loadScreen);
 
   // Wait for two animation frames — the first commits the DOM mutation,
@@ -2723,12 +2812,18 @@ function buildReaderSettings() {
     </div>
     <div class="section-label">DISPLAY</div>
     <label style="display:block; margin-bottom:12px; font-size:12px;">
-      <div style="display:flex; justify-content:space-between; margin-bottom:5px;"><span>Font Size</span><span style="color:var(--textDim)" id="fs-val">${state.fontSize}px</span></div>
-      <input type="range" id="fs-slider" min="14" max="28" step="1" value="${state.fontSize}">
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:5px;">
+        <span style="font-size:11px; opacity:0.5; font-family:Georgia,serif; font-weight:400; line-height:1;">A</span>
+        <input type="range" id="fs-slider" min="14" max="28" step="1" value="${state.fontSize}" style="flex:1;">
+        <span style="font-size:18px; opacity:0.7; font-family:Georgia,serif; font-weight:700; line-height:1;">A</span>
+      </div>
     </label>
     <label style="display:block; margin-bottom:12px; font-size:12px;">
-      <div style="display:flex; justify-content:space-between; margin-bottom:5px;"><span>Line Spacing</span><span style="color:var(--textDim)" id="ls-val">${state.lineSpacing}</span></div>
-      <input type="range" id="ls-slider" min="1.4" max="2.4" step="0.1" value="${state.lineSpacing}">
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:5px;">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="opacity:0.5;flex-shrink:0;"><line x1="2" y1="4" x2="14" y2="4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><line x1="2" y1="12" x2="14" y2="12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        <input type="range" id="ls-slider" min="1.4" max="2.4" step="0.1" value="${state.lineSpacing}" style="flex:1;">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="opacity:0.7;flex-shrink:0;"><line x1="2" y1="2" x2="14" y2="2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><line x1="2" y1="14" x2="14" y2="14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+      </div>
     </label>
     <label style="display:block; font-size:12px;">
       <div style="margin-bottom:5px;">Font</div>
@@ -2778,7 +2873,6 @@ function buildReaderSettings() {
   // Font size: update CSS live, re-measure columns
   document.getElementById("fs-slider").oninput = (e) => {
     state.fontSize = +e.target.value;
-    document.getElementById("fs-val").textContent = `${state.fontSize}px`;
     ensurePageStyle(); _currentRenderedChapter = -1;
     renderPage(state.currentChapter, state.currentPage, false);
   };
@@ -2792,7 +2886,6 @@ function buildReaderSettings() {
   };
   document.getElementById("ls-slider").oninput = (e) => {
     state.lineSpacing = +e.target.value;
-    document.getElementById("ls-val").textContent = state.lineSpacing;
     ensurePageStyle(); _currentRenderedChapter = -1;
     renderPage(state.currentChapter, state.currentPage, false);
   };
@@ -2905,10 +2998,6 @@ function showSelectionToolbar(selectedText, range) {
   _selToolbarEl = toolbar;
 
   toolbar.innerHTML = `
-    <button class="sel-btn" id="sel-summarize">
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="1" y="3" width="14" height="2" rx="1" fill="currentColor" opacity=".7"/><rect x="1" y="7" width="10" height="2" rx="1" fill="currentColor" opacity=".9"/><rect x="1" y="11" width="7" height="2" rx="1" fill="currentColor" opacity=".6"/></svg>
-      Summarize
-    </button>
     <button class="sel-btn" id="sel-add-note">
       <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M2 2h12v10H8l-4 3V2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><line x1="5" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><line x1="5" y1="9" x2="9" y2="9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
       Note
@@ -2930,12 +3019,6 @@ function showSelectionToolbar(selectedText, range) {
   toolbar.style.left = `${left}px`;
   toolbar.style.top = `${top}px`;
 
-  toolbar.querySelector("#sel-summarize").onclick = (e) => {
-    e.stopPropagation();
-    const txt = window.getSelection()?.toString().trim() || selectedText;
-    removeSelToolbar();
-    showSummaryPopup(txt, rect);
-  };
   toolbar.querySelector("#sel-add-note").onclick = (e) => {
     e.stopPropagation();
     const txt = window.getSelection()?.toString().trim() || selectedText;
@@ -3186,10 +3269,13 @@ function showWordPopup(word, anchorEl) {
 }
 
 function handleWordClick(e) {
+  // Word click now only handles selection - popup is on right-click
+}
+
+function handleWordRightClick(e) {
   const target = e.target;
   if (target.tagName !== "SPAN" || !target.classList.contains("col-word")) return;
-  const sel = window.getSelection();
-  if (sel && !sel.isCollapsed && sel.toString().trim().length > 1) return;
+  e.preventDefault();
   const word = target.dataset.word;
   if (word && word.length >= 2) showWordPopup(word, target);
 }
@@ -4061,8 +4147,8 @@ async function _nbSave() {
       icon.classList.add('animating');
       setTimeout(() => {
         icon.classList.remove('animating');
-        setTimeout(() => icon.classList.remove('visible'), 800);
-      }, 1200);
+        setTimeout(() => icon.classList.remove('visible'), 400);
+      }, 600);
     });
   }
 }
@@ -4825,9 +4911,11 @@ function renderNotebooks() {
   grid.innerHTML = '';
   if (!state.notebooks.length) { if (empty) empty.classList.remove('hidden'); return; }
   if (empty) empty.classList.add('hidden');
-  state.notebooks.forEach(nb => {
+  let _dragSrc = null;
+  state.notebooks.forEach((nb, idx) => {
     const card = document.createElement('div');
     card.className = 'book-card-container notebook-card';
+    card.draggable = true;
     const createdStr = nb.createdAt ? new Date(nb.createdAt).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '';
     const titleShort = (nb.title || 'Untitled').slice(0, 24);
     const authorName = state.userName || '';
@@ -4881,6 +4969,11 @@ function renderNotebooks() {
         }}
       ]);
     });
+    card.addEventListener('dragstart', (e) => { _dragSrc=idx; e.dataTransfer.effectAllowed="move"; requestAnimationFrame(()=>card.classList.add("drag-ghost")); });
+    card.addEventListener('dragend', () => { card.classList.remove("drag-ghost"); grid.querySelectorAll(".drag-over").forEach(c=>c.classList.remove("drag-over")); });
+    card.addEventListener('dragover', (e) => { e.preventDefault(); if (_dragSrc!==idx){grid.querySelectorAll(".drag-over").forEach(c=>c.classList.remove("drag-over"));card.classList.add("drag-over");} });
+    card.addEventListener('dragleave', () => card.classList.remove("drag-over"));
+    card.addEventListener('drop', (e) => { e.preventDefault(); card.classList.remove("drag-over"); if (_dragSrc===null||_dragSrc===idx) return; const[m]=state.notebooks.splice(_dragSrc,1); state.notebooks.splice(idx,0,m); _dragSrc=null; saveNotebooksMeta(); renderNotebooks(); renderLibraryAll(); });
     grid.appendChild(card);
   });
 }
@@ -5096,7 +5189,22 @@ function _nbSetViewMode(mode) {
   pane.classList.toggle('nb-view-page',   mode === 'page');
   pane.classList.toggle('nb-view-scroll', mode === 'scroll');
 
-  // Ebook-style footer
+  // In page mode: overflow hidden, page clips at boundary (e-reader style)
+  // In scroll mode: natural overflow, page extends as user types
+  const page = document.getElementById('nb-page');
+  if (page) {
+    if (mode === 'page') {
+      page.style.transform = '';
+      page.style.height = '';
+      // Page clips via overflow:hidden on the pane in CSS
+    } else {
+      // Scroll mode: reset any transform from page mode
+      page.style.transform = '';
+      page.style.minHeight = '100%';
+    }
+  }
+
+  // Ebook-style footer (page mode only)
   let footer = document.getElementById('nb-page-footer');
   if (mode === 'page') {
     if (!footer) {
@@ -5110,23 +5218,17 @@ function _nbSetViewMode(mode) {
           <button id="nb-page-next" class="btn outline">Next →</button>
         </div>
         <div class="progress-track"><div id="nb-page-progress" class="progress-bar"></div></div>`;
-      // Insert after the editor pane (inside notebook-body parent)
       const body = document.getElementById('notebook-body');
-      if (body) {
-        body.parentNode.insertBefore(footer, body.nextSibling);
-      }
+      if (body) body.parentNode.insertBefore(footer, body.nextSibling);
       document.getElementById('nb-page-prev').onclick = () => _nbPageNav(-1);
       document.getElementById('nb-page-next').onclick = () => _nbPageNav(1);
     }
     footer.style.display = '';
-    // Scroll to current page (top)
-    const page = document.getElementById('nb-page');
-    if (page) page.scrollTop = 0;
+    footer.classList.add('nb-footer-visible');
     _nbUpdatePageNav();
-    // Watch for typing past bottom of page
     _nbInstallPageOverflow();
   } else {
-    if (footer) footer.style.display = 'none';
+    if (footer) { footer.style.display = 'none'; footer.classList.remove('nb-footer-visible'); }
     _nbUninstallPageOverflow();
   }
 
@@ -5140,21 +5242,25 @@ function _nbSetViewMode(mode) {
 }
 
 function _nbPageNav(dir) {
+  const pane = document.getElementById('notebook-editor-pane');
   const page = document.getElementById('nb-page');
-  if (!page) return;
-  const pageH = page.clientHeight;
+  if (!page || !pane) return;
+  const pageH = pane.clientHeight; // pane is overflow:hidden, page fills it at 100%
+  // Count virtual pages: each "page" is pageH pixels of content
   const total = Math.max(1, Math.ceil(page.scrollHeight / pageH));
   _nbPageIdx = Math.max(0, Math.min(total - 1, _nbPageIdx + dir));
-  page.scrollTo({ top: _nbPageIdx * pageH, behavior: 'smooth' });
-  setTimeout(_nbUpdatePageNav, 350);
+  // Slide the page div upward to reveal the next virtual page
+  page.style.transform = `translateY(-${_nbPageIdx * pageH}px)`;
+  page.style.transition = 'transform 0.28s cubic-bezier(0.4,0,0.2,1)';
+  setTimeout(_nbUpdatePageNav, 320);
 }
 
 function _nbUpdatePageNav() {
+  const pane = document.getElementById('notebook-editor-pane');
   const page = document.getElementById('nb-page');
-  if (!page) return;
-  const pageH = page.clientHeight || 1;
+  if (!page || !pane) return;
+  const pageH = pane.clientHeight || 1;
   const total = Math.max(1, Math.ceil(page.scrollHeight / pageH));
-  _nbPageIdx = Math.round(page.scrollTop / pageH);
   const ind  = document.getElementById('nb-page-indicator');
   const prev = document.getElementById('nb-page-prev');
   const next = document.getElementById('nb-page-next');
@@ -5171,36 +5277,45 @@ function _nbInstallPageOverflow() {
   if (!editor || _nbOverflowHandler) return;
   _nbOverflowHandler = () => {
     if (_nbViewMode !== 'page') return;
-    const page = document.getElementById('nb-page');
     const pane = document.getElementById('notebook-editor-pane');
+    const page = document.getElementById('nb-page');
     if (!page || !pane) return;
+    const pageH = pane.clientHeight;
+    const total = Math.max(1, Math.ceil(page.scrollHeight / pageH));
+
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return;
     try {
       const caretRect = sel.getRangeAt(0).getBoundingClientRect();
       const paneRect  = pane.getBoundingClientRect();
-      // If caret is below the visible area → advance to next "page"
-      if (caretRect.bottom > paneRect.bottom - 16) {
-        const pageH = page.clientHeight;
-        const total = Math.max(1, Math.ceil(page.scrollHeight / pageH));
+      // Caret is below visible area of current page
+      if (caretRect.bottom > paneRect.bottom - 8) {
         if (_nbPageIdx < total - 1) {
+          // Next page already exists (prior content), just navigate there
           _nbPageIdx++;
-          page.scrollTo({ top: _nbPageIdx * pageH, behavior: 'smooth' });
         } else {
-          // At last page; grow scrollHeight (by adding a blank block) and scroll there
+          // We're on the last page and content overflows — add a blank block
+          // to create a new page, then navigate to it
           const lastBlock = _nbBlocks[_nbBlocks.length - 1];
-          if (lastBlock && lastBlock.raw.trim() === '') return; // already blank at end
-          _nbInsertBlockAfter(_nbBlocks[_nbBlocks.length - 1]?.id, '', null);
+          if (lastBlock && lastBlock.raw.trim() !== '') {
+            _nbInsertBlockAfter(lastBlock.id, '', null);
+          }
           requestAnimationFrame(() => {
-            _nbPageIdx++;
-            page.scrollTo({ top: _nbPageIdx * page.clientHeight, behavior: 'smooth' });
+            const newTotal = Math.max(1, Math.ceil(page.scrollHeight / pageH));
+            _nbPageIdx = newTotal - 1;
+            page.style.transform = `translateY(-${_nbPageIdx * pageH}px)`;
+            page.style.transition = 'transform 0.28s cubic-bezier(0.4,0,0.2,1)';
+            setTimeout(_nbUpdatePageNav, 320);
           });
+          return;
         }
-        setTimeout(_nbUpdatePageNav, 400);
+        page.style.transform = `translateY(-${_nbPageIdx * pageH}px)`;
+        page.style.transition = 'transform 0.28s cubic-bezier(0.4,0,0.2,1)';
+        setTimeout(_nbUpdatePageNav, 320);
       }
     } catch (_) {}
   };
-  editor.addEventListener('input',  _nbOverflowHandler);
+  editor.addEventListener('input',   _nbOverflowHandler);
   editor.addEventListener('keydown', _nbOverflowHandler);
 }
 function _nbUninstallPageOverflow() {
@@ -6272,53 +6387,9 @@ async function handleStandaloneAudioUpload(e) {
   e.target.value = '';
 }
 
-// Import an audiobook folder (multiple chapter files → one entry)
-async function handleAudiobookFolderUpload(e) {
-  const files = Array.from(e.target.files || []).filter(f =>
-    /\.(mp3|m4b|m4a|wav|ogg|flac|aac|opus)$/i.test(f.name)
-  ).sort((a,b) => a.name.localeCompare(b.name, undefined, {numeric:true}));
-
-  if (!files.length) { showToast(false, 'No audio files found in folder'); return; }
-
-  const folderName = files[0].webkitRelativePath
-    ? files[0].webkitRelativePath.split('/')[0]
-    : files[0].name.replace(/\.(mp3|m4b|m4a|wav|ogg|flac|aac|opus)$/i,'');
-
-  showToast(true, `Importing "${folderName}" (${files.length} tracks)…`);
-
-  try {
-    const id = `audio_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
-    // Store each chapter's data URL
-    const chapters = [];
-    for (let i=0; i<files.length; i++) {
-      const file = files[i];
-      const url  = await readFileAsDataURL(file);
-      const chapterTitle = file.name.replace(/\.(mp3|m4b|m4a|wav|ogg|flac|aac|opus)$/i,'').replace(/[_-]/g,' ').trim();
-      chapters.push({ title: chapterTitle, url, index: i });
-      await window.storage.set(`audiochap_${id}_${i}`, url);
-    }
-    await window.storage.set(`audiochaps_${id}`, JSON.stringify(chapters.map(c => ({title:c.title, index:c.index}))));
-
-    state.library.push({
-      id, title: folderName, author: '', type: 'audio', format: 'audiofolder',
-      audioChapters: chapters.map(c => ({title:c.title, index:c.index})),
-      hasAudio: true, totalChapters: files.length,
-      currentChapter: 0, currentPage: 0,
-      addedAt: new Date().toISOString(), coverDataUrl: null
-    });
-    await saveLibrary();
-    showToast(true, `Imported "${folderName}" — ${files.length} chapters!`);
-    renderLibrary(); renderAudiobooks(); renderLibraryAll();
-  } catch(err) {
-    console.error('Folder audio import error:', err);
-    showToast(false, 'Import failed: ' + err.message);
-  }
-  hideToast();
-  e.target.value = '';
-}
-
 function updateAudioBtn() {
   const btn = document.getElementById("btn-toggle-audio");
+  if (!btn) return;
   if (state.audioSrc) {
     btn.classList.remove("hidden");
     btn.classList.toggle("playing", state.isPlaying);
