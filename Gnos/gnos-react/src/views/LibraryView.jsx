@@ -34,6 +34,12 @@ const SettingsIcon = () => (
     <path d="M8 1.5v1.2M8 13.3v1.2M1.5 8h1.2M13.3 8h1.2M3.4 3.4l.85.85M11.75 11.75l.85.85M12.6 3.4l-.85.85M4.25 11.75l-.85.85" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
   </svg>
 )
+const ProfileIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+    <circle cx="8" cy="5.5" r="2.5" stroke="currentColor" strokeWidth="1.5"/>
+    <path d="M2.5 13c0-2.485 2.462-4.5 5.5-4.5s5.5 2.015 5.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+  </svg>
+)
 
 const TABS = [
   { id: 'library',    label: 'Library' },
@@ -353,56 +359,50 @@ function SearchDropdown({ query, library, notebooks, onOpenBook, onOpenAudio, on
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NotebookCard — clean notebook cover design with ruled-lines motif
+// NotebookCard — bold title + date top, ruled lines near bottom
 // ─────────────────────────────────────────────────────────────────────────────
 function NotebookCard({ nb, onOpen, onMenu }) {
-  const color = nb.coverColor || '#1a1a2e'
-  const wc = nb.wordCount || 0
-  const wordLabel = wc > 999 ? `${(wc/1000).toFixed(1)}k words` : `${wc} words`
+  const color = nb.coverColor || '#c0392b'
+  const dateStr = nb.updatedAt || nb.createdAt
+    ? new Date(nb.updatedAt || nb.createdAt).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })
+    : ''
   return (
     <div className="book-card-container" style={{ cursor:'pointer' }}
       onClick={() => onOpen(nb)}
       onContextMenu={e => { e.preventDefault(); onMenu(e, nb) }}>
-      {/* Cover */}
-      <div style={{
-        width: '100%', aspectRatio: '2/3', borderRadius: 8,
-        background: color, position: 'relative', overflow: 'hidden',
-        boxShadow: '0 4px 20px rgba(0,0,0,0.45)',
-        display: 'flex', flexDirection: 'column',
-      }}>
-        {/* Spine accent */}
-        <div style={{ position:'absolute', left:0, top:0, bottom:0, width:6,
-          background:'rgba(0,0,0,0.25)', borderRadius:'8px 0 0 8px' }} />
-        {/* Ruled lines */}
-        <div style={{ position:'absolute', inset:0, paddingLeft:12, paddingTop:22,
-          paddingRight:8, display:'flex', flexDirection:'column', gap:10, opacity:0.18 }}>
-          {[...Array(8)].map((_,i) => (
-            <div key={i} style={{ height:1, background:'rgba(255,255,255,0.9)', borderRadius:1 }} />
-          ))}
-        </div>
-        {/* Title */}
-        <div style={{ position:'relative', padding:'12px 10px 6px 16px', marginTop:'auto' }}>
-          <div style={{ fontSize:11, fontWeight:700, color:'rgba(255,255,255,0.85)',
-            lineHeight:1.3, overflow:'hidden', display:'-webkit-box',
-            WebkitLineClamp:3, WebkitBoxOrient:'vertical', wordBreak:'break-word' }}>
+      {/* Cover — same fixed size as book covers */}
+      <div className="book-cover" style={{ background: color, padding: 0, justifyContent: 'flex-start', alignItems: 'stretch' }}>
+        {/* Left spine shadow */}
+        <div style={{ position:'absolute', left:0, top:0, bottom:0, width:8,
+          background:'rgba(0,0,0,0.18)', zIndex:1 }} />
+
+        {/* Title + date — top section */}
+        <div style={{ position:'relative', padding:'14px 12px 0 16px', flex:1, zIndex:2 }}>
+          <div style={{ fontSize:13, fontWeight:800, color:'#fff',
+            lineHeight:1.25, wordBreak:'break-word',
+            overflow:'hidden', display:'-webkit-box',
+            WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>
             {nb.title}
           </div>
+          {dateStr && (
+            <div style={{ fontSize:10, color:'rgba(255,255,255,0.6)', marginTop:7, fontWeight:400 }}>
+              {dateStr}
+            </div>
+          )}
         </div>
-        {/* Note icon badge */}
-        <div style={{ position:'absolute', top:8, right:8, opacity:0.5 }}>
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <rect x="2" y="1" width="10" height="14" rx="1.5" stroke="rgba(255,255,255,0.8)" strokeWidth="1.3"/>
-            <line x1="5" y1="5" x2="9" y2="5" stroke="rgba(255,255,255,0.8)" strokeWidth="1.1" strokeLinecap="round"/>
-            <line x1="5" y1="7.5" x2="9" y2="7.5" stroke="rgba(255,255,255,0.8)" strokeWidth="1.1" strokeLinecap="round"/>
-            <line x1="5" y1="10" x2="7.5" y2="10" stroke="rgba(255,255,255,0.8)" strokeWidth="1.1" strokeLinecap="round"/>
-          </svg>
+
+        {/* Ruled lines — bottom area */}
+        <div style={{ position:'relative', padding:'0 12px 16px 16px', display:'flex', flexDirection:'column', gap:8, zIndex:2 }}>
+          {[...Array(2)].map((_,i) => (
+            <div key={i} style={{ height:1, background:'rgba(255,255,255,0.32)', borderRadius:1 }} />
+          ))}
         </div>
       </div>
       {/* Meta */}
       <div className="book-meta">
         <div className="meta-text">
           <div className="meta-title">{nb.title}</div>
-          <div className="meta-author">{wordLabel}</div>
+          {dateStr && <div className="meta-author">{dateStr}</div>}
         </div>
         <button className="btn-dots" onClick={e => { e.stopPropagation(); onMenu(e, nb) }}><DotsIcon /></button>
       </div>
@@ -415,60 +415,46 @@ function NotebookCard({ nb, onOpen, onMenu }) {
 // ─────────────────────────────────────────────────────────────────────────────
 function SketchbookCard({ sb, onOpen, onMenu }) {
   const color = sb.coverColor || '#1a1a2e'
+  const dateStr = sb.updatedAt || sb.createdAt
+    ? new Date(sb.updatedAt || sb.createdAt).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })
+    : ''
   return (
     <div className="book-card-container" style={{ cursor:'pointer' }}
       onClick={() => onOpen(sb)}
       onContextMenu={e => { e.preventDefault(); onMenu(e, sb) }}>
-      {/* Cover */}
-      <div style={{
-        width: '100%', aspectRatio: '2/3', borderRadius: 8,
-        background: color, position: 'relative', overflow: 'hidden',
-        boxShadow: '0 4px 20px rgba(0,0,0,0.45)',
-      }}>
-        {/* Spiral binding dots */}
-        <div style={{ position:'absolute', left:0, top:0, bottom:0, width:14,
-          background:'rgba(0,0,0,0.3)', borderRadius:'8px 0 0 8px',
-          display:'flex', flexDirection:'column', alignItems:'center',
-          justifyContent:'space-evenly', paddingTop:16, paddingBottom:16 }}>
-          {[...Array(6)].map((_,i) => (
-            <div key={i} style={{ width:8, height:8, borderRadius:'50%',
-              background:'rgba(255,255,255,0.55)', border:'1.5px solid rgba(0,0,0,0.4)' }} />
-          ))}
-        </div>
-        {/* Sketch grid pattern */}
-        <div style={{ position:'absolute', inset:0, paddingLeft:20, opacity:0.1,
-          backgroundImage:`repeating-linear-gradient(0deg,rgba(255,255,255,0.6) 0,rgba(255,255,255,0.6) 1px,transparent 1px,transparent 18px),
-            repeating-linear-gradient(90deg,rgba(255,255,255,0.6) 0,rgba(255,255,255,0.6) 1px,transparent 1px,transparent 18px)` }} />
-        {/* Pencil icon */}
-        <div style={{ position:'absolute', top:'50%', left:'50%',
-          transform:'translate(-50%,-60%)', opacity:0.35 }}>
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none">
-            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"
-              stroke="rgba(255,255,255,0.9)" strokeWidth="1.6" strokeLinecap="round"/>
-            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"
-              stroke="rgba(255,255,255,0.9)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </div>
-        {/* Title */}
-        <div style={{ position:'absolute', bottom:0, left:14, right:0, padding:'10px 10px 10px 8px' }}>
-          <div style={{ fontSize:11, fontWeight:700, color:'rgba(255,255,255,0.85)',
-            lineHeight:1.3, overflow:'hidden', display:'-webkit-box',
-            WebkitLineClamp:2, WebkitBoxOrient:'vertical', wordBreak:'break-word' }}>
+      {/* Cover — same fixed size as book covers */}
+      <div className="book-cover" style={{ background: color, padding: 0, justifyContent: 'flex-start', alignItems: 'stretch' }}>
+        {/* Left spine shadow */}
+        <div style={{ position:'absolute', left:0, top:0, bottom:0, width:8,
+          background:'rgba(0,0,0,0.18)', zIndex:1 }} />
+
+        {/* Title + date — top section */}
+        <div style={{ position:'relative', padding:'14px 12px 0 16px', flex:1, zIndex:2 }}>
+          <div style={{ fontSize:13, fontWeight:800, color:'#fff',
+            lineHeight:1.25, wordBreak:'break-word',
+            overflow:'hidden', display:'-webkit-box',
+            WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>
             {sb.title}
           </div>
+          {dateStr && (
+            <div style={{ fontSize:10, color:'rgba(255,255,255,0.6)', marginTop:7, fontWeight:400 }}>
+              {dateStr}
+            </div>
+          )}
         </div>
-        {/* Badge */}
-        <div style={{ position:'absolute', top:8, right:8,
-          background:'rgba(0,0,0,0.35)', borderRadius:4, padding:'2px 5px',
-          fontSize:8, fontWeight:700, color:'rgba(255,255,255,0.7)', letterSpacing:'0.05em' }}>
-          SKETCH
+
+        {/* Ruled lines — bottom area */}
+        <div style={{ position:'relative', padding:'0 12px 16px 16px', display:'flex', flexDirection:'column', gap:8, zIndex:2 }}>
+          {[...Array(2)].map((_,i) => (
+            <div key={i} style={{ height:1, background:'rgba(255,255,255,0.32)', borderRadius:1 }} />
+          ))}
         </div>
       </div>
       {/* Meta */}
       <div className="book-meta">
         <div className="meta-text">
           <div className="meta-title">{sb.title}</div>
-          <div className="meta-author">Sketchbook</div>
+          {dateStr && <div className="meta-author">{dateStr}</div>}
         </div>
         <button className="btn-dots" onClick={e => { e.stopPropagation(); onMenu(e, sb) }}><DotsIcon /></button>
       </div>
@@ -512,6 +498,447 @@ function EditNotebookModal({ nb, onSave, onClose }) {
   )
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SettingsModal
+// ─────────────────────────────────────────────────────────────────────────────
+function SettingsModal({ onClose }) {
+  const [tab, setTab] = useState('theme')
+
+  const themeKey      = useAppStore(s => s.themeKey)
+  const customThemes  = useAppStore(s => s.customThemes)
+  const highlightWords = useAppStore(s => s.highlightWords)
+  const underlineLine  = useAppStore(s => s.underlineLine)
+  const ollamaUrl      = useAppStore(s => s.ollamaUrl)
+  const ollamaModel    = useAppStore(s => s.ollamaModel)
+  const setTheme       = useAppStore(s => s.setTheme)
+  const setPref        = useAppStore(s => s.setPref)
+  const persistPreferences = useAppStore(s => s.persistPreferences)
+  const library        = useAppStore(s => s.library)
+  const persistLibrary = useAppStore(s => s.persistLibrary)
+  const addBook        = useAppStore(s => s.addBook)
+
+  const fileInputRef   = useRef()
+  const themeInputRef  = useRef()
+  const importInputRef = useRef()
+
+  const [aiTestResult, setAiTestResult] = useState('')
+  const [ollamaUrlVal,   setOllamaUrlVal]   = useState(ollamaUrl)
+  const [ollamaModelVal, setOllamaModelVal] = useState(ollamaModel)
+
+  const BUILT_IN_THEMES_LOCAL = {
+    dark: { name: 'Dark', bg: '#0d1117', surface: '#161b22', accent: '#388bfd' },
+    light: { name: 'Light (Cream)', bg: '#f5f0e8', surface: '#fdfaf4', accent: '#7c6034' },
+  }
+  const allThemes = { ...BUILT_IN_THEMES_LOCAL, ...customThemes }
+
+  const TABS = [
+    { id: 'theme', label: 'Appearance' },
+    { id: 'library', label: 'Library' },
+    { id: 'accessibility', label: 'Accessibility' },
+    { id: 'ai', label: 'AI' },
+  ]
+
+  const overlayStyle = {
+    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+    zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+  }
+  const modalStyle = {
+    background: 'var(--surface)', border: '1px solid var(--border)',
+    borderRadius: 14, width: 480, maxWidth: 'calc(100vw - 32px)',
+    maxHeight: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column',
+    boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
+  }
+
+  function renderThemeTab() {
+    return (
+      <div>
+        <div className="section-label">THEME</div>
+        <div className="radio-list">
+          {Object.keys(allThemes).map(k => (
+            <label key={k} className={`radio-item${themeKey === k ? ' active' : ''}`}
+              style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 12px',
+                borderRadius:8, cursor:'pointer', border: themeKey === k ? '1px solid var(--accent)' : '1px solid var(--border)',
+                marginBottom:6, background: themeKey === k ? 'rgba(56,139,253,0.06)' : 'transparent' }}>
+              <input type="radio" name="theme" value={k} checked={themeKey === k}
+                onChange={() => setTheme(k)} style={{ display:'none' }} />
+              <div style={{ display:'flex', gap:4 }}>
+                {['bg','surface','accent'].map(p => (
+                  <div key={p} className="swatch" style={{
+                    width:14, height:14, borderRadius:3,
+                    background: allThemes[k][p] || '#888',
+                    border: '1px solid rgba(255,255,255,0.1)'
+                  }} />
+                ))}
+              </div>
+              <span style={{ fontSize:13, fontWeight:500, color:'var(--text)', flex:1 }}>{allThemes[k].name}</span>
+              {k.startsWith('custom_') && <span style={{ fontSize:10, color:'var(--textDim)' }}>Custom</span>}
+            </label>
+          ))}
+        </div>
+        <div className="theme-import-box" style={{ marginTop:16 }}>
+          <div style={{ fontSize:12, color:'var(--textMuted)', marginBottom:8 }}>
+            Import custom theme <strong>.json</strong>
+          </div>
+          <button className="btn secondary" onClick={() => themeInputRef.current?.click()}>
+            Import theme (.json)
+          </button>
+          <input ref={themeInputRef} type="file" accept=".json" style={{ display:'none' }}
+            onChange={async e => {
+              const file = e.target.files[0]; if (!file) return
+              try {
+                const p = JSON.parse(await file.text())
+                if (p.name && p.bg && p.text) {
+                  const k = `custom_${Date.now()}`
+                  const next = { ...customThemes, [k]: p }
+                  setPref('customThemes', next)
+                  setTheme(k)
+                  await persistPreferences()
+                }
+              } catch { alert('Invalid theme file') }
+              e.target.value = ''
+            }} />
+        </div>
+      </div>
+    )
+  }
+
+  function renderLibraryTab() {
+    return (
+      <div>
+        <div className="section-label">DISCOVER BOOKS</div>
+        <a href="https://www.gutenberg.org" target="_blank" rel="noopener" className="gutenberg-btn">
+          <span className="gutenberg-btn-icon">📚</span>
+          <div className="gutenberg-btn-text">
+            <div className="title">Project Gutenberg</div>
+            <div className="sub">Free public domain ebooks — 70,000+ titles</div>
+          </div>
+          <svg className="gutenberg-btn-arrow" width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M3 7h8M8 4l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </a>
+        <a href="https://librivox.org" target="_blank" rel="noopener" className="gutenberg-btn" style={{ marginTop:8 }}>
+          <span className="gutenberg-btn-icon">🎧</span>
+          <div className="gutenberg-btn-text">
+            <div className="title">LibriVox</div>
+            <div className="sub">Free public domain audiobooks — 20,000+ titles</div>
+          </div>
+          <svg className="gutenberg-btn-arrow" width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M3 7h8M8 4l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </a>
+
+        <div className="section-label" style={{ marginTop:18 }}>LIBRARY DATA</div>
+        <p style={{ fontSize:13, color:'var(--textMuted)', marginBottom:14, lineHeight:1.6 }}>
+          Export your library as <strong>gnos-library.json</strong> to back it up.
+        </p>
+        <div style={{ display:'flex', gap:10, marginBottom:18 }}>
+          <button className="btn secondary" style={{ flex:1, justifyContent:'center' }} onClick={() => {
+            const blob = new Blob([JSON.stringify({ _readme: 'Gnos Library', books: library }, null, 2)], { type: 'application/json' })
+            const url = URL.createObjectURL(blob)
+            Object.assign(document.createElement('a'), { href: url, download: 'gnos-library.json' }).click()
+            URL.revokeObjectURL(url)
+          }}>↓ Export</button>
+          <button className="btn primary" style={{ flex:1, justifyContent:'center' }}
+            onClick={() => importInputRef.current?.click()}>↑ Import</button>
+        </div>
+        <div className="section-label">ADD BOOKS</div>
+        <div style={{ display:'flex', gap:10, marginTop:8 }}>
+          <button className="btn primary" style={{ flex:1, justifyContent:'center' }}
+            onClick={() => fileInputRef.current?.click()}>+ Add Books</button>
+        </div>
+        <input ref={fileInputRef} type="file" accept=".epub,.txt,.md,.pdf" multiple style={{ display:'none' }}
+          onChange={async e => {
+            const { importBooks } = await import('@/lib/bookImport')
+            const { added } = await importBooks(e.target.files)
+            for (const book of added) addBook(book)
+            if (added.length) await persistLibrary()
+            e.target.value = ''
+          }} />
+        <input ref={importInputRef} type="file" accept=".json" style={{ display:'none' }}
+          onChange={async e => {
+            const file = e.target.files[0]; if (!file) return
+            try {
+              const d = JSON.parse(await file.text())
+              if (Array.isArray(d.books)) {
+                const ids = new Set(library.map(b => b.id))
+                d.books.filter(b => !ids.has(b.id)).forEach(b => addBook(b))
+                await persistLibrary()
+              }
+            } catch { alert('Invalid library file') }
+            e.target.value = ''
+          }} />
+      </div>
+    )
+  }
+
+  function renderAccessibilityTab() {
+    const Row = ({ label, sub, active, onToggle }) => (
+      <div className="accessibility-row" style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+        padding:'12px 0', borderBottom:'1px solid var(--borderSubtle)' }}>
+        <div>
+          <div className="accessibility-label" style={{ fontSize:13, fontWeight:600, color:'var(--text)', marginBottom:3 }}>{label}</div>
+          <div className="accessibility-sub" style={{ fontSize:12, color:'var(--textDim)' }}>{sub}</div>
+        </div>
+        <div onClick={onToggle} style={{
+          width:36, height:20, borderRadius:10, cursor:'pointer', flexShrink:0, marginLeft:16,
+          background: active ? 'var(--accent)' : 'var(--surfaceAlt)',
+          border: '1px solid var(--border)', position:'relative', transition:'background 0.2s'
+        }}>
+          <div style={{
+            position:'absolute', top:2, left: active ? 16 : 2,
+            width:14, height:14, borderRadius:7, background:'var(--text)',
+            transition:'left 0.2s',
+          }} />
+        </div>
+      </div>
+    )
+    return (
+      <div>
+        <p style={{ fontSize:12, color:'var(--textMuted)', marginBottom:16, lineHeight:1.6 }}>
+          These settings apply in the reader and help improve reading comfort.
+        </p>
+        <Row label="Highlight words on hover" sub="Highlights individual words when you hover over them."
+          active={highlightWords} onToggle={async () => { setPref('highlightWords', !highlightWords); await persistPreferences() }} />
+        <Row label="Underline current line" sub="Underlines the line you're hovering over to help focus."
+          active={underlineLine} onToggle={async () => { setPref('underlineLine', !underlineLine); await persistPreferences() }} />
+      </div>
+    )
+  }
+
+  function renderAITab() {
+    return (
+      <div>
+        <div className="section-label">AI ASSISTANT</div>
+        <p style={{ fontSize:12, color:'var(--textMuted)', marginBottom:16, lineHeight:1.6 }}>
+          Connect a local Ollama instance for AI-powered text summarization.
+        </p>
+        <label style={{ display:'block', marginBottom:14, fontSize:12 }}>
+          <div style={{ marginBottom:5, fontWeight:600, color:'var(--text)' }}>Ollama Server URL</div>
+          <input type="text" placeholder="http://localhost:11434" value={ollamaUrlVal}
+            onChange={e => setOllamaUrlVal(e.target.value)}
+            style={{ width:'100%', background:'var(--bg)', border:'1px solid var(--border)', color:'var(--text)',
+              borderRadius:6, padding:'8px 10px', fontSize:12, outline:'none', fontFamily:'inherit', boxSizing:'border-box' }} />
+        </label>
+        <label style={{ display:'block', marginBottom:14, fontSize:12 }}>
+          <div style={{ marginBottom:5, fontWeight:600, color:'var(--text)' }}>Model Name</div>
+          <input type="text" placeholder="llama3, mistral, phi3…" value={ollamaModelVal}
+            onChange={e => setOllamaModelVal(e.target.value)}
+            style={{ width:'100%', background:'var(--bg)', border:'1px solid var(--border)', color:'var(--text)',
+              borderRadius:6, padding:'8px 10px', fontSize:12, outline:'none', fontFamily:'inherit', boxSizing:'border-box' }} />
+        </label>
+        <div style={{ display:'flex', gap:10, marginTop:6 }}>
+          <button className="btn primary" style={{ flex:1, justifyContent:'center' }} onClick={async () => {
+            setPref('ollamaUrl', ollamaUrlVal.trim().replace(/\/$/, ''))
+            setPref('ollamaModel', ollamaModelVal.trim())
+            await persistPreferences()
+            setAiTestResult('')
+          }}>Save Settings</button>
+          <button className="btn secondary" style={{ flex:1, justifyContent:'center' }} onClick={async () => {
+            setAiTestResult('Testing connection…')
+            const url = (ollamaUrlVal.trim() || 'http://localhost:11434').replace(/\/$/, '')
+            const model = ollamaModelVal.trim() || 'llama3'
+            try {
+              const r = await fetch(`${url}/api/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model, prompt: 'Say: OK', stream: false }),
+              })
+              setAiTestResult(r.ok ? '✓ Connected successfully!' : `✗ Server returned ${r.status}`)
+            } catch (err) {
+              setAiTestResult(`✗ Could not connect: ${err.message}`)
+            }
+          }}>Test Connection</button>
+        </div>
+        {aiTestResult && (
+          <div style={{ marginTop:12, fontSize:12, color: aiTestResult.startsWith('✓') ? '#3fb950' : aiTestResult.startsWith('✗') ? '#f85149' : 'var(--textDim)' }}>
+            {aiTestResult}
+          </div>
+        )}
+        <div style={{ marginTop:20, paddingTop:16, borderTop:'1px solid var(--borderSubtle)' }}>
+          <div className="section-label">CURRENT AI SOURCE</div>
+          <div style={{ fontSize:12, color:'var(--textMuted)', padding:'10px 12px',
+            background:'var(--surfaceAlt)', borderRadius:7, border:'1px solid var(--border)' }}>
+            {ollamaUrl
+              ? <><span style={{ color:'#3fb950' }}>●</span> Ollama at <strong style={{ color:'var(--accent)' }}>{ollamaUrl}</strong>{ollamaModel ? ` using ${ollamaModel}` : ' (no model set)'}</>
+              : <><span style={{ color:'#f85149' }}>○</span> <strong style={{ color:'var(--textMuted)' }}>No local LLM configured.</strong></>}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div style={overlayStyle} onClick={onClose}>
+      <div style={modalStyle} onClick={e => e.stopPropagation()}>
+        <div className="modal-header" style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+          padding:'16px 20px 0', flexShrink:0 }}>
+          <h2 style={{ margin:0, fontSize:16, fontWeight:700, color:'var(--text)' }}>Settings</h2>
+          <button className="btn-close" onClick={onClose} style={{ background:'none', border:'none',
+            fontSize:18, cursor:'pointer', color:'var(--textMuted)', lineHeight:1, padding:'2px 6px' }}>×</button>
+        </div>
+        <div className="modal-tabs" style={{ display:'flex', gap:2, padding:'12px 20px 0', flexShrink:0,
+          borderBottom:'1px solid var(--borderSubtle)' }}>
+          {TABS.map(t => (
+            <button key={t.id} className={`tab${tab === t.id ? ' active' : ''}`}
+              onClick={() => setTab(t.id)}
+              style={{ padding:'7px 14px', fontSize:12, fontWeight:600, background:'none', border:'none',
+                cursor:'pointer', borderRadius:'7px 7px 0 0', marginBottom:-1,
+                color: tab === t.id ? 'var(--accent)' : 'var(--textMuted)',
+                borderBottom: tab === t.id ? '2px solid var(--accent)' : '2px solid transparent' }}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div className="modal-body" style={{ overflowY:'auto', padding:'18px 20px 20px', flex:1 }}>
+          {tab === 'theme'         && renderThemeTab()}
+          {tab === 'library'       && renderLibraryTab()}
+          {tab === 'accessibility' && renderAccessibilityTab()}
+          {tab === 'ai'            && renderAITab()}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ProfileStatCard({ value, label }) {
+  return (
+    <div className="profile-stat-card" style={{ background:'var(--surfaceAlt)', borderRadius:10, padding:'12px 14px',
+      textAlign:'center', border:'1px solid var(--borderSubtle)' }}>
+      <div className="profile-stat-value" style={{ fontSize:22, fontWeight:700, color:'var(--text)', lineHeight:1 }}>{value}</div>
+      <div className="profile-stat-label" style={{ fontSize:11, color:'var(--textDim)', marginTop:4, textTransform:'uppercase', letterSpacing:'0.06em' }}>{label}</div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProfileModal
+// ─────────────────────────────────────────────────────────────────────────────
+function ProfileModal({ onClose }) {
+  const library = useAppStore(s => s.library)
+
+  // Reading log: stored in window.storage under 'reading_log'
+  const [log, setLog] = useState({})
+
+  useEffect(() => {
+    window.storage?.get('reading_log').then(r => r && setLog(JSON.parse(r.value))).catch(() => {})
+  }, [])
+
+  const todayKey = () => new Date().toISOString().slice(0, 10)
+
+  const totalMinutes = Object.values(log).reduce((a, b) => a + b, 0)
+  const dayCount = Object.keys(log).length
+  const avgDaily = dayCount > 0 ? totalMinutes / dayCount : 0
+  const todayMins = Math.round(log[todayKey()] || 0)
+  const booksFinished = library.filter(b => (b.currentChapter || 0) >= Math.max((b.totalChapters || 1) - 1, 1)).length
+
+  // Streak
+  let streak = 0
+  for (let i = 0; i < 365; i++) {
+    const d = new Date(); d.setDate(d.getDate() - i)
+    const k = d.toISOString().slice(0, 10)
+    if ((log[k] || 0) >= 1) streak++; else break
+  }
+
+  // Heatmap: last 84 days (12 weeks)
+  const heatmapDays = []
+  for (let i = 83; i >= 0; i--) {
+    const d = new Date(); d.setDate(d.getDate() - i)
+    const k = d.toISOString().slice(0, 10)
+    const mins = log[k] || 0
+    const level = mins === 0 ? 0 : mins < 10 ? 1 : mins < 30 ? 2 : mins < 60 ? 3 : 4
+    heatmapDays.push({ k, mins, level })
+  }
+
+  // Top books by chapters read
+  const topBooks = library.map(b => ({ ...b, chaptersRead: b.currentChapter || 0 }))
+    .sort((a, b) => b.chaptersRead - a.chaptersRead).slice(0, 5)
+
+  const heatColors = ['var(--surfaceAlt)', 'rgba(56,139,253,0.25)', 'rgba(56,139,253,0.5)', 'rgba(56,139,253,0.75)', 'var(--accent)']
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:2000,
+      display:'flex', alignItems:'center', justifyContent:'center' }} onClick={onClose}>
+      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:14,
+        width:480, maxWidth:'calc(100vw - 32px)', maxHeight:'calc(100vh - 64px)', display:'flex',
+        flexDirection:'column', boxShadow:'0 20px 60px rgba(0,0,0,0.6)' }} onClick={e => e.stopPropagation()}>
+
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+          padding:'16px 20px 0', flexShrink:0 }}>
+          <h2 style={{ margin:0, fontSize:16, fontWeight:700, color:'var(--text)' }}>Reading Profile</h2>
+          <button onClick={onClose} style={{ background:'none', border:'none', fontSize:18,
+            cursor:'pointer', color:'var(--textMuted)', lineHeight:1, padding:'2px 6px' }}>×</button>
+        </div>
+
+        <div style={{ overflowY:'auto', padding:'16px 20px 24px', flex:1 }}>
+
+          {/* Stats grid */}
+          <div className="profile-stats-grid" style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8, marginBottom:20 }}>
+            <ProfileStatCard value={streak}                                   label="Day Streak" />
+            <ProfileStatCard value={Math.round(avgDaily)}                     label="Avg Min / Day" />
+            <ProfileStatCard value={todayMins}                                label="Min Today" />
+            <ProfileStatCard value={booksFinished}                            label="Finished" />
+            <ProfileStatCard value={Math.round(totalMinutes)}                 label="Total Min" />
+            <ProfileStatCard value={Math.round(totalMinutes / 60 * 10) / 10} label="Hours Read" />
+          </div>
+
+          {/* Heatmap */}
+          <div style={{ fontSize:12, fontWeight:700, color:'var(--textMuted)', textTransform:'uppercase',
+            letterSpacing:'0.07em', marginBottom:8 }}>Reading Activity — Last 12 Weeks</div>
+          <div className="heatmap-grid" style={{ display:'grid', gridTemplateColumns:'repeat(12, 1fr)', gap:3, marginBottom:6 }}>
+            {heatmapDays.map((d, i) => (
+              <div key={i} title={`${d.k}: ${Math.round(d.mins)} min`}
+                style={{ height:10, borderRadius:2,
+                  background: heatColors[d.level],
+                  border: d.level === 0 ? '1px solid var(--borderSubtle)' : 'none' }} />
+            ))}
+          </div>
+          <div className="heatmap-legend" style={{ display:'flex', alignItems:'center', gap:4, fontSize:11, color:'var(--textDim)', marginBottom:20 }}>
+            <span>Less</span>
+            {heatColors.map((c, i) => (
+              <div key={i} style={{ width:10, height:10, borderRadius:2, background:c,
+                border: i === 0 ? '1px solid var(--borderSubtle)' : 'none' }} />
+            ))}
+            <span>More</span>
+          </div>
+
+          {/* Top books */}
+          <div style={{ fontSize:12, fontWeight:700, color:'var(--textMuted)', textTransform:'uppercase',
+            letterSpacing:'0.07em', marginBottom:12 }}>Most Read Books</div>
+          {topBooks.length === 0
+            ? <div style={{ color:'var(--textDim)', fontSize:13 }}>No reading data yet.</div>
+            : topBooks.map((b, i) => {
+                const [c1, c2] = generateCoverColor(b.title)
+                const progressPct = b.totalChapters > 1
+                  ? Math.round((b.chaptersRead / (b.totalChapters - 1)) * 100) : 0
+                return (
+                  <div key={b.id} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
+                    <span style={{ fontSize:11, color:'var(--textDim)', width:14, textAlign:'right', flexShrink:0 }}>{i+1}</span>
+                    <div style={{ width:28, height:38, borderRadius:4, overflow:'hidden', flexShrink:0,
+                      background:`linear-gradient(135deg,${c1},${c2})` }}>
+                      {b.coverDataUrl && <img src={b.coverDataUrl} alt="" style={{ width:'100%', height:'100%', objectFit:'cover' }} />}
+                    </div>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:12, fontWeight:600, color:'var(--text)', whiteSpace:'nowrap',
+                        overflow:'hidden', textOverflow:'ellipsis' }}>{b.title}</div>
+                      <div style={{ fontSize:11, color:'var(--textDim)', marginTop:1 }}>
+                        Ch {b.chaptersRead} / {b.totalChapters}
+                      </div>
+                    </div>
+                    <div style={{ width:60, flexShrink:0 }}>
+                      <div style={{ height:4, background:'var(--surfaceAlt)', borderRadius:2, overflow:'hidden' }}>
+                        <div style={{ height:'100%', width:`${progressPct}%`, background:'var(--accent)', borderRadius:2 }} />
+                      </div>
+                      <div style={{ fontSize:9, color:'var(--textDim)', textAlign:'right', marginTop:2 }}>{progressPct}%</div>
+                    </div>
+                  </div>
+                )
+              })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function LibraryView() {
   const library   = useAppStore(s => s.library)
   const notebooks = useAppStore(s => s.notebooks)
@@ -542,6 +969,8 @@ export default function LibraryView() {
   const [editNb,     setEditNb]     = useState(null)
   const [editSb,     setEditSb]     = useState(null)
   const [toast,      setToast]      = useState(null) // { message, error }
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [profileOpen,  setProfileOpen]  = useState(false)
 
   const [searchFocused, setSearchFocused] = useState(false)
   const searchRef = useRef()
@@ -756,10 +1185,9 @@ export default function LibraryView() {
       <header className="app-header">
         <div className="app-header-top">
 
-          {/* Gnos logo + sidebar toggle */}
+          {/* Gnos logo area */}
           <div className="lib-logo-area">
             <GnosNavButton />
-            <span className="lib-gnos-logo">Gnos</span>
           </div>
 
           {/* Search + Add */}
@@ -816,9 +1244,10 @@ export default function LibraryView() {
             </div>
           </div>
 
-          {/* Settings */}
+          {/* Settings + Profile */}
           <div className="header-right-actions">
-            <button className="btn-icon-round" title="Settings"><SettingsIcon /></button>
+            <button className="btn-icon-round" title="Profile" onClick={() => setProfileOpen(true)}><ProfileIcon /></button>
+            <button className="btn-icon-round" title="Settings" onClick={() => setSettingsOpen(true)}><SettingsIcon /></button>
           </div>
 
         </div>
@@ -869,6 +1298,8 @@ export default function LibraryView() {
         />
       )}
       <Toast message={toast?.message} error={toast?.error} />
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {profileOpen  && <ProfileModal  onClose={() => setProfileOpen(false)} />}
     </div>
   )
 }

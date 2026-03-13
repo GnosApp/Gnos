@@ -16,7 +16,6 @@ const fmt = (s) => {
 
 export default function AudioPlayerView() {
   const book    = useAppStore(s => s.activeAudioBook)
-  const setView = useAppStore(s => s.setView)
 
   const audioRef    = useRef(null)
   const chapCacheRef = useRef({})
@@ -68,32 +67,43 @@ export default function AudioPlayerView() {
       if (cache[idx]) {
         src = cache[idx]
       } else {
+        // ── Populate cache synchronously first from in-memory data ──────────
+        // This ensures togglePlay() always finds something in cache[idx]
+        // even if the async storage load hasn't completed yet.
+        if (book.audioChapters?.[idx]?.dataUrl) {
+          src = book.audioChapters[idx].dataUrl
+          cache[idx] = src
+        }
+        // Try to upgrade to the persisted version asynchronously
         try {
           const stored = await loadAudioChapter(book.id, idx)
           if (stored) {
             const val = stored.value ?? stored
-            src = val instanceof Blob ? URL.createObjectURL(val) : val
+            const storedSrc = val instanceof Blob ? URL.createObjectURL(val) : val
+            if (storedSrc) { src = storedSrc; cache[idx] = src }
           }
         } catch { /* fall through */ }
-        // Fall back to in-memory dataUrl stored on the chapter object at import time
-        if (!src) src = book.audioChapters?.[idx]?.dataUrl || ''
-        if (src) cache[idx] = src
       }
     } else {
-      // Single audio file — try cache, then storage, then book object directly
+      // Single audio file
       if (cache[0]) {
         src = cache[0]
       } else {
+        // Populate cache synchronously from book object first
+        if (book.audioDataUrl) {
+          src = book.audioDataUrl
+          cache[0] = src
+        }
+        // Try to upgrade from storage
         try {
           const stored = await loadSingleAudioData(book.id)
           if (stored) {
             const val = stored.value ?? stored
-            src = typeof val === 'string' && val.startsWith('data:') ? val
+            const storedSrc = typeof val === 'string' && val.startsWith('data:') ? val
                 : val instanceof Blob ? URL.createObjectURL(val) : ''
-            if (src) cache[0] = src
+            if (storedSrc) { src = storedSrc; cache[0] = src }
           }
         } catch { /* fall through */ }
-        // Always fall back to the in-memory dataUrl on the book object
         if (!src) src = book.audioDataUrl || ''
         if (src) cache[0] = src
       }
@@ -182,10 +192,19 @@ export default function AudioPlayerView() {
 
     // Detect un-loaded state: blank src resolves to the page URL in browsers
     const srcIsBlank = !audio.src || audio.src === window.location.href ||
-      audio.src === window.location.origin + window.location.pathname
+      audio.src === window.location.origin + window.location.pathname ||
+      audio.src === window.location.origin + '/'
 
     if (!srcIsBlank) {
-      // Src already set — play directly, staying inside the gesture context
+      // Src already set — ensure it's loaded, then play
+      if (audio.readyState < 2) {
+        // Not yet ready — load then play
+        audio.load()
+        audio.addEventListener('canplay', () => {
+          audio.play().catch(() => loadAndPlayChapter(chapIdxRef.current, true))
+        }, { once: true })
+        return
+      }
       audio.play().catch(() => loadAndPlayChapter(chapIdxRef.current, true))
       return
     }
@@ -201,14 +220,17 @@ export default function AudioPlayerView() {
 
     if (syncSrc) {
       audio.src = syncSrc
+      // Populate cache for future calls
+      if (bk?.format === 'audiofolder') { if (!cache[idx]) cache[idx] = syncSrc }
+      else { if (!cache[0]) cache[0] = syncSrc }
       audio.playbackRate = speedRef.current
       // play() called synchronously — browser gesture context still alive
       audio.play().catch(err => {
-        console.warn('[AudioPlayer] sync play failed:', err)
+        console.warn('[AudioPlayer] sync play failed, retrying via load:', err)
         loadAndPlayChapter(idx, true)
       })
     } else {
-      // Nothing in memory yet — async load (may need one retry tap)
+      // Nothing in memory — kick off async load
       loadAndPlayChapter(idx, true)
     }
   }
@@ -249,11 +271,28 @@ export default function AudioPlayerView() {
     if (audioRef.current) audioRef.current.volume = v
   }
 
-  function exit() {
-    const audio = audioRef.current
-    if (audio) { audio.pause(); audio.src = '' }
-    setView('library')
-  }
+  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e) => {
+      // Don't steal keys when user is typing in an input/textarea
+      const tag = document.activeElement?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+
+      if (e.key === ' ' || e.code === 'Space') {
+        e.preventDefault()
+        togglePlay()
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        skipBy(e.shiftKey ? 30 : 10)
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        skipBy(e.shiftKey ? -30 : -10)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []) // togglePlay and skipBy close over refs — intentionally stable
 
   // ── Cover ──────────────────────────────────────────────────────────────────
   const [c1, c2] = generateCoverColor(book?.title || '')
@@ -276,7 +315,6 @@ export default function AudioPlayerView() {
         <aside className="ap-sidebar">
           <div className="ap-sidebar-header">
             <GnosNavButton />
-            <button className="ap-gnos-logo" onClick={exit}>Gnos</button>
             <div className="ap-sidebar-title">Chapters</div>
           </div>
           <div className="ap-chapter-list">

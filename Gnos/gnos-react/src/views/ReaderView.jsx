@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import useAppStore, { useAppStoreShallow } from '@/store/useAppStore'
 import { loadBookContent } from '@/lib/storage'
+import { GnosNavButton } from '@/components/SideNav'
 import { generateCoverColor } from '@/lib/utils'
 import { applyTheme } from '@/lib/themes'
 import {
   ensurePageStyle, renderPage, precomputeAllChapters,
   invalidateCache, getPageBreaks, getTotalPages,
-  getGlobalPage, reset as resetEngine
+  getGlobalPage
 } from '@/lib/paginationEngine'
-import { GnosNavButton } from '@/components/SideNav'
 
 // ── SettingsPanel ─────────────────────────────────────────────────────────────
 
@@ -42,23 +42,21 @@ function SettingsPanel({ prefs, themes, onPrefChange, onRebuild }) {
       </div>
 
       <div className="section-label">DISPLAY</div>
-      <label style={{ display: 'block', marginBottom: 12, fontSize: 12 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
-          <span>Font Size</span><span style={{ color: 'var(--textDim)' }}>{fontSize}px</span>
-        </div>
+      <div className="reader-slider-row">
+        <span className="reader-slider-icon-sm" style={{ fontFamily: 'Georgia, serif', fontWeight: 700 }}>A</span>
         <input type="range" min="14" max="28" step="1" value={fontSize}
           onChange={e => onPrefChange('fontSize', +e.target.value)}
-          onMouseUp={onRebuild} onTouchEnd={onRebuild} />
-      </label>
-      <label style={{ display: 'block', marginBottom: 12, fontSize: 12 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
-          <span>Line Spacing</span><span style={{ color: 'var(--textDim)' }}>{lineSpacing}</span>
-        </div>
+          onMouseUp={onRebuild} onTouchEnd={onRebuild} style={{ flex: 1 }} />
+        <span className="reader-slider-icon-lg" style={{ fontFamily: 'Georgia, serif', fontWeight: 700 }}>A</span>
+      </div>
+      <div className="reader-slider-row">
+        <span className="reader-slider-icon-sm-line">≡</span>
         <input type="range" min="1.4" max="2.4" step="0.1" value={lineSpacing}
           onChange={e => onPrefChange('lineSpacing', +e.target.value)}
-          onMouseUp={onRebuild} onTouchEnd={onRebuild} />
-      </label>
-      <label style={{ display: 'block', fontSize: 12 }}>
+          onMouseUp={onRebuild} onTouchEnd={onRebuild} style={{ flex: 1 }} />
+        <span className="reader-slider-icon-lg-line" style={{ letterSpacing: '2px' }}>≡{'\n'}≡</span>
+      </div>
+      <label style={{ display: 'block', fontSize: 12, marginBottom: 12 }}>
         <div style={{ marginBottom: 5 }}>Font</div>
         <select value={fontFamily} onChange={e => { onPrefChange('fontFamily', e.target.value); onRebuild() }}>
           <option value="Georgia, serif">Georgia</option>
@@ -89,7 +87,7 @@ function SettingsPanel({ prefs, themes, onPrefChange, onRebuild }) {
         ].map(({ label, key, val }) => (
           <label key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: 10 }}>
             <div style={{ fontSize: 12, fontWeight: 500 }}>{label}</div>
-            <Toggle on={!!val} onClick={() => onPrefChange(key, !val)} />
+            <Toggle on={!!val} onClick={() => { onPrefChange(key, !val); setTimeout(onRebuild, 20) }} />
           </label>
         ))}
       </div>
@@ -193,9 +191,9 @@ const BUILT_IN_THEMES = {
 
 export default function ReaderView() {
   const activeBook         = useAppStore(s => s.activeBook)
-  const setView            = useAppStore(s => s.setView)
   const setPref            = useAppStore(s => s.setPref)
   const persistPreferences = useAppStore(s => s.persistPreferences)
+  const sideNavOpen        = useAppStore(s => s.sideNavOpen)
 
   // Read all prefs in one selector so settings panel always stays in sync
   const prefs = useAppStoreShallow(s => ({
@@ -408,24 +406,64 @@ export default function ReaderView() {
   }
 
   // ── Prefs ─────────────────────────────────────────────────────────────────
+  const persistDebounceRef = useRef(null)
   function handlePrefChange(key, value) {
     setPref(key, value)
-    persistPreferences()
+    // Debounce persistence so rapid toggle clicks don't block the UI
+    if (persistDebounceRef.current) clearTimeout(persistDebounceRef.current)
+    persistDebounceRef.current = setTimeout(() => persistPreferences(), 400)
   }
 
   function handleRebuild() {
     if (!cardRef.current || chaptersRef.current.length === 0) return
     const p = prefsRef.current
+
+    // Save current words on screen before rebuild so we can restore position
+    const cardEl = cardRef.current
+    const firstWordEl = cardEl.querySelector('.col-word')
+    const savedWord = firstWordEl?.dataset?.word || null
+
     ensurePageStyle(p)
-    cardRef.current.classList.toggle('two-page', p.twoPage)
-    cardRef.current.classList.toggle('highlight-words', p.highlightWords)
-    cardRef.current.classList.toggle('underline-line', p.underlineLine)
+    cardEl.classList.toggle('two-page', p.twoPage)
+    cardEl.classList.toggle('highlight-words', p.highlightWords)
+    cardEl.classList.toggle('underline-line', p.underlineLine)
     invalidateCache()
-    precomputeAllChapters(chaptersRef.current, p, cardRef.current)
+    precomputeAllChapters(chaptersRef.current, p, cardEl)
     const cache = {}
     for (let i = 0; i < chaptersRef.current.length; i++) cache[i] = getPageBreaks(i)
     setBreaksCache(cache)
-    renderPage(cardRef.current, chaptersRef.current, curChapterRef.current, curPageRef.current, p.twoPage, false)
+
+    // Try to find the page that contains the saved word
+    let targetChapter = curChapterRef.current
+    let targetPage    = curPageRef.current
+
+    if (savedWord) {
+      // Search from current chapter forward, then backward
+      outer: for (let chOffset = 0; chOffset < chaptersRef.current.length; chOffset++) {
+        const ci = (targetChapter + chOffset) % chaptersRef.current.length
+        const ch = chaptersRef.current[ci]
+        const src = ch._expanded || ch.blocks
+        const breaks = cache[ci]
+        if (!breaks) continue
+        for (let pi = 0; pi < breaks.length; pi++) {
+          const start = breaks[pi]
+          const end   = breaks[pi + 1] ?? src.length
+          const pageBlocks = src.slice(start, end)
+          const hasWord = pageBlocks.some(b =>
+            b?.text?.toLowerCase().includes(savedWord.toLowerCase())
+          )
+          if (hasWord) {
+            targetChapter = ci
+            targetPage    = pi
+            break outer
+          }
+        }
+      }
+    }
+
+    setCurChapter(targetChapter)
+    setCurPage(targetPage)
+    renderPage(cardEl, chaptersRef.current, targetChapter, targetPage, p.twoPage, false)
   }
 
   // ── Page jump ─────────────────────────────────────────────────────────────
@@ -443,10 +481,219 @@ export default function ReaderView() {
     jumpToChapter(chaptersRef.current.length - 1, 0)
   }
 
-  function exit() {
-    resetEngine()
-    setView('library')
+  // ── TTS (Text-To-Speech) state ─────────────────────────────────────────────
+  const [ttsActive,   setTtsActive]   = useState(false)
+  const [ttsSentence, setTtsSentence] = useState('')
+  const [ttsPaused,   setTtsPaused]   = useState(false)
+  const [ttsProgress, setTtsProgress] = useState(0)
+  const ttsUtterRef   = useRef(null)
+  const ttsSentencesRef = useRef([])
+  const ttsSentIdxRef   = useRef(0)
+  const ttsActiveWordRef = useRef(null) // currently highlighted .col-word el
+
+  // ── Word context menu state ────────────────────────────────────────────────
+  const [wordMenu,       setWordMenu]       = useState(null) // { word, sentence, x, y }
+  const [defPopup,       setDefPopup]       = useState(null) // { word, mode:'define'|'translate', x, y, content, loading }
+  const [translateLang,  setTranslateLang]  = useState('es') // target language for LibreTranslate
+  // Default to local LibreTranslate instance (run: docker run -p 5000:5000 libretranslate/libretranslate)
+  const [libreUrl,       setLibreUrl]       = useState('http://localhost:5000')
+
+  // Available LibreTranslate target languages
+  const LIBRE_LANGS = [
+    { code:'es', name:'Spanish' }, { code:'fr', name:'French' }, { code:'de', name:'German' },
+    { code:'it', name:'Italian' }, { code:'pt', name:'Portuguese' }, { code:'nl', name:'Dutch' },
+    { code:'pl', name:'Polish' }, { code:'ru', name:'Russian' }, { code:'ja', name:'Japanese' },
+    { code:'zh', name:'Chinese' }, { code:'ar', name:'Arabic' }, { code:'ko', name:'Korean' },
+    { code:'sv', name:'Swedish' }, { code:'tr', name:'Turkish' }, { code:'uk', name:'Ukrainian' },
+    { code:'hi', name:'Hindi' },
+  ]
+
+  function extractSentences(text) {
+    return text.match(/[^.!?…]+[.!?…]+|[^.!?…]+$/g)?.map(s => s.trim()).filter(Boolean) || []
   }
+
+  function ttsClearWordHighlight() {
+    if (ttsActiveWordRef.current) {
+      ttsActiveWordRef.current.classList.remove('tts-word-active')
+      ttsActiveWordRef.current = null
+    }
+  }
+
+  function ttsSpeakSentence(sentence, onEnd) {
+    window.speechSynthesis.cancel()
+    ttsClearWordHighlight()
+    const utt = new SpeechSynthesisUtterance(sentence)
+    utt.rate = 1
+    utt.onend = () => { ttsClearWordHighlight(); onEnd() }
+    utt.onboundary = (e) => {
+      if (e.name !== 'word') return
+      const charIdx = e.charIndex
+      // Find the word in the utterance text starting at charIdx
+      let end = charIdx
+      while (end < sentence.length && /\S/.test(sentence[end])) end++
+      const rawWord = sentence.slice(charIdx, end)
+      const clean = rawWord.replace(/[^a-zA-Z'\u2019-]/g, '').toLowerCase()
+      if (!clean) return
+      // Clear previous highlight
+      ttsClearWordHighlight()
+      // Find the matching .col-word span on the page
+      // We search forward from the last highlighted position to handle repeated words
+      const card = cardRef.current
+      if (!card) return
+      const spans = card.querySelectorAll('.col-word')
+      // Find first unhighlighted span matching this word
+      let found = null
+      let pastLast = ttsActiveWordRef.current === null
+      for (const span of spans) {
+        if (!pastLast) {
+          if (span === ttsActiveWordRef._prev) pastLast = true
+          continue
+        }
+        if ((span.dataset.word || '').toLowerCase() === clean) {
+          found = span; break
+        }
+      }
+      // Fallback: search from beginning if not found past last
+      if (!found) {
+        for (const span of spans) {
+          if ((span.dataset.word || '').toLowerCase() === clean) {
+            found = span; break
+          }
+        }
+      }
+      if (found) {
+        found.classList.add('tts-word-active')
+        ttsActiveWordRef.current = found
+        ttsActiveWordRef._prev = found
+      }
+    }
+    ttsUtterRef.current = utt
+    window.speechSynthesis.speak(utt)
+    setTtsSentence(sentence)
+  }
+
+  function ttsStart(startText) {
+    const card = cardRef.current
+    if (!card) return
+    const allText = Array.from(card.querySelectorAll('.page-content p, .page-content h2, .page-content h3'))
+      .map(el => el.textContent.trim()).filter(Boolean).join(' ')
+    const sentences = extractSentences(allText)
+    if (!sentences.length) return
+
+    // Find closest sentence to clicked text
+    let startIdx = 0
+    if (startText) {
+      const lower = startText.toLowerCase()
+      startIdx = sentences.findIndex(s => s.toLowerCase().includes(lower))
+      if (startIdx < 0) startIdx = 0
+    }
+
+    ttsSentencesRef.current = sentences
+    ttsSentIdxRef.current   = startIdx
+    setTtsActive(true)
+    setTtsPaused(false)
+
+    const speakNext = () => {
+      const idx = ttsSentIdxRef.current
+      if (idx >= ttsSentencesRef.current.length) { ttsStop(); return }
+      setTtsProgress(idx / Math.max(1, ttsSentencesRef.current.length))
+      ttsSpeakSentence(ttsSentencesRef.current[idx], () => {
+        ttsSentIdxRef.current++
+        speakNext()
+      })
+    }
+    speakNext()
+  }
+
+  function ttsStop() {
+    window.speechSynthesis.cancel()
+    ttsClearWordHighlight()
+    setTtsActive(false)
+    setTtsSentence('')
+    setTtsPaused(false)
+    setTtsProgress(0)
+    ttsSentencesRef.current = []
+    ttsSentIdxRef.current   = 0
+  }
+
+  function ttsTogglePause() {
+    if (ttsPaused) {
+      window.speechSynthesis.resume()
+      setTtsPaused(false)
+    } else {
+      window.speechSynthesis.pause()
+      setTtsPaused(true)
+    }
+  }
+
+  function ttsNav(dir) {
+    // dir=1 → next sentence, dir=-1 → previous sentence
+    const delta = dir > 0 ? 1 : -1
+    ttsSentIdxRef.current = Math.max(0, Math.min(
+      ttsSentencesRef.current.length - 1,
+      ttsSentIdxRef.current + delta
+    ))
+    window.speechSynthesis.cancel()
+    ttsClearWordHighlight()
+    const speakNext = () => {
+      const idx = ttsSentIdxRef.current
+      if (idx >= ttsSentencesRef.current.length) { ttsStop(); return }
+      setTtsProgress(idx / Math.max(1, ttsSentencesRef.current.length))
+      ttsSpeakSentence(ttsSentencesRef.current[idx], () => {
+        ttsSentIdxRef.current++
+        speakNext()
+      })
+    }
+    speakNext()
+  }
+
+  // Stop TTS when leaving view
+  useEffect(() => { return () => window.speechSynthesis?.cancel() }, [])
+
+  // ── Card click handler for word context menu + TTS start ─────────────────
+  function handleCardClick(e) {
+    // Right-click opens word menu (via onContextMenu)
+    // Left-click on a word when TTS is active → jump to that sentence
+    if (ttsActive) {
+      const word = e.target.closest('.col-word')
+      if (word) {
+        const wordText = word.dataset.word || word.textContent
+        ttsStop()
+        setTimeout(() => ttsStart(wordText), 50)
+      }
+    }
+  }
+
+  function handleCardContextMenu(e) {
+    const wordEl = e.target.closest('.col-word')
+    if (!wordEl) return
+    e.preventDefault()
+    const word = wordEl.dataset.word || wordEl.textContent
+
+    // Extract sentence context
+    const page = wordEl.closest('.page-content')
+    const pageText = page ? page.textContent : ''
+    const sentences = extractSentences(pageText)
+    const sentence = sentences.find(s => s.toLowerCase().includes(word.toLowerCase())) || ''
+
+    setWordMenu({ word, sentence, x: e.clientX, y: e.clientY })
+  }
+
+  // Close word menu on outside click
+  useEffect(() => {
+    if (!wordMenu) return
+    const h = () => setWordMenu(null)
+    document.addEventListener('click', h)
+    return () => document.removeEventListener('click', h)
+  }, [wordMenu])
+
+  // Close def popup on outside click
+  useEffect(() => {
+    if (!defPopup) return
+    const h = () => setDefPopup(null)
+    document.addEventListener('click', h)
+    return () => document.removeEventListener('click', h)
+  }, [defPopup])
 
   // ── Derived state ─────────────────────────────────────────────────────────
   const chapterBreaks  = getPageBreaks(curChapter)
@@ -465,12 +712,143 @@ export default function ReaderView() {
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="view active" style={{ flexDirection: 'column' }}>
+      <style>{`
+        /* ── Word hover features ──────────────────────────────────────────── */
+        .highlight-words .col-word:hover {
+          background: rgba(56,139,253,0.22);
+          border-radius: 2px;
+          cursor: pointer;
+        }
+        .underline-line .col-word.same-line {
+          text-decoration: underline;
+          text-decoration-color: rgba(56,139,253,0.5);
+          text-underline-offset: 2px;
+        }
+
+        /* ── Font size slider icons ───────────────────────────────────────── */
+        .reader-slider-row {
+          display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+        }
+        .reader-slider-icon-sm { font-size: 11px; opacity: 0.55; flex-shrink: 0; }
+        .reader-slider-icon-lg { font-size: 16px; opacity: 0.8; flex-shrink: 0; }
+        .reader-slider-icon-sm-line { font-size: 10px; opacity: 0.55; flex-shrink: 0; line-height: 1; }
+        .reader-slider-icon-lg-line { font-size: 10px; opacity: 0.8; flex-shrink: 0; line-height: 1; white-space: pre; }
+
+        /* ── Word context menu — horizontal pill ─────────────────────────── */
+        .word-menu {
+          position: fixed; z-index: 9999;
+          background: var(--surface); border: 1px solid var(--border);
+          border-radius: 12px; padding: 4px 6px;
+          box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+          display: flex; align-items: center; gap: 2px;
+          animation: word-menu-in 0.12s ease;
+          transform: translateX(-50%);
+        }
+        @keyframes word-menu-in {
+          from { opacity: 0; transform: translateX(-50%) scale(0.92) translateY(-4px); }
+          to   { opacity: 1; transform: translateX(-50%) scale(1) translateY(0); }
+        }
+        .word-menu-item {
+          display: flex; flex-direction: row; align-items: center; gap: 6px;
+          padding: 7px 10px; border: none; background: none;
+          cursor: pointer; border-radius: 8px;
+          font-size: 10px; font-weight: 600; color: var(--textDim); font-family: inherit;
+          transition: background 0.08s, color 0.08s;
+          letter-spacing: 0.03em; text-transform: uppercase; white-space: nowrap;
+        }
+        .word-menu-item:hover { background: var(--hover); color: var(--text); }
+        .word-menu-item svg { flex-shrink: 0; }
+        .word-menu-sep { width: 1px; height: 28px; background: var(--borderSubtle); margin: 0 2px; flex-shrink: 0; }
+
+        /* ── Definition / Translate popup ────────────────────────────────── */
+        .def-popup {
+          position: fixed; z-index: 10000;
+          background: var(--surface); border: 1px solid var(--border);
+          border-radius: 12px; padding: 14px 16px;
+          box-shadow: 0 12px 48px rgba(0,0,0,0.5);
+          max-width: 380px; min-width: 260px;
+          animation: word-menu-in 0.12s ease;
+          transform: translateX(-50%);
+        }
+        .def-popup-word {
+          font-size: 16px; font-weight: 700; color: var(--text);
+          margin-bottom: 4px; font-family: Georgia, serif;
+        }
+        .def-popup-content {
+          font-size: 13px; color: var(--textDim); line-height: 1.6;
+          max-height: 180px; overflow-y: auto;
+        }
+        .def-popup-close {
+          position: absolute; top: 8px; right: 10px;
+          background: none; border: none; color: var(--textDim);
+          cursor: pointer; font-size: 18px; line-height: 1; padding: 2px 4px;
+          border-radius: 4px; transition: color 0.1s;
+        }
+        .def-popup-close:hover { color: var(--text); }
+        .def-popup-loading {
+          display: flex; align-items: center; gap: 8px;
+          font-size: 12px; color: var(--textDim);
+        }
+
+        /* ── TTS Player bar ───────────────────────────────────────────────── */
+        .tts-bar {
+          position: fixed; bottom: 72px; left: 50%; transform: translateX(-50%);
+          background: var(--headerBg, var(--surface));
+          border: 1px solid var(--border);
+          border-radius: 16px; padding: 8px 12px 10px;
+          box-shadow: 0 4px 20px rgba(0,0,0,0.35);
+          display: flex; flex-direction: column; gap: 6px;
+          max-width: 480px; width: calc(100vw - 32px);
+          z-index: 8500;
+          animation: tts-bar-in 0.18s cubic-bezier(0.4,0,0.2,1);
+        }
+        @keyframes tts-bar-in {
+          from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+          to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+        }
+        .tts-controls-row {
+          display: flex; align-items: center; gap: 6px;
+        }
+        .tts-controls-spacer { flex: 1; }
+        .tts-progress-bar {
+          height: 2px; border-radius: 1px;
+          background: var(--border); overflow: hidden; flex-shrink: 0;
+        }
+        .tts-progress-fill {
+          height: 100%; background: var(--accent);
+          transition: width 0.3s ease; border-radius: 1px;
+        }
+        .tts-sentence {
+          font-size: 11px; color: var(--textDim); line-height: 1.5;
+          font-style: italic; text-align: center;
+          white-space: normal; word-break: break-word;
+        }
+        .tts-ctrl {
+          background: none; border: none; border-radius: 7px;
+          color: var(--textDim); cursor: pointer; width: 30px; height: 30px;
+          display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+          transition: background 0.1s, color 0.1s;
+        }
+        .tts-ctrl:hover { background: var(--surfaceAlt); color: var(--text); }
+        .tts-ctrl.primary {
+          background: var(--accent); color: #fff;
+          width: 34px; height: 34px; border-radius: 9px;
+          box-shadow: 0 2px 8px rgba(56,139,253,0.3);
+        }
+        .tts-ctrl.primary:hover { filter: brightness(1.1); }
+
+        /* ── TTS word highlight ───────────────────────────────────────────── */
+        .col-word.tts-word-active {
+          background: rgba(56,139,253,0.28);
+          border-radius: 2px;
+          outline: none;
+        }
+      `}</style>
 
       {/* Header */}
       <header className="reader-header">
         <div className="reader-header-logo">
           <GnosNavButton />
-          <button className="btn-icon text-logo" onClick={exit}>Gnos</button>
         </div>
 
         <div className="chapter-nav-wrapper">
@@ -490,6 +868,15 @@ export default function ReaderView() {
         </div>
 
         <div className="reader-actions">
+          <button className="btn-reader-icon" title="Read aloud (TTS)"
+            onClick={() => ttsActive ? ttsStop() : ttsStart(null)}
+            style={ttsActive ? { color: 'var(--accent)' } : undefined}>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <path d="M2 5.5h3l4-3.5v11L5 9.5H2v-4z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
+              <path d="M11 5c.9.8 1.5 1.8 1.5 3s-.6 2.2-1.5 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+              <path d="M13 3c1.5 1.3 2.5 3 2.5 5s-1 3.7-2.5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+            </svg>
+          </button>
           <button className="btn-reader-icon" title="Reader settings"
             onClick={e => { e.stopPropagation(); setSettingsOpen(o => !o); setDropdownOpen(false) }}>
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -507,10 +894,11 @@ export default function ReaderView() {
           onPrefChange={handlePrefChange} onRebuild={handleRebuild} />
       )}
 
-      {/* Tap zones */}
+      {/* Tap zones — left zone shifts right when sidebar is open */}
       {prefs.tapToTurn && !loading && (
         <>
-          <div className="tap-zone left" onClick={prevPage}>
+          <div className="tap-zone left" onClick={prevPage}
+            style={sideNavOpen ? { left: 238 } : undefined}>
             <div className="tap-icon">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                 <path d="M9 2L4 7l5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
@@ -529,7 +917,10 @@ export default function ReaderView() {
 
       {/* Main card area */}
       <main className="reader-main" style={{ position: 'relative' }}>
-        <div ref={cardRef} className="reader-card" />
+        <div ref={cardRef} className="reader-card"
+          onClick={handleCardClick}
+          onContextMenu={handleCardContextMenu}
+        />
 
         {loading && (
           <div style={{
@@ -585,6 +976,257 @@ export default function ReaderView() {
           <div className="progress-bar" style={{ width: `${pct}%` }} />
         </div>
       </footer>
+
+      {/* ── Word context menu — horizontal pill ── */}
+      {wordMenu && (
+        <div className="word-menu" style={{ top: wordMenu.y - 64, left: wordMenu.x }} onClick={e => e.stopPropagation()}>
+          <button className="word-menu-item" onClick={() => {
+            const word = wordMenu.word
+            const x = wordMenu.x, y = wordMenu.y
+            setWordMenu(null)
+            setDefPopup({ word, mode: 'define', x, y: y + 12, content: null, loading: true })
+            // Fetch definition from Free Dictionary API
+            fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`)
+              .then(r => r.json())
+              .then(data => {
+                const entry = Array.isArray(data) ? data[0] : null
+                if (!entry) { setDefPopup(p => p && ({ ...p, loading: false, content: 'No definition found.' })); return }
+                const meanings = entry.meanings?.slice(0, 2).map(m =>
+                  `<b>${m.partOfSpeech}</b>: ${m.definitions?.slice(0,2).map(d => d.definition).join('; ')}`
+                ).join('<br>') || 'No definition found.'
+                const phonetic = entry.phonetic || ''
+                setDefPopup(p => p && ({ ...p, loading: false, content: meanings, phonetic }))
+              })
+              .catch(() => setDefPopup(p => p && ({ ...p, loading: false, content: 'Could not load definition.' })))
+          }}>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M3 14V3a1.5 1.5 0 0 1 1.5-1.5h9V14H4.5A1.5 1.5 0 0 1 3 12.5v0A1.5 1.5 0 0 1 4.5 11H13.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+              <line x1="6" y1="5.5" x2="11" y2="5.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+              <line x1="6" y1="8" x2="10" y2="8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+            </svg>
+            Define
+          </button>
+          <div className="word-menu-sep" />
+
+          {/* Language selector inline in menu pill */}
+          <div style={{ display:'flex', alignItems:'center', padding:'0 6px', gap:4, flexShrink:0 }}>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ color:'var(--textDim)', flexShrink:0 }}>
+              <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.3"/>
+              <path d="M8 1.5C8 1.5 5.5 4 5.5 8s2.5 6.5 2.5 6.5M8 1.5C8 1.5 10.5 4 10.5 8s-2.5 6.5-2.5 6.5M1.5 8h13" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+            </svg>
+            <select
+              value={translateLang}
+              onChange={e => setTranslateLang(e.target.value)}
+              onClick={e => e.stopPropagation()}
+              style={{ background:'var(--surfaceAlt)', border:'1px solid var(--border)', borderRadius:5, color:'var(--text)', fontSize:10, fontFamily:'inherit', padding:'2px 4px', cursor:'pointer', outline:'none', maxWidth:80 }}
+            >
+              {LIBRE_LANGS.map(l => <option key={l.code} value={l.code}>{l.name}</option>)}
+            </select>
+          </div>
+
+          <div className="word-menu-sep" />
+
+          <button className="word-menu-item" onClick={() => {
+            const word = wordMenu.word
+            const ctx = wordMenu.sentence || word
+            const x = wordMenu.x, y = wordMenu.y
+            const tl = translateLang
+            setWordMenu(null)
+            setDefPopup({ word: ctx.length > 60 ? word : ctx, mode: 'translate', x, y: y + 12, content: null, loading: true, targetLang: tl })
+
+            const base = libreUrl.replace(/\/$/, '')
+            const doTranslate = (url) => fetch(`${url}/translate`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ q: ctx, source: 'auto', target: tl, format: 'text' }),
+            }).then(r => r.json())
+
+            doTranslate(base)
+              .then(data => {
+                if (data.error) throw new Error(data.error)
+                const translated = data.translatedText || ''
+                const confidence = data.detectedLanguage?.confidence != null
+                  ? Math.round(data.detectedLanguage.confidence * 100)
+                  : null
+                const detectedLang = data.detectedLanguage?.language || null
+                setDefPopup(p => p && ({ ...p, loading: false, content: translated || 'Translation not available.', confidence, detectedLang }))
+                if (word.split(/\s+/).length === 1) {
+                  fetch(`https://api.dictionaryapi.dev/api/v2/entries/${tl}/${encodeURIComponent(translated.split(/\s+/)[0])}`)
+                    .then(r => r.json())
+                    .then(defData => {
+                      const entry = Array.isArray(defData) ? defData[0] : null
+                      if (!entry) return
+                      const defText = entry.meanings?.slice(0,1).map(m =>
+                        m.definitions?.slice(0,1).map(d => d.definition).join('; ')
+                      ).join(' ') || ''
+                      if (defText) setDefPopup(p => p && ({ ...p, targetDefinition: defText }))
+                    })
+                    .catch(() => {})
+                }
+              })
+              .catch(() => {
+                // Local instance failed — try public fallbacks
+                const fallbacks = ['https://libretranslate.com', 'https://libretranslate.de']
+                  .filter(u => !base.includes(new URL(u).hostname))
+                const tryNext = (idx) => {
+                  if (idx >= fallbacks.length) {
+                    setDefPopup(p => p && ({ ...p, loading: false, content: '⚠️ LibreTranslate not reachable.\n\nTo translate locally, run:\ndocker run -p 5000:5000 libretranslate/libretranslate\n\nOr update the server URL below.' }))
+                    return
+                  }
+                  doTranslate(fallbacks[idx])
+                    .then(data2 => {
+                      const translated = data2.translatedText || ''
+                      setDefPopup(p => p && ({ ...p, loading: false, content: translated || 'Translation not available.' }))
+                    })
+                    .catch(() => tryNext(idx + 1))
+                }
+                tryNext(0)
+              })
+          }}>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M2 4h7M5.5 2v2M2 4c0 3 2 5 3.5 5.5M7 9c-1 0-3-1-3.5-2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+              <path d="M9 11l2-6 2 6M10 9.5h2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+            </svg>
+            Translate
+          </button>
+          <div className="word-menu-sep" />
+          <button className="word-menu-item" onClick={() => {
+            ttsStart(wordMenu.sentence || wordMenu.word)
+            setWordMenu(null)
+          }}>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <polygon points="4,3 13,8 4,13" fill="currentColor"/>
+            </svg>
+            Play
+          </button>
+        </div>
+      )}
+
+      {/* ── Definition / Translate popup ── */}
+      {defPopup && (
+        <div className="def-popup" style={{ top: defPopup.y + 8, left: defPopup.x }} onClick={e => e.stopPropagation()}>
+          <button className="def-popup-close" onClick={() => setDefPopup(null)}>×</button>
+
+          {/* Header row — word + mode badge */}
+          <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:4, flexWrap:'wrap' }}>
+            <div className="def-popup-word" style={{ marginBottom:0 }}>
+              {defPopup.word}
+              {defPopup.phonetic && <span style={{ fontSize:12, fontWeight:400, fontStyle:'italic', color:'var(--textDim)', marginLeft:8 }}>{defPopup.phonetic}</span>}
+            </div>
+            {defPopup.mode === 'translate' && (
+              <span style={{ fontSize:10, background:'var(--surfaceAlt)', border:'1px solid var(--border)', borderRadius:4, padding:'1px 6px', color:'var(--textDim)', flexShrink:0, fontFamily:'inherit' }}>
+                → {LIBRE_LANGS.find(l=>l.code===defPopup.targetLang)?.name || defPopup.targetLang}
+              </span>
+            )}
+          </div>
+
+          <div className="def-popup-content">
+            {defPopup.loading
+              ? <div className="def-popup-loading"><div className="spinner" />Loading…</div>
+              : <>
+                  <span dangerouslySetInnerHTML={{ __html: defPopup.content || '' }} />
+
+                  {/* Translation metadata */}
+                  {defPopup.mode === 'translate' && (defPopup.confidence != null || defPopup.detectedLang) && (
+                    <div style={{ marginTop:8, paddingTop:6, borderTop:'1px solid var(--borderSubtle)', display:'flex', gap:10, flexWrap:'wrap' }}>
+                      {defPopup.detectedLang && (
+                        <span style={{ fontSize:10, color:'var(--textDim)' }}>
+                          Detected: <b style={{ color:'var(--text)' }}>{defPopup.detectedLang.toUpperCase()}</b>
+                        </span>
+                      )}
+                      {defPopup.confidence != null && (
+                        <span style={{ fontSize:10, color:'var(--textDim)', display:'flex', alignItems:'center', gap:5 }}>
+                          Confidence:
+                          <span style={{
+                            display:'inline-block', width:48, height:5, background:'var(--border)',
+                            borderRadius:3, overflow:'hidden', verticalAlign:'middle', marginLeft:3,
+                          }}>
+                            <span style={{ display:'block', height:'100%', width:`${defPopup.confidence}%`,
+                              background: defPopup.confidence > 70 ? 'var(--accent)' : defPopup.confidence > 40 ? '#d29922' : '#f85149',
+                              borderRadius:3, transition:'width 0.3s',
+                            }} />
+                          </span>
+                          <b style={{ color:'var(--text)' }}>{defPopup.confidence}%</b>
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Target-language definition (if fetched) */}
+                  {defPopup.mode === 'translate' && defPopup.targetDefinition && (
+                    <div style={{ marginTop:8, paddingTop:6, borderTop:'1px solid var(--borderSubtle)' }}>
+                      <div style={{ fontSize:10, fontWeight:600, color:'var(--textDim)', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:4 }}>
+                        Definition in {LIBRE_LANGS.find(l=>l.code===defPopup.targetLang)?.name || defPopup.targetLang}
+                      </div>
+                      <div style={{ fontSize:12, color:'var(--textDim)', lineHeight:1.5 }}>
+                        {defPopup.targetDefinition}
+                      </div>
+                    </div>
+                  )}
+                </>
+            }
+          </div>
+
+          {/* LibreTranslate server config (only in translate mode) */}
+          {defPopup.mode === 'translate' && !defPopup.loading && (
+            <div style={{ marginTop:8, paddingTop:6, borderTop:'1px solid var(--borderSubtle)' }}>
+              <div style={{ fontSize:10, color:'var(--textDim)', marginBottom:3 }}>
+                LibreTranslate server
+                <span style={{ marginLeft:6, opacity:0.6 }}>
+                  — local: <code style={{ fontFamily:'monospace' }}>docker run -p 5000:5000 libretranslate/libretranslate</code>
+                </span>
+              </div>
+              <input
+                style={{ width:'100%', background:'var(--bg)', border:'1px solid var(--border)', borderRadius:5, color:'var(--text)', padding:'3px 7px', fontSize:10, fontFamily:'inherit', outline:'none', boxSizing:'border-box' }}
+                value={libreUrl}
+                onChange={e => setLibreUrl(e.target.value)}
+                onClick={e => e.stopPropagation()}
+                placeholder="http://localhost:5000"
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── TTS Player bar ── */}
+      {ttsActive && (
+        <div className="tts-bar">
+          <div className="tts-controls-row">
+            <button className="tts-ctrl" onClick={() => ttsNav(-1)} title="Previous sentence">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <polygon points="10,2 3,6 10,10" fill="currentColor"/>
+                <rect x="1" y="2" width="2" height="8" rx="0.5" fill="currentColor"/>
+              </svg>
+            </button>
+            <button className="tts-ctrl primary" onClick={ttsTogglePause} title={ttsPaused ? 'Resume' : 'Pause'}>
+              {ttsPaused
+                ? <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><polygon points="2,1 11,6 2,11" fill="currentColor"/></svg>
+                : <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="2" y="1" width="3" height="10" rx="0.5" fill="currentColor"/><rect x="7" y="1" width="3" height="10" rx="0.5" fill="currentColor"/></svg>
+              }
+            </button>
+            <button className="tts-ctrl" onClick={() => ttsNav(1)} title="Next sentence">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <polygon points="2,2 9,6 2,10" fill="currentColor"/>
+                <rect x="9" y="2" width="2" height="8" rx="0.5" fill="currentColor"/>
+              </svg>
+            </button>
+            <div className="tts-controls-spacer" />
+            <button className="tts-ctrl" onClick={ttsStop} title="Stop">
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </button>
+          </div>
+          <div className="tts-progress-bar">
+            <div className="tts-progress-fill" style={{ width: `${Math.round(ttsProgress * 100)}%` }} />
+          </div>
+          {ttsSentence && (
+            <div className="tts-sentence">
+              &ldquo;{ttsSentence}&rdquo;
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

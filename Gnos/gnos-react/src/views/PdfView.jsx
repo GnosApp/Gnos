@@ -1,8 +1,8 @@
-import { GnosNavButton } from '@/components/SideNav'
 import { useEffect, useRef, useState } from 'react'
 import useAppStore from '@/store/useAppStore'
 import { loadBookContent } from '@/lib/storage'
 import { generateCoverColor } from '@/lib/utils'
+import { GnosNavButton } from '@/components/SideNav'
 
 // ── Load PDF.js from CDN ───────────────────────────────────────────────────────
 
@@ -169,7 +169,6 @@ export default function PdfView() {
         borderBottom:'1px solid var(--border)', background:'var(--headerBg)', flexShrink:0,
       }}>
         <GnosNavButton />
-
         <div style={{ width:1, height:16, background:'var(--border)' }} />
 
         <div style={{ flex:1, minWidth:0 }}>
