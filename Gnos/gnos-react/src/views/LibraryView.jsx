@@ -1,9 +1,11 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useContext, useMemo } from 'react'
+import { PaneContext } from '@/lib/PaneContext'
 import useAppStore from '@/store/useAppStore'
 import { generateCoverColor, makeId } from '@/lib/utils'
 import { importBooks, importAudioFile, importAudioFolder } from '@/lib/bookImport'
+import { loadReadingLog } from '@/lib/storage'
 import Toast from '@/components/ui/Toast'
-import { GnosNavButton } from '@/components/SideNav'
+import { GnosNavButton, UniversalSettingsModal } from '@/components/SideNav'
 
 const SearchIcon = () => (
   <svg className="search-icon" width="13" height="13" viewBox="0 0 16 16" fill="none">
@@ -312,9 +314,40 @@ function EditAudiobookModal({ book, onSave, onClose }) {
   )
 }
 
-function SearchDropdown({ query, library, notebooks, onOpenBook, onOpenAudio, onOpenNotebook, onClose }) {
+function SearchDropdown({ query, library, notebooks, onOpenBook, onOpenAudio, onOpenNotebook, onClose, onDevCommand }) {
   const q = query.trim().toLowerCase()
   if (!q) return null
+
+  // ── Dev commands ─────────────────────────────────────────────────────────────
+  if (q === '/dev test onboarding') {
+    return (
+      <div className="search-dropdown">
+        <button className="search-drop-item" onClick={() => { onDevCommand('onboarding'); onClose() }}
+          style={{ gap: 10 }}>
+          <div className="search-drop-cover" style={{ background: 'linear-gradient(135deg,#8b5e3c,#e8922a)', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🧪</div>
+          <div className="search-drop-info">
+            <div className="search-drop-title">Test Onboarding</div>
+            <div className="search-drop-sub">Preview onboarding flow — read-only, no file system changes</div>
+          </div>
+        </button>
+      </div>
+    )
+  }
+  // Show hint when user starts typing /dev
+  if (q.startsWith('/dev')) {
+    return (
+      <div className="search-dropdown">
+        <div style={{ padding: '8px 14px 4px', fontSize: 10, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--textDim)', opacity: 0.6 }}>Dev Commands</div>
+        <button className="search-drop-item" onClick={() => { onDevCommand('onboarding'); onClose() }}>
+          <div className="search-drop-cover" style={{ background: 'linear-gradient(135deg,#8b5e3c,#e8922a)', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🧪</div>
+          <div className="search-drop-info">
+            <div className="search-drop-title">/dev test onboarding</div>
+            <div className="search-drop-sub">Preview onboarding flow</div>
+          </div>
+        </button>
+      </div>
+    )
+  }
   const bookResults = library.filter(b => b.title?.toLowerCase().includes(q) || b.author?.toLowerCase().includes(q))
   const nbResults   = notebooks.filter(n => n.title?.toLowerCase().includes(q))
   const all = [...bookResults, ...nbResults.map(n => ({ ...n, _isNb: true }))]
@@ -498,308 +531,6 @@ function EditNotebookModal({ nb, onSave, onClose }) {
   )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SettingsModal
-// ─────────────────────────────────────────────────────────────────────────────
-function SettingsModal({ onClose }) {
-  const [tab, setTab] = useState('theme')
-
-  const themeKey      = useAppStore(s => s.themeKey)
-  const customThemes  = useAppStore(s => s.customThemes)
-  const highlightWords = useAppStore(s => s.highlightWords)
-  const underlineLine  = useAppStore(s => s.underlineLine)
-  const ollamaUrl      = useAppStore(s => s.ollamaUrl)
-  const ollamaModel    = useAppStore(s => s.ollamaModel)
-  const setTheme       = useAppStore(s => s.setTheme)
-  const setPref        = useAppStore(s => s.setPref)
-  const persistPreferences = useAppStore(s => s.persistPreferences)
-  const library        = useAppStore(s => s.library)
-  const persistLibrary = useAppStore(s => s.persistLibrary)
-  const addBook        = useAppStore(s => s.addBook)
-
-  const fileInputRef   = useRef()
-  const themeInputRef  = useRef()
-  const importInputRef = useRef()
-
-  const [aiTestResult, setAiTestResult] = useState('')
-  const [ollamaUrlVal,   setOllamaUrlVal]   = useState(ollamaUrl)
-  const [ollamaModelVal, setOllamaModelVal] = useState(ollamaModel)
-
-  const BUILT_IN_THEMES_LOCAL = {
-    dark: { name: 'Dark', bg: '#0d1117', surface: '#161b22', accent: '#388bfd' },
-    light: { name: 'Light (Cream)', bg: '#f5f0e8', surface: '#fdfaf4', accent: '#7c6034' },
-  }
-  const allThemes = { ...BUILT_IN_THEMES_LOCAL, ...customThemes }
-
-  const TABS = [
-    { id: 'theme', label: 'Appearance' },
-    { id: 'library', label: 'Library' },
-    { id: 'accessibility', label: 'Accessibility' },
-    { id: 'ai', label: 'AI' },
-  ]
-
-  const overlayStyle = {
-    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
-    zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center',
-  }
-  const modalStyle = {
-    background: 'var(--surface)', border: '1px solid var(--border)',
-    borderRadius: 14, width: 480, maxWidth: 'calc(100vw - 32px)',
-    maxHeight: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column',
-    boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
-  }
-
-  function renderThemeTab() {
-    return (
-      <div>
-        <div className="section-label">THEME</div>
-        <div className="radio-list">
-          {Object.keys(allThemes).map(k => (
-            <label key={k} className={`radio-item${themeKey === k ? ' active' : ''}`}
-              style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 12px',
-                borderRadius:8, cursor:'pointer', border: themeKey === k ? '1px solid var(--accent)' : '1px solid var(--border)',
-                marginBottom:6, background: themeKey === k ? 'rgba(56,139,253,0.06)' : 'transparent' }}>
-              <input type="radio" name="theme" value={k} checked={themeKey === k}
-                onChange={() => setTheme(k)} style={{ display:'none' }} />
-              <div style={{ display:'flex', gap:4 }}>
-                {['bg','surface','accent'].map(p => (
-                  <div key={p} className="swatch" style={{
-                    width:14, height:14, borderRadius:3,
-                    background: allThemes[k][p] || '#888',
-                    border: '1px solid rgba(255,255,255,0.1)'
-                  }} />
-                ))}
-              </div>
-              <span style={{ fontSize:13, fontWeight:500, color:'var(--text)', flex:1 }}>{allThemes[k].name}</span>
-              {k.startsWith('custom_') && <span style={{ fontSize:10, color:'var(--textDim)' }}>Custom</span>}
-            </label>
-          ))}
-        </div>
-        <div className="theme-import-box" style={{ marginTop:16 }}>
-          <div style={{ fontSize:12, color:'var(--textMuted)', marginBottom:8 }}>
-            Import custom theme <strong>.json</strong>
-          </div>
-          <button className="btn secondary" onClick={() => themeInputRef.current?.click()}>
-            Import theme (.json)
-          </button>
-          <input ref={themeInputRef} type="file" accept=".json" style={{ display:'none' }}
-            onChange={async e => {
-              const file = e.target.files[0]; if (!file) return
-              try {
-                const p = JSON.parse(await file.text())
-                if (p.name && p.bg && p.text) {
-                  const k = `custom_${Date.now()}`
-                  const next = { ...customThemes, [k]: p }
-                  setPref('customThemes', next)
-                  setTheme(k)
-                  await persistPreferences()
-                }
-              } catch { alert('Invalid theme file') }
-              e.target.value = ''
-            }} />
-        </div>
-      </div>
-    )
-  }
-
-  function renderLibraryTab() {
-    return (
-      <div>
-        <div className="section-label">DISCOVER BOOKS</div>
-        <a href="https://www.gutenberg.org" target="_blank" rel="noopener" className="gutenberg-btn">
-          <span className="gutenberg-btn-icon">📚</span>
-          <div className="gutenberg-btn-text">
-            <div className="title">Project Gutenberg</div>
-            <div className="sub">Free public domain ebooks — 70,000+ titles</div>
-          </div>
-          <svg className="gutenberg-btn-arrow" width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M3 7h8M8 4l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </a>
-        <a href="https://librivox.org" target="_blank" rel="noopener" className="gutenberg-btn" style={{ marginTop:8 }}>
-          <span className="gutenberg-btn-icon">🎧</span>
-          <div className="gutenberg-btn-text">
-            <div className="title">LibriVox</div>
-            <div className="sub">Free public domain audiobooks — 20,000+ titles</div>
-          </div>
-          <svg className="gutenberg-btn-arrow" width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M3 7h8M8 4l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </a>
-
-        <div className="section-label" style={{ marginTop:18 }}>LIBRARY DATA</div>
-        <p style={{ fontSize:13, color:'var(--textMuted)', marginBottom:14, lineHeight:1.6 }}>
-          Export your library as <strong>gnos-library.json</strong> to back it up.
-        </p>
-        <div style={{ display:'flex', gap:10, marginBottom:18 }}>
-          <button className="btn secondary" style={{ flex:1, justifyContent:'center' }} onClick={() => {
-            const blob = new Blob([JSON.stringify({ _readme: 'Gnos Library', books: library }, null, 2)], { type: 'application/json' })
-            const url = URL.createObjectURL(blob)
-            Object.assign(document.createElement('a'), { href: url, download: 'gnos-library.json' }).click()
-            URL.revokeObjectURL(url)
-          }}>↓ Export</button>
-          <button className="btn primary" style={{ flex:1, justifyContent:'center' }}
-            onClick={() => importInputRef.current?.click()}>↑ Import</button>
-        </div>
-        <div className="section-label">ADD BOOKS</div>
-        <div style={{ display:'flex', gap:10, marginTop:8 }}>
-          <button className="btn primary" style={{ flex:1, justifyContent:'center' }}
-            onClick={() => fileInputRef.current?.click()}>+ Add Books</button>
-        </div>
-        <input ref={fileInputRef} type="file" accept=".epub,.txt,.md,.pdf" multiple style={{ display:'none' }}
-          onChange={async e => {
-            const { importBooks } = await import('@/lib/bookImport')
-            const { added } = await importBooks(e.target.files)
-            for (const book of added) addBook(book)
-            if (added.length) await persistLibrary()
-            e.target.value = ''
-          }} />
-        <input ref={importInputRef} type="file" accept=".json" style={{ display:'none' }}
-          onChange={async e => {
-            const file = e.target.files[0]; if (!file) return
-            try {
-              const d = JSON.parse(await file.text())
-              if (Array.isArray(d.books)) {
-                const ids = new Set(library.map(b => b.id))
-                d.books.filter(b => !ids.has(b.id)).forEach(b => addBook(b))
-                await persistLibrary()
-              }
-            } catch { alert('Invalid library file') }
-            e.target.value = ''
-          }} />
-      </div>
-    )
-  }
-
-  function renderAccessibilityTab() {
-    const Row = ({ label, sub, active, onToggle }) => (
-      <div className="accessibility-row" style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-        padding:'12px 0', borderBottom:'1px solid var(--borderSubtle)' }}>
-        <div>
-          <div className="accessibility-label" style={{ fontSize:13, fontWeight:600, color:'var(--text)', marginBottom:3 }}>{label}</div>
-          <div className="accessibility-sub" style={{ fontSize:12, color:'var(--textDim)' }}>{sub}</div>
-        </div>
-        <div onClick={onToggle} style={{
-          width:36, height:20, borderRadius:10, cursor:'pointer', flexShrink:0, marginLeft:16,
-          background: active ? 'var(--accent)' : 'var(--surfaceAlt)',
-          border: '1px solid var(--border)', position:'relative', transition:'background 0.2s'
-        }}>
-          <div style={{
-            position:'absolute', top:2, left: active ? 16 : 2,
-            width:14, height:14, borderRadius:7, background:'var(--text)',
-            transition:'left 0.2s',
-          }} />
-        </div>
-      </div>
-    )
-    return (
-      <div>
-        <p style={{ fontSize:12, color:'var(--textMuted)', marginBottom:16, lineHeight:1.6 }}>
-          These settings apply in the reader and help improve reading comfort.
-        </p>
-        <Row label="Highlight words on hover" sub="Highlights individual words when you hover over them."
-          active={highlightWords} onToggle={async () => { setPref('highlightWords', !highlightWords); await persistPreferences() }} />
-        <Row label="Underline current line" sub="Underlines the line you're hovering over to help focus."
-          active={underlineLine} onToggle={async () => { setPref('underlineLine', !underlineLine); await persistPreferences() }} />
-      </div>
-    )
-  }
-
-  function renderAITab() {
-    return (
-      <div>
-        <div className="section-label">AI ASSISTANT</div>
-        <p style={{ fontSize:12, color:'var(--textMuted)', marginBottom:16, lineHeight:1.6 }}>
-          Connect a local Ollama instance for AI-powered text summarization.
-        </p>
-        <label style={{ display:'block', marginBottom:14, fontSize:12 }}>
-          <div style={{ marginBottom:5, fontWeight:600, color:'var(--text)' }}>Ollama Server URL</div>
-          <input type="text" placeholder="http://localhost:11434" value={ollamaUrlVal}
-            onChange={e => setOllamaUrlVal(e.target.value)}
-            style={{ width:'100%', background:'var(--bg)', border:'1px solid var(--border)', color:'var(--text)',
-              borderRadius:6, padding:'8px 10px', fontSize:12, outline:'none', fontFamily:'inherit', boxSizing:'border-box' }} />
-        </label>
-        <label style={{ display:'block', marginBottom:14, fontSize:12 }}>
-          <div style={{ marginBottom:5, fontWeight:600, color:'var(--text)' }}>Model Name</div>
-          <input type="text" placeholder="llama3, mistral, phi3…" value={ollamaModelVal}
-            onChange={e => setOllamaModelVal(e.target.value)}
-            style={{ width:'100%', background:'var(--bg)', border:'1px solid var(--border)', color:'var(--text)',
-              borderRadius:6, padding:'8px 10px', fontSize:12, outline:'none', fontFamily:'inherit', boxSizing:'border-box' }} />
-        </label>
-        <div style={{ display:'flex', gap:10, marginTop:6 }}>
-          <button className="btn primary" style={{ flex:1, justifyContent:'center' }} onClick={async () => {
-            setPref('ollamaUrl', ollamaUrlVal.trim().replace(/\/$/, ''))
-            setPref('ollamaModel', ollamaModelVal.trim())
-            await persistPreferences()
-            setAiTestResult('')
-          }}>Save Settings</button>
-          <button className="btn secondary" style={{ flex:1, justifyContent:'center' }} onClick={async () => {
-            setAiTestResult('Testing connection…')
-            const url = (ollamaUrlVal.trim() || 'http://localhost:11434').replace(/\/$/, '')
-            const model = ollamaModelVal.trim() || 'llama3'
-            try {
-              const r = await fetch(`${url}/api/generate`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model, prompt: 'Say: OK', stream: false }),
-              })
-              setAiTestResult(r.ok ? '✓ Connected successfully!' : `✗ Server returned ${r.status}`)
-            } catch (err) {
-              setAiTestResult(`✗ Could not connect: ${err.message}`)
-            }
-          }}>Test Connection</button>
-        </div>
-        {aiTestResult && (
-          <div style={{ marginTop:12, fontSize:12, color: aiTestResult.startsWith('✓') ? '#3fb950' : aiTestResult.startsWith('✗') ? '#f85149' : 'var(--textDim)' }}>
-            {aiTestResult}
-          </div>
-        )}
-        <div style={{ marginTop:20, paddingTop:16, borderTop:'1px solid var(--borderSubtle)' }}>
-          <div className="section-label">CURRENT AI SOURCE</div>
-          <div style={{ fontSize:12, color:'var(--textMuted)', padding:'10px 12px',
-            background:'var(--surfaceAlt)', borderRadius:7, border:'1px solid var(--border)' }}>
-            {ollamaUrl
-              ? <><span style={{ color:'#3fb950' }}>●</span> Ollama at <strong style={{ color:'var(--accent)' }}>{ollamaUrl}</strong>{ollamaModel ? ` using ${ollamaModel}` : ' (no model set)'}</>
-              : <><span style={{ color:'#f85149' }}>○</span> <strong style={{ color:'var(--textMuted)' }}>No local LLM configured.</strong></>}
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div style={overlayStyle} onClick={onClose}>
-      <div style={modalStyle} onClick={e => e.stopPropagation()}>
-        <div className="modal-header" style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-          padding:'16px 20px 0', flexShrink:0 }}>
-          <h2 style={{ margin:0, fontSize:16, fontWeight:700, color:'var(--text)' }}>Settings</h2>
-          <button className="btn-close" onClick={onClose} style={{ background:'none', border:'none',
-            fontSize:18, cursor:'pointer', color:'var(--textMuted)', lineHeight:1, padding:'2px 6px' }}>×</button>
-        </div>
-        <div className="modal-tabs" style={{ display:'flex', gap:2, padding:'12px 20px 0', flexShrink:0,
-          borderBottom:'1px solid var(--borderSubtle)' }}>
-          {TABS.map(t => (
-            <button key={t.id} className={`tab${tab === t.id ? ' active' : ''}`}
-              onClick={() => setTab(t.id)}
-              style={{ padding:'7px 14px', fontSize:12, fontWeight:600, background:'none', border:'none',
-                cursor:'pointer', borderRadius:'7px 7px 0 0', marginBottom:-1,
-                color: tab === t.id ? 'var(--accent)' : 'var(--textMuted)',
-                borderBottom: tab === t.id ? '2px solid var(--accent)' : '2px solid transparent' }}>
-              {t.label}
-            </button>
-          ))}
-        </div>
-        <div className="modal-body" style={{ overflowY:'auto', padding:'18px 20px 20px', flex:1 }}>
-          {tab === 'theme'         && renderThemeTab()}
-          {tab === 'library'       && renderLibraryTab()}
-          {tab === 'accessibility' && renderAccessibilityTab()}
-          {tab === 'ai'            && renderAITab()}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function ProfileStatCard({ value, label }) {
   return (
     <div className="profile-stat-card" style={{ background:'var(--surfaceAlt)', borderRadius:10, padding:'12px 14px',
@@ -814,65 +545,93 @@ function ProfileStatCard({ value, label }) {
 // ProfileModal
 // ─────────────────────────────────────────────────────────────────────────────
 function ProfileModal({ onClose }) {
-  const library = useAppStore(s => s.library)
+  const library  = useAppStore(s => s.library)
+  const username = useAppStore(s => s.username)
 
-  // Reading log: stored in window.storage under 'reading_log'
   const [log, setLog] = useState({})
 
   useEffect(() => {
-    window.storage?.get('reading_log').then(r => r && setLog(JSON.parse(r.value))).catch(() => {})
+    loadReadingLog().then(setLog).catch(() => setLog({}))
   }, [])
 
-  const todayKey = () => new Date().toISOString().slice(0, 10)
+  const today = new Date().toISOString().slice(0, 10)
 
-  const totalMinutes = Object.values(log).reduce((a, b) => a + b, 0)
-  const dayCount = Object.keys(log).length
-  const avgDaily = dayCount > 0 ? totalMinutes / dayCount : 0
-  const todayMins = Math.round(log[todayKey()] || 0)
-  const booksFinished = library.filter(b => (b.currentChapter || 0) >= Math.max((b.totalChapters || 1) - 1, 1)).length
+  const { totalMinutes, avgDaily, todayMins, streak, booksFinished, heatmapDays } = useMemo(() => {
+    const total = Object.values(log).reduce((a, b) => a + b, 0)
+    const days  = Object.keys(log).length
+    const tMins = Math.round(log[today] || 0)
 
-  // Streak
-  let streak = 0
-  for (let i = 0; i < 365; i++) {
-    const d = new Date(); d.setDate(d.getDate() - i)
-    const k = d.toISOString().slice(0, 10)
-    if ((log[k] || 0) >= 1) streak++; else break
-  }
+    // Streak: consecutive days ending today (or yesterday) with ≥1 min
+    let s = 0
+    for (let i = 0; i < 365; i++) {
+      const d = new Date(); d.setDate(d.getDate() - i)
+      const k = d.toISOString().slice(0, 10)
+      if ((log[k] || 0) >= 1) s++; else break
+    }
 
-  // Heatmap: last 84 days (12 weeks)
-  const heatmapDays = []
-  for (let i = 83; i >= 0; i--) {
-    const d = new Date(); d.setDate(d.getDate() - i)
-    const k = d.toISOString().slice(0, 10)
-    const mins = log[k] || 0
-    const level = mins === 0 ? 0 : mins < 10 ? 1 : mins < 30 ? 2 : mins < 60 ? 3 : 4
-    heatmapDays.push({ k, mins, level })
-  }
+    const finished = library.filter(b =>
+      (b.currentChapter || 0) >= Math.max((b.totalChapters || 1) - 1, 1)
+    ).length
 
-  // Top books by chapters read
-  const topBooks = library.map(b => ({ ...b, chaptersRead: b.currentChapter || 0 }))
-    .sort((a, b) => b.chaptersRead - a.chaptersRead).slice(0, 5)
+    // Heatmap: 84 days = 12 weeks × 7 days, laid out as 7 rows × 12 cols
+    const heat = []
+    for (let i = 83; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i)
+      const k = d.toISOString().slice(0, 10)
+      const m = log[k] || 0
+      const level = m === 0 ? 0 : m < 10 ? 1 : m < 30 ? 2 : m < 60 ? 3 : 4
+      heat.push({ k, m, level })
+    }
 
-  const heatColors = ['var(--surfaceAlt)', 'rgba(56,139,253,0.25)', 'rgba(56,139,253,0.5)', 'rgba(56,139,253,0.75)', 'var(--accent)']
+    return {
+      totalMinutes: total,
+      avgDaily:     days > 0 ? total / days : 0,
+      todayMins:    tMins,
+      streak:       s,
+      booksFinished: finished,
+      heatmapDays:  heat,
+    }
+  }, [log, library, today])
+
+  const topBooks = useMemo(() =>
+    library
+      .map(b => ({ ...b, chaptersRead: b.currentChapter || 0 }))
+      .sort((a, b) => b.chaptersRead - a.chaptersRead)
+      .slice(0, 5),
+    [library]
+  )
+
+  const title = username ? `${username} — Reading Profile` : 'Reading Profile'
+
+  // Heatmap colours use CSS variables so they adapt to every theme
+  // Level 0 = empty, levels 1-4 = progressively more opaque accent
+  const heatAlpha = ['0', '0.22', '0.45', '0.7', '1']
 
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:2000,
       display:'flex', alignItems:'center', justifyContent:'center' }} onClick={onClose}>
       <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:14,
-        width:480, maxWidth:'calc(100vw - 32px)', maxHeight:'calc(100vh - 64px)', display:'flex',
+        width:500, maxWidth:'calc(100vw - 32px)', maxHeight:'calc(100vh - 64px)', display:'flex',
         flexDirection:'column', boxShadow:'0 20px 60px rgba(0,0,0,0.6)' }} onClick={e => e.stopPropagation()}>
 
+        {/* Header */}
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-          padding:'16px 20px 0', flexShrink:0 }}>
-          <h2 style={{ margin:0, fontSize:16, fontWeight:700, color:'var(--text)' }}>Reading Profile</h2>
-          <button onClick={onClose} style={{ background:'none', border:'none', fontSize:18,
-            cursor:'pointer', color:'var(--textMuted)', lineHeight:1, padding:'2px 6px' }}>×</button>
+          padding:'16px 20px 12px', borderBottom:'1px solid var(--borderSubtle)', flexShrink:0 }}>
+          <span style={{ fontSize:14, fontWeight:700, color:'var(--text)' }}>{title}</span>
+          <button onClick={onClose} title="Close" style={{
+            width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',
+            color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',
+            transition:'background 0.1s,color 0.1s,border-color 0.1s',
+          }} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}}
+             onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}>
+            <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+          </button>
         </div>
 
         <div style={{ overflowY:'auto', padding:'16px 20px 24px', flex:1 }}>
 
           {/* Stats grid */}
-          <div className="profile-stats-grid" style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8, marginBottom:20 }}>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8, marginBottom:20 }}>
             <ProfileStatCard value={streak}                                   label="Day Streak" />
             <ProfileStatCard value={Math.round(avgDaily)}                     label="Avg Min / Day" />
             <ProfileStatCard value={todayMins}                                label="Min Today" />
@@ -881,28 +640,52 @@ function ProfileModal({ onClose }) {
             <ProfileStatCard value={Math.round(totalMinutes / 60 * 10) / 10} label="Hours Read" />
           </div>
 
-          {/* Heatmap */}
-          <div style={{ fontSize:12, fontWeight:700, color:'var(--textMuted)', textTransform:'uppercase',
-            letterSpacing:'0.07em', marginBottom:8 }}>Reading Activity — Last 12 Weeks</div>
-          <div className="heatmap-grid" style={{ display:'grid', gridTemplateColumns:'repeat(12, 1fr)', gap:3, marginBottom:6 }}>
+          {/* Heatmap section */}
+          <div style={{ fontSize:11, fontWeight:700, color:'var(--textDim)', textTransform:'uppercase',
+            letterSpacing:'0.07em', marginBottom:10 }}>Reading Activity — Last 12 Weeks</div>
+
+          {/* Grid: 12 columns (weeks) × 7 rows (days) */}
+          <div style={{
+            display:'grid',
+            gridTemplateColumns:'repeat(12, 1fr)',
+            gridTemplateRows:'repeat(7, 1fr)',
+            gridAutoFlow:'column',
+            gap:3,
+            marginBottom:10,
+          }}>
             {heatmapDays.map((d, i) => (
-              <div key={i} title={`${d.k}: ${Math.round(d.mins)} min`}
-                style={{ height:10, borderRadius:2,
-                  background: heatColors[d.level],
-                  border: d.level === 0 ? '1px solid var(--borderSubtle)' : 'none' }} />
+              <div
+                key={i}
+                title={`${d.k}: ${Math.round(d.m)} min`}
+                style={{
+                  height: 10,
+                  borderRadius: 2,
+                  background: d.level === 0
+                    ? 'var(--surfaceAlt)'
+                    : `color-mix(in srgb, var(--accent) ${Math.round(parseFloat(heatAlpha[d.level]) * 100)}%, transparent)`,
+                  border: d.level === 0 ? '1px solid var(--borderSubtle)' : 'none',
+                }}
+              />
             ))}
           </div>
-          <div className="heatmap-legend" style={{ display:'flex', alignItems:'center', gap:4, fontSize:11, color:'var(--textDim)', marginBottom:20 }}>
-            <span>Less</span>
-            {heatColors.map((c, i) => (
-              <div key={i} style={{ width:10, height:10, borderRadius:2, background:c,
-                border: i === 0 ? '1px solid var(--borderSubtle)' : 'none' }} />
+
+          {/* Legend — separate row, no overlap */}
+          <div style={{ display:'flex', alignItems:'center', gap:5, marginBottom:20 }}>
+            <span style={{ fontSize:10, color:'var(--textDim)' }}>Less</span>
+            {heatAlpha.map((a, i) => (
+              <div key={i} style={{
+                width:10, height:10, borderRadius:2, flexShrink:0,
+                background: i === 0
+                  ? 'var(--surfaceAlt)'
+                  : `color-mix(in srgb, var(--accent) ${Math.round(parseFloat(a) * 100)}%, transparent)`,
+                border: i === 0 ? '1px solid var(--borderSubtle)' : 'none',
+              }} />
             ))}
-            <span>More</span>
+            <span style={{ fontSize:10, color:'var(--textDim)' }}>More</span>
           </div>
 
           {/* Top books */}
-          <div style={{ fontSize:12, fontWeight:700, color:'var(--textMuted)', textTransform:'uppercase',
+          <div style={{ fontSize:11, fontWeight:700, color:'var(--textDim)', textTransform:'uppercase',
             letterSpacing:'0.07em', marginBottom:12 }}>Most Read Books</div>
           {topBooks.length === 0
             ? <div style={{ color:'var(--textDim)', fontSize:13 }}>No reading data yet.</div>
@@ -939,11 +722,64 @@ function ProfileModal({ onClose }) {
   )
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DevOnboardingPreview — full onboarding UI in a modal, all side-effects
+// replaced with no-ops so no files are created and no prefs are written.
+// Triggered by typing `/dev test onboarding` in the library search bar.
+// ─────────────────────────────────────────────────────────────────────────────
+// DevOnboardingPreview — renders the real OnboardingView inside a full-screen
+// modal with all Tauri side-effects neutralised. No files are created and no
+// preferences are written. Triggered by `/dev test onboarding` in the search bar.
+function DevOnboardingPreview({ onClose }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 20000, display: 'flex', flexDirection: 'column' }}>
+      {/* DEV banner */}
+      <div style={{
+        position: 'absolute', top: 0, left: 0, right: 0, zIndex: 1,
+        background: 'rgba(248,81,73,0.92)', color: '#fff',
+        fontSize: 11, fontWeight: 700, letterSpacing: '.08em',
+        textTransform: 'uppercase', textAlign: 'center', padding: '5px 0',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
+      }}>
+        <span>🧪 Dev Preview — read-only, no files created, no prefs saved</span>
+        <button onClick={onClose} style={{
+          background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff',
+          borderRadius: 4, padding: '1px 8px', cursor: 'pointer', fontSize: 11,
+          fontWeight: 700, fontFamily: 'inherit',
+        }}>✕ Exit</button>
+      </div>
+      {/* Real OnboardingView shifted down by banner height, side-effects patched */}
+      <div style={{ flex: 1, marginTop: 27 }}>
+        <OnboardingViewDev onClose={onClose} />
+      </div>
+    </div>
+  )
+}
+
+// Dynamically imports OnboardingView and renders it with devMode=true.
+// The devMode prop inside OnboardingView skips all Tauri filesystem calls
+// and store writes, so nothing is created or persisted.
+function OnboardingViewDev({ onClose }) {
+  const [OBView, setOBView] = useState(null)
+  useEffect(() => {
+    import('@/views/OnboardingView').then(m => setOBView(() => m.default))
+  }, [])
+
+  if (!OBView) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--textDim)', fontSize: 13 }}>
+      Loading…
+    </div>
+  )
+
+  return <OBView onComplete={onClose} devMode={true} />
+}
+
 export default function LibraryView() {
   const library   = useAppStore(s => s.library)
   const notebooks = useAppStore(s => s.notebooks)
   const sketchbooks = useAppStore(s => s.sketchbooks)
-  const setView   = useAppStore(s => s.setView)
+  const setView         = useAppStore(s => s.setView)
+  const openNewTab      = useAppStore(s => s.openNewTab)
   const setActiveBook      = useAppStore(s => s.setActiveBook)
   const setActiveNotebook  = useAppStore(s => s.setActiveNotebook)
   const setActiveAudioBook = useAppStore(s => s.setActiveAudioBook)
@@ -963,6 +799,7 @@ export default function LibraryView() {
 
   const [search,     setSearch]     = useState('')
   const [addOpen,    setAddOpen]    = useState(false)
+  const [devOnboardingOpen, setDevOnboardingOpen] = useState(false)
   const [menu,       setMenu]       = useState(null)
   const [libMenu,    setLibMenu]    = useState(null)
   const [editBook,   setEditBook]   = useState(null)
@@ -981,6 +818,20 @@ export default function LibraryView() {
   const books      = library.filter(b => b.type !== 'audio')
   const audiobooks = library.filter(b => b.type === 'audio')
 
+  useEffect(() => {
+    const handler = async (e) => {
+      const { file } = e.detail
+      setToast({ message: 'Importing…' })
+      const { added, errors } = await importBooks([file])
+      for (const book of added) addBook(book)
+      if (added.length) await persistLibrary()
+      if (errors.length) setToast({ message: errors[0], error: true })
+      else if (added.length) setToast({ message: `Added ${added.length} book${added.length > 1 ? 's' : ''}!` })
+      setTimeout(() => setToast(null), 2500)
+    }
+    window.addEventListener('open-file', handler)
+    return () => window.removeEventListener('open-file', handler)
+  }, [addBook, persistLibrary])
 
   async function handleBookFiles(e) {
     const files = e.target.files
@@ -1024,30 +875,72 @@ export default function LibraryView() {
     e.target.value = ''
   }
 
+  // In split mode PaneContext holds the tabId for this pane.
+  // We update that tab's snapshot directly instead of the global view.
+  const paneTabId = useContext(PaneContext)
+
   function openBook(book) {
     setActiveBook(book)
+    // In split mode: snapshot the new view into this pane's tab so it persists
+    // when the user switches back. Don't switchTab — let the user stay where they are.
+    if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: book.format === 'pdf' ? 'pdf' : 'reader', activeBook: book })
     setView(book.format === 'pdf' ? 'pdf' : 'reader')
   }
-  function openAudio(book)      { setActiveAudioBook(book); setView('audio-player') }
-  function openNotebook(nb)     { setActiveNotebook(nb);    setView('notebook') }
-  function openSketchbook(sb)   { setActiveSketchbook(sb);  setView('sketchbook') }
+  function openAudio(book) {
+    setActiveAudioBook(book)
+    if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'audio-player', activeAudioBook: book })
+    setView('audio-player')
+  }
+  function openNotebook(nb) {
+    setActiveNotebook(nb)
+    if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'notebook', activeNotebook: nb })
+    setView('notebook')
+  }
+  function openSketchbook(sb) {
+    setActiveSketchbook(sb)
+    if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'sketchbook', activeSketchbook: sb })
+    setView('sketchbook')
+  }
+
+  function openBookInNewTab(book) {
+    useAppStore.getState().setActiveBook(book)
+    openNewTab({ view: book.format === 'pdf' ? 'pdf' : 'reader', activeBook: book })
+  }
+  function openAudioInNewTab(book) {
+    useAppStore.getState().setActiveAudioBook(book)
+    openNewTab({ view: 'audio-player', activeAudioBook: book })
+  }
+  function openNotebookInNewTab(nb) {
+    useAppStore.getState().setActiveNotebook(nb)
+    openNewTab({ view: 'notebook', activeNotebook: nb })
+  }
+  function openSketchbookInNewTab(sb) {
+    useAppStore.getState().setActiveSketchbook(sb)
+    openNewTab({ view: 'sketchbook', activeSketchbook: sb })
+  }
 
   const ICON_BOOK   = '<path d="M3 14V3a1.5 1.5 0 0 1 1.5-1.5h9V14H4.5A1.5 1.5 0 0 1 3 12.5v0A1.5 1.5 0 0 1 4.5 11H13.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
   const ICON_AUDIO  = '<path d="M3 6h3l3-3.5v11L6 10H3V6z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M11 5c.8.7 1.3 1.6 1.3 3s-.5 2.3-1.3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'
   const ICON_NB     = '<rect x="2" y="1" width="12" height="14" rx="1.5" stroke="currentColor" stroke-width="1.4"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><line x1="5" y1="11" x2="8" y2="11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>'
   const ICON_TRASH  = '<polyline points="3,6 5,6 13,6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 6V4H5v2M14 6l-.867 9.143A1.5 1.5 0 0 1 11.64 16.5H4.36A1.5 1.5 0 0 1 2.867 15.143L2 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
 
+  const ICON_SEARCH = '<circle cx="6" cy="6" r="4" stroke="currentColor" stroke-width="1.4"/><path d="M9.5 9.5l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'
+  const ICON_NEWTAB = '<path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1h4v4M14 1l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
   function showBookMenu(e, book) {
     e.stopPropagation()
     setMenu({ x: e.clientX, y: e.clientY, items: [
-      { label: 'Open',   icon: ICON_BOOK,  action: () => openBook(book) },
+      { label: 'Open',            icon: ICON_BOOK,   action: () => openBook(book) },
+      { label: 'Open in New Tab', icon: ICON_NEWTAB, action: () => openBookInNewTab(book) },
+      { label: 'Search title', icon: ICON_SEARCH, action: () => window.open(`https://www.google.com/search?q=${encodeURIComponent(book.title)}`, '_blank') },
+      { label: 'Search author', icon: ICON_SEARCH, action: () => window.open(`https://www.google.com/search?q=${encodeURIComponent(book.author || book.title + ' author')}`, '_blank') },
       { label: 'Delete', icon: ICON_TRASH, danger: true, action: () => removeBook(book.id) },
     ]})
   }
   function showAudioMenu(e, book) {
     e.stopPropagation()
     setMenu({ x: e.clientX, y: e.clientY, items: [
-      { label: 'Play',   icon: ICON_AUDIO, action: () => openAudio(book) },
+      { label: 'Play',            icon: ICON_AUDIO,  action: () => openAudio(book) },
+      { label: 'Open in New Tab', icon: ICON_NEWTAB,  action: () => openAudioInNewTab(book) },
       { label: 'Edit',   icon: '<path d="M11.5 2.5a2.121 2.121 0 0 1 3 3L5 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>', action: () => setEditBook(book) },
       { label: 'Delete', icon: ICON_TRASH, danger: true, action: () => removeBook(book.id) },
     ]})
@@ -1055,7 +948,8 @@ export default function LibraryView() {
   function showNbMenu(e, nb) {
     e.stopPropagation()
     setMenu({ x: e.clientX, y: e.clientY, items: [
-      { label: 'Open',   icon: ICON_NB,    action: () => openNotebook(nb) },
+      { label: 'Open',            icon: ICON_NB,     action: () => openNotebook(nb) },
+      { label: 'Open in New Tab', icon: ICON_NEWTAB,  action: () => openNotebookInNewTab(nb) },
       { label: 'Edit',   icon: '<path d="M11.5 2.5a2.121 2.121 0 0 1 3 3L5 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>', action: () => setEditNb(nb) },
       { label: 'Delete', icon: ICON_TRASH, danger: true, action: () => removeNotebook(nb.id) },
     ]})
@@ -1064,7 +958,8 @@ export default function LibraryView() {
   function showSbMenu(e, sb) {
     e.stopPropagation()
     setMenu({ x: e.clientX, y: e.clientY, items: [
-      { label: 'Open',   icon: ICON_SKETCH, action: () => openSketchbook(sb) },
+      { label: 'Open',            icon: ICON_SKETCH, action: () => openSketchbook(sb) },
+      { label: 'Open in New Tab', icon: ICON_NEWTAB,  action: () => openSketchbookInNewTab(sb) },
       { label: 'Edit',   icon: '<path d="M11.5 2.5a2.121 2.121 0 0 1 3 3L5 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>', action: () => setEditSb(sb) },
       { label: 'Delete', icon: ICON_TRASH, danger: true, action: async () => {
         const { deleteSketchbookContent } = await import('@/lib/storage')
@@ -1080,7 +975,7 @@ export default function LibraryView() {
     const nbs = notebooks
     const sbs = sketchbooks
     if (!lib.length && !nbs.length && !sbs.length) return (
-      <div className="lib-empty-state">
+      <div className="lib-empty-state" style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10}}>
         <button className="lib-empty-plus" onClick={() => fileInputRef.current?.click()}>
           <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
         </button>
@@ -1104,50 +999,73 @@ export default function LibraryView() {
 
   function renderTab() {
     if (activeTab === 'library') {
-      return <div className="library-grid">{renderAll()}</div>
+      return (
+        <div className="lib-tab-inner">
+          <div className="library-grid" style={{gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))"}}>{renderAll()}</div>
+        </div>
+      )
     }
     if (activeTab === 'books') {
-      return <div className="library-grid">
-        {books.length ? books.map(b => <BookCard key={b.id} book={b} onOpen={openBook} onMenu={showBookMenu} />)
-          : <div className="lib-empty-state">
-            <button className="lib-empty-plus" onClick={() => fileInputRef.current?.click()}>
-              <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
-            </button>
-            <p className="lib-empty-hint">Click to add books, or right-click anywhere</p>
-            <p className="lib-empty-formats">.epub · .txt · .md · .pdf</p>
-          </div>}
-      </div>
+      return (
+        <div className="lib-tab-inner">
+          <div className="library-grid" style={{gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))"}}>
+            {books.length ? books.map(b => <BookCard key={b.id} book={b} onOpen={openBook} onMenu={showBookMenu} />) : null}
+          </div>
+          {!books.length && (
+            <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10}}>
+              <button className="lib-empty-plus" onClick={() => fileInputRef.current?.click()}>
+                <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
+              </button>
+              <p className="lib-empty-hint">Click to add books, or right-click anywhere</p>
+              <p className="lib-empty-formats">.epub · .txt · .md · .pdf</p>
+            </div>
+          )}
+        </div>
+      )
     }
     if (activeTab === 'audiobooks') {
-      return <div className="library-grid">
-        {audiobooks.length ? audiobooks.map(b => <AudiobookCard key={b.id} book={b} onOpen={openAudio} onMenu={showAudioMenu} />)
-          : <div className="lib-empty-state">
-            <button className="lib-empty-plus" onClick={() => audioInputRef.current?.click()}>
-              <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
-            </button>
-            <p className="lib-empty-hint">Right-click anywhere to add an audiobook,<br/>or click + above</p>
-            <p className="lib-empty-formats">.mp3 · .m4b · .m4a · .wav · .flac</p>
-          </div>}
-      </div>
+      return (
+        <div className="lib-tab-inner">
+          <div className="library-grid" style={{gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))"}}>
+            {audiobooks.length ? audiobooks.map(b => <AudiobookCard key={b.id} book={b} onOpen={openAudio} onMenu={showAudioMenu} />) : null}
+          </div>
+          {!audiobooks.length && (
+            <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10}}>
+              <button className="lib-empty-plus" onClick={() => audioInputRef.current?.click()}>
+                <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
+              </button>
+              <p className="lib-empty-hint">Right-click anywhere to add an audiobook,<br/>or click + above</p>
+              <p className="lib-empty-formats">.mp3 · .m4b · .m4a · .wav · .flac</p>
+            </div>
+          )}
+        </div>
+      )
     }
     if (activeTab === 'notebooks') {
       const combined = [
         ...notebooks.map(nb => ({ ...nb, _kind: 'notebook' })),
         ...sketchbooks.map(sb => ({ ...sb, _kind: 'sketchbook' })),
       ]
-      return <div className="library-grid">
-        {combined.length ? combined.map(item =>
-          item._kind === 'sketchbook'
-            ? <SketchbookCard key={item.id} sb={item} onOpen={openSketchbook} onMenu={showSbMenu} />
-            : <NotebookCard   key={item.id} nb={item} onOpen={openNotebook}   onMenu={showNbMenu} />
-        ) : <div className="lib-empty-state">
-            <button className="lib-empty-plus" onClick={() => setAddOpen(true)}>
-              <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
-            </button>
-            <p className="lib-empty-hint">Click + to create a notebook or sketchbook</p>
-            <p className="lib-empty-formats">Markdown · wikilinks · Excalidraw canvas</p>
-          </div>}
-      </div>
+      return (
+        <div className="lib-tab-inner">
+          <div className="library-grid" style={{gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))"}}>
+            {combined.length ? combined.map(item =>
+              item._kind === 'sketchbook'
+                ? <SketchbookCard key={item.id} sb={item} onOpen={openSketchbook} onMenu={showSbMenu} />
+                : <NotebookCard   key={item.id} nb={item} onOpen={openNotebook}   onMenu={showNbMenu} />
+            ) : null}
+          </div>
+          {!combined.length && (
+            <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10}}>
+              <button className="lib-empty-plus" onClick={() => setAddOpen(true)}>
+                <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
+              </button>
+              <p className="lib-empty-hint">Click + to create a notebook or sketchbook</p>
+              <p className="lib-empty-formats">Markdown · wikilinks · Excalidraw canvas</p>
+            </div>
+          )}
+        </div>
+      )
     }
   }
 
@@ -1210,6 +1128,7 @@ export default function LibraryView() {
                   onOpenBook={openBook}
                   onOpenAudio={openAudio}
                   onOpenNotebook={openNotebook}
+                  onDevCommand={cmd => { if (cmd === 'onboarding') setDevOnboardingOpen(true) }}
                   onClose={() => { setSearch(''); setSearchFocused(false) }}
                 />
               )}
@@ -1247,7 +1166,10 @@ export default function LibraryView() {
           {/* Settings + Profile */}
           <div className="header-right-actions">
             <button className="btn-icon-round" title="Profile" onClick={() => setProfileOpen(true)}><ProfileIcon /></button>
-            <button className="btn-icon-round" title="Settings" onClick={() => setSettingsOpen(true)}><SettingsIcon /></button>
+            <button className="sidenav-footer-btn" title="Settings" onClick={() => setSettingsOpen(true)}
+              style={{ width: 30, height: 30, borderRadius: 8 }}>
+              <SettingsIcon />
+            </button>
           </div>
 
         </div>
@@ -1298,8 +1220,9 @@ export default function LibraryView() {
         />
       )}
       <Toast message={toast?.message} error={toast?.error} />
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <UniversalSettingsModal onClose={() => setSettingsOpen(false)} />}
       {profileOpen  && <ProfileModal  onClose={() => setProfileOpen(false)} />}
+      {devOnboardingOpen && <DevOnboardingPreview onClose={() => setDevOnboardingOpen(false)} />}
     </div>
   )
 }

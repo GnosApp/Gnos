@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import useAppStore, { useAppStoreShallow } from '@/store/useAppStore'
-import { loadBookContent } from '@/lib/storage'
+import { loadBookContent, addReadingMinutes } from '@/lib/storage'
 import { GnosNavButton } from '@/components/SideNav'
 import { generateCoverColor } from '@/lib/utils'
-import { applyTheme } from '@/lib/themes'
 import {
   ensurePageStyle, renderPage, precomputeAllChapters,
   invalidateCache, getPageBreaks, getTotalPages,
@@ -20,27 +19,14 @@ function Toggle({ on, onClick }) {
   )
 }
 
-function SettingsPanel({ prefs, themes, onPrefChange, onRebuild }) {
-  const { fontSize, lineSpacing, fontFamily, justifyText, tapToTurn, twoPage, highlightWords, underlineLine, themeKey } = prefs
+function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose }) {
+  const { fontSize, lineSpacing, fontFamily, justifyText, tapToTurn, twoPage, highlightWords, underlineLine } = prefs
   return (
     <div className="settings-panel" style={{ display: 'block' }} onClick={e => e.stopPropagation()}>
-      <div className="section-label">THEME</div>
-      <div className="radio-list" style={{ marginBottom: 14 }}>
-        {Object.entries(themes).map(([k, t]) => (
-          <label key={k} className={`radio-item${themeKey === k ? ' active' : ''}`} style={{ cursor: 'pointer' }}>
-            <input type="radio" name="reader-theme" value={k} checked={themeKey === k}
-              onChange={() => { onPrefChange('themeKey', k); applyTheme(k) }}
-              style={{ accentColor: 'var(--accent)' }} />
-            <div style={{ display: 'flex', gap: 4 }}>
-              <div className="swatch" style={{ background: t.bg }} />
-              <div className="swatch" style={{ background: t.surface }} />
-              <div className="swatch" style={{ background: t.accent || '#888' }} />
-            </div>
-            <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text)', flex: 1 }}>{t.name}</span>
-          </label>
-        ))}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14,paddingBottom:12,borderBottom:'1px solid var(--borderSubtle)'}}>
+        <span style={{fontSize:13,fontWeight:700,color:'var(--text)'}}>Reader Settings</span>
+        <button onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg></button>
       </div>
-
       <div className="section-label">DISPLAY</div>
       <div className="reader-slider-row">
         <span className="reader-slider-icon-sm" style={{ fontFamily: 'Georgia, serif', fontWeight: 700 }}>A</span>
@@ -230,6 +216,37 @@ export default function ReaderView() {
   chaptersRef.current   = chapters
   curChapterRef.current = curChapter
   curPageRef.current    = curPage
+
+  // ── Reading timer — tracks minutes spent reading for streak/stats ───────────
+  useEffect(() => {
+    if (!activeBook) return
+    const TICK_MS  = 60_000   // save every 60 s
+    const IDLE_MS  = 120_000  // stop counting after 2 min of inactivity
+    let lastActive = Date.now()
+    let accumulated = 0
+
+    const onActivity = () => { lastActive = Date.now() }
+    window.addEventListener('mousemove', onActivity, { passive: true })
+    window.addEventListener('keydown',   onActivity, { passive: true })
+
+    const interval = setInterval(() => {
+      if (Date.now() - lastActive < IDLE_MS) {
+        accumulated += TICK_MS / 60_000   // accumulate fractional minutes
+        if (accumulated >= 1) {
+          addReadingMinutes(Math.floor(accumulated)).catch(() => {})
+          accumulated -= Math.floor(accumulated)
+        }
+      }
+    }, TICK_MS)
+
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener('mousemove', onActivity)
+      window.removeEventListener('keydown',   onActivity)
+      // Flush any partial minute on unmount
+      if (accumulated >= 0.1) addReadingMinutes(Math.max(1, Math.round(accumulated))).catch(() => {})
+    }
+  }, [activeBook])
 
   // ── Load ──────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -494,9 +511,7 @@ export default function ReaderView() {
   // ── Word context menu state ────────────────────────────────────────────────
   const [wordMenu,       setWordMenu]       = useState(null) // { word, sentence, x, y }
   const [defPopup,       setDefPopup]       = useState(null) // { word, mode:'define'|'translate', x, y, content, loading }
-  const [translateLang,  setTranslateLang]  = useState('es') // target language for LibreTranslate
-  // Default to local LibreTranslate instance (run: docker run -p 5000:5000 libretranslate/libretranslate)
-  const [libreUrl,       setLibreUrl]       = useState('http://localhost:5000')
+  const [translateLang,  setTranslateLang]  = useState('es') // target language for translation
 
   // Available LibreTranslate target languages
   const LIBRE_LANGS = [
@@ -522,51 +537,77 @@ export default function ReaderView() {
   function ttsSpeakSentence(sentence, onEnd) {
     window.speechSynthesis.cancel()
     ttsClearWordHighlight()
+    // Build ordered list of word spans for this sentence to match by position
+    const card = cardRef.current
+    const allSpans = card ? Array.from(card.querySelectorAll('.col-word')) : []
+    const sentWords = sentence.trim().replace(/[\u201c\u201d\u2018\u2019]/g, '').split(/\s+/).filter(Boolean)
+    let sentenceSpans = []
+    let spanIdx = 0
+    outer: for (let start = 0; start < allSpans.length; start++) {
+      for (let len = sentWords.length; len >= Math.max(1, sentWords.length - 2); len--) {
+        const candidate = allSpans.slice(start, start + len)
+        const candidateText = candidate.map(s => s.textContent.replace(/[\u201c\u201d\u2018\u2019]/g, '').trim()).join(' ')
+        const sentText = sentWords.slice(0, len).join(' ')
+        if (candidateText.toLowerCase() === sentText.toLowerCase()) {
+          sentenceSpans = candidate
+          break outer
+        }
+      }
+    }
     const utt = new SpeechSynthesisUtterance(sentence)
     utt.rate = 1
-    utt.onend = () => { ttsClearWordHighlight(); onEnd() }
+    utt.onend = () => { ttsClearWordHighlight(); spanIdx = 0; onEnd() }
     utt.onboundary = (e) => {
       if (e.name !== 'word') return
       const charIdx = e.charIndex
-      // Find the word in the utterance text starting at charIdx
       let end = charIdx
       while (end < sentence.length && /\S/.test(sentence[end])) end++
       const rawWord = sentence.slice(charIdx, end)
-      const clean = rawWord.replace(/[^a-zA-Z'\u2019-]/g, '').toLowerCase()
+      const clean = rawWord.replace(/[^a-zA-Z'\u2019\u2018]/g, '').toLowerCase().replace(/[\u2019\u2018]/g, "'")
       if (!clean) return
-      // Clear previous highlight
+
       ttsClearWordHighlight()
-      // Find the matching .col-word span on the page
-      // We search forward from the last highlighted position to handle repeated words
-      const card = cardRef.current
-      if (!card) return
-      const spans = card.querySelectorAll('.col-word')
-      // Find first unhighlighted span matching this word
+
       let found = null
-      let pastLast = ttsActiveWordRef.current === null
-      for (const span of spans) {
-        if (!pastLast) {
-          if (span === ttsActiveWordRef._prev) pastLast = true
-          continue
-        }
-        if ((span.dataset.word || '').toLowerCase() === clean) {
-          found = span; break
+
+      // Primary: advance through this sentence's pre-matched spans by index
+      if (sentenceSpans.length > 0) {
+        while (spanIdx < sentenceSpans.length) {
+          const t = (sentenceSpans[spanIdx].dataset.word || sentenceSpans[spanIdx].textContent)
+            .toLowerCase().replace(/[^a-zA-Z']/g, '').replace(/[\u2019\u2018]/g, "'")
+          if (t === clean || t.startsWith(clean) || clean.startsWith(t)) {
+            found = sentenceSpans[spanIdx]
+            spanIdx++
+            break
+          }
+          spanIdx++
         }
       }
-      // Fallback: search from beginning if not found past last
+
+      // Fallback: scan forward from last highlighted position across all spans
       if (!found) {
-        for (const span of spans) {
-          if ((span.dataset.word || '').toLowerCase() === clean) {
-            found = span; break
+        const card = cardRef.current
+        if (card) {
+          const spans = Array.from(card.querySelectorAll('.col-word'))
+          const startFrom = ttsActiveWordRef._lastIdx ?? 0
+          for (let i = startFrom; i < spans.length; i++) {
+            const t = (spans[i].dataset.word || spans[i].textContent)
+              .toLowerCase().replace(/[^a-zA-Z']/g, '').replace(/[\u2019\u2018]/g, "'")
+            if (t === clean || t.startsWith(clean) || clean.startsWith(t)) {
+              found = spans[i]
+              ttsActiveWordRef._lastIdx = i + 1
+              break
+            }
           }
         }
       }
+
       if (found) {
         found.classList.add('tts-word-active')
         ttsActiveWordRef.current = found
-        ttsActiveWordRef._prev = found
       }
     }
+    ttsActiveWordRef._lastIdx = 0
     ttsUtterRef.current = utt
     window.speechSynthesis.speak(utt)
     setTtsSentence(sentence)
@@ -706,7 +747,6 @@ export default function ReaderView() {
   const pagesLeft      = totalInChapter - curPage - 1
   const isCover        = chapters[curChapter]?.title === '_cover_'
   const chapterTitle   = isCover ? 'Cover' : (chapters[curChapter]?.title || '')
-  const allThemes      = { ...BUILT_IN_THEMES, ...(prefs.customThemes || {}) }
   const [c1, c2]       = activeBook ? generateCoverColor(activeBook.title) : ['#1a1a2e', '#16213e']
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -790,15 +830,15 @@ export default function ReaderView() {
           font-size: 12px; color: var(--textDim);
         }
 
-        /* ── TTS Player bar ───────────────────────────────────────────────── */
+        /* ── TTS Player bar — Gnos style ──────────────────────────────────── */
         .tts-bar {
-          position: fixed; bottom: 72px; left: 50%; transform: translateX(-50%);
-          background: var(--headerBg, var(--surface));
+          position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+          background: var(--surface);
           border: 1px solid var(--border);
-          border-radius: 16px; padding: 8px 12px 10px;
-          box-shadow: 0 4px 20px rgba(0,0,0,0.35);
-          display: flex; flex-direction: column; gap: 6px;
-          max-width: 480px; width: calc(100vw - 32px);
+          border-radius: 12px; padding: 10px 12px 12px;
+          box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+          display: flex; flex-direction: column; gap: 8px;
+          width: 440px; max-width: calc(100vw - 24px);
           z-index: 8500;
           animation: tts-bar-in 0.18s cubic-bezier(0.4,0,0.2,1);
         }
@@ -806,36 +846,54 @@ export default function ReaderView() {
           from { opacity: 0; transform: translateX(-50%) translateY(10px); }
           to   { opacity: 1; transform: translateX(-50%) translateY(0); }
         }
-        .tts-controls-row {
-          display: flex; align-items: center; gap: 6px;
+        .tts-top-row {
+          display: flex; align-items: center; justify-content: space-between; gap: 8px;
         }
-        .tts-controls-spacer { flex: 1; }
+        .tts-controls-row {
+          display: flex; align-items: center; justify-content: center; gap: 6px; flex: 1;
+        }
         .tts-progress-bar {
-          height: 2px; border-radius: 1px;
-          background: var(--border); overflow: hidden; flex-shrink: 0;
+          height: 3px; border-radius: 2px;
+          background: var(--surfaceAlt); overflow: hidden;
         }
         .tts-progress-fill {
           height: 100%; background: var(--accent);
-          transition: width 0.3s ease; border-radius: 1px;
+          transition: width 0.3s ease; border-radius: 2px;
         }
         .tts-sentence {
           font-size: 11px; color: var(--textDim); line-height: 1.5;
           font-style: italic; text-align: center;
           white-space: normal; word-break: break-word;
         }
+        /* Gnos bordered button style */
         .tts-ctrl {
-          background: none; border: none; border-radius: 7px;
-          color: var(--textDim); cursor: pointer; width: 30px; height: 30px;
+          height: 30px; min-width: 30px; padding: 0 6px;
+          border: 1px solid var(--border); border-radius: 7px;
+          background: var(--surface); color: var(--text);
+          cursor: pointer;
           display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-          transition: background 0.1s, color 0.1s;
+          transition: background 0.1s, border-color 0.1s;
+          font-size: 11px; font-weight: 600;
         }
-        .tts-ctrl:hover { background: var(--surfaceAlt); color: var(--text); }
+        .tts-ctrl:hover { background: var(--surfaceAlt); border-color: var(--accent); }
         .tts-ctrl.primary {
-          background: var(--accent); color: #fff;
-          width: 34px; height: 34px; border-radius: 9px;
-          box-shadow: 0 2px 8px rgba(56,139,253,0.3);
+          border-color: var(--accent); color: var(--accent);
+          width: 36px; height: 36px; border-radius: 9px;
+          box-shadow: 0 0 0 2px rgba(56,139,253,0.15);
         }
-        .tts-ctrl.primary:hover { filter: brightness(1.1); }
+        .tts-ctrl.primary:hover { background: rgba(56,139,253,0.1); }
+        /* X close button */
+        .tts-close-btn {
+          width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0;
+          border: 1px solid var(--border); background: var(--surface);
+          color: var(--textDim); cursor: pointer;
+          display: flex; align-items: center; justify-content: center;
+          transition: background 0.1s, color 0.1s, border-color 0.1s;
+        }
+        .tts-close-btn:hover {
+          background: rgba(248,81,73,0.12);
+          color: #f85149; border-color: rgba(248,81,73,0.4);
+        }
 
         /* ── TTS word highlight ───────────────────────────────────────────── */
         .col-word.tts-word-active {
@@ -890,8 +948,8 @@ export default function ReaderView() {
 
       {/* Settings panel */}
       {settingsOpen && (
-        <SettingsPanel prefs={prefs} themes={allThemes}
-          onPrefChange={handlePrefChange} onRebuild={handleRebuild} />
+        <SettingsPanel prefs={prefs}
+          onPrefChange={handlePrefChange} onRebuild={handleRebuild} onClose={() => setSettingsOpen(false)} />
       )}
 
       {/* Tap zones — left zone shifts right when sidebar is open */}
@@ -1008,24 +1066,6 @@ export default function ReaderView() {
           </button>
           <div className="word-menu-sep" />
 
-          {/* Language selector inline in menu pill */}
-          <div style={{ display:'flex', alignItems:'center', padding:'0 6px', gap:4, flexShrink:0 }}>
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ color:'var(--textDim)', flexShrink:0 }}>
-              <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.3"/>
-              <path d="M8 1.5C8 1.5 5.5 4 5.5 8s2.5 6.5 2.5 6.5M8 1.5C8 1.5 10.5 4 10.5 8s-2.5 6.5-2.5 6.5M1.5 8h13" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-            </svg>
-            <select
-              value={translateLang}
-              onChange={e => setTranslateLang(e.target.value)}
-              onClick={e => e.stopPropagation()}
-              style={{ background:'var(--surfaceAlt)', border:'1px solid var(--border)', borderRadius:5, color:'var(--text)', fontSize:10, fontFamily:'inherit', padding:'2px 4px', cursor:'pointer', outline:'none', maxWidth:80 }}
-            >
-              {LIBRE_LANGS.map(l => <option key={l.code} value={l.code}>{l.name}</option>)}
-            </select>
-          </div>
-
-          <div className="word-menu-sep" />
-
           <button className="word-menu-item" onClick={() => {
             const word = wordMenu.word
             const ctx = wordMenu.sentence || word
@@ -1034,58 +1074,54 @@ export default function ReaderView() {
             setWordMenu(null)
             setDefPopup({ word: ctx.length > 60 ? word : ctx, mode: 'translate', x, y: y + 12, content: null, loading: true, targetLang: tl })
 
-            const base = libreUrl.replace(/\/$/, '')
-            const doTranslate = (url) => fetch(`${url}/translate`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ q: ctx, source: 'auto', target: tl, format: 'text' }),
-            }).then(r => r.json())
+            const textToTranslate = (ctx.length > 500 ? ctx.slice(0, 500) : ctx).trim()
 
-            doTranslate(base)
-              .then(data => {
-                if (data.error) throw new Error(data.error)
-                const translated = data.translatedText || ''
-                const confidence = data.detectedLanguage?.confidence != null
-                  ? Math.round(data.detectedLanguage.confidence * 100)
-                  : null
-                const detectedLang = data.detectedLanguage?.language || null
-                setDefPopup(p => p && ({ ...p, loading: false, content: translated || 'Translation not available.', confidence, detectedLang }))
-                if (word.split(/\s+/).length === 1) {
-                  fetch(`https://api.dictionaryapi.dev/api/v2/entries/${tl}/${encodeURIComponent(translated.split(/\s+/)[0])}`)
-                    .then(r => r.json())
-                    .then(defData => {
-                      const entry = Array.isArray(defData) ? defData[0] : null
-                      if (!entry) return
-                      const defText = entry.meanings?.slice(0,1).map(m =>
-                        m.definitions?.slice(0,1).map(d => d.definition).join('; ')
-                      ).join(' ') || ''
-                      if (defText) setDefPopup(p => p && ({ ...p, targetDefinition: defText }))
-                    })
-                    .catch(() => {})
+            // Primary: MyMemory (free, no API key)
+            // Fallback: Google Translate unofficial endpoint
+            async function doTranslate() {
+              // Try MyMemory first
+              try {
+                const mmUrl = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=en|${tl}`
+                const r = await fetch(mmUrl)
+                const data = await r.json()
+                if (data.responseStatus === 200 && data.responseData?.translatedText &&
+                    !data.responseData.translatedText.toLowerCase().includes('mymemory warning')) {
+                  const translated = data.responseData.translatedText
+                  setDefPopup(p => p && ({ ...p, loading: false, content: translated }))
+                  return
                 }
-              })
-              .catch(() => {
-                // Local instance failed — try public fallbacks
-                const fallbacks = ['https://libretranslate.com', 'https://libretranslate.de']
-                  .filter(u => !base.includes(new URL(u).hostname))
-                const tryNext = (idx) => {
-                  if (idx >= fallbacks.length) {
-                    setDefPopup(p => p && ({ ...p, loading: false, content: '⚠️ LibreTranslate not reachable.\n\nTo translate locally, run:\ndocker run -p 5000:5000 libretranslate/libretranslate\n\nOr update the server URL below.' }))
-                    return
-                  }
-                  doTranslate(fallbacks[idx])
-                    .then(data2 => {
-                      const translated = data2.translatedText || ''
-                      setDefPopup(p => p && ({ ...p, loading: false, content: translated || 'Translation not available.' }))
-                    })
-                    .catch(() => tryNext(idx + 1))
+              } catch { /* fall through */ }
+
+              // Fallback: Lingva Translate (open-source Google Translate front-end)
+              try {
+                const lingvaUrl = `https://lingva.ml/api/v1/en/${tl}/${encodeURIComponent(textToTranslate)}`
+                const r = await fetch(lingvaUrl)
+                const data = await r.json()
+                if (data?.translation) {
+                  setDefPopup(p => p && ({ ...p, loading: false, content: data.translation }))
+                  return
                 }
-                tryNext(0)
-              })
+              } catch { /* fall through */ }
+
+              // Last resort: unofficial Google Translate
+              try {
+                const gtUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${tl}&dt=t&q=${encodeURIComponent(textToTranslate)}`
+                const r = await fetch(gtUrl)
+                const data = await r.json()
+                const translated = data?.[0]?.map(s => s?.[0]).filter(Boolean).join('') || ''
+                if (translated) {
+                  setDefPopup(p => p && ({ ...p, loading: false, content: translated }))
+                  return
+                }
+              } catch { /* fall through */ }
+
+              setDefPopup(p => p && ({ ...p, loading: false, content: '⚠️ Translation service unavailable. Please check your internet connection.' }))
+            }
+            doTranslate()
           }}>
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <path d="M2 4h7M5.5 2v2M2 4c0 3 2 5 3.5 5.5M7 9c-1 0-3-1-3.5-2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-              <path d="M9 11l2-6 2 6M10 9.5h2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+            {/* Language translation icon from svgrepo.com/svg/324210/language-translation */}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z" fill="currentColor"/>
             </svg>
             Translate
           </button>
@@ -1120,6 +1156,52 @@ export default function ReaderView() {
             )}
           </div>
 
+          {/* Language selector — only in translate mode, at top of popup */}
+          {defPopup.mode === 'translate' && (
+            <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:8, padding:'6px 8px', background:'var(--surfaceAlt)', borderRadius:6, border:'1px solid var(--border)' }}>
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ color:'var(--textDim)', flexShrink:0 }}>
+                <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.3"/>
+                <path d="M8 1.5C8 1.5 5.5 4 5.5 8s2.5 6.5 2.5 6.5M8 1.5C8 1.5 10.5 4 10.5 8s-2.5 6.5-2.5 6.5M1.5 8h13" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+              </svg>
+              <span style={{ fontSize:11, color:'var(--textDim)', flexShrink:0 }}>Translate to</span>
+              <select
+                value={translateLang}
+                onChange={e => {
+                  const newLang = e.target.value
+                  setTranslateLang(newLang)
+                  const word = defPopup.word
+                  setDefPopup(p => p && ({ ...p, loading: true, content: null, targetLang: newLang }))
+                  const _txt = word.slice(0, 500).trim();
+                  (async () => {
+                    try {
+                      const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(_txt)}&langpair=en|${newLang}`)
+                      const d = await r.json()
+                      if (d.responseStatus === 200 && d.responseData?.translatedText && !d.responseData.translatedText.toLowerCase().includes('mymemory warning')) {
+                        setDefPopup(p => p && ({ ...p, loading: false, content: d.responseData.translatedText, targetLang: newLang })); return
+                      }
+                    } catch { /* fall through */ }
+                    try {
+                      const r = await fetch(`https://lingva.ml/api/v1/en/${newLang}/${encodeURIComponent(_txt)}`)
+                      const d = await r.json()
+                      if (d?.translation) { setDefPopup(p => p && ({ ...p, loading: false, content: d.translation, targetLang: newLang })); return }
+                    } catch { /* fall through */ }
+                    try {
+                      const r = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${newLang}&dt=t&q=${encodeURIComponent(_txt)}`)
+                      const d = await r.json()
+                      const translated = d?.[0]?.map(s => s?.[0]).filter(Boolean).join('') || ''
+                      if (translated) { setDefPopup(p => p && ({ ...p, loading: false, content: translated, targetLang: newLang })); return }
+                    } catch { /* fall through */ }
+                    setDefPopup(p => p && ({ ...p, loading: false, content: '⚠️ Translation service unavailable.' }))
+                  })()
+                }}
+                onClick={e => e.stopPropagation()}
+                style={{ background:'var(--bg)', border:'1px solid var(--border)', borderRadius:5, color:'var(--text)', fontSize:11, fontFamily:'inherit', padding:'2px 6px', cursor:'pointer', outline:'none', flex:1 }}
+              >
+                {LIBRE_LANGS.map(l => <option key={l.code} value={l.code}>{l.name}</option>)}
+              </select>
+            </div>
+          )}
+
           <div className="def-popup-content">
             {defPopup.loading
               ? <div className="def-popup-loading"><div className="spinner" />Loading…</div>
@@ -1127,28 +1209,21 @@ export default function ReaderView() {
                   <span dangerouslySetInnerHTML={{ __html: defPopup.content || '' }} />
 
                   {/* Translation metadata */}
-                  {defPopup.mode === 'translate' && (defPopup.confidence != null || defPopup.detectedLang) && (
+                  {defPopup.mode === 'translate' && defPopup.confidence != null && (
                     <div style={{ marginTop:8, paddingTop:6, borderTop:'1px solid var(--borderSubtle)', display:'flex', gap:10, flexWrap:'wrap' }}>
-                      {defPopup.detectedLang && (
-                        <span style={{ fontSize:10, color:'var(--textDim)' }}>
-                          Detected: <b style={{ color:'var(--text)' }}>{defPopup.detectedLang.toUpperCase()}</b>
+                      <span style={{ fontSize:10, color:'var(--textDim)', display:'flex', alignItems:'center', gap:5 }}>
+                        Match quality:
+                        <span style={{
+                          display:'inline-block', width:48, height:5, background:'var(--border)',
+                          borderRadius:3, overflow:'hidden', verticalAlign:'middle', marginLeft:3,
+                        }}>
+                          <span style={{ display:'block', height:'100%', width:`${defPopup.confidence}%`,
+                            background: defPopup.confidence > 70 ? 'var(--accent)' : defPopup.confidence > 40 ? '#d29922' : '#f85149',
+                            borderRadius:3, transition:'width 0.3s',
+                          }} />
                         </span>
-                      )}
-                      {defPopup.confidence != null && (
-                        <span style={{ fontSize:10, color:'var(--textDim)', display:'flex', alignItems:'center', gap:5 }}>
-                          Confidence:
-                          <span style={{
-                            display:'inline-block', width:48, height:5, background:'var(--border)',
-                            borderRadius:3, overflow:'hidden', verticalAlign:'middle', marginLeft:3,
-                          }}>
-                            <span style={{ display:'block', height:'100%', width:`${defPopup.confidence}%`,
-                              background: defPopup.confidence > 70 ? 'var(--accent)' : defPopup.confidence > 40 ? '#d29922' : '#f85149',
-                              borderRadius:3, transition:'width 0.3s',
-                            }} />
-                          </span>
-                          <b style={{ color:'var(--text)' }}>{defPopup.confidence}%</b>
-                        </span>
-                      )}
+                        <b style={{ color:'var(--text)' }}>{defPopup.confidence}%</b>
+                      </span>
                     </div>
                   )}
 
@@ -1167,22 +1242,10 @@ export default function ReaderView() {
             }
           </div>
 
-          {/* LibreTranslate server config (only in translate mode) */}
+          {/* Powered-by note */}
           {defPopup.mode === 'translate' && !defPopup.loading && (
-            <div style={{ marginTop:8, paddingTop:6, borderTop:'1px solid var(--borderSubtle)' }}>
-              <div style={{ fontSize:10, color:'var(--textDim)', marginBottom:3 }}>
-                LibreTranslate server
-                <span style={{ marginLeft:6, opacity:0.6 }}>
-                  — local: <code style={{ fontFamily:'monospace' }}>docker run -p 5000:5000 libretranslate/libretranslate</code>
-                </span>
-              </div>
-              <input
-                style={{ width:'100%', background:'var(--bg)', border:'1px solid var(--border)', borderRadius:5, color:'var(--text)', padding:'3px 7px', fontSize:10, fontFamily:'inherit', outline:'none', boxSizing:'border-box' }}
-                value={libreUrl}
-                onChange={e => setLibreUrl(e.target.value)}
-                onClick={e => e.stopPropagation()}
-                placeholder="http://localhost:5000"
-              />
+            <div style={{ marginTop:8, paddingTop:6, borderTop:'1px solid var(--borderSubtle)', fontSize:10, color:'var(--textDim)', opacity:0.6, textAlign:'right' }}>
+              Free translation
             </div>
           )}
         </div>
@@ -1191,29 +1254,31 @@ export default function ReaderView() {
       {/* ── TTS Player bar ── */}
       {ttsActive && (
         <div className="tts-bar">
-          <div className="tts-controls-row">
-            <button className="tts-ctrl" onClick={() => ttsNav(-1)} title="Previous sentence">
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                <polygon points="10,2 3,6 10,10" fill="currentColor"/>
-                <rect x="1" y="2" width="2" height="8" rx="0.5" fill="currentColor"/>
-              </svg>
-            </button>
-            <button className="tts-ctrl primary" onClick={ttsTogglePause} title={ttsPaused ? 'Resume' : 'Pause'}>
-              {ttsPaused
-                ? <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><polygon points="2,1 11,6 2,11" fill="currentColor"/></svg>
-                : <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="2" y="1" width="3" height="10" rx="0.5" fill="currentColor"/><rect x="7" y="1" width="3" height="10" rx="0.5" fill="currentColor"/></svg>
-              }
-            </button>
-            <button className="tts-ctrl" onClick={() => ttsNav(1)} title="Next sentence">
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                <polygon points="2,2 9,6 2,10" fill="currentColor"/>
-                <rect x="9" y="2" width="2" height="8" rx="0.5" fill="currentColor"/>
-              </svg>
-            </button>
-            <div className="tts-controls-spacer" />
-            <button className="tts-ctrl" onClick={ttsStop} title="Stop">
+          <div className="tts-top-row">
+            <div className="tts-controls-row">
+              <button className="tts-ctrl" onClick={() => ttsNav(-1)} title="Previous sentence">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <polygon points="10,2 3,6 10,10" fill="currentColor"/>
+                  <rect x="1" y="2" width="2" height="8" rx="0.5" fill="currentColor"/>
+                </svg>
+              </button>
+              <button className="tts-ctrl primary" onClick={ttsTogglePause} title={ttsPaused ? 'Resume' : 'Pause'}>
+                {ttsPaused
+                  ? <svg width="13" height="13" viewBox="0 0 12 12" fill="none"><polygon points="2,1 11,6 2,11" fill="currentColor"/></svg>
+                  : <svg width="13" height="13" viewBox="0 0 12 12" fill="none"><rect x="2" y="1" width="3" height="10" rx="0.5" fill="currentColor"/><rect x="7" y="1" width="3" height="10" rx="0.5" fill="currentColor"/></svg>
+                }
+              </button>
+              <button className="tts-ctrl" onClick={() => ttsNav(1)} title="Next sentence">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <polygon points="2,2 9,6 2,10" fill="currentColor"/>
+                  <rect x="9" y="2" width="2" height="8" rx="0.5" fill="currentColor"/>
+                </svg>
+              </button>
+            </div>
+            {/* × close — pinned to far right */}
+            <button className="tts-close-btn" onClick={ttsStop} title="Stop reading" style={{marginLeft:'auto'}}>
               <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
               </svg>
             </button>
           </div>
@@ -1221,9 +1286,7 @@ export default function ReaderView() {
             <div className="tts-progress-fill" style={{ width: `${Math.round(ttsProgress * 100)}%` }} />
           </div>
           {ttsSentence && (
-            <div className="tts-sentence">
-              &ldquo;{ttsSentence}&rdquo;
-            </div>
+            <div className="tts-sentence">&ldquo;{ttsSentence}&rdquo;</div>
           )}
         </div>
       )}

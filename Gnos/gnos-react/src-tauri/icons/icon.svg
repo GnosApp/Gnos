@@ -1,0 +1,21 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1024" height="1024" rx="210" fill="#2c1e0f"/>
+  <rect x="54" y="54" width="916" height="916" rx="174"
+    fill="none"
+    stroke="#c9873a"
+    stroke-width="4.5"
+    stroke-opacity="0.45"
+    stroke-dasharray="18 12"
+  />
+  <text
+    x="512"
+    y="550"
+    dominant-baseline="middle"
+    text-anchor="middle"
+    font-family="Georgia, serif"
+    font-size="300"
+    font-weight="800"
+    letter-spacing="-6"
+    fill="#e8c97a"
+  >Gnos</text>
+</svg>

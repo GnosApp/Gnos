@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import useAppStore from '@/store/useAppStore'
-import { loadAudioChapter, loadSingleAudioData } from '@/lib/storage'
+import { loadAudioChapter, loadSingleAudioData, addReadingMinutes } from '@/lib/storage'
 import { generateCoverColor } from '@/lib/utils'
 import { GnosNavButton } from '@/components/SideNav'
 
@@ -27,6 +27,8 @@ export default function AudioPlayerView() {
   const [timeCur,   setTimeCur]   = useState('0:00')
   const [timeDur,   setTimeDur]   = useState('0:00')
   const [volume,    setVolume]    = useState(1)
+  const [audioError, setAudioError] = useState(null)
+  const [showSettings, setShowSettings] = useState(false)
 
   const chapIdxRef = useRef(0)
   const speedRef    = useRef(1)
@@ -67,19 +69,27 @@ export default function AudioPlayerView() {
       if (cache[idx]) {
         src = cache[idx]
       } else {
-        // ── Populate cache synchronously first from in-memory data ──────────
-        // This ensures togglePlay() always finds something in cache[idx]
-        // even if the async storage load hasn't completed yet.
+        // Populate from in-memory data first (synchronous)
         if (book.audioChapters?.[idx]?.dataUrl) {
           src = book.audioChapters[idx].dataUrl
           cache[idx] = src
         }
-        // Try to upgrade to the persisted version asynchronously
+        // Try to upgrade to the persisted version
         try {
           const stored = await loadAudioChapter(book.id, idx)
           if (stored) {
-            const val = stored.value ?? stored
-            const storedSrc = val instanceof Blob ? URL.createObjectURL(val) : val
+            const raw = stored.value ?? stored
+            let storedSrc = ''
+            if (raw instanceof Blob) {
+              storedSrc = URL.createObjectURL(raw)
+            } else if (typeof raw === 'string') {
+              // Could be a bare data URL or JSON-encoded string
+              if (raw.startsWith('data:')) {
+                storedSrc = raw
+              } else {
+                try { const p = JSON.parse(raw); storedSrc = typeof p === 'string' ? p : '' } catch { storedSrc = raw }
+              }
+            }
             if (storedSrc) { src = storedSrc; cache[idx] = src }
           }
         } catch { /* fall through */ }
@@ -89,7 +99,7 @@ export default function AudioPlayerView() {
       if (cache[0]) {
         src = cache[0]
       } else {
-        // Populate cache synchronously from book object first
+        // Populate synchronously from book object first
         if (book.audioDataUrl) {
           src = book.audioDataUrl
           cache[0] = src
@@ -98,9 +108,17 @@ export default function AudioPlayerView() {
         try {
           const stored = await loadSingleAudioData(book.id)
           if (stored) {
-            const val = stored.value ?? stored
-            const storedSrc = typeof val === 'string' && val.startsWith('data:') ? val
-                : val instanceof Blob ? URL.createObjectURL(val) : ''
+            const raw = stored.value ?? stored
+            let storedSrc = ''
+            if (raw instanceof Blob) {
+              storedSrc = URL.createObjectURL(raw)
+            } else if (typeof raw === 'string') {
+              if (raw.startsWith('data:')) {
+                storedSrc = raw
+              } else {
+                try { const p = JSON.parse(raw); storedSrc = typeof p === 'string' ? p : '' } catch { storedSrc = raw }
+              }
+            }
             if (storedSrc) { src = storedSrc; cache[0] = src }
           }
         } catch { /* fall through */ }
@@ -111,8 +129,10 @@ export default function AudioPlayerView() {
 
     if (!src) {
       console.warn('[AudioPlayer] No audio source found for book', book.id)
+      setAudioError('Audio file not found in storage. This can happen when the app is used offline or the audio data exceeded storage limits. Please re-import the audio file.')
       return
     }
+    setAudioError(null)
 
     audio.src = src
     audio.playbackRate = speedRef.current
@@ -214,9 +234,21 @@ export default function AudioPlayerView() {
     const bk    = useAppStore.getState().activeAudioBook
     const cache = chapCacheRef.current
     const idx   = chapIdxRef.current
+
+    // Helper to extract a playable src string from a raw stored value
+    const extractSrc = (raw) => {
+      if (!raw) return ''
+      if (raw instanceof Blob) return URL.createObjectURL(raw)
+      if (typeof raw === 'string') {
+        if (raw.startsWith('data:') || raw.startsWith('blob:') || raw.startsWith('http')) return raw
+        try { const p = JSON.parse(raw); return typeof p === 'string' ? p : '' } catch { return raw }
+      }
+      return ''
+    }
+
     const syncSrc = bk?.format === 'audiofolder'
-      ? (cache[idx] || bk?.audioChapters?.[idx]?.dataUrl || '')
-      : (cache[0]   || bk?.audioDataUrl || '')
+      ? (cache[idx] || extractSrc(bk?.audioChapters?.[idx]?.dataUrl) || '')
+      : (cache[0]   || extractSrc(bk?.audioDataUrl) || '')
 
     if (syncSrc) {
       audio.src = syncSrc
@@ -239,13 +271,6 @@ export default function AudioPlayerView() {
     const audio = audioRef.current
     if (!audio) return
     audio.currentTime = Math.max(0, Math.min(audio.duration || 0, audio.currentTime + sec))
-  }
-
-  function cycleSpeed() {
-    const next = SPEEDS[(SPEEDS.indexOf(speedRef.current) + 1) % SPEEDS.length]
-    speedRef.current = next
-    setSpeed(next)
-    if (audioRef.current) audioRef.current.playbackRate = next
   }
 
   function scrubTo(clientX, rect) {
@@ -274,9 +299,15 @@ export default function AudioPlayerView() {
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
   useEffect(() => {
     const handler = (e) => {
-      // Don't steal keys when user is typing in an input/textarea
-      const tag = document.activeElement?.tagName
+      // Only fire when the audio player is the active view
+      if (useAppStore.getState().view !== 'audio-player') return
+
+      // Don't steal keys from any text input or contenteditable (e.g. CodeMirror)
+      const el = document.activeElement
+      const tag = el?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (el?.isContentEditable) return
+      if (el?.closest('[contenteditable="true"]')) return
 
       if (e.key === ' ' || e.code === 'Space') {
         e.preventDefault()
@@ -294,7 +325,25 @@ export default function AudioPlayerView() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // togglePlay and skipBy close over refs — intentionally stable
 
-  // ── Cover ──────────────────────────────────────────────────────────────────
+  // ── Listening timer — credits minutes while audio is playing ───────────────
+  useEffect(() => {
+    if (!playing) return
+    const TICK_MS = 60_000
+    const interval = setInterval(() => {
+      addReadingMinutes(1).catch(() => {})
+    }, TICK_MS)
+    return () => clearInterval(interval)
+  }, [playing])
+
+  // ── Close settings on outside click ───────────────────────────────────────
+  useEffect(() => {
+    if (!showSettings) return
+    const h = (e) => {
+      if (!e.target.closest('.ap-settings-area')) setShowSettings(false)
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [showSettings])
   const [c1, c2] = generateCoverColor(book?.title || '')
   const hasCover = !!book?.coverDataUrl
 
@@ -308,13 +357,94 @@ export default function AudioPlayerView() {
   if (!book) return null
 
   return (
-    <div className="view active" style={{ padding: 0 }}>
-      <div className="ap-layout">
+    <div className="view active" style={{ padding: 0, display: 'flex', flexDirection: 'column' }}>
+
+      {/* ── Top header bar ── */}
+      <header style={{
+        display: 'flex', alignItems: 'center', gap: 10, padding: '0 14px',
+        height: 48, flexShrink: 0,
+        background: 'var(--headerBg, var(--surface))',
+        borderBottom: '1px solid var(--border)',
+        zIndex: 20,
+      }}>
+        <GnosNavButton />
+        <div style={{ width: 1, height: 18, background: 'var(--border)', flexShrink: 0 }} />
+
+        {/* Centered title */}
+        <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' }}>
+          <span style={{
+            fontSize: 13, fontWeight: 600, color: 'var(--text)',
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+            maxWidth: '60%',
+          }}>
+            {book.title || 'Audiobook'}
+          </span>
+          {book.author && (
+            <span style={{ fontSize: 12, color: 'var(--textDim)', marginLeft: 8, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '30%' }}>
+              — {book.author}
+            </span>
+          )}
+        </div>
+
+        {/* Settings button + dropdown */}
+        <div className="ap-settings-area" style={{ position: 'relative', flexShrink: 0 }}>
+        <button
+          title="Playback settings"
+          onClick={() => setShowSettings(s => !s)}
+          style={{
+            width: 30, height: 30, borderRadius: 7,
+            border: showSettings ? '1px solid var(--accent)' : '1px solid var(--border)',
+            background: showSettings ? 'rgba(56,139,253,.1)' : 'var(--surface)',
+            color: showSettings ? 'var(--accent)' : 'var(--textDim)',
+            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'all 0.12s',
+            flexShrink: 0,
+          }}
+        >
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.4"/>
+            <path d="M8 1.5v1.2M8 13.3v1.2M1.5 8h1.2M13.3 8h1.2M3.4 3.4l.85.85M11.75 11.75l.85.85M12.6 3.4l-.85.85M4.25 11.75l-.85.85" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+          </svg>
+        </button>
+
+        {/* Settings dropdown */}
+        {showSettings && (
+          <div style={{
+            position: 'absolute', top: 38, right: 0,
+            background: 'var(--surface)', border: '1px solid var(--border)',
+            borderRadius: 12, padding: 14, minWidth: 220,
+            boxShadow: '0 12px 40px rgba(0,0,0,0.45)',
+            zIndex: 100,
+          }}>
+            <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.07em', color: 'var(--textDim)', opacity: .6, marginBottom: 10 }}>Playback Speed</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
+              {SPEEDS.map(s => (
+                <button key={s} onClick={() => { speedRef.current = s; setSpeed(s); if (audioRef.current) audioRef.current.playbackRate = s; }}
+                  style={{
+                    padding: '4px 10px', borderRadius: 6, fontSize: 12, fontWeight: 500,
+                    border: '1px solid var(--border)',
+                    background: speed === s ? 'var(--accent)' : 'var(--surfaceAlt)',
+                    color: speed === s ? '#fff' : 'var(--text)',
+                    cursor: 'pointer', transition: 'all .1s',
+                  }}>
+                  {s}×
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.07em', color: 'var(--textDim)', opacity: .6, marginBottom: 8 }}>Volume</div>
+            <input type="range" min="0" max="1" step="0.02"
+              value={volume} onChange={onVolChange}
+              style={{ width: '100%', accentColor: 'var(--accent)' }} />
+          </div>
+        )}
+        </div>
+      </header>
+
+      <div className="ap-layout" style={{ flex: 1, overflow: 'hidden' }}>
 
         {/* ── Sidebar ── */}
         <aside className="ap-sidebar">
           <div className="ap-sidebar-header">
-            <GnosNavButton />
             <div className="ap-sidebar-title">Chapters</div>
           </div>
           <div className="ap-chapter-list">
@@ -347,6 +477,28 @@ export default function AudioPlayerView() {
 
         {/* ── Main ── */}
         <main className="ap-main">
+
+          {/* Audio error banner */}
+          {audioError && (
+            <div style={{
+              background: 'rgba(248,81,73,0.12)', border: '1px solid rgba(248,81,73,0.35)',
+              borderRadius: 10, padding: '12px 16px', margin: '0 0 16px',
+              display: 'flex', alignItems: 'flex-start', gap: 10,
+            }}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
+                <circle cx="8" cy="8" r="7" stroke="#f85149" strokeWidth="1.4"/>
+                <path d="M8 4.5v4M8 10.5v1" stroke="#f85149" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+              <div style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.5 }}>
+                <strong style={{ display: 'block', marginBottom: 2 }}>Audio not available</strong>
+                <span style={{ color: 'var(--textDim)' }}>
+                  The audio file could not be loaded from storage. Audio files are too large for local storage —
+                  they are only available while the app is open in the same session they were imported.
+                  Please re-import the file to listen again.
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Cover */}
           <div className="ap-cover-wrap">
@@ -393,7 +545,6 @@ export default function AudioPlayerView() {
 
           {/* Controls */}
           <div className="ap-controls">
-            <button className="ap-ctrl-btn ap-speed-cycle" onClick={cycleSpeed}>{speed}×</button>
             <button className="ap-ctrl-btn ap-skip" onClick={() => skipBy(-30)} title="Back 30s">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
                 <path d="M12 5V2L7 7l5 5V8a7 7 0 1 1-5.3 11.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
@@ -448,31 +599,11 @@ export default function AudioPlayerView() {
                 <text x="18" y="16" fontSize="6" fill="currentColor" fontFamily="sans-serif" textAnchor="middle">30</text>
               </svg>
             </button>
-            <button className="ap-ctrl-btn" title="Volume">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <path d="M11 5L6 9H2v6h4l5 4V5z" fill="currentColor"/>
-                <path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 6a9 9 0 0 1 0 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-              </svg>
-            </button>
-          </div>
-
-          {/* Volume slider */}
-          <div className="ap-vol-row">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ opacity: 0.4 }}>
-              <path d="M11 5L6 9H2v6h4l5 4V5z" fill="currentColor"/>
-            </svg>
-            <input type="range" className="ap-vol-slider" min="0" max="1" step="0.02"
-              value={volume} onChange={onVolChange}
-              style={{ '--val': `${volume * 100}%` }} />
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ opacity: 0.4 }}>
-              <path d="M11 5L6 9H2v6h4l5 4V5z" fill="currentColor"/>
-              <path d="M15.5 8.5a5 5 0 0 1 0 7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-            </svg>
           </div>
 
         </main>
+        <audio ref={audioRef} preload="metadata" />
       </div>
-      <audio ref={audioRef} preload="metadata" />
     </div>
   )
 }

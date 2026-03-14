@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { loadLibrary, saveLibrary, loadNotebooksMeta, saveNotebooksMeta, loadPreferences, savePreferences, loadSketchbooksMeta, saveSketchbooksMeta } from '@/lib/storage'
+import { loadLibrary, saveLibrary, loadNotebooksMeta, saveNotebooksMeta, loadPreferences, savePreferences, loadSketchbooksMeta, saveSketchbooksMeta, migrateBooksToNamedFolders, migrateNotebooksToFolders, migrateSketchbooksToFolders, migrateAudiobooksToFolders, saveArchivePointer, loadArchivePointer } from '@/lib/storage'
 import { applyTheme, BUILT_IN_THEMES } from '@/lib/themes'
 import { makeId } from '@/lib/utils'
 
@@ -47,7 +47,7 @@ const useAppStore = create((set, get) => ({
     })
   },
 
-  /** Open a new tab. If already 2, replace the inactive one. */
+  /** Open a new tab (no limit). */
   openNewTab(snapshot = {}) {
     const s = get()
     // Save current state into active tab
@@ -65,13 +65,8 @@ const useAppStore = create((set, get) => ({
       activeAudioBook: snapshot.activeAudioBook || null,
       activeSketchbook: snapshot.activeSketchbook || null,
     }
-    let finalTabs
-    if (updatedTabs.length < 2) {
-      finalTabs = [...updatedTabs, newTab]
-    } else {
-      // Replace the inactive tab
-      finalTabs = updatedTabs.map(t => t.id !== s.activeTabId ? newTab : t)
-    }
+    // Always append — no tab limit
+    const finalTabs = [...updatedTabs, newTab]
     set({
       tabs: finalTabs,
       activeTabId: newTab.id,
@@ -82,6 +77,14 @@ const useAppStore = create((set, get) => ({
       activeAudioBook: newTab.activeAudioBook,
       activeSketchbook: newTab.activeSketchbook,
     })
+  },
+
+  /** Directly update a specific tab's snapshot without switching to it.
+   *  Used by split-pane views to keep their own state independent. */
+  updateTab(tabId, patch) {
+    set(s => ({
+      tabs: s.tabs.map(t => t.id === tabId ? { ...t, ...patch } : t),
+    }))
   },
 
   /** Close a tab, switch to the remaining one */
@@ -183,15 +186,35 @@ const useAppStore = create((set, get) => ({
   ollamaUrl: '',
   ollamaModel: 'llama3',
 
+  // ── User profile & archive ──────────────────────────────────────────────────────
+  username: '',
+  archivePath: '',
+  onboardingComplete: false,
+  setUsername: (username) => set({ username }),
+  setArchivePath: (archivePath) => set({ archivePath }),
+  setOnboardingComplete: (v) => set({ onboardingComplete: v }),
+
   // ── Async actions ─────────────────────────────────────────────────────────────
 
   async init() {
+    // ── Step 1: read the pointer file from appDataDir/gnos/archive_path.json ──
+    // This is a tiny file that always lives in the default location regardless
+    // of where the user's archive is. It tells us the archive path so we can
+    // point storage there before loading anything else.
+    const savedArchivePath = await loadArchivePointer()
+    if (savedArchivePath) {
+      // Set archivePath in the store NOW so getBaseDir() resolves to the archive
+      set({ archivePath: savedArchivePath })
+    }
+
+    // ── Step 2: load everything from the correct location ─────────────────────
     const [library, notebooks, sketchbooks, prefs] = await Promise.all([
       loadLibrary(),
       loadNotebooksMeta(),
       loadSketchbooksMeta(),
       loadPreferences(),
     ])
+
     if (prefs) {
       const {
         themeKey = 'dark', customThemes = {},
@@ -199,15 +222,23 @@ const useAppStore = create((set, get) => ({
         tapToTurn = true, twoPage = false,
         justifyText = true, highlightWords = false, underlineLine = false,
         ollamaUrl = '', ollamaModel = 'llama3',
+        username = '', archivePath = '', onboardingComplete = false,
       } = prefs
+      // archivePath from prefs wins over the pointer (they should match, but prefs is authoritative)
       set({ themeKey, customThemes, fontSize, lineSpacing, fontFamily,
             tapToTurn, twoPage, justifyText, highlightWords, underlineLine,
-            ollamaUrl, ollamaModel })
+            ollamaUrl, ollamaModel, username,
+            archivePath: archivePath || savedArchivePath,
+            onboardingComplete })
       applyTheme(themeKey, customThemes)
     } else {
       applyTheme('dark')
     }
     set({ library: library ?? [], notebooks: notebooks ?? [], sketchbooks: sketchbooks ?? [] })
+    migrateBooksToNamedFolders(library ?? []).catch(err => console.warn('[Gnos] Migration error:', err))
+    migrateNotebooksToFolders(notebooks ?? []).catch(err => console.warn('[Gnos] Notebook migration error:', err))
+    migrateSketchbooksToFolders(sketchbooks ?? []).catch(err => console.warn('[Gnos] Sketchbook migration error:', err))
+    migrateAudiobooksToFolders(library ?? []).catch(err => console.warn('[Gnos] Audio migration error:', err))
   },
 
   async persistLibrary() {
@@ -227,7 +258,12 @@ const useAppStore = create((set, get) => ({
       tapToTurn: s.tapToTurn, twoPage: s.twoPage,
       justifyText: s.justifyText, highlightWords: s.highlightWords, underlineLine: s.underlineLine,
       ollamaUrl: s.ollamaUrl, ollamaModel: s.ollamaModel,
+      username: s.username, archivePath: s.archivePath, onboardingComplete: s.onboardingComplete,
     })
+    // Always keep the pointer file up to date so init() can find the archive on next launch
+    if (s.archivePath) {
+      await saveArchivePointer(s.archivePath)
+    }
   },
   setTheme(key) {
     const { customThemes } = get()

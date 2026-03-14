@@ -4,7 +4,7 @@
 // No DOM manipulation, no global state — returns data that the store consumes.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import storage, { saveBookContent } from '@/lib/storage'
+import storage, { saveBookContent, saveAudiobookMeta } from '@/lib/storage'
 import { readFileAsDataURL } from '@/lib/utils'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -406,6 +406,37 @@ export async function importBooks(files) {
         pdfDataUrl  = await readFileAsDataURL(file)
         // Minimal placeholder chapters — actual rendering done by PdfView
         chapters    = [{ title: bookTitle, blocks: [{ type: 'para', text: bookTitle }] }]
+        // Generate cover thumbnail from first page
+        try {
+          let pdfjsLib = window.pdfjsLib
+          if (!pdfjsLib) {
+            await new Promise((res, rej) => {
+              const s = document.createElement('script')
+              s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
+              s.onload = () => {
+                window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+                  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
+                res()
+              }
+              s.onerror = rej
+              document.head.appendChild(s)
+            })
+            pdfjsLib = window.pdfjsLib
+          }
+          const pdfDoc = await pdfjsLib.getDocument({ url: pdfDataUrl }).promise
+          const firstPage = await pdfDoc.getPage(1)
+          const rawVp = firstPage.getViewport({ scale: 1 })
+          const dpr = window.devicePixelRatio || 1
+          const thumbScale = Math.min(280 / rawVp.width, 380 / rawVp.height) * dpr
+          const thumbVp = firstPage.getViewport({ scale: thumbScale })
+          const offscreen = document.createElement('canvas')
+          offscreen.width  = thumbVp.width
+          offscreen.height = thumbVp.height
+          const octx = offscreen.getContext('2d')
+          await firstPage.render({ canvasContext: octx, viewport: thumbVp }).promise
+          coverDataUrl = offscreen.toDataURL('image/jpeg', 0.9)
+          pdfDoc.destroy()
+        } catch { /* non-fatal — cover stays null */ }
       } else {
         format    = isMd ? 'md' : 'txt'
         const text = await readFileAsText(file)
@@ -414,9 +445,7 @@ export async function importBooks(files) {
       }
 
       const id = makeBookId('book')
-      await saveBookContent(id, chapters)
-
-      added.push({
+      const bookEntry = {
         id, title: bookTitle, author: bookAuthor, format,
         totalChapters: chapters.length,
         currentChapter: 0, currentPage: 0,
@@ -424,7 +453,9 @@ export async function importBooks(files) {
         hasAudio: false,
         coverDataUrl: coverDataUrl || null,
         pdfDataUrl: pdfDataUrl || null,
-      })
+      }
+      await saveBookContent(bookEntry, chapters)
+      added.push(bookEntry)
     } catch (err) {
       console.error('Book import error:', err)
       errors.push(`"${file.name}" — ${err.message || 'unknown error'}`)
@@ -449,13 +480,15 @@ export async function importAudioFile(file) {
   const blobUrl = await readFileAsDataURL(file)
   await storage.set(`audiodata_${id}`, blobUrl)
 
-  return {
+  const book = {
     id, title, author: '', type: 'audio', format: 'audio',
     audioDataUrl: blobUrl, hasAudio: true,  // blobUrl is now a dataURL
     totalChapters: 1, currentChapter: 0, currentPage: 0,
     addedAt: new Date().toISOString(),
     coverDataUrl: null,
   }
+  await saveAudiobookMeta(book)
+  return book
 }
 
 // ── importAudioFolder — folder of chapter files → one multi-chapter entry ─────
@@ -487,7 +520,7 @@ export async function importAudioFolder(files) {
 
   await storage.set(`audiochaps_${id}`, JSON.stringify(chapters))
 
-  return {
+  const book = {
     id,
     title: folderName, author: '', type: 'audio', format: 'audiofolder',
     audioChapters: chapters,
@@ -496,4 +529,6 @@ export async function importAudioFolder(files) {
     addedAt: new Date().toISOString(),
     coverDataUrl: null,
   }
+  await saveAudiobookMeta(book)
+  return book
 }

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import useAppStore from '@/store/useAppStore'
-import { loadBookContent } from '@/lib/storage'
 import { generateCoverColor } from '@/lib/utils'
 import { GnosNavButton } from '@/components/SideNav'
 
@@ -21,6 +20,16 @@ async function loadPdfJs() {
   })
 }
 
+// ── Load PDF.js text layer CSS ─────────────────────────────────────────────────
+function ensureTextLayerCss() {
+  if (document.getElementById('pdfjs-text-layer-css')) return
+  const link = document.createElement('link')
+  link.id = 'pdfjs-text-layer-css'
+  link.rel = 'stylesheet'
+  link.href = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf_viewer.min.css'
+  document.head.appendChild(link)
+}
+
 export default function PdfView() {
   const activeBook = useAppStore(s => s.activeBook)
   const setView    = useAppStore(s => s.setView)
@@ -30,21 +39,24 @@ export default function PdfView() {
   const [numPages,  setNumPages]  = useState(0)
   const [loading,   setLoading]   = useState(true)
   const [error,     setError]     = useState(null)
-  const [scale,     setScale]     = useState(1.2)
+  const [scale,     setScale]     = useState(1.0)
+  const [fitScale,  setFitScale]  = useState(1.0)
   const [pageInput, setPageInput] = useState(null)
+  const [coverDataUrl, setCoverDataUrl] = useState(null)
 
   const canvasRef    = useRef()
+  const textLayerRef = useRef()
   const renderTask   = useRef(null)
   const pdfRef       = useRef(null)
 
   const [c1, c2] = generateCoverColor(activeBook?.title || '')
-
   const bookId = activeBook?.id
 
   // ── Load PDF ───────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!activeBook) return
     let cancelled = false
+    ensureTextLayerCss()
 
     async function load() {
       setLoading(true)
@@ -52,32 +64,17 @@ export default function PdfView() {
       try {
         const pdfjsLib = await loadPdfJs()
 
-        // PDF books store their source as a data URL in the book object or storage
-        // Try book.audioDataUrl equivalent — books import a coverDataUrl but for PDF
-        // we stored chapters as pdfPage blocks — check that first
-        const chapters = await loadBookContent(activeBook.id)
-        let src = null
-
-        if (chapters?.[0]?.blocks?.[0]?.type === 'pdfPage') {
-          // Legacy pdfPage block format — reconstruct from data URLs
-          // Fall through to raw PDF source
-        }
-
-        // Try raw PDF data URL stored on book object
-        src = activeBook.pdfDataUrl || activeBook.rawDataUrl || null
+        const src = activeBook.pdfDataUrl || activeBook.rawDataUrl || null
 
         if (!src) {
-          // No raw PDF source — show the rendered pdfPage images if available
-          if (chapters?.some(c => c.blocks?.some(b => b.type === 'pdfPage'))) {
-            setError('PDF was imported as images. Re-import for full PDF viewing.')
-          } else {
-            setError('PDF source not found. Please re-import this file.')
-          }
+          setError('PDF source not found. Please re-import this file.')
           setLoading(false)
           return
         }
 
-        const pdfDoc = await pdfjsLib.getDocument({ url: src }).promise
+        // data: URIs must be passed as `data`, http(s) URLs as `url`
+        const pdfDocSource = src.startsWith('data:') ? { data: atob(src.split(',')[1]) } : { url: src }
+        const pdfDoc = await pdfjsLib.getDocument(pdfDocSource).promise
         if (cancelled) return
 
         pdfRef.current = pdfDoc
@@ -87,6 +84,37 @@ export default function PdfView() {
         const saved = (activeBook.currentChapter || 0) + 1
         const startPage = Math.max(1, Math.min(saved, pdfDoc.numPages))
         setPageNum(startPage)
+
+        // Compute fit scale from first page
+        try {
+          const firstPage = await pdfDoc.getPage(1)
+          const rawViewport = firstPage.getViewport({ scale: 1 })
+          const containerEl = document.getElementById('pdf-main-container')
+          const availW = containerEl ? containerEl.clientWidth  - 48 : window.innerWidth  - 48
+          const availH = containerEl ? containerEl.clientHeight - 48 : window.innerHeight - 96
+          const scaleW = availW / rawViewport.width
+          const scaleH = availH / rawViewport.height
+          const computed = Math.min(scaleW, scaleH, 2.5)
+          setFitScale(computed)
+          setScale(computed)
+
+          // Render cover thumbnail at high quality
+          const thumbScale = Math.min(280 / rawViewport.width, 380 / rawViewport.height)
+          const dpr = window.devicePixelRatio || 1
+          const thumbVp = firstPage.getViewport({ scale: thumbScale * dpr })
+          const offscreen = document.createElement('canvas')
+          offscreen.width  = thumbVp.width
+          offscreen.height = thumbVp.height
+          const octx = offscreen.getContext('2d')
+          await firstPage.render({ canvasContext: octx, viewport: thumbVp }).promise
+          const thumbUrl = offscreen.toDataURL('image/jpeg', 0.9)
+          setCoverDataUrl(thumbUrl)
+          if (!activeBook.coverDataUrl) {
+            useAppStore.getState().updateBook(activeBook.id, { coverDataUrl: thumbUrl })
+            useAppStore.getState().persistLibrary()
+          }
+        } catch { /* non-fatal */ }
+
         setLoading(false)
       } catch (err) {
         if (!cancelled) {
@@ -101,7 +129,7 @@ export default function PdfView() {
     return () => { cancelled = true }
   }, [activeBook, bookId])
 
-  // ── Render page ────────────────────────────────────────────────────────────
+  // ── Render page (high-DPI + text layer) ────────────────────────────────────
   useEffect(() => {
     if (!pdf || !canvasRef.current || loading) return
     let cancelled = false
@@ -112,24 +140,60 @@ export default function PdfView() {
         renderTask.current = null
       }
 
+      // Clear text layer
+      if (textLayerRef.current) textLayerRef.current.innerHTML = ''
+
       try {
         const page    = await pdf.getPage(pageNum)
         if (cancelled) return
 
+        const containerEl = document.getElementById('pdf-main-container')
+        const availW = containerEl ? containerEl.clientWidth  - 48 : window.innerWidth  - 48
+        const availH = containerEl ? containerEl.clientHeight - 48 : window.innerHeight - 96
+        const rawVp  = page.getViewport({ scale: 1 })
+        const scaleW = availW / rawVp.width
+        const scaleH = availH / rawVp.height
+        const autoFit = Math.min(scaleW, scaleH, 2.5)
+        setFitScale(prev => Math.abs(prev - autoFit) > 0.02 ? autoFit : prev)
+
+        // Use devicePixelRatio for high-DPI rendering
+        const dpr = window.devicePixelRatio || 1
         const viewport = page.getViewport({ scale })
         const canvas   = canvasRef.current
         const ctx      = canvas.getContext('2d')
 
-        canvas.width  = viewport.width
-        canvas.height = viewport.height
+        // Physical pixels (sharp on retina)
+        canvas.width  = Math.floor(viewport.width  * dpr)
+        canvas.height = Math.floor(viewport.height * dpr)
+        // CSS size stays at logical pixels
         canvas.style.width  = viewport.width  + 'px'
         canvas.style.height = viewport.height + 'px'
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
         renderTask.current = page.render({ canvasContext: ctx, viewport })
         await renderTask.current.promise
         renderTask.current = null
 
-        // Save progress
+        // ── Text layer for copy-paste ────────────────────────────────────
+        if (textLayerRef.current && window.pdfjsLib) {
+          const textContent = await page.getTextContent()
+          if (cancelled) return
+
+          const tl = textLayerRef.current
+          tl.innerHTML = ''
+          tl.style.width  = viewport.width  + 'px'
+          tl.style.height = viewport.height + 'px'
+          // PDF.js 3.x requires --scale-factor to match viewport.scale
+          tl.style.setProperty('--scale-factor', viewport.scale)
+
+          window.pdfjsLib.renderTextLayer({
+            textContentSource: textContent,
+            container: tl,
+            viewport,
+            textDivs: [],
+          })
+        }
+
         useAppStore.getState().updateBookProgress(bookId, pageNum - 1, 0)
         useAppStore.getState().persistLibrary()
       } catch (err) {
@@ -161,12 +225,12 @@ export default function PdfView() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div style={{ display:'flex', flexDirection:'column', height:'100vh', background:'var(--readerBg)', color:'var(--text)' }}>
+    <div style={{ display:'flex', flexDirection:'column', height:'100%', background:'var(--readerBg)', color:'var(--text)' }}>
 
       {/* Header */}
-      <header style={{
-        display:'flex', alignItems:'center', gap:10, padding:'0 16px', height:48,
-        borderBottom:'1px solid var(--border)', background:'var(--headerBg)', flexShrink:0,
+      <header className="gnos-header" style={{
+        display:'flex', alignItems:'center', gap:10, padding:'0 20px', height:52,
+        borderBottom:'1px solid var(--borderSubtle)', background:'var(--headerBg)', flexShrink:0,
       }}>
         <GnosNavButton />
         <div style={{ width:1, height:16, background:'var(--border)' }} />
@@ -180,22 +244,27 @@ export default function PdfView() {
           )}
         </div>
 
-        {/* Zoom controls */}
+        {/* Zoom controls — order: Fit | − | % | + */}
         <div style={{ display:'flex', alignItems:'center', gap:4, flexShrink:0 }}>
-          <button onClick={() => setScale(s => Math.max(0.5, +(s - 0.2).toFixed(1)))}
-            style={{ background:'var(--surfaceAlt)', border:'1px solid var(--border)', color:'var(--text)', borderRadius:6, width:28, height:28, cursor:'pointer', fontSize:14, display:'flex', alignItems:'center', justifyContent:'center' }}>−</button>
-          <span style={{ fontSize:11, color:'var(--textDim)', minWidth:36, textAlign:'center' }}>{Math.round(scale * 100)}%</span>
-          <button onClick={() => setScale(s => Math.min(3, +(s + 0.2).toFixed(1)))}
-            style={{ background:'var(--surfaceAlt)', border:'1px solid var(--border)', color:'var(--text)', borderRadius:6, width:28, height:28, cursor:'pointer', fontSize:14, display:'flex', alignItems:'center', justifyContent:'center' }}>+</button>
+          <button onClick={() => setScale(fitScale)} title="Fit to screen"
+            style={{ background:'var(--surface)', border:'1px solid var(--border)', color:'var(--textDim)', borderRadius:7, height:30, padding:'0 9px', cursor:'pointer', fontSize:11, fontFamily:'inherit', whiteSpace:'nowrap', fontWeight:600, transition:'background 0.1s' }}>Fit</button>
+          <button onClick={() => setScale(s => Math.max(0.3, +(s - 0.15).toFixed(2)))} title="Zoom out"
+            style={{ background:'var(--surface)', border:'1px solid var(--border)', color:'var(--text)', borderRadius:7, width:30, height:30, cursor:'pointer', fontSize:16, display:'flex', alignItems:'center', justifyContent:'center', transition:'background 0.1s' }}>−</button>
+          <span style={{ fontSize:11, color:'var(--textDim)', minWidth:38, textAlign:'center', fontVariantNumeric:'tabular-nums' }}>{Math.round(scale * 100)}%</span>
+          <button onClick={() => setScale(s => Math.min(3, +(s + 0.15).toFixed(2)))} title="Zoom in"
+            style={{ background:'var(--surface)', border:'1px solid var(--border)', color:'var(--text)', borderRadius:7, width:30, height:30, cursor:'pointer', fontSize:16, display:'flex', alignItems:'center', justifyContent:'center', transition:'background 0.1s' }}>+</button>
         </div>
       </header>
 
       {/* Main */}
-      <main style={{ flex:1, overflow:'auto', display:'flex', alignItems:'flex-start', justifyContent:'center', padding:'24px 16px', background:'var(--readerBg)' }}>
+      <main id="pdf-main-container" style={{ flex:1, overflow:'auto', display:'flex', alignItems:'flex-start', justifyContent:'center', padding:'24px 16px', background:'var(--readerBg)' }}>
         {loading && (
           <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:20 }}>
-            <div style={{ width:140, height:190, borderRadius:8, background:`linear-gradient(135deg,${c1},${c2})`, display:'flex', alignItems:'flex-end', padding:12, boxSizing:'border-box', boxShadow:'0 8px 32px rgba(0,0,0,0.3)' }}>
-              <span style={{ color:'rgba(255,255,255,0.9)', fontSize:11, fontWeight:700, fontFamily:'Georgia,serif', lineHeight:1.3 }}>{activeBook?.title}</span>
+            <div style={{ width:140, height:190, borderRadius:8, overflow:'hidden', display:'flex', alignItems:'flex-end', padding:0, boxSizing:'border-box', boxShadow:'0 8px 32px rgba(0,0,0,0.3)', background:`linear-gradient(135deg,${c1},${c2})` }}>
+              {coverDataUrl
+                ? <img src={coverDataUrl} alt="" style={{ width:'100%', height:'100%', objectFit:'cover' }} />
+                : <span style={{ color:'rgba(255,255,255,0.9)', fontSize:11, fontWeight:700, fontFamily:'Georgia,serif', lineHeight:1.3, padding:12 }}>{activeBook?.title}</span>
+              }
             </div>
             <div style={{ display:'flex', alignItems:'center', gap:8, color:'var(--textDim)', fontSize:12 }}>
               <div className="spinner" /><span>Loading PDF…</span>
@@ -216,8 +285,22 @@ export default function PdfView() {
         )}
 
         {!loading && !error && (
-          <div style={{ boxShadow:'0 8px 40px rgba(0,0,0,0.4)', borderRadius:2, overflow:'hidden', background:'#fff' }}>
-            <canvas ref={canvasRef} />
+          <div style={{ position: 'relative', boxShadow:'0 8px 40px rgba(0,0,0,0.4)', borderRadius:2, overflow:'hidden', background:'#fff', display:'inline-block' }}>
+            <canvas ref={canvasRef} style={{ display: 'block' }} />
+            {/* Text layer for copy-paste — positioned exactly over canvas */}
+            <div
+              ref={textLayerRef}
+              className="textLayer"
+              style={{
+                position: 'absolute',
+                top: 0, left: 0,
+                overflow: 'hidden',
+                opacity: 0.2,
+                lineHeight: 1,
+                userSelect: 'text',
+                pointerEvents: 'auto',
+              }}
+            />
           </div>
         )}
       </main>

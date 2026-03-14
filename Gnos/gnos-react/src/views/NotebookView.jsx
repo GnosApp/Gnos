@@ -1,18 +1,27 @@
-/* NotebookView.jsx — Markdown editor powered by CodeMirror 6
+/* NotebookView.jsx — CodeMirror 6 — v4
  *
- * Fixes vs previous version
- * ──────────────────────────
- * • Live preview now VISUALLY RENDERS formatting (bold → bold font weight,
- *   italics → italic, headings → larger text, code → monospace bg, etc.)
- *   using Decoration.mark with CSS classes, matching Obsidian's behaviour.
- *   Markdown punctuation is still hidden off-cursor-line, but the text itself
- *   is styled in-place.
- * • Sync bug fixed: CM is always initialised from contentRef.current (the
- *   latest in-memory text) so switching live↔source never loses edits.
- * • Heading line style now sets the entire line font-size, not just the
- *   heading token, so the line height is correct in live mode.
- * • Task-list checkboxes rendered as styled replacements via WidgetType.
- * • Wikilinks rendered as styled spans in live mode.
+ * Changes from v3:
+ * ─────────────────
+ * • Live view styled identically to preview (same typography, prose spacing,
+ *   block padding) — only difference is the cursor / caret.
+ * • Both opening AND closing syntax markers are hidden together when the cursor
+ *   leaves the span. The cursor-zone now tracks the widest inline ancestor so
+ *   **both** EmphasisMarks reveal at once.
+ * • KaTeX replaced with MathQuill for inline-editable math. Clicking a rendered
+ *   formula opens an in-place MathQuill editor; pressing Escape/Enter commits.
+ * • Images render correctly in live view and no longer blank the screen in
+ *   preview (line-level block replacement constrained to just the image node).
+ * • Math $$…$$ and $…$ render in both live and preview via MathQuill rendering.
+ * • Predictive formatting: once one side of a pair is typed (e.g. **) the
+ *   partially-wrapped text immediately receives its CSS style via a dedicated
+ *   "half-open" pass in the live plugin.
+ * • [[ wikilink dropdown now uses a card-style floating panel that mirrors the
+ *   library search bar; it is driven by a custom EditorView plugin (not the
+ *   generic autocompletion tooltip) so it looks consistent.
+ * • Paired-syntax auto-wrap: typing **, *, `, ~~, ==, $ around selected text
+ *   (or at end of a word) wraps rather than showing a dropdown.
+ * • Generic pair-syntax dropdown removed from autocompletion; only wikilinks
+ *   use the autocomplete tooltip.
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
@@ -20,12 +29,16 @@ import useAppStore from '@/store/useAppStore'
 import { loadNotebookContent, saveNotebookContent } from '@/lib/storage'
 import { GnosNavButton } from '@/components/SideNav'
 
+// ─── Tiny id helper ───────────────────────────────────────────────────────────
+function makeId(prefix = 'id') {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
+}
 
-// ─── CodeMirror lazy loader ───────────────────────────────────────────────────
-let _cmPromise = null
+// ─── CodeMirror lazy bundle ───────────────────────────────────────────────────
+let _cmP = null
 function loadCM() {
-  if (_cmPromise) return _cmPromise
-  _cmPromise = Promise.all([
+  if (_cmP) return _cmP
+  _cmP = Promise.all([
     import('@codemirror/state'),
     import('@codemirror/view'),
     import('@codemirror/commands'),
@@ -38,570 +51,1119 @@ function loadCM() {
   ]).then(([state, view, commands, language, langMd, autocomplete, search, highlight, lezerMd]) => ({
     state, view, commands, language, langMd, autocomplete, search, highlight, lezerMd,
   }))
-  return _cmPromise
+  return _cmP
 }
 
-// ─── Markdown utilities ───────────────────────────────────────────────────────
-
-function esc(s) {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+// ─── KaTeX lazy loader (static rendering) ────────────────────────────────────
+let _ktP = null
+function getKaTeX() {
+  if (_ktP) return _ktP
+  _ktP = (async () => {
+    try {
+      if (window.katex) return window.katex
+      if (!document.getElementById('katex-css')) {
+        const link = document.createElement('link')
+        link.id = 'katex-css'; link.rel = 'stylesheet'
+        link.href = 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.10/katex.min.css'
+        document.head.appendChild(link)
+      }
+      await new Promise((res, rej) => {
+        const s = document.createElement('script')
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.10/katex.min.js'
+        s.onload = res; s.onerror = rej
+        document.head.appendChild(s)
+      })
+      return window.katex ?? null
+    } catch (e) {
+      console.warn('[KaTeX] failed to load:', e)
+      return null
+    }
+  })()
+  return _ktP
 }
 
-function inlineHtml(text, notebooks = [], library = []) {
-  let s = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  const codeSpans = [], images = [], links = []
-  const S = '\x02', E = '\x03'
-  s = s.replace(/!\[([^\]]*)\]\(([^)\s"]+)(?:\s+"([^"]*)")?\)/g,
-    (_, alt, url, title) => { images.push({ alt, url, title: title||'' }); return S+'IMG'+(images.length-1)+E })
-  s = s.replace(/\[([^\]]+)\]\(([^)\s"]+)(?:\s+"([^"]*)")?\)/g,
-    (_, txt, url, title) => { links.push({ txt, url, title: title||'' }); return S+'LNK'+(links.length-1)+E })
-  s = s.replace(/``([^`]+)``/g, (_,c) => { codeSpans.push(c); return S+'CODE'+(codeSpans.length-1)+E })
-  s = s.replace(/`([^`]+)`/g,   (_,c) => { codeSpans.push(c); return S+'CODE'+(codeSpans.length-1)+E })
-  s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
-  s = s.replace(/___(.+?)___/g,        '<strong><em>$1</em></strong>')
-  s = s.replace(/\*\*(.+?)\*\*/g,      '<strong>$1</strong>')
-  s = s.replace(/__([^_]+)__/g,         '<strong>$1</strong>')
-  s = s.replace(/\*([^*\n]+)\*/g,      '<em>$1</em>')
-  s = s.replace(/_([^_\n]+)_/g,        '<em>$1</em>')
-  s = s.replace(/~~(.+?)~~/g,           '<del>$1</del>')
-  s = s.replace(/==(.+?)==/g,           '<mark class="nb-hl">$1</mark>')
-  s = s.replace(/\^([^^\s]+)\^/g,      '<sup>$1</sup>')
-  s = s.replace(/~([^~\s]+)~/g,        '<sub>$1</sub>')
-  const emojiMap = {
-    joy:'😂',smile:'😊',thumbsup:'👍',heart:'❤️',fire:'🔥',star:'⭐',check:'✅',
-    x:'❌',warning:'⚠️',info:'ℹ️',rocket:'🚀',tada:'🎉',eyes:'👀',ok:'👌',
-    wave:'👋',clap:'👏',muscle:'💪',thinking:'🤔',exploding_head:'🤯',zap:'⚡',
-    bulb:'💡',book:'📚',pencil:'✏️',gear:'⚙️',link:'🔗',lock:'🔒',key:'🔑',
-    search:'🔍',calendar:'📅',clock:'🕐',pin:'📌',flag:'🚩',sun:'☀️',moon:'🌙',
-    snowflake:'❄️',coffee:'☕',
-  }
-  s = s.replace(/:([a-z_]+):/g, (m, name) => emojiMap[name] || m)
-  s = s.replace(new RegExp(S+'CODE(\\d+)'+E,'g'), (_,i) => `<code class="nb-inline-code">${esc(codeSpans[+i])}</code>`)
-  s = s.replace(new RegExp(S+'IMG(\\d+)'+E,'g'),  (_,i) => { const {alt,url,title}=images[+i]; return `<img src="${esc(url)}" alt="${esc(alt)}"${title?` title="${esc(title)}"`:''} class="nb-img" loading="lazy">` })
-  s = s.replace(new RegExp(S+'LNK(\\d+)'+E,'g'),  (_,i) => { const {txt,url,title}=links[+i]; return `<a href="${esc(url)}" target="_blank" rel="noopener"${title?` title="${esc(title)}"`:''} >${txt}</a>` })
-  s = s.replace(/\[\[([^\]]{1,120})\]\]/g, (_,title) => {
-    const t = title.trim()
-    const nb = notebooks.find(n => n.title?.toLowerCase()===t.toLowerCase())
-    const bk = !nb && library.find(b => b.title?.toLowerCase()===t.toLowerCase())
-    const type = nb ? 'notebook' : bk ? 'book' : 'unresolved'
-    const id = nb ? nb.id : bk ? bk.id : ''
-    return `<span class="wikilink wikilink-${type}" data-wl-type="${type}" data-wl-id="${esc(id)}" data-wl-title="${esc(t)}">${esc(t)}</span>`
+// Render LaTeX into a DOM element using KaTeX (synchronous once loaded)
+function renderMathStatic(el, latex, displayMode) {
+  getKaTeX().then(katex => {
+    if (!katex) { el.textContent = latex; return }
+    try {
+      katex.render(latex, el, { displayMode, throwOnError: false, strict: false })
+    } catch { el.textContent = latex }
   })
+}
+
+// ─── MathQuill lazy loader (edit popup only) ─────────────────────────────────
+let _mqP = null
+function getMQ() {
+  if (_mqP) return _mqP
+  _mqP = (async () => {
+    try {
+      if (window.MathQuill) return window.MathQuill.getInterface(2)
+      if (!window.jQuery) {
+        await new Promise((res, rej) => {
+          const s = document.createElement('script')
+          s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js'
+          s.onload = res; s.onerror = rej
+          document.head.appendChild(s)
+        })
+      }
+      if (!document.getElementById('mathquill-css')) {
+        const link = document.createElement('link')
+        link.id = 'mathquill-css'; link.rel = 'stylesheet'
+        link.href = 'https://cdnjs.cloudflare.com/ajax/libs/mathquill/0.10.1/mathquill.min.css'
+        document.head.appendChild(link)
+      }
+      await new Promise((res, rej) => {
+        const s = document.createElement('script')
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/mathquill/0.10.1/mathquill.min.js'
+        s.onload = res; s.onerror = rej
+        document.head.appendChild(s)
+      })
+      return window.MathQuill?.getInterface(2) ?? null
+    } catch (e) {
+      console.warn('[MathQuill] failed to load:', e)
+      return null
+    }
+  })()
+  return _mqP
+}
+
+// ─── HTML escape ──────────────────────────────────────────────────────────────
+const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+
+// ─── Inline markdown → HTML ───────────────────────────────────────────────────
+function inlineToHtml(text, notebooks = [], library = []) {
+  const buckets = []
+  const ph = html => { const k = `\x02${buckets.length}\x03`; buckets.push(html); return k }
+
+  let s = esc(text)
+
+  // Images  ![alt](src)
+  s = s.replace(/!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)/g, (_, alt, src, title) =>
+    ph(`<img src="${esc(src)}" alt="${esc(alt)}"${title ? ` title="${esc(title)}"` : ''} class="nb-img" loading="lazy">`))
+
+  // Links  [text](url)
+  s = s.replace(/\[([^\]]+)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)/g, (_, txt, url, title) =>
+    ph(`<a href="${esc(url)}" target="_blank" rel="noopener"${title ? ` title="${esc(title)}"` : ''}>${txt}</a>`))
+
+  // Inline code  ``…`` then `…`
+  s = s.replace(/``([^`]+)``/g, (_, c) => ph(`<code class="nb-ic">${esc(c)}</code>`))
+  s = s.replace(/`([^`\n]+)`/g, (_, c) => ph(`<code class="nb-ic">${esc(c)}</code>`))
+
+  // Math  $$…$$ inline  $…$
+  s = s.replace(/\$\$(.+?)\$\$/g, (_, m) => ph(`<span class="nb-math nb-math-mq" data-latex="${esc(m)}" data-display="1"></span>`))
+  s = s.replace(/\$([^$\n]+)\$/g, (_, m) => ph(`<span class="nb-math nb-math-mq" data-latex="${esc(m)}"></span>`))
+
+  // Bold-italic ***…*** or ___…___
+  s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong class="nb-bold"><em class="nb-italic">$1</em></strong>')
+  s = s.replace(/___(.+?)___/g,       '<strong class="nb-bold"><em class="nb-italic">$1</em></strong>')
+  // Bold **…** or __…__
+  s = s.replace(/\*\*(.+?)\*\*/g, '<strong class="nb-bold">$1</strong>')
+  s = s.replace(/__([^_\n]+)__/g,  '<strong class="nb-bold">$1</strong>')
+  // Italic *…* or _…_
+  s = s.replace(/\*([^*\n]+)\*/g, '<em class="nb-italic">$1</em>')
+  s = s.replace(/_([^_\n]+)_/g,   '<em class="nb-italic">$1</em>')
+  // Strikethrough ~~…~~
+  s = s.replace(/~~(.+?)~~/g, '<del class="nb-strike">$1</del>')
+  // Highlight ==…==
+  s = s.replace(/==(.+?)==/g, '<mark class="nb-hl">$1</mark>')
+  // Superscript ^…^
+  s = s.replace(/\^([^\s^]+)\^/g, '<sup class="nb-sup">$1</sup>')
+  // Subscript ~…~
+  s = s.replace(/~([^\s~]+)~/g, '<sub class="nb-sub">$1</sub>')
+  // Footnote refs [^id]
+  s = s.replace(/\[\^([^\]\n]+)\]/g, (_, id) =>
+    ph(`<sup class="nb-fn-ref"><a href="#fn-${esc(id)}">[${esc(id)}]</a></sup>`))
+  // Wikilinks [[Title]]
+  s = s.replace(/\[\[([^\]\n]{1,120})\]\]/g, (_, raw) => {
+    const title = raw.trim()
+    const nb = notebooks.find(n => n.title?.toLowerCase() === title.toLowerCase())
+    const bk = !nb && library.find(b => b.title?.toLowerCase() === title.toLowerCase())
+    const cls  = nb ? 'wikilink wikilink-nb' : bk ? 'wikilink wikilink-bk' : 'wikilink wikilink-new'
+    const type = nb ? 'notebook' : bk ? 'book' : 'new'
+    const id   = nb ? nb.id : bk ? bk.id : ''
+    return ph(`<span class="${cls}" data-wl-type="${type}" data-wl-id="${esc(id)}" data-wl-title="${esc(title)}">${esc(title)}</span>`)
+  })
+
+  // Restore placeholders without using control-char regex
+  s = s.split('\x02').reduce((acc, part, idx) => {
+    if (idx === 0) return part
+    const end = part.indexOf('\x03')
+    const bucketIdx = parseInt(part.slice(0, end), 10)
+    return acc + (buckets[bucketIdx] ?? '') + part.slice(end + 1)
+  }, '')
   return s
 }
 
-function detectBlockType(raw) {
-  const f = raw.split('\n')[0]
-  if (/^#{6}\s/.test(f)) return 'h6'
-  if (/^#{5}\s/.test(f)) return 'h5'
-  if (/^#{4}\s/.test(f)) return 'h4'
-  if (/^#{3}\s/.test(f)) return 'h3'
-  if (/^#{2}\s/.test(f)) return 'h2'
-  if (/^#\s/.test(f))    return 'h1'
-  if (/^```/.test(f) || /^~~~/.test(f)) return 'code'
-  if (/^- \[[ xX]\]/.test(f) || /^\* \[[ xX]\]/.test(f)) return 'tasklist'
-  if (/^[-*+]\s/.test(f)) return 'ul'
-  if (/^\d+\.\s/.test(f)) return 'ol'
-  if (/^>\s?/.test(f))    return 'blockquote'
-  if (/^---+$|^\*\*\*+$|^___+$/.test(f.trim())) return 'hr'
-  if (/^\|/.test(f))      return 'table'
-  return 'p'
+// ─── Block renderer ───────────────────────────────────────────────────────────
+
+function renderList(rawLines, il) {
+  let html = ''
+  const stack = []
+  const openTag = (tag, start) => {
+    html += (tag === 'ol' && start > 1) ? `<ol start="${start}">` : `<${tag}>`
+  }
+  const closeTag = () => { const top = stack.pop(); html += `</${top.tag}>` }
+
+  rawLines.forEach(line => {
+    const olM = line.match(/^(\s*)(\d+)[.)]\s+(.*)/)
+    const ulM = !olM && line.match(/^(\s*)([-*+])\s+(.*)/)
+    const m = olM || ulM
+    if (!m) return
+    const indent = m[1].length
+    const tag    = olM ? 'ol' : 'ul'
+    const num    = olM ? parseInt(m[2], 10) : 1
+    const item   = m[3]
+
+    if (!stack.length) {
+      openTag(tag, num); stack.push({ tag, indent })
+    } else if (indent > stack[stack.length - 1].indent) {
+      openTag(tag, num); stack.push({ tag, indent })
+    } else {
+      while (stack.length > 1 && indent < stack[stack.length - 1].indent) closeTag()
+      if (stack[stack.length - 1].tag !== tag) {
+        closeTag(); openTag(tag, num); stack.push({ tag, indent })
+      }
+    }
+    html += `<li>${il(item)}</li>`
+  })
+  while (stack.length) closeTag()
+  return html
 }
 
-function blockToHtml(raw, notebooks = [], library = []) {
-  const type = detectBlockType(raw)
-  const il = t => inlineHtml(t, notebooks, library)
-  if (type === 'hr') return '<hr>'
-  if (type === 'code') {
-    const fl   = raw.split('\n')[0]
-    const lang = fl.replace(/^```|^~~~/,'').trim()
-    const body = raw.replace(/^(```|~~~)[^\n]*\n?/,'').replace(/(```|~~~)\s*$/,'')
-    return `<pre class="nb-code${lang?' lang-'+esc(lang):''}"><code>${esc(body)}</code></pre>`
+function blockToHtml(raw, notebooks, library, footnotesBuf) {
+  const il = t => inlineToHtml(t, notebooks, library)
+  const lines = raw.split('\n')
+  const first = lines[0]
+
+  const hm = first.match(/^(#{1,6})\s+(.+?)(?:\s+\{#([^}]+)\})?$/)
+  if (hm) {
+    const lv = hm[1].length
+    const id = hm[3] ? ` id="${esc(hm[3])}"` : ''
+    return `<h${lv}${id}>${il(hm[2])}</h${lv}>`
   }
-  if (type === 'blockquote') {
-    const lines = raw.split('\n').map(l => l.replace(/^>\s?/,''))
-    const joined = lines.join('\n').trim()
-    const calloutM = joined.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION|INFO|SUCCESS|DANGER|QUESTION|QUOTE)\](.*)(\n[\s\S]*)?$/i)
-    if (calloutM) {
-      const kind = calloutM[1].toUpperCase()
-      const title = calloutM[2].trim() || kind.charAt(0)+kind.slice(1).toLowerCase()
-      const body = calloutM[3]?.trim() || ''
-      const colors = {NOTE:'#388bfd',TIP:'#3fb950',IMPORTANT:'#a371f7',WARNING:'#d29922',CAUTION:'#f85149',INFO:'#388bfd',SUCCESS:'#3fb950',DANGER:'#f85149',QUESTION:'#a371f7',QUOTE:'#8b949e'}
-      const c = colors[kind] || '#388bfd'
-      return `<div class="nb-callout" style="border-left:3px solid ${c};background:${c}18;padding:10px 14px;border-radius:0 6px 6px 0;margin:0.6em 0"><div style="font-weight:700;color:${c};margin-bottom:${body?'6px':'0'};font-size:0.93em">${esc(title)}</div>${body?`<div>${il(body)}</div>`:''}</div>`
+
+  if (/^(---+|\*\*\*+|___+)$/.test(first.trim())) return '<hr>'
+
+  if (/^(`{3,}|~{3,})/.test(first)) {
+    const lang = first.replace(/^`{3,}|^~{3,}/, '').trim()
+    const body = raw.replace(/^[^\n]*\n/, '').replace(/\n[`~]{3,}\s*$/, '')
+    return `<pre class="nb-pre${lang ? ' lang-'+esc(lang) : ''}"><code>${esc(body)}</code></pre>`
+  }
+
+  if (/^>\s?/.test(first)) {
+    const inner = lines.map(l => l.replace(/^>\s?/, '')).join('\n').trim()
+    const callM = inner.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION|INFO|SUCCESS|DANGER)\](.*)/i)
+    if (callM) {
+      const kind  = callM[1].toUpperCase()
+      const title = callM[2].trim() || kind.charAt(0)+kind.slice(1).toLowerCase()
+      const palettes = {NOTE:'#388bfd',TIP:'#3fb950',IMPORTANT:'#a371f7',WARNING:'#d29922',CAUTION:'#f85149',INFO:'#388bfd',SUCCESS:'#3fb950',DANGER:'#f85149'}
+      const c = palettes[kind] || '#388bfd'
+      return `<div class="nb-callout" style="border-left:3px solid ${c};background:${c}18;padding:10px 14px;border-radius:0 6px 6px 0;margin:.6em 0"><div style="font-weight:700;color:${c};margin-bottom:4px;font-size:.93em">${esc(title)}</div><div>${il(inner.replace(/^\[[^\]]+\][^\n]*\n?/, '').trim())}</div></div>`
     }
-    return `<blockquote>${il(lines.join('<br>'))}</blockquote>`
+    return `<blockquote>${il(inner.replace(/\n/g, '<br>'))}</blockquote>`
   }
-  if (type === 'tasklist') {
-    const items = raw.split('\n').filter(l => /^[-*+]\s\[[ xX]\]/.test(l))
-    return `<ul class="nb-tasklist">${items.map(l => {
-      const ck = /\[[xX]\]/.test(l)
-      const tx = l.replace(/^[-*+]\s\[[ xX]\]\s*/,'')
-      return `<li class="nb-task-item${ck?' checked':''}"><span class="nb-checkbox">${ck?'✓':''}</span>${il(tx)}</li>`
-    }).join('')}</ul>`
+
+  if (/^\|/.test(first) && lines.length >= 2) {
+    const parseRow = row => row.split('|').slice(1, -1).map(c => c.trim())
+    const headers = parseRow(lines[0])
+    const sep     = lines[1] ? parseRow(lines[1]) : []
+    const aligns  = sep.map(c => /^:-+:$/.test(c) ? 'center' : /-+:$/.test(c) ? 'right' : 'left')
+    const rows    = lines.slice(2).filter(l => /\|/.test(l) && !/^[\s|:-]+$/.test(l))
+    const thHtml  = headers.map((h, i) => `<th style="text-align:${aligns[i]||'left'}">${il(h)}</th>`).join('')
+    const tbHtml  = rows.map(r => {
+      const cells = parseRow(r)
+      return `<tr>${cells.map((c, i) => `<td style="text-align:${aligns[i]||'left'}">${il(c)}</td>`).join('')}</tr>`
+    }).join('')
+    return `<table class="nb-table"><thead><tr>${thHtml}</tr></thead><tbody>${tbHtml}</tbody></table>`
   }
-  if (type === 'ul') {
-    const lines = raw.split('\n').filter(l => l.trim() && /^\s*[-*+]\s/.test(l))
-    let html = '', depth = 0
-    lines.forEach(l => {
-      const lvl = Math.floor(l.search(/\S/)/2)
-      const tx = l.replace(/^\s*[-*+]\s+/,'')
-      if (lvl>depth){html+='<ul>'.repeat(lvl-depth);depth=lvl}
-      if (lvl<depth){html+='</ul>'.repeat(depth-lvl);depth=lvl}
-      html+=`<li>${il(tx)}</li>`
+
+  if (/^\s*[-*+]\s\[[ xX]\]/.test(first)) {
+    let idx = 0
+    const items = lines.filter(l => /^\s*[-*+]\s\[[ xX]\]/.test(l)).map(l => {
+      const checked = /\[[xX]\]/.test(l)
+      const text    = l.replace(/^\s*[-*+]\s\[[ xX]\]\s*/, '')
+      return `<li class="nb-task${checked?' checked':''}" data-ti="${idx++}"><span class="nb-cb" data-ti="${idx-1}">${checked?'✓':''}</span><span>${il(text)}</span></li>`
     })
-    if (depth>0) html+='</ul>'.repeat(depth)
-    return `<ul>${html}</ul>`
+    return `<ul class="nb-tl">${items.join('')}</ul>`
   }
-  if (type === 'ol') {
-    const lines = raw.split('\n').filter(l => /^\s*\d+[.)].?\s/.test(l))
-    return `<ol>${lines.map(l=>`<li>${il(l.replace(/^\s*\d+[.)].?\s+/,''))}</li>`).join('')}</ol>`
+
+  if (/^\s*[-*+]\s/.test(first)) return renderList(lines, il)
+  if (/^\s*\d+[.)]\s/.test(first)) return renderList(lines, il)
+
+  const fnM = first.match(/^\[\^([^\]]+)\]:\s*(.*)/)
+  if (fnM) {
+    footnotesBuf?.push({ id: fnM[1], text: fnM[2] })
+    return `<div class="nb-fn-def" id="fn-${esc(fnM[1])}"><sup>${esc(fnM[1])}</sup> ${il(fnM[2])} <a href="#fnref-${esc(fnM[1])}" class="nb-fn-back">↩</a></div>`
   }
-  if (type === 'table') {
-    const lines = raw.split('\n').filter(l => l.trim())
-    if (lines.length < 2) return `<p>${il(raw)}</p>`
-    const pr = row => row.split('|').map(c=>c.trim()).filter((c,i,a)=>i>0&&i<a.length-1||a.length===1)
-    const headers = pr(lines[0])
-    const aligns  = lines[1]?pr(lines[1]).map(c=>/^:-+:$/.test(c)?'center':/^-+:$/.test(c)?'right':'left'):[]
-    const rows    = lines.slice(2).filter(l=>!l.match(/^[|\-:\s]+$/))
-    const thH = headers.map((h,i)=>`<th style="text-align:${aligns[i]||'left'}">${il(h)}</th>`).join('')
-    const trH = rows.map(r=>{const cells=pr(r);return`<tr>${cells.map((c,i)=>`<td style="text-align:${aligns[i]||'left'}">${il(c)}</td>`).join('')}</tr>`}).join('')
-    return `<table class="nb-table"><thead><tr>${thH}</tr></thead><tbody>${trH}</tbody></table>`
+
+  // Math block $$…$$
+  if (/^\$\$/.test(first)) {
+    const body = raw.replace(/^\$\$\n?/, '').replace(/\n?\$\$$/, '')
+    return `<div class="nb-math nb-math-block nb-math-mq" data-latex="${esc(body)}" data-display="1"></div>`
   }
-  if (type.startsWith('h')) {
-    const lvl = parseInt(type[1])
-    const m = raw.match(/^#{1,6}\s+(.+?)(?:\s+\{#([^}]+)\})?$/)
-    const text = m?m[1]:raw.replace(/^#{1,6}\s+/,'')
-    const id = m?.[2]?` id="${esc(m[2])}"`:''
-    return `<h${lvl}${id}>${il(text)}</h${lvl}>`
+
+  return `<p>${il(raw.replace(/\n/g, '<br>'))}</p>`
+}
+
+function parseBlocks(text) {
+  const lines = text.split('\n')
+  const blocks = []
+  let buf = [], inFence = false, fenceMarker = ''
+
+  const flush = () => {
+    const raw = buf.join('\n').trim()
+    if (raw) blocks.push(raw)
+    buf = []
   }
-  return `<p>${il(raw.replace(/\n/g,'<br>'))}</p>`
+
+  for (const line of lines) {
+    if (!inFence && /^(`{3,}|~{3,})/.test(line)) {
+      flush(); inFence = true; fenceMarker = line.match(/^(`{3,}|~{3,})/)[1]
+      buf.push(line); continue
+    }
+    if (inFence) {
+      buf.push(line)
+      if (line.startsWith(fenceMarker) && line.trim().length === fenceMarker.length) {
+        flush(); inFence = false; fenceMarker = ''
+      }
+      continue
+    }
+    if (line.trim() === '$$') { buf.push(line); continue }
+    if (line.trim() === '') { flush(); continue }
+
+    const isTable   = /^\s*\|/.test(line)
+    const wasTable  = buf.length > 0 && /^\s*\|/.test(buf[0])
+    if (isTable && wasTable) { buf.push(line); continue }
+    if (isTable && !wasTable) { flush(); buf.push(line); continue }
+
+    const isUl   = /^\s*[-*+]\s/.test(line) && !/^\s*[-*+]\s\[[ xX]\]/.test(line)
+    const isOl   = /^\s*\d+[.)]\s/.test(line)
+    const isTask = /^\s*[-*+]\s\[[ xX]\]/.test(line)
+    const isList = isUl || isOl || isTask
+    const wasList = buf.length > 0 && (
+      /^\s*[-*+]\s/.test(buf[0]) || /^\s*\d+[.)]\s/.test(buf[0])
+    )
+    if (isList && wasList) { buf.push(line); continue }
+    if (isList) { flush() }
+
+    flush(); buf.push(line)
+  }
+  flush()
+  return blocks
 }
 
 function renderMarkdown(text, notebooks = [], library = []) {
   if (!text?.trim()) return ''
-  const lines = text.split('\n')
-  const blocks = []
-  let buf = [], inFence = false
-  const flush = () => { const raw=buf.join('\n').trim(); if(raw) blocks.push(raw); buf=[] }
-  for (const line of lines) {
-    if (line.startsWith('```') || line.startsWith('~~~')) {
-      if (!inFence) { flush(); inFence=true; buf.push(line) }
-      else { buf.push(line); flush(); inFence=false }
-      continue
-    }
-    if (inFence) { buf.push(line); continue }
-    if (line.trim()==='') { flush(); continue }
-    if (/^\s*\|/.test(line)) { buf.push(line); continue }
-    flush(); buf.push(line)
-  }
-  flush()
-  return blocks.map((raw,i) =>
-    blockToHtml(raw, notebooks, library).replace(/^(<\w+)/, `$1 data-block-idx="${i}"`)
+  const footnotes = []
+  const blocks = parseBlocks(text)
+  const html = blocks.map((raw, i) =>
+    blockToHtml(raw, notebooks, library, footnotes)
+      .replace(/^(<\w+)/, `$1 data-bi="${i}"`)
   ).join('\n')
+  if (!footnotes.length) return html
+  const fnHtml = `<section class="nb-fns"><hr>${footnotes.map(f =>
+    `<div id="fn-${esc(f.id)}" class="nb-fn-def"><sup>${esc(f.id)}</sup> ${inlineToHtml(f.text)} <a href="#fnref-${esc(f.id)}" class="nb-fn-back">↩</a></div>`
+  ).join('')}</section>`
+  return html + fnHtml
 }
 
-// ─── Gnos CodeMirror theme factory ───────────────────────────────────────────
-function makeGnosTheme(cm) {
+// Hydrate math nodes in a container after innerHTML is set — uses KaTeX
+function hydrateMathNodes(container) {
+  const nodes = Array.from(container.querySelectorAll('.nb-math-mq'))
+  if (!nodes.length) return
+  getKaTeX().then(katex => {
+    nodes.forEach(el => {
+      const latex = el.dataset.latex || ''
+      const display = el.dataset.display === '1'
+      if (!katex) { el.textContent = latex; return }
+      try {
+        katex.render(latex, el, { displayMode: display, throwOnError: false, strict: false })
+      } catch { el.textContent = latex }
+    })
+  })
+}
+
+// ─── CodeMirror theme ─────────────────────────────────────────────────────────
+function makeTheme(cm) {
   const { EditorView } = cm.view
   return EditorView.theme({
+    // In live mode we style lines via CSS classes, not the base editor font.
+    // Keep base styles minimal so .nb-live CSS classes dominate.
     '&': {
-      background: 'var(--bg)',
+      background: 'transparent',
       color: 'var(--text)',
       height: '100%',
-      fontFamily: 'inherit',
-      fontSize: '14px',
+      fontFamily: 'Georgia, serif',
+      fontSize: '15px',
     },
-    '.cm-content': {
-      caretColor: 'var(--accent)',
-      padding: '16px 0',
-      maxWidth: '780px',
-      margin: '0 auto',
-    },
+    '.cm-content': { caretColor: 'var(--accent)', padding: '16px 0' },
     '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)' },
-    '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': {
-      background: 'rgba(56,139,253,0.22)',
+    '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
+      background: 'var(--nb-sel, rgba(56,139,253,0.28)) !important',
     },
-    '.cm-activeLine': { background: 'rgba(255,255,255,0.03)' },
-    '.cm-live-hidden': { display: 'none' },
-    '.cm-foldPlaceholder': {
-      background: 'var(--surfaceAlt)',
+    '.cm-activeLine': { background: 'transparent' },
+    // Wikilink autocomplete tooltip — card style
+    '.cm-tooltip.cm-wl-tooltip': {
+      background: 'var(--surface)',
       border: '1px solid var(--border)',
-      color: 'var(--textDim)',
+      borderRadius: '12px',
+      boxShadow: '0 12px 40px rgba(0,0,0,0.45)',
+      padding: '6px',
+      minWidth: '220px',
     },
     '.cm-tooltip': {
       background: 'var(--surface)',
       border: '1px solid var(--border)',
-      borderRadius: '8px',
-      boxShadow: '0 4px 20px rgba(0,0,0,0.35)',
+      borderRadius: '10px',
+      boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
     },
-    '.cm-tooltip-autocomplete > ul > li[aria-selected]': {
-      background: 'var(--accent)',
-      color: '#fff',
-    },
+    '.cm-tooltip-autocomplete > ul': { fontFamily: 'inherit', fontSize: '13px', maxHeight: '220px' },
+    '.cm-tooltip-autocomplete > ul > li': { padding: '6px 12px', lineHeight: '1.5' },
+    '.cm-tooltip-autocomplete > ul > li[aria-selected]': { background: 'var(--accent)', color: '#fff', borderRadius: '4px' },
+    '.cm-completionLabel': { fontWeight: '500' },
+    '.cm-completionDetail': { opacity: '0.6', fontSize: '11px', marginLeft: '6px' },
     '.cm-searchMatch': { background: 'rgba(210,153,34,0.35)', borderRadius: '2px' },
     '.cm-searchMatch.cm-searchMatch-selected': { background: 'rgba(56,139,253,0.45)' },
     '.cm-panels': { background: 'var(--surface)', borderTop: '1px solid var(--border)' },
     '.cm-panel': { padding: '6px 10px', background: 'var(--surface)' },
-    '.cm-panel input': {
-      background: 'var(--bg)',
-      border: '1px solid var(--border)',
-      borderRadius: '6px',
-      color: 'var(--text)',
-      padding: '3px 8px',
-      fontFamily: 'inherit',
-      fontSize: '12px',
-      outline: 'none',
-    },
-    '.cm-panel button': {
-      background: 'var(--surfaceAlt)',
-      border: '1px solid var(--border)',
-      borderRadius: '6px',
-      color: 'var(--text)',
-      cursor: 'pointer',
-      padding: '3px 8px',
-      fontFamily: 'inherit',
-      fontSize: '12px',
-    },
+    '.cm-panel input': { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--text)', padding: '3px 8px', fontFamily: 'inherit', fontSize: '12px', outline: 'none' },
+    '.cm-panel button': { background: 'var(--surfaceAlt)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--text)', cursor: 'pointer', padding: '3px 8px', fontFamily: 'inherit', fontSize: '12px' },
     '.cm-scroller': { overflow: 'auto', fontFamily: 'inherit' },
-    // ── Live-mode visual styles ──────────────────────────────────────────────
-    '.cm-lv-h1': { fontSize: '1.55em', fontWeight: '700', lineHeight: '1.3', color: 'var(--text)', display: 'block' },
-    '.cm-lv-h2': { fontSize: '1.3em',  fontWeight: '700', lineHeight: '1.3', color: 'var(--text)', display: 'block' },
-    '.cm-lv-h3': { fontSize: '1.15em', fontWeight: '600', lineHeight: '1.4', color: 'var(--text)', display: 'block' },
-    '.cm-lv-h4': { fontSize: '1.05em', fontWeight: '600', color: 'var(--text)', display: 'block' },
-    '.cm-lv-h5': { fontSize: '0.95em', fontWeight: '600', color: 'var(--text)', display: 'block' },
-    '.cm-lv-h6': { fontSize: '0.9em',  fontWeight: '600', color: 'var(--textDim)', display: 'block' },
-    '.cm-lv-bold': { fontWeight: '700' },
-    '.cm-lv-italic': { fontStyle: 'italic' },
-    '.cm-lv-bold-italic': { fontWeight: '700', fontStyle: 'italic' },
-    '.cm-lv-strike': { textDecoration: 'line-through', opacity: '0.65' },
-    '.cm-lv-code': { fontFamily: 'SF Mono,Menlo,Consolas,monospace', fontSize: '0.88em', background: 'rgba(56,139,253,0.1)', borderRadius: '3px', padding: '0 3px', color: 'var(--accent)' },
-    '.cm-lv-blockquote': { borderLeft: '3px solid var(--accent)', marginLeft: '0', paddingLeft: '10px', color: 'var(--textDim)', display: 'block', background: 'rgba(56,139,253,0.04)', borderRadius: '0 4px 4px 0' },
-    '.cm-lv-link': { color: 'var(--accent)', textDecoration: 'underline' },
-    '.cm-lv-hr': { display: 'block', borderBottom: '1px solid var(--border)', margin: '8px 0' },
-    '.cm-lv-highlight': { background: 'rgba(210,153,34,0.28)', borderRadius: '2px', padding: '0 2px' },
-    '.cm-lv-wikilink': { color: 'var(--accent)', borderBottom: '1px solid var(--accent)', cursor: 'pointer' },
-    '.cm-lv-checkbox-checked': { color: 'var(--accent)' },
-    '.cm-lv-dim': { opacity: '0.35', fontSize: '0.85em' },
   }, { dark: true })
 }
 
-// Syntax highlight style for markdown
-function makeHighlightStyle(cm) {
+function makeHighlight(cm) {
   const { tags } = cm.highlight
   const { HighlightStyle } = cm.language
   return HighlightStyle.define([
-    { tag: tags.heading1, color: 'var(--text)', fontWeight: '700', fontSize: '1.4em' },
-    { tag: tags.heading2, color: 'var(--text)', fontWeight: '700', fontSize: '1.25em' },
-    { tag: tags.heading3, color: 'var(--text)', fontWeight: '600', fontSize: '1.1em' },
+    { tag: tags.heading1, color: 'var(--text)', fontWeight: '700', fontSize: '1.6em', fontFamily: 'Georgia, serif' },
+    { tag: tags.heading2, color: 'var(--text)', fontWeight: '700', fontSize: '1.35em', fontFamily: 'Georgia, serif' },
+    { tag: tags.heading3, color: 'var(--text)', fontWeight: '600', fontSize: '1.15em' },
     { tag: tags.heading4, color: 'var(--text)', fontWeight: '600' },
-    { tag: tags.strong,   color: 'var(--text)', fontWeight: '700' },
-    { tag: tags.emphasis, color: 'var(--text)', fontStyle: 'italic' },
+    { tag: tags.strong,   color: 'var(--nb-bold, var(--text))', fontWeight: '700' },
+    { tag: tags.emphasis, color: 'var(--nb-italic, #a5d6ff)', fontStyle: 'italic' },
     { tag: tags.strikethrough, color: 'var(--textDim)', textDecoration: 'line-through' },
-    { tag: tags.link,     color: 'var(--accent)' },
-    { tag: tags.url,      color: 'var(--accent)', textDecoration: 'underline' },
+    { tag: tags.link,   color: 'var(--accent)' },
+    { tag: tags.url,    color: 'var(--accent)', textDecoration: 'underline' },
     { tag: tags.monospace, color: 'var(--accent)', fontFamily: 'SF Mono,Menlo,Consolas,monospace', fontSize: '0.88em' },
-    { tag: tags.processingInstruction, color: 'var(--textDim)', opacity: '0.6' },
-    { tag: tags.meta, color: 'var(--textDim)', opacity: '0.55' },
-    { tag: tags.atom, color: 'var(--textDim)' },
+    { tag: tags.meta,   color: 'var(--textDim)', opacity: '0.4' },
+    { tag: tags.atom,   color: 'var(--textDim)' },
     { tag: tags.comment, color: 'var(--textDim)', fontStyle: 'italic' },
+    { tag: tags.processingInstruction, color: 'var(--textDim)', opacity: '0.6' },
     { tag: tags.keyword, color: '#d2a8ff' },
     { tag: tags.string,  color: '#a5d6ff' },
     { tag: tags.number,  color: '#f0a868' },
-    { tag: tags.operator,color: 'var(--textDim)' },
+    { tag: tags.operator, color: 'var(--textDim)' },
   ])
 }
 
-// ─── Wiki-link autocomplete source ───────────────────────────────────────────
-function makeWikiCompletions(notebooks, library) {
-  return (context) => {
-    const before = context.matchBefore(/\[\[[^\]]*/)
-    if (!before || (before.from === before.to && !context.explicit)) return null
+// ─── Wiki-link autocomplete (Obsidian-style live dropdown) ───────────────────
+// • Appears as soon as user types [[
+// • Filters live as they type the title
+// • Confirms ONLY on Tab or by typing ]] — never on Enter (which would be intrusive)
+// • Arrow keys navigate; Escape dismisses without inserting
+// • The completion replaces from the [[ all the way to the current cursor
+function makeWikiSource(notebooks, library) {
+  return ctx => {
+    // Only activate inside an open [[…  that has no closing ]]
+    const before = ctx.matchBefore(/\[\[[^\]]*/)
+    if (!before) return null
+    // Always show if we are inside [[, even with zero chars typed after it
+    // (but only auto-open when something after [[ is typed, i.e. before.to > before.from+2)
     const query = before.text.slice(2).toLowerCase()
-    const options = [
-      ...notebooks.map(n => ({ label: n.title, type: 'keyword', detail: 'notebook', apply: `[[${n.title}]]` })),
-      ...library.map(b => ({ label: b.title, type: 'variable', detail: 'book',     apply: `[[${b.title}]]` })),
-    ].filter(o => o.label.toLowerCase().includes(query))
-    return { from: before.from, options, validFor: /\[\[[^\]]*/ }
+
+    const nbOpts = notebooks
+      .filter(n => n.title?.toLowerCase().includes(query))
+      .slice(0, 8)
+      .map(n => ({
+        label: n.title,
+        type: 'keyword',
+        detail: '📓 Note',
+        // apply replaces from the [[ to cursor and closes with ]]
+        apply: (view, _c, from, to) => {
+          view.dispatch({ changes: { from, to, insert: `[[${n.title}]]` } })
+        },
+        boost: 2,
+      }))
+
+    const bkOpts = library
+      .filter(b => b.title?.toLowerCase().includes(query))
+      .slice(0, Math.max(0, 8 - nbOpts.length))
+      .map(b => ({
+        label: b.title,
+        type: 'variable',
+        detail: '📖 Book',
+        apply: (view, _c, from, to) => {
+          view.dispatch({ changes: { from, to, insert: `[[${b.title}]]` } })
+        },
+      }))
+
+    const options = [...nbOpts, ...bkOpts]
+    if (!options.length) return null
+
+    return {
+      from: before.from,   // replace from the opening [[
+      options,
+      validFor: /\[\[[^\]]*/,
+    }
   }
 }
 
-// ─── Smart-Enter extension (list continuation) ────────────────────────────────
-function makeSmartEnter(cm) {
-  const { keymap } = cm.view
-  const { insertNewlineAndIndentContinueMarkupList } = cm.commands
-  return keymap.of([{
-    key: 'Enter',
-    run: insertNewlineAndIndentContinueMarkupList,
-  }])
+// ─── Custom keymap for wikilink completion ────────────────────────────────────
+// Only Tab confirms; Enter is left for newline. Escape dismisses.
+function makeWikiCompletionKeymap(cm) {
+  const { acceptCompletion, closeCompletion, completionStatus } = cm.autocomplete
+  return cm.view.keymap.of([
+    {
+      key: 'Tab',
+      run: view => {
+        if (completionStatus(view.state) === 'active') {
+          return acceptCompletion(view)
+        }
+        return false
+      },
+    },
+    {
+      key: 'Escape',
+      run: view => {
+        if (completionStatus(view.state) === 'active') {
+          closeCompletion(view)
+          return true
+        }
+        return false
+      },
+    },
+  ])
 }
 
-// ─── Inline formatting shortcuts ──────────────────────────────────────────────
-function makeFormatKeymap(cm) {
-  const { keymap } = cm.view
-  const wrap = (marker) => ({ state, dispatch }) => {
-    const { selection, doc } = state
-    const changes = selection.ranges.map(r => {
-      const sel = doc.sliceString(r.from, r.to)
-      const text = sel ? `${marker}${sel}${marker}` : `${marker}${marker}`
-      return { from: r.from, to: r.to, insert: text }
+// ─── Paired-syntax auto-wrap (transaction filter — no dropdown) ───────────────
+// When the user types an opening token, we check if there's a selection or
+// a word to the left and wrap it. If nothing is selected, we insert both tokens
+// and place the cursor in the middle. This is the Obsidian-style approach.
+function makePairInputHandler(cm) {
+  const PAIRS = {
+    '**': '**',
+    '*':  '*',
+    '`':  '`',
+    '~~': '~~',
+    '==': '==',
+    '$':  '$',
+  }
+  // We use an InputHandler to intercept typed characters
+  return cm.view.EditorView.inputHandler.of((view, _from, _to, text) => {
+    // Check if we just completed an opening token
+    // We check the text being inserted + what's already immediately before cursor
+    const sel = view.state.selection.main
+    const before2 = sel.from >= 2 ? view.state.doc.sliceString(sel.from - 2, sel.from) : ''
+    const before1 = sel.from >= 1 ? view.state.doc.sliceString(sel.from - 1, sel.from) : ''
+
+    // Map of what full typed sequence → pair close
+    let open = null, close = null
+
+    if (text === '*' && before1 === '*' && before2[0] !== '*') {
+      open = '**'; close = '**'
+    } else if (text === '~' && before1 === '~') {
+      open = '~~'; close = '~~'
+    } else if (text === '=' && before1 === '=') {
+      open = '=='; close = '=='
+    } else {
+      // Single-char pairs
+      const singlePair = { '*': '*', '`': '`', '$': '$' }
+      if (singlePair[text] && before1 !== text) {
+        open = text; close = singlePair[text]
+      }
+    }
+
+    if (!open) return false
+
+    // If there's a non-empty selection, wrap it
+    if (!sel.empty) {
+      view.dispatch({
+        changes: [
+          { from: sel.from, to: sel.from, insert: open },
+          { from: sel.to, to: sel.to, insert: close },
+        ],
+        selection: cm.state.EditorSelection.range(sel.from + open.length, sel.to + open.length),
+      })
+      return true
+    }
+
+    // No selection: insert open+close and place cursor between
+    // But first insert the final char of open (the one being typed)
+    const insert = text + close
+    view.dispatch({
+      changes: { from: sel.from, to: sel.to, insert },
+      selection: { anchor: sel.from + text.length },
+    })
+    return true
+  })
+}
+
+// ─── Auto-confirm wikilink when user closes ]] ────────────────────────────────
+// If the completion is active and user types ]], we accept the top completion
+// then append ]] naturally (or let the apply fn handle the full [[title]] insert).
+function makeWikiCloseHandler(cm) {
+  return cm.view.EditorView.inputHandler.of((view, _from, _to, text) => {
+    if (text !== ']') return false
+    const { completionStatus, acceptCompletion } = cm.autocomplete
+    if (completionStatus(view.state) !== 'active') return false
+    // Check if the char before cursor is already ]
+    const sel = view.state.selection.main
+    const prev = sel.from >= 1 ? view.state.doc.sliceString(sel.from - 1, sel.from) : ''
+    if (prev === ']') {
+      // User is closing the bracket — accept the highlighted completion
+      return acceptCompletion(view)
+    }
+    return false
+  })
+}
+function makeSmartEnter(cm) {
+  return cm.view.keymap.of([{ key: 'Enter', run: cm.commands.insertNewlineAndIndentContinueMarkupList }])
+}
+
+// ─── Inline format shortcuts ──────────────────────────────────────────────────
+function makeFormatKeys(cm) {
+  const wrap = m => ({ state, dispatch }) => {
+    const changes = state.selection.ranges.map(r => {
+      const sel = state.doc.sliceString(r.from, r.to)
+      return { from: r.from, to: r.to, insert: sel ? `${m}${sel}${m}` : `${m}${m}` }
     })
     dispatch(state.update({ changes, scrollIntoView: true }))
     return true
   }
-  const insertLink = ({ state, dispatch }) => {
+  const link = ({ state, dispatch }) => {
     const sel = state.doc.sliceString(state.selection.main.from, state.selection.main.to)
-    const text = sel ? `[${sel}](url)` : '[link text](url)'
-    dispatch(state.update({
-      changes: { from: state.selection.main.from, to: state.selection.main.to, insert: text },
-      scrollIntoView: true,
-    }))
+    dispatch(state.update({ changes: { from: state.selection.main.from, to: state.selection.main.to, insert: sel ? `[${sel}](url)` : '[link text](url)' }, scrollIntoView: true }))
     return true
   }
-  return keymap.of([
+  return cm.view.keymap.of([
     { key: 'Mod-b', run: wrap('**') },
     { key: 'Mod-i', run: wrap('*') },
     { key: 'Mod-e', run: wrap('`') },
-    { key: 'Mod-k', run: insertLink },
+    { key: 'Mod-k', run: link },
     { key: 'Mod-Shift-h', run: wrap('==') },
   ])
 }
 
-// ─── Obsidian live preview — full node-level, cursor-aware implementation ─────
-//
-// CURSOR-AWARE HIDING — how it works character by character:
-//
-//   Each punctuation node (EmphasisMark, HeaderMark, etc.) has a [from,to] offset
-//   in the document. Its parent formatting span (StrongEmphasis, ATXHeading1, etc.)
-//   also has a [from,to] that encompasses the whole construct including markers.
-//
-//   Rule: cursor offset within parent[from, to]  → show punct node (dimmed)
-//         cursor offset outside parent[from, to] → hide punct with Decoration.replace({})
-//
-//   Example — "**bold**" at offsets 0–8, cursor at offset 12 (elsewhere):
-//     StrongEmphasis [0,8]
-//       EmphasisMark [0,2]  ← cursor NOT in [0,8] → replace with nothing (hidden)
-//       "bold"       [2,6]
-//       EmphasisMark [6,8]  ← cursor NOT in [0,8] → replace with nothing (hidden)
-//     Result: you see "bold" in bold, markers invisible
-//
-//   Cursor moves to offset 3 (inside "bold"):
-//       EmphasisMark [0,2]  ← cursor IS in [0,8] → show dimmed
-//       EmphasisMark [6,8]  ← cursor IS in [0,8] → show dimmed
-//     Result: you see "**bold**" with ** dimmed
-//
-//   This is PER-NODE, not per-line. Two bold spans on the same line each
-//   independently reveal only when the cursor enters their specific range.
 
-// ── Replacement widgets ────────────────────────────────────────────────────────
+// ─── Ghost hint plugin ────────────────────────────────────────────────────────
+// Shows placeholder ghost text after typing an opening syntax token.
+// Tab accepts, any other key dismisses. Non-intrusive — never auto-inserts.
+function makeGhostHintPlugin(cm) {
+  const { ViewPlugin, Decoration, WidgetType } = cm.view
 
+  // Ghost shows only the closing syntax token — no placeholder text.
+  // Obsidian style: type ** → see faint ** after cursor, Tab to accept.
+  const HINTS = {
+    '***': '***',
+    '**':  '**',
+    '*':   '*',
+    '~~':  '~~',
+    '==':  '==',
+    '`':   '`',
+    '$$':  '$$',
+    '$':   '$',
+  }
+
+  class GhostWidget extends WidgetType {
+    constructor(text) { super(); this.text = text }
+    toDOM() {
+      const span = document.createElement('span')
+      span.className = 'cm-ghost-hint'
+      span.textContent = this.text
+      span.setAttribute('aria-hidden', 'true')
+      return span
+    }
+    eq(o) { return o instanceof GhostWidget && o.text === this.text }
+    ignoreEvent() { return true }
+  }
+
+  const ghostPlugin = ViewPlugin.fromClass(class {
+    constructor(view) { this.deco = Decoration.none; this._hint = null; this._compute(view) }
+    update(upd) { if (upd.docChanged || upd.selectionSet) this._compute(upd.view) }
+    _compute(view) {
+      const { state } = view
+      const cur = state.selection.main
+      if (!cur.empty) { this.deco = Decoration.none; this._hint = null; return }
+      const line = state.doc.lineAt(cur.head)
+      const col = cur.head - line.from
+      const textBefore = line.text.slice(0, col)
+      const after = line.text.slice(col)
+
+      let matched = null
+      for (const token of ['***', '$$', '**', '~~', '==', '*', '`', '$']) {
+        if (textBefore.endsWith(token) && !after.includes(token)) {
+          matched = token; break
+        }
+      }
+
+      if (!matched || !HINTS[matched]) { this.deco = Decoration.none; this._hint = null; return }
+      const close = HINTS[matched]
+
+      // Don't show ghost if pair handler already inserted the close
+      // (pair handler fires on the second * of **, so by the time ghost
+      //  computes, the close is already there — detect and skip)
+      if (after.startsWith(close)) { this.deco = Decoration.none; this._hint = null; return }
+
+      const builder = new cm.state.RangeSetBuilder()
+      try {
+        builder.add(cur.head, cur.head, Decoration.widget({ widget: new GhostWidget(close), side: 1 }))
+      } catch { /* ignore */ }
+      this.deco = builder.finish()
+      this._hint = { pos: cur.head, insert: close }
+    }
+    get decorations() { return this.deco }
+  }, { decorations: v => v.decorations })
+
+  const ghostKeymap = cm.view.keymap.of([{
+    key: 'Tab',
+    run: view => {
+      const plugin = view.plugin(ghostPlugin)
+      if (!plugin?._hint) return false
+      const { pos, insert } = plugin._hint
+      if (view.state.selection.main.head !== pos) return false
+      // Insert closing token and place cursor between open and close
+      view.dispatch({
+        changes: { from: pos, to: pos, insert },
+        selection: { anchor: pos },
+      })
+      return true
+    },
+  }])
+
+  return [ghostPlugin, ghostKeymap]
+}
+
+
+// ─── Widgets ─────────────────────────────────────────────────────────────────
 class HRWidget {
   toDOM() {
     const d = document.createElement('div')
-    d.className = 'cm-lv-hr-widget'
+    d.className = 'cm-hr'
     return d
   }
-  ignoreEvent() { return true }
   eq(o) { return o instanceof HRWidget }
-  get estimatedHeight() { return 1 }
+  compare(o) { return o instanceof HRWidget }
+  destroy() {}
+  ignoreEvent() { return true }
+  get estimatedHeight() { return 2 }
+  coordsAt() { return null }
 }
 
 class CheckboxWidget {
-  constructor(checked) { this.checked = checked }
+  constructor(checked, pos) { this.checked = checked; this.pos = pos }
   toDOM() {
     const s = document.createElement('span')
-    s.className = 'cm-lv-checkbox' + (this.checked ? ' cm-lv-checkbox-on' : '')
-    s.textContent = this.checked ? '\u2713' : ''
+    s.className = 'cm-cb' + (this.checked ? ' cm-cb-on' : '')
+    s.textContent = this.checked ? '✓' : ''
+    s.dataset.pos = String(this.pos)
     return s
   }
+  eq(o) { return o instanceof CheckboxWidget && o.checked === this.checked && o.pos === this.pos }
+  compare(o) { return o instanceof CheckboxWidget && o.checked === this.checked && o.pos === this.pos }
+  destroy() {}
   ignoreEvent() { return false }
-  eq(o) { return o instanceof CheckboxWidget && o.checked === this.checked }
+  coordsAt() { return null }
 }
 
-class WikilinkWidget {
-  constructor(title, resolved) { this.title = title; this.resolved = resolved }
+class ImgWidget {
+  constructor(src, alt) { this.src = src; this.alt = alt }
+  toDOM() {
+    const wrap = document.createElement('div')
+    wrap.className = 'cm-img-wrap'
+    const img = document.createElement('img')
+    img.src = this.src; img.alt = this.alt; img.loading = 'lazy'
+    img.className = 'cm-img'
+    img.onerror = () => {
+      img.style.display = 'none'
+      const ph = document.createElement('span')
+      ph.className = 'cm-img-err'
+      ph.textContent = this.alt || this.src || 'image'
+      wrap.appendChild(ph)
+    }
+    wrap.appendChild(img)
+    return wrap
+  }
+  eq(o) { return o instanceof ImgWidget && o.src === this.src }
+  compare(o) { return o instanceof ImgWidget && o.src === this.src }
+  destroy() {}
+  ignoreEvent() { return false }
+  get estimatedHeight() { return 160 }
+  coordsAt() { return null }
+}
+
+// MathQuill-backed widget — renders math, clicking opens an inline MathQuill editor
+class MathWidget {
+  constructor(tex, display, from, to) {
+    this.tex = tex
+    this.display = display
+    this.from = from   // doc position — used to commit edits back
+    this.to = to
+  }
+  toDOM() {
+    const wrap = document.createElement(this.display ? 'div' : 'span')
+    wrap.className = this.display ? 'cm-math-block cm-math-mq' : 'cm-math-inline cm-math-mq'
+    wrap.dataset.latex = this.tex
+    wrap.dataset.display = this.display ? '1' : '0'
+    wrap.title = 'Click to edit'
+    // Render static math immediately
+    const staticSpan = document.createElement('span')
+    wrap.appendChild(staticSpan)
+    renderMathStatic(staticSpan, this.tex, this.display)
+    return wrap
+  }
+  eq(o) { return o instanceof MathWidget && o.tex === this.tex && o.display === this.display }
+  compare(o) { return o instanceof MathWidget && o.tex === this.tex && o.display === this.display }
+  destroy() {}
+  ignoreEvent() { return false }
+  get estimatedHeight() { return this.display ? 44 : 22 }
+  coordsAt() { return null }
+}
+
+class WikiWidget {
+  constructor(title, cls, type, id) { this.title = title; this.cls = cls; this.type = type; this.id = id }
   toDOM() {
     const s = document.createElement('span')
-    s.className = 'cm-lv-wikilink' + (this.resolved ? '' : ' cm-lv-wikilink-unresolved')
+    s.className = this.cls
     s.textContent = this.title
-    s.dataset.wlTitle = this.title
+    s.dataset.wlType = this.type; s.dataset.wlId = this.id; s.dataset.wlTitle = this.title
+    s.title = this.type === 'new' ? `Create note: ${this.title}` : `Open ${this.type}`
     return s
   }
+  eq(o) { return o instanceof WikiWidget && o.title === this.title && o.cls === this.cls }
+  compare(o) { return o instanceof WikiWidget && o.title === this.title && o.cls === this.cls }
+  destroy() {}
   ignoreEvent() { return false }
-  eq(o) {
-    return o instanceof WikilinkWidget && o.title === this.title && o.resolved === this.resolved
-  }
+  coordsAt() { return null }
 }
 
-// ── Plugin factory ─────────────────────────────────────────────────────────────
-function makeLivePreviewPlugin(cm, RangeSetBuilder, notebooks, library) {
+class LinkWidget {
+  constructor(text, href) { this.text = text; this.href = href }
+  toDOM() {
+    const a = document.createElement('a')
+    a.className = 'cm-link-widget'
+    a.textContent = this.text || this.href
+    a.href = this.href
+    a.target = '_blank'
+    a.rel = 'noopener noreferrer'
+    a.title = this.href
+    a.addEventListener('click', e => { e.preventDefault(); window.open(this.href, '_blank') })
+    return a
+  }
+  eq(o) { return o instanceof LinkWidget && o.text === this.text && o.href === this.href }
+  compare(o) { return o instanceof LinkWidget && o.text === this.text && o.href === this.href }
+  destroy() {}
+  ignoreEvent() { return false }
+  coordsAt() { return null }
+}
+
+// ─── Live preview plugin ──────────────────────────────────────────────────────
+function makeLivePlugin(cm, RangeSetBuilder, notebooks, library) {
   const { ViewPlugin, Decoration } = cm.view
   const { syntaxTree } = cm.language
 
-  // Pure punctuation nodes — hidden when cursor is outside their parent span
-  const PUNCT = new Set([
+  const PUNCT_NODES = new Set([
     'EmphasisMark', 'HeaderMark', 'CodeMark', 'StrikethroughMark',
-    'LinkMark', 'ImageMark', 'QuoteMark', 'ListMark', 'TaskMarker',
+    'LinkMark', 'ImageMark', 'QuoteMark', 'TaskMarker',
     'TableDelimiter',
   ])
 
-  // Content span nodes → CSS class (always styled, never hidden themselves)
-  const SPAN = {
-    StrongEmphasis: 'cm-lv-bold-italic',
-    Emphasis:       'cm-lv-italic',
-    Strong:         'cm-lv-bold',
-    Strikethrough:  'cm-lv-strike',
-    InlineCode:     'cm-lv-code',
-    Highlight:      'cm-lv-highlight',
-    Link:           'cm-lv-link',
-    Image:          'cm-lv-link',
-    URL:            'cm-lv-url',
+  const SPAN_MAP = {
+    StrongEmphasis: null, // handled specially
+    Emphasis:       'cm-lv-i',
+    Strikethrough:  'cm-lv-s',
+    InlineCode:     'cm-lv-c',
+    Highlight:      'cm-lv-hl',
+    Link:           'cm-lv-lnk',
+    Image:          'cm-lv-lnk',
   }
 
-  // Block nodes whose LINE gets a decoration class
-  const LINE_CLS = {
+  const LINE_MAP = {
     ATXHeading1: 'cm-lv-h1', ATXHeading2: 'cm-lv-h2', ATXHeading3: 'cm-lv-h3',
     ATXHeading4: 'cm-lv-h4', ATXHeading5: 'cm-lv-h5', ATXHeading6: 'cm-lv-h6',
   }
-
   const CODE_BLOCKS = new Set(['FencedCode', 'CodeBlock', 'IndentedCode'])
+
+  // The set of nodes whose marks we want to hide/show as a unit
+  const INLINE_ANCESTORS = new Set(['Emphasis','StrongEmphasis','Strikethrough','InlineCode','Link','Image','Highlight'])
 
   function build(view) {
     const { state } = view
-    const cursor    = state.selection.main.head
-    const doc       = state.doc
-    const cursorIn  = (f, t) => cursor >= f && cursor <= t
+    const cur = state.selection.main.head
+    const doc = state.doc
+    const inCur = (f, t) => cur >= f && cur <= t
 
-    const spans  = []   // { from, to, deco }  inline mark / replace
-    const lineDs = []   // { pos, deco }        line decorations
+    const inlines  = []
+    const lineDecs = []
 
-    syntaxTree(state).iterate({
-      enter(node) {
-        const { from, to, name } = node
+    try {
+      syntaxTree(state).iterate({
+        enter(node) {
+          const { from, to, name } = node
+          if (from >= to) return
 
-        // ── Fenced / indented code block: style every contained line ────────
-        if (CODE_BLOCKS.has(name)) {
-          const startLn = doc.lineAt(from).number
-          const endLn   = doc.lineAt(to).number
-          for (let ln = startLn; ln <= endLn; ln++) {
-            lineDs.push({ pos: doc.line(ln).from, deco: Decoration.line({ class: 'cm-lv-codeblock' }) })
+          // ── Code block ──────────────────────────────────────────────────
+          if (CODE_BLOCKS.has(name)) {
+            const ls = doc.lineAt(from).number
+            const le = doc.lineAt(Math.min(to, doc.length - 1)).number
+            for (let n = ls; n <= le; n++) {
+              try { lineDecs.push({ pos: doc.line(n).from, cls: 'cm-lv-cb' }) } catch { /**/ }
+            }
+            return false
           }
-          return false  // skip children — don't process CodeMarks inside code blocks
-        }
 
-        // ── Horizontal rule: swap whole line for HR widget ──────────────────
-        if (name === 'HorizontalRule') {
-          const line = doc.lineAt(from)
-          if (!cursorIn(line.from, line.to)) {
-            spans.push({ from: line.from, to: line.to,
-              deco: Decoration.replace({ widget: new HRWidget() }) })
+          // ── Horizontal rule ─────────────────────────────────────────────
+          if (name === 'HorizontalRule') {
+            const ln = doc.lineAt(from)
+            if (!inCur(ln.from, ln.to)) {
+              inlines.push({ from: ln.from, to: ln.to, deco: Decoration.replace({ widget: new HRWidget() }) })
+            }
+            return false
           }
-          return false
-        }
 
-        // ── Task checkbox: swap [ ] / [x] for checkbox widget ──────────────
-        if (name === 'TaskMarker') {
-          const raw     = doc.sliceString(from, to)
-          const checked = /\[[xX]\]/.test(raw)
-          if (!cursorIn(from, to)) {
-            spans.push({ from, to,
-              deco: Decoration.replace({ widget: new CheckboxWidget(checked) }) })
-          } else {
-            spans.push({ from, to, deco: Decoration.mark({ class: 'cm-lv-punct' }) })
+          // ── Task checkbox ────────────────────────────────────────────────
+          if (name === 'TaskMarker') {
+            const raw = doc.sliceString(from, to)
+            const ck  = /\[[xX]\]/.test(raw)
+            if (!inCur(from, to)) {
+              inlines.push({ from, to, deco: Decoration.replace({ widget: new CheckboxWidget(ck, from) }) })
+            } else {
+              inlines.push({ from, to, deco: Decoration.mark({ class: 'cm-lv-p' }) })
+            }
+            return false
           }
-          return false
-        }
 
-        // ── Heading lines ───────────────────────────────────────────────────
-        if (LINE_CLS[name]) {
-          lineDs.push({ pos: doc.lineAt(from).from,
-            deco: Decoration.line({ class: LINE_CLS[name] }) })
-          // fall through — still need to process HeaderMark children
-        }
-
-        // ── Blockquote lines ────────────────────────────────────────────────
-        if (name === 'Blockquote') {
-          const startLn = doc.lineAt(from).number
-          const endLn   = doc.lineAt(to).number
-          for (let ln = startLn; ln <= endLn; ln++) {
-            lineDs.push({ pos: doc.line(ln).from,
-              deco: Decoration.line({ class: 'cm-lv-blockquote-line' }) })
+          // ── Image — replace entire image node (not the line) ────────────
+          if (name === 'Image') {
+            const raw = doc.sliceString(from, to)
+            const m   = raw.match(/!\[([^\]]*)\]\(([^\s)]+)/)
+            if (m) {
+              if (!inCur(from, to)) {
+                // Replace only the image syntax, not the whole line
+                inlines.push({ from, to, deco: Decoration.replace({ widget: new ImgWidget(m[2], m[1]), block: false }) })
+                return false
+              }
+            }
           }
-          // fall through to process QuoteMark children
-        }
 
-        // ── Content spans: always apply styling class ───────────────────────
-        if (SPAN[name]) {
-          spans.push({ from, to, deco: Decoration.mark({ class: SPAN[name] }) })
-          // fall through — process punctuation children inside
-        }
-
-        // ── THE KEY MECHANISM: cursor-aware punctuation hiding ─────────────
-        //
-        //  node.node.parent is the Lezer SyntaxNode API to get the parent node.
-        //  We check if cursor is within the PARENT's range, not just this node.
-        //  This means clicking anywhere inside **bold** reveals both ** markers.
-        if (PUNCT.has(name)) {
-          const par   = node.node.parent
-          const pFrom = par ? par.from : from
-          const pTo   = par ? par.to   : to
-
-          if (cursorIn(pFrom, pTo)) {
-            // Cursor inside this construct → show syntax, visually dimmed
-            spans.push({ from, to, deco: Decoration.mark({ class: 'cm-lv-punct' }) })
-          } else {
-            // Cursor elsewhere → hide this punctuation completely
-            // Decoration.replace({}) with no widget = zero-width, invisible
-            spans.push({ from, to, deco: Decoration.replace({}) })
+          // ── Math: inline $…$ and block $$…$$ ───────────────────────────
+          if (name === 'InlineMath' || name === 'BlockMath' || name === 'MathSpan') {
+            const raw = doc.sliceString(from, to)
+            const isBlock = name === 'BlockMath'
+            const tex = raw.replace(/^\$+\n?/, '').replace(/\n?\$+$/, '')
+            if (!inCur(from, to)) {
+              inlines.push({ from, to, deco: Decoration.replace({ widget: new MathWidget(tex, isBlock, from, to) }) })
+            } else {
+              inlines.push({ from, to, deco: Decoration.mark({ class: 'cm-lv-p' }) })
+            }
+            return false
           }
-        }
-      }
-    })
 
-    // ── Wikilinks via regex (Lezer parses them as plain text) ───────────────
-    const fullText = doc.toString()
-    // eslint-disable-next-line no-useless-escape
-    const wlRe = /\[\[([^\]\n]{1,120})\]\]/g
-    let wm
-    while ((wm = wlRe.exec(fullText)) !== null) {
-      const wFrom = wm.index
-      const wTo   = wm.index + wm[0].length
-      const title = wm[1].trim()
-      const resolved =
-        notebooks.some(n => n.title?.toLowerCase() === title.toLowerCase()) ||
-        library.some(b  => b.title?.toLowerCase()  === title.toLowerCase())
+          // ── List marker ─────────────────────────────────────────────────
+          if (name === 'ListMark') {
+            const ln = doc.lineAt(from)
+            if (!inCur(ln.from, ln.to)) {
+              inlines.push({ from, to, deco: Decoration.replace({}) })
+            } else {
+              inlines.push({ from, to, deco: Decoration.mark({ class: 'cm-lv-p' }) })
+            }
+            return false
+          }
 
-      if (cursorIn(wFrom, wTo)) {
-        // Cursor inside → show raw [[...]] dimmed
-        spans.push({ from: wFrom, to: wTo, deco: Decoration.mark({ class: 'cm-lv-dim' }) })
-      } else {
-        // Cursor outside → replace with styled widget
-        spans.push({ from: wFrom, to: wTo,
-          deco: Decoration.replace({ widget: new WikilinkWidget(title, resolved) }) })
-      }
+          // ── Heading line decoration ──────────────────────────────────────
+          if (LINE_MAP[name]) {
+            try { lineDecs.push({ pos: doc.lineAt(from).from, cls: LINE_MAP[name] }) } catch { /**/ }
+          }
+
+          // ── Blockquote line decoration ───────────────────────────────────
+          if (name === 'Blockquote') {
+            const ls = doc.lineAt(from).number
+            const le = doc.lineAt(Math.min(to, doc.length - 1)).number
+            for (let n = ls; n <= le; n++) {
+              try { lineDecs.push({ pos: doc.line(n).from, cls: 'cm-lv-bq' }) } catch { /**/ }
+            }
+          }
+
+          // ── List item: depth + ordered/unordered ─────────────────────────
+          if (name === 'ListItem') {
+            try {
+              const linePos = doc.lineAt(from).from
+              let p = node.node.parent
+              let depth = 0
+              let isOrdered = false
+              while (p) {
+                if (p.name === 'BulletList' || p.name === 'OrderedList') {
+                  if (depth === 0) isOrdered = p.name === 'OrderedList'
+                  depth++
+                }
+                p = p.parent
+              }
+              const depthCls = `cm-lv-depth-${Math.min(depth, 4)}`
+              const cls = isOrdered
+                ? `cm-lv-li cm-lv-oli ${depthCls}`
+                : `cm-lv-li ${depthCls}`
+              lineDecs.push({ pos: linePos, cls })
+            } catch { /**/ }
+          }
+
+          // ── Inline content span ──────────────────────────────────────────
+          // Obsidian approach: marks inside a span are NEVER replaced — they
+          // are styled with font-size:0 via cm-lv-p (cursor off) or shown
+          // dimly (cursor on). This avoids the RangeSetBuilder overlap-skip
+          // issue that causes the opening ** to remain visible.
+          if (name === 'StrongEmphasis') {
+            const raw = doc.sliceString(from, to)
+            const cls = raw.startsWith('***') ? 'cm-lv-bi' : 'cm-lv-b'
+            const cursorInSpan = inCur(from, to)
+
+            inlines.push({ from, to, deco: Decoration.mark({ class: cls }) })
+
+            let child = node.node.firstChild
+            while (child) {
+              if (child.name === 'EmphasisMark') {
+                inlines.push({
+                  from: child.from, to: child.to,
+                  deco: Decoration.mark({ class: cursorInSpan ? 'cm-lv-p' : 'cm-lv-hidden' }),
+                })
+              }
+              child = child.nextSibling
+            }
+            return false
+          } else if (SPAN_MAP[name] !== undefined) {
+            if (SPAN_MAP[name]) {
+              const cursorInSpan = inCur(from, to)
+              inlines.push({ from, to, deco: Decoration.mark({ class: SPAN_MAP[name] }) })
+              // Hide marks as zero-width (Obsidian style) rather than replace
+              let child = node.node.firstChild
+              while (child) {
+                if (PUNCT_NODES.has(child.name)) {
+                  inlines.push({
+                    from: child.from, to: child.to,
+                    deco: Decoration.mark({ class: cursorInSpan ? 'cm-lv-p' : 'cm-lv-hidden' }),
+                  })
+                }
+                child = child.nextSibling
+              }
+              // For Link: replace whole syntax with a widget when cursor is off
+              if (name === 'Link' && !cursorInSpan) {
+                const raw = doc.sliceString(from, to)
+                const lm = raw.match(/^\[([^\]]*)\]\(([^\s)]*)\)$/)
+                if (lm) {
+                  inlines.push({ from, to, deco: Decoration.replace({ widget: new LinkWidget(lm[1], lm[2]) }) })
+                }
+              }
+              return false
+            }
+          }
+
+          // ── Heading mark (# ## ### …) hiding ────────────────────────────
+          if (name === 'HeaderMark') {
+            const ln = doc.lineAt(from)
+            const cls = inCur(ln.from, ln.to) ? 'cm-lv-p' : 'cm-lv-hidden'
+            inlines.push({ from, to, deco: Decoration.mark({ class: cls }) })
+            return false
+          }
+
+          // ── Cursor-aware punctuation hiding (inline spans only) ──────────
+          // Marks belonging to StrongEmphasis, Emphasis, Link, etc. are already
+          // handled in their parent's branch above with return false — this
+          // fallback only catches orphaned or unrecognised marks.
+          if (PUNCT_NODES.has(name) && name !== 'ListMark' && name !== 'TaskMarker'
+              && name !== 'EmphasisMark' && name !== 'HeaderMark'
+              && name !== 'LinkMark' && name !== 'ImageMark'
+              && name !== 'CodeMark' && name !== 'StrikethroughMark') {
+            const parent = node.node.parent
+            if (!parent || !INLINE_ANCESTORS.has(parent.name)) return
+
+            let ancestor = parent
+            while (ancestor.parent && INLINE_ANCESTORS.has(ancestor.parent.name)) {
+              ancestor = ancestor.parent
+            }
+            const af = ancestor.from
+            const at = ancestor.to
+            if (inCur(af, at)) {
+              inlines.push({ from, to, deco: Decoration.mark({ class: 'cm-lv-p' }) })
+            } else {
+              inlines.push({ from, to, deco: Decoration.replace({}) })
+            }
+          }
+        },
+      })
+    } catch (e) {
+      console.warn('[LivePreview] tree walk error (suppressed):', e?.message)
     }
 
-    // ── Sort spans: from ASC, then to DESC so wider (parent) ranges come first
-    // when they share the same `from`. CM6 requires document order AND that
-    // a parent decoration precedes child decorations at the same start offset.
-    spans.sort((a, b) => a.from !== b.from ? a.from - b.from : b.to - a.to)
+    // ── Math via regex fallback ───────────────────────────────────────────
+    try {
+      const full = doc.toString()
+      const reBlock = /\$\$([\s\S]*?)\$\$/gm
+      let mb
+      while ((mb = reBlock.exec(full)) !== null) {
+        const bf = mb.index, bt = mb.index + mb[0].length
+        const already = inlines.some(d => d.from <= bf && d.to >= bt && d.deco.spec?.widget instanceof MathWidget)
+        if (!already) {
+          if (!inCur(bf, bt)) {
+            inlines.push({ from: bf, to: bt, deco: Decoration.replace({ widget: new MathWidget(mb[1].trim(), true, bf, bt) }) })
+          }
+        }
+      }
+      const reInline = /\$([^$\n]+)\$/g
+      let mi
+      while ((mi = reInline.exec(full)) !== null) {
+        const mf = mi.index, mt = mi.index + mi[0].length
+        const already = inlines.some(d => d.from <= mf && d.to >= mt && d.deco.spec?.widget instanceof MathWidget)
+        if (!already) {
+          if (!inCur(mf, mt)) {
+            inlines.push({ from: mf, to: mt, deco: Decoration.replace({ widget: new MathWidget(mi[1], false, mf, mt) }) })
+          }
+        }
+      }
+    } catch { /**/ }
 
-    // ── Build inline RangeSet ───────────────────────────────────────────────
+    // ── Wikilinks via regex ───────────────────────────────────────────────
+    try {
+      const full = doc.toString()
+      const re = /\[\[([^\]\n]{1,120})\]\]/g
+      let m
+      while ((m = re.exec(full)) !== null) {
+        const wf = m.index, wt = m.index + m[0].length
+        const title = m[1].trim()
+        const nb = notebooks.find(n => n.title?.toLowerCase() === title.toLowerCase())
+        const bk = !nb && library.find(b => b.title?.toLowerCase() === title.toLowerCase())
+        if (inCur(wf, wt)) {
+          inlines.push({ from: wf, to: wt, deco: Decoration.mark({ class: 'cm-lv-p' }) })
+        } else {
+          const type = nb ? 'notebook' : bk ? 'book' : 'new'
+          const id   = nb ? nb.id : bk ? bk.id : ''
+          const cls  = nb ? 'cm-wl cm-wl-nb' : bk ? 'cm-wl cm-wl-bk' : 'cm-wl cm-wl-new'
+          inlines.push({ from: wf, to: wt, deco: Decoration.replace({ widget: new WikiWidget(title, cls, type, id) }) })
+        }
+      }
+    } catch { /**/ }
+
+    // ── Sort and build ────────────────────────────────────────────────────
+    inlines.sort((a, b) => a.from !== b.from ? a.from - b.from : b.to - a.to)
+
     const sb = new RangeSetBuilder()
-    for (const { from, to, deco } of spans) {
-      if (from >= to) continue
-      try { sb.add(from, to, deco) } catch { /* overlapping ranges — skip gracefully */ }
+    let lastReplTo = -1
+    for (const { from, to, deco } of inlines) {
+      if (from < 0 || to > doc.length || from >= to) continue
+      const isReplace = !!deco.spec?.widget || (deco.spec?.block === undefined && !deco.spec?.class)
+      if (isReplace && from < lastReplTo) continue
+      try {
+        sb.add(from, to, deco)
+        if (isReplace) lastReplTo = to
+      } catch { /**/ }
     }
 
-    // ── Build line RangeSet ─────────────────────────────────────────────────
-    lineDs.sort((a, b) => a.pos - b.pos)
+    lineDecs.sort((a, b) => a.pos - b.pos)
     const lb = new RangeSetBuilder()
-    let prevPos = -1
-    for (const { pos, deco } of lineDs) {
-      if (pos === prevPos) continue  // only one line deco per line
-      try { lb.add(pos, pos, deco); prevPos = pos } catch { /* skip */ }
+    const seen = new Set()
+    for (const { pos, cls } of lineDecs) {
+      const k = `${pos}:${cls}`
+      if (seen.has(k)) continue; seen.add(k)
+      try { lb.add(pos, pos, Decoration.line({ class: cls })) } catch { /**/ }
     }
 
     return { spans: sb.finish(), lines: lb.finish() }
@@ -610,39 +1172,170 @@ function makeLivePreviewPlugin(cm, RangeSetBuilder, notebooks, library) {
   return ViewPlugin.fromClass(
     class {
       constructor(view) {
-        const r = build(view)
-        this.decorations = r.spans
-        this.lineDecos   = r.lines
+        try { const r = build(view); this.decorations = r.spans; this.lineDecos = r.lines }
+        catch { this.decorations = Decoration.none; this.lineDecos = Decoration.none }
       }
       update(upd) {
         if (upd.docChanged || upd.selectionSet || upd.viewportChanged) {
-          const r = build(upd.view)
-          this.decorations = r.spans
-          this.lineDecos   = r.lines
+          try { const r = build(upd.view); this.decorations = r.spans; this.lineDecos = r.lines }
+          catch { /**/ }
         }
       }
     },
     {
       decorations: v => v.decorations,
       provide: plugin => [
-        cm.view.EditorView.decorations.of(
-          v => v.plugin(plugin)?.lineDecos ?? Decoration.none
-        ),
+        cm.view.EditorView.decorations.of(v => {
+          try { return v.plugin(plugin)?.lineDecos ?? Decoration.none }
+          catch { return Decoration.none }
+        }),
       ],
     }
   )
 }
 
+// ─── Checkbox click handler (live mode) ──────────────────────────────────────
+function makeCheckboxHandler(cm) {
+  return cm.view.EditorView.domEventHandlers({
+    mousedown(e, view) {
+      const el = e.target
+      if (!el.classList.contains('cm-cb')) return false
+      const pos = parseInt(el.dataset.pos || '0', 10)
+      if (!pos && el.dataset.pos !== '0') return false
+      try {
+        const line = view.state.doc.lineAt(pos)
+        const txt  = line.text
+        const newTxt = /\[[xX]\]/.test(txt)
+          ? txt.replace(/\[[xX]\]/, '[ ]')
+          : txt.replace(/\[ \]/, '[x]')
+        view.dispatch({ changes: { from: line.from, to: line.to, insert: newTxt } })
+        e.preventDefault()
+        return true
+      } catch { return false }
+    },
+  })
+}
 
+// ─── Wikilink click handler (live mode) ──────────────────────────────────────
+function makeWikiHandler(cm, onNav) {
+  return cm.view.EditorView.domEventHandlers({
+    click(e) {
+      const el = e.target.closest('.cm-wl')
+      if (!el) return false
+      onNav(el.dataset.wlTitle, el.dataset.wlType, el.dataset.wlId)
+      e.preventDefault(); return true
+    },
+  })
+}
+
+// ─── Math click → inline MathQuill editing ───────────────────────────────────
+function makeMathClickHandler(cm) {
+  return cm.view.EditorView.domEventHandlers({
+    click(e, view) {
+      const el = e.target.closest('.cm-math-mq')
+      if (!el) return false
+
+      const latex   = el.dataset.latex ?? ''
+      const display = el.dataset.display === '1'
+
+      // Build overlay anchored to the widget position
+      const rect = el.getBoundingClientRect()
+
+      const overlay = document.createElement('div')
+      overlay.className = 'nb-math-editor-overlay'
+      overlay.style.cssText = `
+        position: fixed;
+        top: ${rect.top - 6}px;
+        left: ${rect.left - 8}px;
+        min-width: ${Math.max(rect.width + 16, 160)}px;
+        background: var(--surface, #161b22);
+        border: 1.5px solid var(--accent, #388bfd);
+        border-radius: 8px;
+        padding: 6px 10px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.55);
+        z-index: 99999;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      `
+
+      const mqSpan = document.createElement('span')
+      mqSpan.style.cssText = 'display:inline-block; min-width:60px; flex:1;'
+      overlay.appendChild(mqSpan)
+
+      const doneBtn = document.createElement('button')
+      doneBtn.textContent = '✓'
+      doneBtn.style.cssText = `
+        background: var(--accent, #388bfd); color: #fff;
+        border: none; border-radius: 5px; padding: 2px 8px;
+        cursor: pointer; font-size: 12px; flex-shrink: 0;
+      `
+      overlay.appendChild(doneBtn)
+
+      document.body.appendChild(overlay)
+
+      getMQ().then(MQ => {
+        if (!MQ) { overlay.remove(); return }
+
+        let mqField = null
+        try {
+          mqField = MQ.MathField(mqSpan, {
+            spaceBehavesLikeTab: true,
+            handlers: { enter: commit },
+          })
+          mqField.latex(latex)
+          mqField.focus()
+        } catch {
+          overlay.remove()
+          return
+        }
+
+        function commit() {
+          if (!mqField) return
+          const newLatex = mqField.latex()
+          overlay.remove()
+          // Find the original syntax in the document and replace it
+          const docStr = view.state.doc.toString()
+          const wrap = display ? `$$${latex}$$` : `$${latex}$`
+          const idx = docStr.indexOf(wrap)
+          if (idx >= 0) {
+            const newWrap = display ? `$$${newLatex}$$` : `$${newLatex}$`
+            view.dispatch({ changes: { from: idx, to: idx + wrap.length, insert: newWrap } })
+          }
+          view.focus()
+        }
+
+        doneBtn.onclick = commit
+
+        const handleKey = (ev) => {
+          if (ev.key === 'Escape') { overlay.remove(); view.focus(); document.removeEventListener('keydown', handleKey) }
+        }
+        document.addEventListener('keydown', handleKey)
+
+        const handleOutside = (ev) => {
+          if (!overlay.contains(ev.target)) {
+            commit()
+            document.removeEventListener('mousedown', handleOutside)
+            document.removeEventListener('keydown', handleKey)
+          }
+        }
+        setTimeout(() => document.addEventListener('mousedown', handleOutside), 80)
+      })
+
+      return true
+    }
+  })
+}
+
+// ─── View mode button ─────────────────────────────────────────────────────────
 const VIEW_MODE_CYCLE = ['live', 'source', 'preview']
-
-const IconSource = () => (
+const IconSrc = () => (
   <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
     <path d="M11.5 2.5l2 2-8 8H3.5v-2l8-8z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" strokeLinecap="round"/>
     <path d="M3.5 13.5h9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
   </svg>
 )
-const IconPreview = () => (
+const IconPrev = () => (
   <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
     <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
     <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.4"/>
@@ -650,69 +1343,33 @@ const IconPreview = () => (
 )
 const IconLive = () => (
   <svg width="17" height="17" viewBox="0 0 20 20" fill="none">
-    <path d="M1 10C1 10 3.5 6 7 6s6 4 6 4-2.5 4-6 4-6-4-6-4z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" opacity="0.75"/>
-    <circle cx="7" cy="10" r="1.5" stroke="currentColor" strokeWidth="1.1" opacity="0.75"/>
-    <path d="M14 6.5l2 2-5.5 5.5H8.5v-2l5.5-5.5z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" strokeLinecap="round"/>
+    <path d="M1.5 6.5C1.5 6.5 3.5 3.5 6.5 3.5s5 3 5 3-2 3-5 3-5-3-5-3z" stroke="currentColor" strokeWidth="1.15" strokeLinejoin="round" opacity="0.6"/>
+    <circle cx="6.5" cy="6.5" r="1.3" stroke="currentColor" strokeWidth="1.05" opacity="0.6"/>
+    <path d="M11 13.5l2.5-2.5 2 2-2.5 2.5H11v-2z" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" strokeLinecap="round"/>
+    <path d="M13.5 11l1-1 2 2-1 1" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" strokeLinecap="round"/>
   </svg>
 )
 const MODE_META = {
-  live:    { icon: <IconLive />,    label: 'Live',    title: 'Live preview — tap to switch, hold for menu' },
-  source:  { icon: <IconSource />,  label: 'Source',  title: 'Source mode' },
-  preview: { icon: <IconPreview />, label: 'Preview', title: 'Reading view' },
+  live:    { icon: <IconLive />, label: 'Live',    title: 'Live preview' },
+  source:  { icon: <IconSrc />,  label: 'Source',  title: 'Source mode' },
+  preview: { icon: <IconPrev />, label: 'Preview', title: 'Reading view' },
 }
-const VM_BTN_CSS = `
-  .vm-btn-wrap { position: relative; flex-shrink: 0; }
-  .vm-btn {
-    width: 30px; height: 30px;
-    background: none; border: 1px solid var(--border); border-radius: 6px;
-    color: var(--textDim); cursor: pointer;
-    display: flex; align-items: center; justify-content: center;
-    transition: background 0.12s, color 0.12s;
-  }
-  .vm-btn:hover { background: var(--surfaceAlt); color: var(--text); }
-  .vm-btn-icon { display: flex; align-items: center; justify-content: center;
-    transition: opacity 0.18s, transform 0.18s; }
-  .vm-btn-icon.exiting  { opacity: 0; transform: scale(0.6) rotate(-15deg); position: absolute; }
-  .vm-btn-icon.entering { opacity: 0; transform: scale(0.6) rotate(15deg); }
-  .vm-btn-icon.visible  { opacity: 1; transform: scale(1) rotate(0deg); }
-  .vm-dropdown {
-    position: absolute; top: calc(100% + 6px); right: 0;
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 10px; overflow: hidden;
-    box-shadow: 0 12px 40px rgba(0,0,0,0.45);
-    min-width: 130px; z-index: 9300;
-    animation: vm-drop-in 0.12s cubic-bezier(0.4,0,0.2,1);
-  }
-  @keyframes vm-drop-in { from { opacity:0; transform:translateY(-6px) scale(0.96); } to { opacity:1; transform:none; } }
-  .vm-drop-item {
-    display: flex; align-items: center; gap: 10px;
-    padding: 9px 14px; border: none; background: none;
-    width: 100%; cursor: pointer; text-align: left;
-    font-size: 13px; font-family: inherit; color: var(--text);
-    transition: background 0.08s;
-  }
-  .vm-drop-item:hover { background: var(--hover, rgba(255,255,255,0.06)); }
-  .vm-drop-item.active { color: var(--accent); }
-  .vm-drop-label { flex: 1; font-weight: 500; }
-  .vm-drop-check { font-size: 11px; opacity: 0.7; }
-`
 
 function ViewModeBtn({ viewMode, setViewMode }) {
-  const [iconPhase, setIconPhase] = useState('visible')
-  const [shownMode, setShownMode] = useState(viewMode)
-  const [dropOpen,  setDropOpen]  = useState(false)
-  const holdTimer    = useRef(null)
-  const didLongPress = useRef(false)
-  const wrapRef      = useRef(null)
-  const prevModeRef  = useRef(viewMode)
+  const [phase,    setPhase]    = useState('visible')
+  const [shown,    setShown]    = useState(viewMode)
+  const [dropOpen, setDropOpen] = useState(false)
+  const holdTimer = useRef(null)
+  const didLong   = useRef(false)
+  const wrapRef   = useRef(null)
+  const prevRef   = useRef(viewMode)
 
   useEffect(() => {
-    const prev = prevModeRef.current
-    prevModeRef.current = viewMode
+    const prev = prevRef.current; prevRef.current = viewMode
     if (prev === viewMode) return
-    const t0 = setTimeout(() => setIconPhase('exiting'),  0)
-    const t1 = setTimeout(() => { setShownMode(viewMode); setIconPhase('entering') }, 150)
-    const t2 = setTimeout(() => setIconPhase('visible'),  300)
+    const t0 = setTimeout(() => setPhase('exiting'),  0)
+    const t1 = setTimeout(() => { setShown(viewMode); setPhase('entering') }, 150)
+    const t2 = setTimeout(() => setPhase('visible'),  300)
     return () => { clearTimeout(t0); clearTimeout(t1); clearTimeout(t2) }
   }, [viewMode])
 
@@ -724,631 +1381,937 @@ function ViewModeBtn({ viewMode, setViewMode }) {
   }, [dropOpen])
 
   return (
-    <>
-      <style>{VM_BTN_CSS}</style>
-      <div className="vm-btn-wrap" ref={wrapRef}>
-        <button
-          className="vm-btn"
-          title={MODE_META[viewMode].title}
-          onMouseDown={() => { didLongPress.current = false; holdTimer.current = setTimeout(() => { didLongPress.current = true; setDropOpen(d => !d) }, 300) }}
-          onMouseUp={() => clearTimeout(holdTimer.current)}
-          onMouseLeave={() => clearTimeout(holdTimer.current)}
-          onClick={() => {
-            if (didLongPress.current) return
-            const next = VIEW_MODE_CYCLE[(VIEW_MODE_CYCLE.indexOf(viewMode) + 1) % VIEW_MODE_CYCLE.length]
-            setViewMode(next); setDropOpen(false)
-          }}
-        >
-          <span className={`vm-btn-icon ${iconPhase}`}>{MODE_META[shownMode].icon}</span>
-        </button>
-        {dropOpen && (
-          <div className="vm-dropdown">
-            {VIEW_MODE_CYCLE.map(m => (
-              <button key={m} className={`vm-drop-item${viewMode===m?' active':''}`}
-                onMouseDown={e => { e.preventDefault(); setViewMode(m); setDropOpen(false) }}>
-                {MODE_META[m].icon}
-                <span className="vm-drop-label">{MODE_META[m].label}</span>
-                {viewMode === m && <span className="vm-drop-check">✓</span>}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    </>
+    <div style={{ position:'relative', flexShrink:0 }} ref={wrapRef}>
+      <button style={{ width:30, height:30, background:'none', border:'1px solid var(--border)', borderRadius:6, color:'var(--textDim)', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', transition:'background .12s,color .12s' }}
+        title={MODE_META[viewMode].title}
+        onMouseDown={() => { didLong.current=false; holdTimer.current=setTimeout(()=>{ didLong.current=true; setDropOpen(d=>!d) },300) }}
+        onMouseUp={() => clearTimeout(holdTimer.current)}
+        onMouseLeave={() => clearTimeout(holdTimer.current)}
+        onClick={() => { if(didLong.current)return; setViewMode(VIEW_MODE_CYCLE[(VIEW_MODE_CYCLE.indexOf(viewMode)+1)%3]); setDropOpen(false) }}
+      >
+        <span style={{ display:'flex', alignItems:'center', justifyContent:'center', transition:'opacity .18s,transform .18s', ...(phase==='exiting'?{opacity:0,transform:'scale(.6) rotate(-15deg)',position:'absolute'}:phase==='entering'?{opacity:0,transform:'scale(.6) rotate(15deg)'}:{opacity:1,transform:'none'}) }}>
+          {MODE_META[shown].icon}
+        </span>
+      </button>
+      {dropOpen && (
+        <div style={{ position:'absolute', top:'calc(100% + 6px)', right:0, background:'var(--surface)', border:'1px solid var(--border)', borderRadius:10, overflow:'hidden', boxShadow:'0 12px 40px rgba(0,0,0,.45)', minWidth:130, zIndex:9300, animation:'vm-drop .12s cubic-bezier(.4,0,.2,1)' }}>
+          {VIEW_MODE_CYCLE.map(m => (
+            <button key={m} onMouseDown={e => { e.preventDefault(); setViewMode(m); setDropOpen(false) }}
+              style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 14px', border:'none', background:'none', width:'100%', cursor:'pointer', textAlign:'left', fontSize:13, fontFamily:'inherit', color: viewMode===m?'var(--accent)':'var(--text)', transition:'background .08s' }}>
+              {MODE_META[m].icon}
+              <span style={{ flex:1, fontWeight:500 }}>{MODE_META[m].label}</span>
+              {viewMode===m && <span style={{ fontSize:11, opacity:.7 }}>✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NotebookView component
+// NotebookView
 // ─────────────────────────────────────────────────────────────────────────────
-
 export default function NotebookView() {
+  const themeKey        = useAppStore(s => s.themeKey ?? 'dark')
   const notebook       = useAppStore(s => s.activeNotebook)
   const notebooks      = useAppStore(s => s.notebooks)
   const updateNotebook = useAppStore(s => s.updateNotebook)
   const setView        = useAppStore(s => s.setView)
   const library        = useAppStore(s => s.library)
+  const addNotebook    = useAppStore(s => s.addNotebook)
 
-  const [viewMode, setViewMode] = useState('live')
-  const [content,  setContent]  = useState('')
-  const [loaded,   setLoaded]   = useState(false)
-  const [, setSaving]   = useState(false)
-  const [findQ,    setFindQ]    = useState('')
-  const [findCount, setFindCount] = useState(0)
-  const [findCurrentDisplay, setFindCurrentIdx] = useState(0)
-  const [editModal, setEditModal] = useState(false)
-  const [layout] = useState('scroll')
-  const [notePage, setNotePage] = useState(0)
+  const notebookId    = notebook?.id
+  const notebookTitle = notebook?.title || ''
 
-  const editorHost  = useRef(null)
-  const cmView      = useRef(null)
-  const cmModules   = useRef(null)
-  const saveTimer   = useRef(null)
-  const saveVisTimer = useRef(null)
-  const contentRef  = useRef('')
+  const [viewMode,  setVM]       = useState('live')
+  const [content,   setContent]  = useState('')
+  const [noteTitle, setTitle]    = useState('')
+  const [loaded,    setLoaded]   = useState(false)
+  const [, setSaving]            = useState(false)
+  const [findQ,     setFindQ]    = useState('')
+  const [findCount, setFindCount]= useState(0)
+  const [findCurD,  setFindCurD] = useState(0)
+  const [editModal, setEditModal]= useState(false)
+
+  const editorRef  = useRef(null)
+  const cmRef      = useRef(null)
+  const cmMods     = useRef(null)
+  const saveTimer  = useRef(null)
+  const saveVisT   = useRef(null)
+  const contentRef = useRef('')
+  const titleRef   = useRef('')
+  const findRef    = useRef(null)
+  const previewRef = useRef(null)
+  const hitsRef    = useRef([])
+  const hitIdxRef  = useRef(0)
+  const loadedFor  = useRef(null)
+
   contentRef.current = content
+  titleRef.current   = noteTitle
+
+  const isLoaded = loaded && loadedFor.current === notebookId
 
   const previewHtml = useMemo(
     () => renderMarkdown(content, notebooks, library),
     [content, notebooks, library]
   )
 
-  // ── Load content ────────────────────────────────────────────────────────────
-  // loadedForNoteId: tracks which notebook id the current content belongs to.
-  // Avoids synchronous setState in the effect body.
-  const [loadedForNoteId, setLoadedForNoteId] = useState(null)
-
+  // Hydrate MathQuill after preview renders
   useEffect(() => {
-    if (!notebook?.id) return
-    let cancelled = false
+    if (viewMode !== 'preview' || !previewRef.current) return
+    hydrateMathNodes(previewRef.current)
+  }, [viewMode, previewHtml])
 
-    loadNotebookContent(notebook.id).then(raw => {
-      if (cancelled) return
-      const text = typeof raw === 'string' ? raw : ''
-      contentRef.current = text
-      setContent(text)
-      setNotePage(0)
+  // Pre-load KaTeX and MathQuill so they're ready when live mode starts
+  useEffect(() => { getKaTeX(); getMQ() }, [])
+
+  // ── Load ──────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!notebookId) return
+    let gone = false
+    setLoaded(false)
+    loadNotebookContent(notebookId).then(raw => {
+      if (gone) return
+      let text  = typeof raw === 'string' ? raw : ''
+      let title = notebookTitle
+      const hm  = text.match(/^# (.+)\n/)
+      if (hm) { title = hm[1]; text = text.slice(hm[0].length) }
+      titleRef.current = title; setTitle(title)
+      contentRef.current = text; setContent(text)
       setLoaded(true)
-      setLoadedForNoteId(notebook.id)
+      loadedFor.current = notebookId
     })
+    return () => { gone = true }
+  }, [notebookId, notebookTitle])
 
-    return () => { cancelled = true }
-  }, [notebook?.id])
+  // ── Wikilink navigation ───────────────────────────────────────────────────
+  const handleWikiNav = useCallback((title, type, id) => {
+    if (type === 'notebook') {
+      const nb = notebooks.find(n => n.id === id)
+      if (nb) { useAppStore.getState().setActiveNotebook(nb); setView('notebook') }
+      else createAndOpenNote(title)
+    } else if (type === 'book') {
+      const bk = library.find(b => b.id === id)
+      if (bk) { useAppStore.getState().setActiveBook(bk); setView(bk.format === 'audiofolder' || bk.format === 'audio' ? 'audio-player' : 'reader') }
+    } else {
+      createAndOpenNote(title)
+    }
+  }, [notebooks, library, setView]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Derived: only treat as loaded if the content belongs to the current notebook
-  const isNoteLoaded = loaded && loadedForNoteId === notebook?.id
+  function createAndOpenNote(title) {
+    const newNb = { id: makeId('nb'), title, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), wordCount: 0 }
+    addNotebook(newNb)
+    useAppStore.getState().persistNotebooks?.()
+    useAppStore.getState().setActiveNotebook(newNb)
+    setView('notebook')
+  }
 
-  // ── Mount CodeMirror ────────────────────────────────────────────────────────
-  // FIX: Always initialise CM from contentRef.current (latest in-memory text),
-  // NOT from the `content` state snapshot captured at effect-creation time.
-  // This ensures switching modes never loses edits that happened since the
-  // last React render.
+  // ── Mount CodeMirror ──────────────────────────────────────────────────────
   useEffect(() => {
-    if (!isNoteLoaded || !editorHost.current) return
-    if (viewMode === 'preview') return
+    if (!isLoaded || !editorRef.current || viewMode === 'preview') return
+    let dead = false
 
-    let destroyed = false
     loadCM().then(cm => {
-      if (destroyed || !editorHost.current) return
-      cmModules.current = cm
-
+      if (dead || !editorRef.current) return
+      cmMods.current = cm
       const {
         state: { EditorState, RangeSetBuilder },
-        view: { EditorView, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine, keymap },
+        view: { EditorView, drawSelection, dropCursor, keymap, placeholder },
         commands: { defaultKeymap, indentWithTab, history, historyKeymap },
         language: { indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap },
-        langMd,
-        lezerMd,
-        autocomplete: { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap },
+        langMd, lezerMd,
+        autocomplete: { autocompletion },
         search: { search: searchExt, searchKeymap },
       } = cm
 
-      const gnosTheme    = makeGnosTheme(cm)
-      const gnosHighlight = makeHighlightStyle(cm)
       const isLive = viewMode === 'live'
+      const gfmExts = lezerMd?.GFM ? [lezerMd.GFM] : [lezerMd?.Strikethrough, lezerMd?.Table, lezerMd?.TaskList].filter(Boolean)
 
       const extensions = [
-        gnosTheme,
-        syntaxHighlighting(gnosHighlight),
+        makeTheme(cm),
+        syntaxHighlighting(makeHighlight(cm)),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-        ...(isLive ? [] : [highlightActiveLine()]),
-        drawSelection(),
-        dropCursor(),
-        rectangularSelection(),
-        crosshairCursor(),
-        indentOnInput(),
-        bracketMatching(),
-        closeBrackets(),
-        history(),
-        langMd.markdown({
-          // Enable GitHub-Flavored Markdown extensions: strikethrough, tables, task lists
-          extensions: lezerMd?.GFM ? [lezerMd.GFM] : [
-            lezerMd?.Strikethrough, lezerMd?.Table, lezerMd?.TaskList,
-          ].filter(Boolean),
+        drawSelection(), dropCursor(),
+        indentOnInput(), bracketMatching(), history(),
+        langMd.markdown({ extensions: gfmExts }),
+        // Wikilink autocomplete — Tab to confirm, never Enter (non-intrusive)
+        autocompletion({
+          override: [makeWikiSource(notebooks, library)],
+          activateOnTyping: true,
+          maxRenderedOptions: 8,
+          tooltipClass: () => 'cm-wl-tooltip',
+          // Disable default accept keys — we handle Tab ourselves
+          defaultKeymap: false,
+          // Don't show info panel, keep it minimal
+          addToOptions: [],
         }),
-        autocompletion({ override: [makeWikiCompletions(notebooks, library)] }),
+        // Custom wikilink keymap — Tab confirms, Escape dismisses, arrows navigate
+        makeWikiCompletionKeymap(cm),
+        // Standard navigation within completion (up/down arrows) — but NOT Enter
+        cm.view.keymap.of([
+          { key: 'ArrowDown', run: cm.autocomplete.moveCompletionSelection(true) },
+          { key: 'ArrowUp',   run: cm.autocomplete.moveCompletionSelection(false) },
+        ]),
         searchExt({ top: false }),
-        makeFormatKeymap(cm),
+        makeFormatKeys(cm),
         makeSmartEnter(cm),
-        // Live preview: visual rendering + syntax hiding
-        ...(isLive ? [makeLivePreviewPlugin(cm, RangeSetBuilder, notebooks, library)] : []),
+        // Pair auto-wrap via input handler
+        makePairInputHandler(cm),
+        // Ghost hint — Tab to accept, any other key dismisses
+        ...makeGhostHintPlugin(cm),
+        // Auto-confirm wikilink when user types ]]
+        makeWikiCloseHandler(cm),
+        ...(isLive ? [
+          makeLivePlugin(cm, RangeSetBuilder, notebooks, library),
+          makeCheckboxHandler(cm),
+          makeWikiHandler(cm, handleWikiNav),
+          makeMathClickHandler(cm),
+        ] : []),
         keymap.of([
-          ...closeBracketsKeymap,
           ...defaultKeymap,
           ...searchKeymap,
           ...historyKeymap,
           ...foldKeymap,
-          ...completionKeymap,
+          // Note: completionKeymap intentionally excluded — we use makeWikiCompletionKeymap
+          // which only confirms on Tab, not Enter
           indentWithTab,
           { key: 'Mod-s', run: () => { flushSave(); return true } },
-          { key: 'Mod-f', run: () => false },
+          { key: 'Mod-f', run: () => { findRef.current?.focus(); findRef.current?.select(); return true } },
         ]),
-        EditorView.updateListener.of(update => {
-          if (update.docChanged) {
-            const text = update.state.doc.toString()
-            setContent(text)
-            scheduleSave(text)
-          }
+        EditorView.updateListener.of(upd => {
+          if (!upd.docChanged) return
+          const t = upd.state.doc.toString()
+          setContent(t); scheduleSave(t)
         }),
         EditorView.lineWrapping,
+        placeholder('Create something…'),
       ]
 
-      if (cmView.current) { cmView.current.destroy(); cmView.current = null }
-
-      const startState = EditorState.create({
-        // ⚠️ KEY FIX: use contentRef.current — the latest text — not the
-        // `content` state variable captured at effect creation time.
-        doc: contentRef.current,
-        extensions,
-      })
-
-      const view = new EditorView({ state: startState, parent: editorHost.current })
-      cmView.current = view
+      if (cmRef.current) { cmRef.current.destroy(); cmRef.current = null }
+      const state = EditorState.create({ doc: contentRef.current, extensions })
+      const view  = new EditorView({ state, parent: editorRef.current })
+      cmRef.current = view
       view.focus()
     })
 
     return () => {
-      destroyed = true
-      if (cmView.current) { cmView.current.destroy(); cmView.current = null }
+      dead = true
+      if (cmRef.current) { cmRef.current.destroy(); cmRef.current = null }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isNoteLoaded, viewMode, notebook?.id])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoaded, viewMode, notebook?.id])
 
-  // ── Save helpers ─────────────────────────────────────────────────────────────
-  const animateSaveIcon = useCallback(() => {
-    const icon = document.getElementById('nb2-save-icon')
-    if (!icon) return
-    icon.classList.remove('animating', 'visible')
-    void icon.offsetWidth
-    icon.classList.add('animating', 'visible')
-    clearTimeout(saveVisTimer.current)
-    saveVisTimer.current = setTimeout(() => {
-      icon.classList.remove('animating')
-      saveVisTimer.current = setTimeout(() => icon.classList.remove('visible'), 600)
+  // ── Save ──────────────────────────────────────────────────────────────────
+  const animateSave = useCallback(() => {
+    const el = document.getElementById('nb-save-icon')
+    if (!el) return
+    el.classList.remove('anim', 'vis'); void el.offsetWidth
+    el.classList.add('anim', 'vis')
+    clearTimeout(saveVisT.current)
+    saveVisT.current = setTimeout(() => {
+      el.classList.remove('anim')
+      saveVisT.current = setTimeout(() => el.classList.remove('vis'), 600)
     }, 1200)
   }, [])
 
-  const doSave = useCallback(async (text) => {
+  const doSave = useCallback(async (text, title) => {
     if (!notebook) return
     setSaving(true)
-    await saveNotebookContent(notebook.id, text)
+    await saveNotebookContent(notebook, title ? `# ${title}\n${text}` : text)
     const wc = (text.match(/\b\w+\b/g) || []).length
-    updateNotebook(notebook.id, { updatedAt: new Date().toISOString(), wordCount: wc })
+    updateNotebook(notebook.id, { updatedAt: new Date().toISOString(), wordCount: wc, title: title || notebook.title })
     useAppStore.getState().persistNotebooks?.()
-    setSaving(false)
-    animateSaveIcon()
-  }, [notebook, updateNotebook, animateSaveIcon])
+    setSaving(false); animateSave()
+  }, [notebook, updateNotebook, animateSave])
 
-  const scheduleSave = useCallback((text) => {
+  const scheduleSave = useCallback(text => {
     clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => doSave(text), 800)
+    saveTimer.current = setTimeout(() => doSave(text, titleRef.current), 800)
   }, [doSave])
 
   const flushSave = useCallback(() => {
     clearTimeout(saveTimer.current)
-    doSave(contentRef.current)
+    doSave(contentRef.current, titleRef.current)
   }, [doSave])
 
-  function _exit() {
-    clearTimeout(saveTimer.current)
-    flushSave()
-    setView('library')
-  }
-
-  // ── Find in preview ──────────────────────────────────────────────────────────
-  const previewRef = useRef(null)
-  const findMatches = useRef([])
-  const findCurrent = useRef(0)
-
-  function doFind(q) {
-    const preview = previewRef.current
-    if (!preview || !q) {
-      if (preview) preview.querySelectorAll('mark.find-hl').forEach(m => {
-        m.replaceWith(document.createTextNode(m.textContent))
-      })
-      findMatches.current = []
-      return
+  // ── Ctrl+F ────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const h = e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault(); findRef.current?.focus(); findRef.current?.select()
+      }
     }
-    preview.querySelectorAll('mark.find-hl').forEach(m => m.replaceWith(document.createTextNode(m.textContent)))
-    preview.normalize()
-    const walker = document.createTreeWalker(preview, NodeFilter.SHOW_TEXT)
-    const hits = []
-    let node
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [])
+
+  // ── Find in preview ────────────────────────────────────────────────────────
+  function doFind(q) {
+    const el = previewRef.current
+    if (!el || !q) {
+      el?.querySelectorAll('mark.nb-fhl').forEach(m => m.replaceWith(document.createTextNode(m.textContent)))
+      hitsRef.current = []; return
+    }
+    el.querySelectorAll('mark.nb-fhl').forEach(m => m.replaceWith(document.createTextNode(m.textContent)))
+    el.normalize()
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+    const hits = []; let node
     while ((node = walker.nextNode())) {
       const text = node.nodeValue
       const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'gi')
-      let m; let lastIdx = 0; const fragments = []
+      let m, last = 0; const frags = []
       while ((m = re.exec(text)) !== null) {
-        if (m.index > lastIdx) fragments.push(document.createTextNode(text.slice(lastIdx, m.index)))
-        const mark = document.createElement('mark')
-        mark.className = 'find-hl'
-        mark.textContent = m[0]
-        fragments.push(mark)
-        hits.push(mark)
-        lastIdx = m.index + m[0].length
+        if (m.index > last) frags.push(document.createTextNode(text.slice(last, m.index)))
+        const mark = document.createElement('mark'); mark.className = 'nb-fhl'; mark.textContent = m[0]
+        frags.push(mark); hits.push(mark); last = m.index + m[0].length
       }
-      if (fragments.length > 0) {
-        if (lastIdx < text.length) fragments.push(document.createTextNode(text.slice(lastIdx)))
-        node.replaceWith(...fragments)
+      if (frags.length) {
+        if (last < text.length) frags.push(document.createTextNode(text.slice(last)))
+        node.parentNode?.replaceChild(frags.reduce((f, n2) => { const df = document.createDocumentFragment(); df.appendChild(f instanceof DocumentFragment ? f : (() => { const ff = document.createDocumentFragment(); ff.appendChild(f); return ff })()) ; df.appendChild(n2); return df }, document.createDocumentFragment()), node)
       }
     }
-    findMatches.current = hits
-    findCurrent.current = 0
-    setFindCount(hits.length)
-    setFindCurrentIdx(0)
-    if (hits.length > 0) hits[0].classList.add('find-hl-active')
+    hitsRef.current = hits; hitIdxRef.current = 0
+    setFindCount(hits.length); setFindCurD(0)
+    if (hits[0]) { hits[0].classList.add('nb-fhl-a'); hits[0].scrollIntoView({ block:'center', behavior:'smooth' }) }
   }
 
   function findNav(dir) {
-    const hits = findMatches.current
+    const hits = hitsRef.current
     if (!hits.length) return
-    hits[findCurrent.current].classList.remove('find-hl-active')
-    findCurrent.current = (findCurrent.current + dir + hits.length) % hits.length
-    setFindCurrentIdx(findCurrent.current)
-    const active = hits[findCurrent.current]
-    active.classList.add('find-hl-active')
-    active.scrollIntoView({ block: 'center', behavior: 'smooth' })
-  }
-
-  function handlePreviewClick(e) {
-    const wl = e.target.closest('.wikilink')
-    if (!wl) return
-    const type = wl.dataset.wlType
-    const id = wl.dataset.wlId
-    if (type === 'notebook') {
-      const nb = notebooks.find(n => n.id === id)
-      if (nb) { useAppStore.getState().setActiveNotebook(nb); setView('notebook') }
-    } else if (type === 'book') {
-      const bk = library.find(b => b.id === id)
-      if (bk) {
-        useAppStore.getState().setActiveBook(bk)
-        setView(bk.format === 'audiofolder' || bk.format === 'audio' ? 'audio-player' : 'reader')
-      }
-    }
-  }
-
-  // ── Paginated layout ──────────────────────────────────────────────────────────
-  const notePages = useMemo(() => {
-    if (layout !== 'paginated') return [content]
-    const paragraphs = content.split(/\n{2,}/)
-    const pages = []
-    let current = []
-    for (const p of paragraphs) {
-      current.push(p)
-      if (current.join('\n\n').length > 2400) { pages.push(current.join('\n\n')); current = [] }
-    }
-    if (current.length > 0) pages.push(current.join('\n\n'))
-    return pages.length > 0 ? pages : ['']
-  }, [content, layout])
-
-  // ── View mode switch helper ────────────────────────────────────────────────────
-  // FIX: Read latest text from CM before switching modes
-  function switchMode(mode) {
-    if (cmView.current && mode !== viewMode) {
-      const text = cmView.current.state.doc.toString()
-      contentRef.current = text
-      if (text !== content) setContent(text)
-    }
-    setViewMode(mode)
+    hits[hitIdxRef.current]?.classList.remove('nb-fhl-a')
+    hitIdxRef.current = (hitIdxRef.current + dir + hits.length) % hits.length
+    setFindCurD(hitIdxRef.current)
+    hits[hitIdxRef.current]?.classList.add('nb-fhl-a')
+    hits[hitIdxRef.current]?.scrollIntoView({ block:'center', behavior:'smooth' })
   }
 
   const wordCount = useMemo(() => (content.match(/\b\w+\b/g) || []).length, [content])
 
-  if (!notebook) return (
-    <div style={{ display:'flex', height:'100vh', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--textDim)', flexDirection:'column', gap:16 }}>
-      <p style={{ fontSize:14 }}>No notebook selected.</p>
-      <button onClick={() => setView('library')} style={{ background:'var(--accent)', color:'#fff', border:'none', borderRadius:8, padding:'8px 18px', cursor:'pointer', fontSize:13 }}>Back to Library</button>
-    </div>
-  )
+  const switchMode = useCallback((m) => {
+    if (m === viewMode) return
+    if (cmRef.current) {
+      const t = cmRef.current.state.doc.toString()
+      contentRef.current = t; setContent(t)
+    }
+    setVM(m)
+  }, [viewMode])
+
+  const handlePreviewClick = useCallback(e => {
+    const wl = e.target.closest('[data-wl-type]')
+    if (wl) handleWikiNav(wl.dataset.wlTitle, wl.dataset.wlType, wl.dataset.wlId)
+    const cb = e.target.closest('.nb-cb')
+    if (cb && previewRef.current) {
+      const ti = parseInt(cb.dataset.ti, 10)
+      const lines = contentRef.current.split('\n')
+      let taskIdx = 0
+      const newLines = lines.map(l => {
+        if (!/^\s*[-*+]\s\[[ xX]\]/.test(l)) return l
+        if (taskIdx++ !== ti) return l
+        return /\[[xX]\]/.test(l) ? l.replace(/\[[xX]\]/, '[ ]') : l.replace(/\[ \]/, '[x]')
+      })
+      const newContent = newLines.join('\n')
+      contentRef.current = newContent; setContent(newContent)
+      scheduleSave(newContent)
+    }
+  }, [handleWikiNav, scheduleSave])
+
+  // ─── CSS ──────────────────────────────────────────────────────────────────
+  const CSS = `
+    /* ── KaTeX theming ─────────────────────────────────── */
+    .katex { color: var(--text) !important; font-size: 1.05em; }
+    .katex-display { margin: 0.4em 0 !important; }
+    .katex-display > .katex { color: var(--text) !important; }
+
+    /* ── MathQuill / KaTeX ─────────────────────────────── */
+    .mq-math-mode { color: var(--text) !important; }
+    .mq-root-block, .mq-math-mode * { font-family: 'KaTeX_Main', 'Times New Roman', serif !important; }
+    @keyframes vm-drop { from{opacity:0;transform:translateY(-6px) scale(.96)} to{opacity:1;transform:none} }
+
+    /* ── Light-mode selection fix ──────────────────────── */
+    .nb-root ::selection { background: var(--nb-sel, rgba(56,139,253,0.28)); }
+    [data-theme="light"] .nb-root, .light .nb-root { --nb-sel: rgba(9,105,218,0.22); }
+
+    /* ══════════════════════════════════════════════════════
+       SHARED PROSE VARIABLES
+       Both live and preview inherit these so typography
+       is controlled from one place.
+    ══════════════════════════════════════════════════════ */
+    .nb-root {
+      --nb-fs:   15px;
+      --nb-lh:   1.8;
+      --nb-ff:   Georgia, serif;
+      --nb-max:  780px;
+      --nb-px:   48px;
+      --nb-py:   28px;
+      --nb-color: var(--readerText, var(--text));
+      --nb-h1: 1.7em; --nb-h2: 1.4em; --nb-h3: 1.15em;
+      --nb-h4: 1.05em; --nb-h5: 0.95em; --nb-h6: 0.88em;
+      --nb-para-gap: 0.72em;
+      /* ── Syntax color palette — defaults, overridden per-theme below ── */
+      --nb-bold-color:     var(--text);
+      --nb-italic-color:   var(--accent);
+      --nb-strike-color:   var(--textDim);
+      --nb-h1-color:       var(--text);
+      --nb-h2-color:       var(--text);
+      --nb-h3-color:       var(--text);
+      --nb-h4-color:       var(--text);
+      --nb-h5-color:       var(--text);
+      --nb-h6-color:       var(--text);
+      --nb-quote-color:    var(--textDim);
+      --nb-quote-bg:       transparent;
+      --nb-quote-border:   var(--accent);
+      --nb-link-color:     var(--accent);
+      --nb-wikilink-color: var(--accent);
+      --nb-hl-bg:          rgba(210,153,34,.28);
+      --nb-code-color:     var(--accent);
+      --nb-code-bg:        rgba(56,139,253,.12);
+    }
+
+    /* ── CM host ───────────────────────────────────────── */
+    .nb-cm { flex:1; overflow:hidden; position:relative; display:flex; flex-direction:column; }
+    .nb-cm .cm-editor { height:100%; flex:1; }
+    .nb-cm .cm-scroller { padding: var(--nb-py) 0 60px; box-sizing:border-box; overflow-x: hidden; }
+    .nb-cm .cm-content {
+      max-width: var(--nb-max); margin: 0 auto;
+      padding: 0 var(--nb-px);
+      box-sizing: border-box; width: 100%;
+      font-family: var(--nb-ff);
+      font-size: var(--nb-fs);
+      line-height: var(--nb-lh);
+      color: var(--nb-color);
+    }
+    .nb-cm .cm-line { padding: 0; min-height: calc(var(--nb-fs) * var(--nb-lh)); }
+    /* Blank lines between paragraphs get the right rhythm */
+    .nb-cm .cm-line:empty { min-height: 0.5em; }
+    .nb-cm .cm-placeholder { color:var(--textDim); opacity:.45; }
+
+    /* ── Hidden syntax markers (Obsidian style — font-size:0 not replace) ── */
+    .nb-live .cm-lv-hidden {
+      font-size: 0 !important;
+      line-height: 0 !important;
+      display: inline-block;
+      width: 0;
+      overflow: hidden;
+    }
+
+    /* ══════════════════════════════════════════════════════
+       LIVE VIEW — line-level class decorations
+       These must match the .nb-prev selectors exactly.
+    ══════════════════════════════════════════════════════ */
+
+    /* Headings — weight, size, rhythm identical to preview */
+    .nb-live .cm-lv-h1 {
+      font-size: var(--nb-h1); font-weight: 700; line-height: 1.25;
+      font-family: var(--nb-ff); color: var(--nb-h1-color);
+      margin-top: 0; padding-top: 0.4em; padding-bottom: 0.1em;
+    }
+    .nb-live .cm-lv-h2 {
+      font-size: var(--nb-h2); font-weight: 700; line-height: 1.3;
+      font-family: var(--nb-ff); color: var(--nb-h2-color);
+      padding-top: 0.35em; padding-bottom: 0.1em;
+    }
+    .nb-live .cm-lv-h3 {
+      font-size: var(--nb-h3); font-weight: 600; line-height: 1.4; color: var(--nb-h3-color);
+      padding-top: 0.3em;
+    }
+    .nb-live .cm-lv-h4 { font-size: var(--nb-h4); font-weight: 600; color: var(--nb-h4-color); }
+    .nb-live .cm-lv-h5 { font-size: var(--nb-h5); font-weight: 600; color: var(--nb-h5-color); }
+    .nb-live .cm-lv-h6 { font-size: var(--nb-h6); font-weight: 600; opacity:.65; color: var(--nb-h6-color); }
+
+    /* Inline formats — exact match to preview */
+    .nb-live .cm-lv-b  { font-weight:700; color: var(--nb-bold-color); }
+    .nb-live .cm-lv-i  { font-style:italic; color: var(--nb-italic-color); }
+    .nb-live .cm-lv-bi { font-weight:700; font-style:italic; color: var(--nb-italic-color); }
+    .nb-live .cm-lv-s  { text-decoration:line-through; opacity:.75; color: var(--nb-strike-color); }
+    .nb-live .cm-lv-c  {
+      font-family: SF Mono,Menlo,Consolas,monospace; font-size:.87em;
+      background: var(--nb-code-bg); border-radius:4px; padding:1px 4px; color: var(--nb-code-color);
+    }
+    .nb-live .cm-lv-lnk { color: var(--nb-link-color); text-decoration:underline; text-underline-offset:2px; }
+    .nb-live .cm-lv-hl  { background: var(--nb-hl-bg); border-radius:2px; padding:0 2px; }
+
+    /* Blockquote — left border + italic + dim, matching preview */
+    .nb-live .cm-lv-bq {
+      border-left: 3px solid var(--nb-quote-border);
+      padding-left: 14px;
+      color: var(--nb-quote-color);
+      background: var(--nb-quote-bg);
+      margin-left: 0;
+      font-style: italic;
+    }
+
+    /* Code block lines — monospace, slightly dimmed bg */
+    .nb-live .cm-lv-cb {
+      background: var(--surfaceAlt);
+      font-family: SF Mono,Menlo,Consolas,monospace;
+      font-size: .87em;
+      padding: 0 8px;
+      border-radius: 3px;
+      color: var(--text);
+    }
+
+    /* ── Visible syntax markers when cursor is on them ── */
+    .nb-live .cm-lv-p  { opacity: 0.32; color: var(--textDim); font-size: .88em; }
+
+    /* Heading # shown dim when cursor on that line */
+    .nb-live .cm-lv-h1 .cm-lv-p,
+    .nb-live .cm-lv-h2 .cm-lv-p,
+    .nb-live .cm-lv-h3 .cm-lv-p,
+    .nb-live .cm-lv-h4 .cm-lv-p,
+    .nb-live .cm-lv-h5 .cm-lv-p,
+    .nb-live .cm-lv-h6 .cm-lv-p {
+      color: var(--accent); opacity: 0.45; font-size: 0.68em;
+      vertical-align: middle; font-weight: 400;
+    }
+    /* Bold markers shown */
+    .nb-live .cm-lv-b  .cm-lv-p,
+    .nb-live .cm-lv-bi .cm-lv-p { color: var(--nb-bold-color); font-weight:700; opacity: 0.38; font-size: 1em; }
+    /* Italic markers shown */
+    .nb-live .cm-lv-i  .cm-lv-p { color: var(--nb-italic-color); font-style:italic; opacity: 0.42; font-size: 1em; }
+    /* Code markers shown */
+    .nb-live .cm-lv-c  .cm-lv-p { color: var(--accent); opacity: 0.45; font-size: 1em; }
+    /* Strikethrough shown */
+    .nb-live .cm-lv-s  .cm-lv-p { color: var(--textDim); opacity: 0.42; font-size: 1em; }
+    /* Highlight shown */
+    .nb-live .cm-lv-hl .cm-lv-p { color: #d29922; opacity: 0.48; font-size: 1em; }
+    /* Link markers shown */
+    .nb-live .cm-lv-lnk .cm-lv-p { color: var(--accent); opacity: 0.42; font-size: 1em; }
+
+    /* ── Widgets ─────────────────────────────────────── */
+    /* HR widget */
+    .cm-hr  { display:block; height:1px; background:var(--border); margin:8px 0; width:100%; pointer-events:none; }
+
+    /* Image widget */
+    .cm-img-wrap { display:block; margin:6px 0; line-height:0; }
+    .cm-img { max-width:100%; max-height:340px; border-radius:6px; object-fit:contain; display:block; box-shadow:0 2px 12px rgba(0,0,0,.2); }
+    .cm-img-err { display:inline-block; padding:4px 8px; background:var(--surfaceAlt); border:1px dashed var(--border); border-radius:4px; font-size:12px; color:var(--textDim); }
+
+    /* Checkbox widget */
+    .cm-cb  { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border:1.5px solid var(--border); border-radius:3px; font-size:9px; vertical-align:middle; margin-right:5px; cursor:pointer; flex-shrink:0; color:transparent; transition:background .1s; }
+    .cm-cb-on { background:var(--accent); border-color:var(--accent); color:#fff; }
+
+    /* Wikilink widget */
+    .cm-wl { color:var(--nb-wikilink-color,var(--accent)); border-bottom:1px solid var(--nb-wikilink-color,var(--accent)); cursor:pointer; border-radius:2px; padding:0 1px; }
+    .cm-wl:hover { opacity:.8; }
+    .cm-wl-new { color:var(--textDim); border-bottom-color:var(--textDim); opacity:.75; }
+
+    /* Link widget — rendered as a proper anchor when cursor is off it */
+    .cm-link-widget {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      cursor: pointer;
+      border-radius: 2px;
+      padding: 0 1px;
+    }
+    .cm-link-widget:hover { opacity: .75; }
+
+    /* Math widgets */
+    .cm-math-inline {
+      display:inline-block; vertical-align:middle;
+      color:var(--text); cursor:pointer;
+      padding: 0 2px;
+    }
+    .cm-math-inline:hover { background: rgba(56,139,253,.1); border-radius:3px; }
+    .cm-math-block {
+      display:block; text-align:center; margin:0.5em 0;
+      overflow-x:auto; color:var(--text); padding:4px 0;
+      cursor:pointer;
+    }
+    .cm-math-block:hover { background: rgba(56,139,253,.06); border-radius:4px; }
+
+    /* ── Wikilink autocomplete dropdown — Obsidian card style ── */
+    .cm-tooltip.cm-wl-tooltip {
+      background: var(--surface) !important;
+      border: 1px solid var(--border) !important;
+      border-radius: 12px !important;
+      box-shadow: 0 16px 48px rgba(0,0,0,.55) !important;
+      padding: 6px !important;
+      overflow: hidden;
+      min-width: 260px !important;
+      max-width: 360px !important;
+    }
+    .cm-tooltip.cm-wl-tooltip .cm-completionLabel { font-size:13px; font-weight:500; }
+    .cm-tooltip.cm-wl-tooltip .cm-completionDetail {
+      font-size:12px; opacity: 0.65;
+      margin-left: auto; padding-left: 8px; flex-shrink: 0;
+    }
+    .cm-tooltip.cm-wl-tooltip ul { padding: 0 !important; margin: 0 !important; list-style: none; }
+    .cm-tooltip.cm-wl-tooltip li {
+      padding: 9px 12px !important;
+      border-radius: 8px !important;
+      margin: 1px 0 !important;
+      display: flex !important;
+      align-items: center !important;
+      gap: 8px !important;
+      cursor: pointer;
+      transition: background 0.08s;
+      color: var(--text) !important;
+    }
+    .cm-tooltip.cm-wl-tooltip li:hover {
+      background: var(--surfaceAlt) !important;
+    }
+    .cm-tooltip.cm-wl-tooltip li[aria-selected] {
+      background: rgba(56,139,253,.18) !important;
+      color: var(--accent) !important;
+    }
+    /* Tab hint shown at bottom of dropdown */
+    .cm-tooltip.cm-wl-tooltip::after {
+      content: 'Tab to confirm · Esc to dismiss';
+      display: block;
+      padding: 5px 12px 6px;
+      font-size: 10.5px;
+      color: var(--textDim);
+      opacity: 0.65;
+      border-top: 1px solid var(--borderSubtle);
+      margin-top: 4px;
+      text-align: center;
+      letter-spacing: 0.01em;
+    }
+
+    /* ── Live list item indentation ── */
+    .nb-live { counter-reset: nb-ol-c1 nb-ol-c2 nb-ol-c3 nb-ol-c4; }
+    .nb-live .cm-lv-li { padding-left: 1.6em; position: relative; }
+    .nb-live .cm-lv-li::before {
+      content: '•'; position: absolute; left: 0.4em;
+      color: var(--textDim); top: 0;
+    }
+    .nb-live .cm-lv-oli { counter-increment: nb-ol-c1; }
+    .nb-live .cm-lv-oli::before {
+      content: counter(nb-ol-c1) '.';
+      font-variant-numeric: tabular-nums;
+      color: var(--textDim);
+    }
+    .nb-live .cm-lv-depth-2 { padding-left: 3.0em; }
+    .nb-live .cm-lv-depth-3 { padding-left: 4.4em; }
+    .nb-live .cm-lv-depth-4 { padding-left: 5.8em; }
+    .nb-live .cm-lv-depth-2:not(.cm-lv-oli)::before { content: '◦'; }
+    .nb-live .cm-lv-depth-3:not(.cm-lv-oli)::before { content: '▸'; font-size: 0.75em; }
+
+    /* ══════════════════════════════════════════════════════
+       PREVIEW — identical typography to live
+    ══════════════════════════════════════════════════════ */
+    .nb-prev {
+      flex: 1; overflow: auto;
+      padding: var(--nb-py) var(--nb-px);
+      font-size: var(--nb-fs);
+      line-height: var(--nb-lh);
+      font-family: var(--nb-ff);
+      color: var(--nb-color);
+      max-width: var(--nb-max); margin: 0 auto; width: 100%;
+      box-sizing: border-box;
+    }
+    /* Headings — match live exactly */
+    .nb-prev h1 { font-size:var(--nb-h1); font-weight:700; margin:1.15em 0 .45em; font-family:var(--nb-ff); color:var(--text); line-height:1.25; }
+    .nb-prev h2 { font-size:var(--nb-h2); font-weight:700; margin:1.1em 0 .4em;  font-family:var(--nb-ff); color:var(--text); line-height:1.3; }
+    .nb-prev h3 { font-size:var(--nb-h3); font-weight:600; margin:1em 0 .35em;   color:var(--text); line-height:1.4; }
+    .nb-prev h4 { font-size:var(--nb-h4); font-weight:600; margin:.9em 0 .3em;   color:var(--text); }
+    .nb-prev h5 { font-size:var(--nb-h5); font-weight:600; margin:.85em 0 .25em; color:var(--text); }
+    .nb-prev h6 { font-size:var(--nb-h6); font-weight:600; margin:.8em 0 .25em;  color:var(--text); opacity:.65; }
+    .nb-prev p  { margin: 0 0 var(--nb-para-gap); }
+    .nb-prev blockquote {
+      border-left: 3px solid var(--accent); margin: .8em 0; padding: 8px 14px;
+      color: var(--textDim); border-radius: 0 4px 4px 0;
+      background: rgba(56,139,253,.04); font-style: italic;
+    }
+    .nb-prev pre.nb-pre { background:var(--surfaceAlt); border:1px solid var(--border); border-radius:8px; padding:14px 16px; overflow-x:auto; margin:.8em 0; }
+    .nb-prev code { font-family:SF Mono,Menlo,Consolas,monospace; font-size:.87em; }
+    .nb-ic { background:rgba(56,139,253,.1); border-radius:4px; padding:1px 5px; font-family:SF Mono,Menlo,Consolas,monospace; font-size:.87em; color:var(--accent); }
+    .nb-prev table.nb-table { border-collapse:collapse; width:100%; margin:.8em 0; font-size:.93em; }
+    .nb-prev table.nb-table th,.nb-prev table.nb-table td { border:1px solid var(--border); padding:6px 10px; }
+    .nb-prev table.nb-table th { background:var(--surfaceAlt); font-weight:600; }
+    .nb-prev ul,.nb-prev ol { margin:0 0 .75em; padding-left:1.8em; }
+    .nb-prev li { margin-bottom:.25em; }
+    .nb-prev ul ul,.nb-prev ol ol,.nb-prev ul ol,.nb-prev ol ul { margin:.2em 0; padding-left:1.4em; }
+    .nb-prev ul.nb-tl { list-style:none; padding-left:.4em; }
+    .nb-prev li.nb-task { display:flex; gap:8px; align-items:baseline; cursor:pointer; }
+    .nb-prev li.nb-task:hover { opacity:.85; }
+    .nb-prev .nb-cb { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border:1.5px solid var(--border); border-radius:3px; font-size:10px; flex-shrink:0; cursor:pointer; user-select:none; transition:background .1s,border-color .1s; }
+    .nb-prev li.checked .nb-cb { background:var(--accent); border-color:var(--accent); color:#fff; }
+    .nb-prev li.checked>span:last-child { text-decoration:line-through; opacity:.55; }
+    .nb-hl { background:rgba(210,153,34,.28); border-radius:2px; padding:0 2px; }
+    /* Inline text formats — match live */
+    .nb-bold   { font-weight:700; color:var(--nb-bold-color); }
+    .nb-italic { font-style:italic; color:var(--nb-italic-color); }
+    .nb-strike { text-decoration:line-through; color:var(--textDim); }
+    .nb-sup    { font-size:.75em; vertical-align:super; color:var(--accent); }
+    .nb-sub    { font-size:.75em; vertical-align:sub;   color:var(--accent); }
+    .wikilink     { border-bottom:1px solid var(--accent); cursor:pointer; color:var(--accent); }
+    .wikilink:hover { opacity:.8; }
+    .wikilink-new { color:var(--textDim); border-bottom-color:var(--textDim); }
+    /* Images in preview */
+    .nb-img {
+      max-width:100%; max-height:500px; border-radius:6px;
+      margin:.75em 0; display:block; object-fit:contain;
+      box-shadow:0 2px 12px rgba(0,0,0,.2);
+    }
+    .nb-img[src=""],
+    .nb-img:not([src]) { display: none; }
+    .nb-prev a { color:var(--accent); text-decoration:underline; }
+    .nb-prev hr { border:none; border-top:1px solid var(--border); margin:1.2em 0; }
+    /* MathQuill static display in preview */
+    .nb-math { display:inline-block; }
+    .nb-math-block { display:block; text-align:center; margin:1em 0; overflow-x:auto; }
+    .nb-math-mq .mq-root-block { color: var(--text) !important; }
+    .nb-fn-ref sup { font-size:.75em; }
+    .nb-fn-ref a { color:var(--accent); text-decoration:none; }
+    .nb-fn-def { font-size:12px; color:var(--textDim); padding:4px 0; border-top:1px solid var(--borderSubtle); margin-top:8px; }
+    .nb-fn-back { color:var(--accent); text-decoration:none; margin-left:4px; }
+    .nb-fns { margin-top:2em; }
+    mark.nb-fhl { background:rgba(210,153,34,.4); border-radius:2px; padding:0 1px; }
+    /* ── Ghost hint ─────────────────────────────────────── */
+    .cm-ghost-hint {
+      color: var(--textDim);
+      opacity: 0.35;
+      font-style: italic;
+      pointer-events: none;
+      user-select: none;
+    }
+    mark.nb-fhl-a { background:rgba(56,139,253,.5); outline:2px solid var(--accent); }
+
+    /* ── Progress bar / misc ───────────────────────────── */
+    .nb2-fb { background:none; border:none; color:var(--textDim); cursor:pointer; border-radius:5px; padding:3px 7px; font-size:11px; font-family:inherit; transition:background .1s,color .1s; }
+    .nb2-fb:hover { background:var(--surfaceAlt); color:var(--text); }
+    .nb2-fc { font-size:16px; opacity:.6; background:none; border:none; cursor:pointer; color:var(--textDim); padding:0 4px; line-height:1; }
+    .nb2-fc:hover { opacity:1; }
+
+    /* ── Save indicator animation ──────────────────────── */
+    .nb-save-indicator { display:flex; align-items:center; opacity:0; transition:opacity .3s; }
+    .nb-save-icon { width:18px; height:18px; color:var(--accent); }
+    .nb-save-icon.vis { opacity:1; }
+    .nb-save-ring { stroke-dasharray:47; stroke-dashoffset:47; transition:stroke-dashoffset 0s; }
+    .nb-save-icon.anim .nb-save-ring { stroke-dashoffset:0; transition:stroke-dashoffset 0.6s ease; }
+    .nb-save-check { stroke-dasharray:12; stroke-dashoffset:12; transition:stroke-dashoffset 0s; }
+    .nb-save-icon.anim .nb-save-check { stroke-dashoffset:0; transition:stroke-dashoffset 0.3s ease 0.5s; }
+  `
+
+
+  // ── Per-theme syntax colors — derived from known theme palettes ───────────
+  // Derived directly from themes.js exact palette values
+  const THEME_SYNTAX = {
+    dark: {
+      italic:'#58a6ff', h1:'#e6edf3', h2:'#58a6ff', h3:'#79c0ff',
+      quote:'#8b949e', quoteBg:'rgba(56,139,253,.07)', quoteBorder:'#388bfd',
+      link:'#58a6ff', wiki:'#58a6ff', hl:'rgba(210,153,34,.30)',
+      code:'#79c0ff', codeBg:'rgba(56,139,253,.13)',
+    },
+    sepia: {
+      italic:'#a0714e', h1:'#3b2f20', h2:'#8b5e3c', h3:'#a0714e',
+      quote:'#7a6652', quoteBg:'rgba(139,94,60,.09)', quoteBorder:'#8b5e3c',
+      link:'#8b5e3c', wiki:'#a0714e', hl:'rgba(180,155,90,.42)',
+      code:'#8b5e3c', codeBg:'rgba(139,94,60,.13)',
+    },
+    light: {
+      italic:'#0969da', h1:'#1f2328', h2:'#0969da', h3:'#0860c7',
+      quote:'#636c76', quoteBg:'rgba(9,105,218,.05)', quoteBorder:'#0969da',
+      link:'#0969da', wiki:'#0860c7', hl:'rgba(255,212,0,.50)',
+      code:'#0969da', codeBg:'rgba(9,105,218,.10)',
+    },
+    moss: {
+      italic:'#4a7c3f', h1:'#2a3320', h2:'#4a7c3f', h3:'#3d6934',
+      quote:'#5a7048', quoteBg:'rgba(74,124,63,.08)', quoteBorder:'#4a7c3f',
+      link:'#4a7c3f', wiki:'#3d6934', hl:'rgba(160,200,120,.42)',
+      code:'#4a7c3f', codeBg:'rgba(74,124,63,.13)',
+    },
+    cherry: {
+      italic:'#f07090', h1:'#f2dde1', h2:'#e05c7a', h3:'#f07090',
+      quote:'#9e6d76', quoteBg:'rgba(224,92,122,.09)', quoteBorder:'#e05c7a',
+      link:'#e05c7a', wiki:'#f07090', hl:'rgba(224,92,122,.26)',
+      code:'#f07090', codeBg:'rgba(224,92,122,.15)',
+    },
+    sunset: {
+      italic:'#f0a840', h1:'#f5e6c8', h2:'#e8922a', h3:'#f0a840',
+      quote:'#a07840', quoteBg:'rgba(232,146,42,.09)', quoteBorder:'#e8922a',
+      link:'#e8922a', wiki:'#f0a840', hl:'rgba(232,146,42,.30)',
+      code:'#f0a840', codeBg:'rgba(232,146,42,.14)',
+    },
+  }
+  const tc = THEME_SYNTAX[themeKey] || THEME_SYNTAX.dark
+  const THEME_CSS = `
+    .nb-root {
+      --nb-italic-color:   ${tc.italic};
+      --nb-h1-color:       ${tc.h1};
+      --nb-h2-color:       ${tc.h2};
+      --nb-h3-color:       ${tc.h3};
+      --nb-quote-color:    ${tc.quote};
+      --nb-quote-bg:       ${tc.quoteBg};
+      --nb-quote-border:   ${tc.quoteBorder};
+      --nb-link-color:     ${tc.link};
+      --nb-wikilink-color: ${tc.wiki};
+      --nb-hl-bg:          ${tc.hl};
+      --nb-code-color:     ${tc.code};
+      --nb-code-bg:        ${tc.codeBg};
+    }
+  `
 
   return (
-    <div style={{ display:'flex', flexDirection:'column', height:'100vh', overflow:'hidden', background:'var(--bg)', color:'var(--text)' }}>
-      <style>{`
-        /* ── CodeMirror host ─────────────────── */
-        .gnos-cm-host { flex:1; overflow:hidden; position:relative; }
-        .gnos-cm-host .cm-editor { height:100%; }
-        .gnos-cm-host .cm-scroller { padding: 0 24px; box-sizing:border-box; }
+    <div className="nb-root" style={{ display:'flex', flexDirection:'column', height:'100vh', overflow:'hidden', background:'var(--readerBg, var(--bg))', color:'var(--text)', position:'relative' }}>
+      <style>{CSS}</style>
+      <style>{THEME_CSS}</style>
 
-        /* ── Preview pane ────────────────────── */
-        .nb-preview {
-          flex:1; overflow:auto; padding:28px 32px;
-          font-size:14px; line-height:1.75; color:var(--readerText, var(--text));
-          max-width:780px; margin:0 auto; width:100%;
-        }
-        .nb-preview h1{font-size:1.7em;font-weight:700;margin:1.2em 0 0.5em;font-family:Georgia,serif}
-        .nb-preview h2{font-size:1.4em;font-weight:700;margin:1.1em 0 0.4em;font-family:Georgia,serif}
-        .nb-preview h3{font-size:1.15em;font-weight:600;margin:1em 0 0.35em}
-        .nb-preview h4,h5,h6{font-size:1em;font-weight:600;margin:0.9em 0 0.3em}
-        .nb-preview p{margin:0 0 0.75em}
-        .nb-preview blockquote{border-left:3px solid var(--accent);margin:0.8em 0;padding:8px 14px;color:var(--textDim);border-radius:0 4px 4px 0;background:rgba(56,139,253,0.04)}
-        .nb-preview pre.nb-code{background:var(--surfaceAlt);border:1px solid var(--border);border-radius:8px;padding:14px 16px;overflow-x:auto;margin:0.8em 0}
-        .nb-preview code{font-family:SF Mono,Menlo,Consolas,monospace;font-size:0.87em}
-        .nb-inline-code{background:rgba(56,139,253,0.1);border-radius:4px;padding:1px 5px;font-family:SF Mono,Menlo,Consolas,monospace;font-size:0.87em;color:var(--accent)}
-        .nb-preview table.nb-table{border-collapse:collapse;width:100%;margin:0.8em 0;font-size:0.93em}
-        .nb-preview table.nb-table th,.nb-preview table.nb-table td{border:1px solid var(--border);padding:6px 10px}
-        .nb-preview table.nb-table th{background:var(--surfaceAlt);font-weight:600}
-        .nb-preview ul,.nb-preview ol{margin:0 0 0.75em;padding-left:1.6em}
-        .nb-preview li{margin-bottom:0.3em}
-        .nb-preview ul.nb-tasklist{list-style:none;padding-left:0.4em}
-        .nb-preview .nb-task-item{display:flex;gap:8px;align-items:baseline}
-        .nb-preview .nb-checkbox{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border:1.5px solid var(--border);border-radius:3px;font-size:10px;flex-shrink:0}
-        .nb-preview .nb-task-item.checked .nb-checkbox{background:var(--accent);border-color:var(--accent);color:#fff}
-        .nb-preview .nb-task-item.checked > *:last-child{text-decoration:line-through;opacity:0.6}
-        .nb-hl{background:rgba(210,153,34,0.28);border-radius:2px;padding:0 2px}
-        .wikilink{border-bottom:1px solid var(--accent);cursor:pointer;color:var(--accent)}
-        .wikilink-unresolved{color:var(--textDim);border-bottom-color:var(--textDim)}
-        .nb-img{max-width:100%;border-radius:6px;margin:0.5em 0}
-        .nb-preview a{color:var(--accent);text-decoration:underline}
-        .nb-preview hr{border:none;border-top:1px solid var(--border);margin:1.2em 0}
-        mark.find-hl{background:rgba(210,153,34,0.4);border-radius:2px;padding:0 1px}
-        mark.find-hl-active{background:rgba(56,139,253,0.5);outline:2px solid var(--accent)}
-
-        /* ── Progress ────────────────────────── */
-        .nb-progress-track{height:2px;background:var(--border);flex-shrink:0}
-        .nb-progress-fill{height:100%;background:var(--accent);transition:width 0.2s}
-
-        /* ── Inline find controls ────────────── */
-        .nb2-find-btn{background:none;border:none;color:var(--textDim);cursor:pointer;border-radius:5px;padding:3px 7px;font-size:11px;font-family:inherit;transition:background 0.1s,color 0.1s}
-        .nb2-find-btn:hover{background:var(--surfaceAlt);color:var(--text)}
-        .nb2-find-close{font-size:16px;opacity:0.6;background:none;border:none;cursor:pointer;color:var(--textDim);padding:0 4px;line-height:1}
-        .nb2-find-close:hover{opacity:1}
-
-        /* ── Live-mode content styles ────────── */
-
-        /* Heading lines — full line gets font size via line decoration */
-        .gnos-cm-live .cm-lv-h1 { font-size:1.7em;  font-weight:700; line-height:1.25; font-family:Georgia,serif; }
-        .gnos-cm-live .cm-lv-h2 { font-size:1.4em;  font-weight:700; line-height:1.3;  font-family:Georgia,serif; }
-        .gnos-cm-live .cm-lv-h3 { font-size:1.2em;  font-weight:600; line-height:1.35; }
-        .gnos-cm-live .cm-lv-h4 { font-size:1.05em; font-weight:600; }
-        .gnos-cm-live .cm-lv-h5 { font-size:0.95em; font-weight:600; }
-        .gnos-cm-live .cm-lv-h6 { font-size:0.9em;  font-weight:600; opacity:0.65; }
-
-        /* Inline spans */
-        .gnos-cm-live .cm-lv-bold        { font-weight:700; }
-        .gnos-cm-live .cm-lv-italic      { font-style:italic; }
-        .gnos-cm-live .cm-lv-bold-italic { font-weight:700; font-style:italic; }
-        .gnos-cm-live .cm-lv-strike      { text-decoration:line-through; opacity:0.6; }
-        .gnos-cm-live .cm-lv-code {
-          font-family: SF Mono,Menlo,Consolas,monospace; font-size:0.87em;
-          background: rgba(56,139,253,0.12); border-radius:4px; padding:1px 4px;
-          color: var(--accent);
-        }
-        .gnos-cm-live .cm-lv-link        { color:var(--accent); text-decoration:underline; cursor:pointer; }
-        .gnos-cm-live .cm-lv-url         { color:var(--accent); opacity:0.7; font-size:0.88em; }
-        .gnos-cm-live .cm-lv-highlight   { background:rgba(210,153,34,0.3); border-radius:2px; padding:0 2px; }
-
-        /* Blockquote — line-level decoration */
-        .gnos-cm-live .cm-lv-blockquote-line {
-          border-left:3px solid var(--accent); padding-left:12px;
-          color:var(--textDim); background:rgba(56,139,253,0.04);
-          margin-left:-12px;
-        }
-
-        /* Code block lines */
-        .gnos-cm-live .cm-lv-codeblock {
-          background: var(--surfaceAlt); font-family:SF Mono,Menlo,Consolas,monospace;
-          font-size:0.87em; padding:0 8px;
-        }
-
-        /* Horizontal rule widget */
-        .cm-lv-hr-widget {
-          display:block; height:1px; background:var(--border);
-          margin:8px 0; width:100%; pointer-events:none;
-        }
-
-        /* Task checkbox widget */
-        .cm-lv-checkbox {
-          display:inline-flex; align-items:center; justify-content:center;
-          width:13px; height:13px; border:1.5px solid var(--border);
-          border-radius:3px; font-size:9px; vertical-align:middle;
-          margin-right:5px; cursor:pointer; flex-shrink:0;
-          color:transparent;
-        }
-        .cm-lv-checkbox-on {
-          background:var(--accent); border-color:var(--accent); color:#fff;
-        }
-
-        /* Wikilink widgets */
-        .cm-lv-wikilink {
-          color:var(--accent); border-bottom:1px solid var(--accent);
-          cursor:pointer; border-radius:2px; padding:0 1px;
-        }
-        .cm-lv-wikilink-unresolved {
-          color:var(--textDim); border-bottom-color:var(--textDim); opacity:0.75;
-        }
-
-        /* Punctuation shown when cursor is inside a formatting span — dimmed */
-        .gnos-cm-live .cm-lv-punct { opacity:0.35; }
-        .gnos-cm-live .cm-lv-dim   { opacity:0.3; }
-
-        /* Fallback hidden class (for any remaining uses) */
-        .gnos-cm-live .cm-live-hidden { display:none; }
-      `}</style>
-
-      {/* ── Header ──────────────────────────────────────────────────────────────── */}
-      <header className="nb-header">
-        <GnosNavButton />
-        <div style={{ width:1, height:16, background:'var(--border)', flexShrink:0 }} />
-
-        <div style={{ fontSize:13, fontWeight:600, color:'var(--text)', flexShrink:0, maxWidth:180, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-          {notebook.title}
-        </div>
-
-        <div className="nb-save-indicator">
-          <svg id="nb2-save-icon" className="nb-save-icon" viewBox="0 0 18 18" fill="none">
-            <circle className="nb-save-ring" cx="9" cy="9" r="7.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-            <polyline className="nb-save-check" points="5.5,9 7.8,11.5 12.5,6.5" stroke="currentColor" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </div>
-
-        <div className="nb-search-row">
-          <div className="nb-search-bar-wrapper">
-            <div
-              className={`search-bar${findQ ? ' focused' : ''}`}
-              style={{ background:'var(--surfaceAlt)' }}
-              onClick={() => document.getElementById('nb-search-input')?.focus()}
-            >
-              <svg className="search-icon" width="13" height="13" viewBox="0 0 16 16" fill="none">
-                <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5"/>
-                <path d="M10 10l3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
-              <input
-                id="nb-search-input"
-                style={{ background:'none', border:'none', color:'var(--text)', outline:'none', fontSize:13, flex:1, minWidth:0 }}
-                placeholder="Find…"
-                value={findQ}
-                onChange={e => { setFindQ(e.target.value); doFind(e.target.value) }}
-                onKeyDown={e => {
-                  if (e.key==='Enter') { e.preventDefault(); findNav(e.shiftKey ? -1 : 1) }
-                  if (e.key==='Escape') { setFindQ(''); doFind('') }
-                }}
-              />
-              {findQ ? (
-                <span style={{ fontSize:11, color:'var(--textDim)', whiteSpace:'nowrap', marginRight:4 }}>
-                  {findCount > 0 ? `${findCurrentDisplay+1}/${findCount}` : 'Not found'}
-                </span>
-              ) : (
-                <span style={{ fontSize:11, color:'var(--textDim)', whiteSpace:'nowrap', marginLeft:'auto', paddingLeft:8, flexShrink:0 }}>
-                  {wordCount.toLocaleString()} words
-                </span>
-              )}
-              {findQ && (
-                <>
-                  <button className="nb2-find-btn" style={{ padding:'2px 7px', fontSize:11 }} onClick={() => findNav(-1)} title="Previous">↑</button>
-                  <button className="nb2-find-btn" style={{ padding:'2px 7px', fontSize:11 }} onClick={() => findNav(1)}  title="Next">↓</button>
-                  <button className="nb2-find-close" onClick={() => { setFindQ(''); doFind('') }} title="Clear">×</button>
-                </>
-              )}
-            </div>
+      {/* ── Header — 3-column grid: [left] [center] [right] ────────────── */}
+      <header className="nb-header gnos-header">
+        {/* Left: nav + save indicator */}
+        <div style={{ display:'flex', alignItems:'center', gap:8, flex:'0 0 auto', minWidth:0 }}>
+          <GnosNavButton />
+          <div style={{ width:1, height:16, background:'var(--border)', flexShrink:0 }} />
+          <div className="nb-save-indicator">
+            <svg id="nb-save-icon" className="nb-save-icon" viewBox="0 0 18 18" fill="none">
+              <circle className="nb-save-ring" cx="9" cy="9" r="7.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+              <polyline className="nb-save-check" points="5.5,9 7.8,11.5 12.5,6.5" stroke="currentColor" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
           </div>
         </div>
 
-        <ViewModeBtn viewMode={viewMode} setViewMode={switchMode} />
+        {/* Center: search bar — flex grows to fill all available middle space */}
+        <div style={{ flex:'1 1 0', minWidth:0, margin:'0 8px' }}>
+          <div className={`search-bar${findQ?' focused':''}`} style={{ background:'var(--surfaceAlt)' }}
+            onClick={() => findRef.current?.focus()}>
+            <svg className="search-icon" width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5"/>
+              <path d="M10 10l3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+            <input ref={findRef} id="nb-search-input"
+              style={{ background:'none', border:'none', color:'var(--text)', outline:'none', fontSize:13, flex:1, minWidth:0 }}
+              placeholder={noteTitle || notebook?.title || 'Find…'} value={findQ}
+              onChange={e => { setFindQ(e.target.value); doFind(e.target.value) }}
+              onKeyDown={e => {
+                if (e.key==='Enter') { e.preventDefault(); findNav(e.shiftKey?-1:1) }
+                if (e.key==='Escape') { setFindQ(''); doFind('') }
+              }}
+            />
+            {findQ ? (
+              <span style={{ fontSize:11, color:'var(--textDim)', whiteSpace:'nowrap', marginRight:4 }}>
+                {findCount>0?`${findCurD+1}/${findCount}`:'Not found'}
+              </span>
+            ) : (
+              <span style={{ fontSize:11, color:'var(--textDim)', whiteSpace:'nowrap', paddingLeft:8, flexShrink:0 }}>
+                {wordCount.toLocaleString()} words
+              </span>
+            )}
+            {findQ && (
+              <>
+                <button className="nb2-fb" onClick={() => findNav(-1)} title="Previous">↑</button>
+                <button className="nb2-fb" onClick={() => findNav(1)}  title="Next">↓</button>
+                <button className="nb2-fc" onClick={() => { setFindQ(''); doFind('') }} title="Clear">×</button>
+              </>
+            )}
+          </div>
+        </div>
 
-        <button
-          onClick={() => setEditModal(true)}
-          title="Syntax reference"
-          style={{ background:'none', border:'1px solid var(--border)', borderRadius:6, color:'var(--textDim)', cursor:'pointer', width:30, height:30, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
-        >
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-            <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.4"/>
-            <path d="M8 1.5v1M8 13.5v1M1.5 8h1M13.5 8h1M3.3 3.3l.7.7M12 12l.7.7M12 3.3l-.7.7M4 12l-.7.7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-          </svg>
-        </button>
+        {/* Right: view mode + syntax help */}
+        <div style={{ display:'flex', alignItems:'center', gap:6, flex:'0 0 auto' }}>
+          <ViewModeBtn viewMode={viewMode} setViewMode={switchMode} />
+          <button onClick={() => setEditModal(true)} title="Syntax reference"
+            style={{ background:'none', border:'1px solid var(--border)', borderRadius:6, color:'var(--textDim)', cursor:'pointer', width:30, height:30, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.4"/>
+              <path d="M8 1.5v1M8 13.5v1M1.5 8h1M13.5 8h1M3.3 3.3l.7.7M12 12l.7.7M12 3.3l-.7.7M4 12l-.7.7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
       </header>
 
-      {/* ── Main area ─────────────────────────────────────────────────────────── */}
-      {!isNoteLoaded ? (
+      {/* ── Main ──────────────────────────────────────────────────────────── */}
+      {!isLoaded ? (
         <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', gap:8, color:'var(--textDim)', fontSize:13 }}>
           <div className="spinner" />Loading…
         </div>
       ) : viewMode === 'preview' ? (
-        <div style={{ flex:1, overflow:'auto', background:'var(--readerBg, var(--bg))' }}>
-          <div
-            ref={previewRef}
-            className="nb-preview"
-            onClick={handlePreviewClick}
-            dangerouslySetInnerHTML={{ __html: previewHtml }}
-          />
+        <div style={{ flex:1, overflow:'auto', background:'var(--readerBg,var(--bg))' }}>
+          {noteTitle && (
+            <div style={{ maxWidth:780, margin:'0 auto', padding:'28px 48px 0', fontFamily:'Georgia,serif', fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2 }}>
+              {noteTitle}
+            </div>
+          )}
+          <div ref={previewRef} className="nb-prev" onClick={handlePreviewClick}
+            dangerouslySetInnerHTML={{ __html: previewHtml }} />
         </div>
       ) : (
-        <div
-          ref={editorHost}
-          className={`gnos-cm-host${viewMode === 'live' ? ' gnos-cm-live' : ''}`}
-          style={{ flex:1, overflow:'hidden' }}
-        />
+        <div style={{ flex:1, overflow:'auto', display:'flex', flexDirection:'column', position:'relative', background:'var(--readerBg,var(--bg))' }}>
+          {/* Title input — same padding as CM content area */}
+          <div style={{ maxWidth:780, margin:'0 auto', width:'100%', padding:'24px 48px 0', boxSizing:'border-box' }}>
+            <input value={noteTitle}
+              onChange={e => { const t=e.target.value; setTitle(t); titleRef.current=t; scheduleSave(contentRef.current) }}
+              placeholder="Title…"
+              style={{ width:'100%', background:'none', border:'none', outline:'none', fontFamily:'Georgia,serif', fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2, padding:0, caretColor:'var(--accent)' }}
+              onKeyDown={e => { if(e.key==='Enter'){e.preventDefault();cmRef.current?.focus()} }}
+            />
+          </div>
+          {/* Divider */}
+          <div style={{ maxWidth:780, margin:'4px auto 0', width:'100%', padding:'0 48px', boxSizing:'border-box', pointerEvents:'none' }}>
+            <div style={{ height:1, background:'var(--borderSubtle)', opacity:.5 }} />
+          </div>
+          {/* CodeMirror */}
+          <div ref={editorRef} className={`nb-cm${viewMode==='live'?' nb-live':''}`} style={{ flex:1, overflow:'hidden', minHeight:0 }} />
+        </div>
       )}
 
-      {/* ── Footer pagination ──────────────────────────────────────────────────── */}
-      {layout === 'paginated' && notePages.length > 1 && (
-        <footer style={{ display:'flex', flexDirection:'column', background:'var(--surface)', borderTop:'1px solid var(--border)', flexShrink:0 }}>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'7px 14px' }}>
-            <button disabled={notePage<=0} onClick={() => setNotePage(p=>Math.max(0,p-1))}
-              style={{ background:'none', border:'1px solid var(--border)', color:notePage<=0?'var(--textDim)':'var(--text)', borderRadius:6, padding:'4px 12px', cursor:notePage<=0?'default':'pointer', fontSize:12, opacity:notePage<=0?0.4:1 }}>← Prev</button>
-            <span style={{ fontSize:12, color:'var(--textDim)' }}>Page {notePage+1} of {notePages.length}</span>
-            <button disabled={notePage>=notePages.length-1} onClick={() => setNotePage(p=>Math.min(notePages.length-1,p+1))}
-              style={{ background:'none', border:'1px solid var(--border)', color:notePage>=notePages.length-1?'var(--textDim)':'var(--text)', borderRadius:6, padding:'4px 12px', cursor:notePage>=notePages.length-1?'default':'pointer', fontSize:12, opacity:notePage>=notePages.length-1?0.4:1 }}>Next →</button>
-          </div>
-          <div className="nb-progress-track">
-            <div className="nb-progress-fill" style={{ width:`${notePages.length>1?(notePage/(notePages.length-1))*100:100}%` }} />
-          </div>
-        </footer>
-      )}
-
-      {editModal && <NotebookInfoPanel onClose={() => setEditModal(false)} />}
+      {editModal && <SyntaxPanel onClose={() => setEditModal(false)} />}
     </div>
   )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Syntax reference panel (unchanged)
-// ─────────────────────────────────────────────────────────────────────────────
-function NotebookInfoPanel({ onClose }) {
-  const SECTIONS = [
+// ─── Syntax reference panel ───────────────────────────────────────────────────
+function SyntaxPanel({ onClose }) {
+  const SECS = [
     { title:'Inline Formatting', rows:[
-      {keys:'**bold**',desc:'Bold text'},{keys:'*italic*',desc:'Italic text'},
-      {keys:'***bold italic***',desc:'Bold + italic'},{keys:'~~strike~~',desc:'Strikethrough'},
-      {keys:'==highlight==',desc:'Highlight'},{keys:'`code`',desc:'Inline code'},
-      {keys:'^superscript^',desc:'Superscript'},{keys:'~subscript~',desc:'Subscript'},
-      {keys:'[text](url)',desc:'Hyperlink'},{keys:'![alt](url)',desc:'Image'},
+      {k:'**bold**',d:'Bold'},{k:'*italic*',d:'Italic'},
+      {k:'***bold italic***',d:'Bold + italic'},{k:'~~strike~~',d:'Strikethrough'},
+      {k:'==highlight==',d:'Highlight'},{k:'`code`',d:'Inline code'},
+      {k:'^sup^',d:'Superscript'},{k:'~sub~',d:'Subscript'},
+      {k:'[text](url)',d:'Hyperlink'},{k:'![alt](url)',d:'Image'},
     ]},
     { title:'Headings', rows:[
-      {keys:'# H1',desc:'H1'},{keys:'## H2',desc:'H2'},{keys:'### H3',desc:'H3'},
-      {keys:'#### H4',desc:'H4'},{keys:'##### H5',desc:'H5'},{keys:'###### H6',desc:'H6'},
+      {k:'# H1',d:'Heading 1'},{k:'## H2',d:'Heading 2'},{k:'### H3',d:'Heading 3'},
+      {k:'#### H4',d:'H4'},{k:'##### H5',d:'H5'},{k:'###### H6',d:'H6'},
     ]},
-    { title:'Block Syntax', rows:[
-      {keys:'> quote',desc:'Blockquote'},{keys:'> [!NOTE]',desc:'Callout'},
-      {keys:'- item',desc:'Unordered list'},{keys:'1. item',desc:'Ordered list'},
-      {keys:'   - nested',desc:'Nested list (3 spaces)'},{keys:'- [ ] task',desc:'Task'},
-      {keys:'- [x] done',desc:'Checked task'},{keys:'```lang',desc:'Code block'},
-      {keys:'---',desc:'Horizontal rule'},{keys:'| col |',desc:'Table'},
+    { title:'Blocks', rows:[
+      {k:'> text',d:'Blockquote'},{k:'> [!NOTE]',d:'Callout'},
+      {k:'- item',d:'Unordered list'},{k:'1. item',d:'Ordered list'},
+      {k:'  - nested',d:'Nested list (2 spaces)'},{k:'- [ ] task',d:'Task item'},
+      {k:'- [x] done',d:'Checked task (clickable)'},{k:'```lang',d:'Code block'},
+      {k:'---',d:'Horizontal rule'},{k:'| a | b |',d:'Table'},
+      {k:'[^1]: note',d:'Footnote definition'},
+      {k:'$math$',d:'Inline math (MathQuill — click to edit)'},
+      {k:'$$\nmath\n$$',d:'Math block (MathQuill — click to edit)'},
     ]},
     { title:'Wikilinks', rows:[
-      {keys:'[[Title]]',desc:'Link to notebook or book'},{keys:'Type [[ …',desc:'Autocomplete dropdown'},
+      {k:'[[Title]]',d:'Link to note or book'},
+      {k:'Type [[',d:'Dropdown — up to 4 suggestions'},
+      {k:'Click link',d:'Opens; creates missing notes'},
     ]},
-    { title:'Keyboard Shortcuts', rows:[
-      {keys:'Ctrl+B',desc:'Bold'},{keys:'Ctrl+I',desc:'Italic'},
-      {keys:'Ctrl+K',desc:'Insert link'},{keys:'Ctrl+E',desc:'Inline code'},
-      {keys:'Ctrl+Shift+H',desc:'Highlight'},{keys:'Ctrl+S',desc:'Save now'},
-      {keys:'Ctrl+F',desc:'Find in note'},{keys:'Tab',desc:'Indent list'},
-      {keys:'Enter',desc:'Smart list continuation'},
+    { title:'Auto-wrap Pairs', rows:[
+      {k:'Select text → type **',d:'Wraps selection with **…**'},
+      {k:'Select text → type *',d:'Wraps selection with *…*'},
+      {k:'Select text → type `',d:'Wraps selection with `…`'},
+      {k:'Select text → type ~~',d:'Wraps selection with ~~…~~'},
+      {k:'Select text → type ==',d:'Wraps selection with ==…=='},
+      {k:'Select text → type $',d:'Wraps selection with $…$'},
+    ]},
+    { title:'Shortcuts', rows:[
+      {k:'Ctrl+B',d:'Bold'},{k:'Ctrl+I',d:'Italic'},{k:'Ctrl+K',d:'Link'},
+      {k:'Ctrl+E',d:'Code'},{k:'Ctrl+Shift+H',d:'Highlight'},
+      {k:'Ctrl+S',d:'Save'},{k:'Ctrl+F',d:'Find'},
+      {k:'Tab',d:'Indent list'},{k:'Enter',d:'Smart list continue'},
     ]},
   ]
   return (
-    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:10000, display:'flex', alignItems:'center', justifyContent:'center' }} onClick={onClose}>
-      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:14, width:440, maxWidth:'94vw', maxHeight:'82vh', display:'flex', flexDirection:'column', boxShadow:'0 20px 60px rgba(0,0,0,0.55)' }} onClick={e=>e.stopPropagation()}>
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.55)', zIndex:10000, display:'flex', alignItems:'center', justifyContent:'center' }} onClick={onClose}>
+      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:14, width:440, maxWidth:'94vw', maxHeight:'82vh', display:'flex', flexDirection:'column', boxShadow:'0 20px 60px rgba(0,0,0,.55)' }} onClick={e=>e.stopPropagation()}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'16px 20px 12px', borderBottom:'1px solid var(--borderSubtle)', flexShrink:0 }}>
           <span style={{ fontSize:14, fontWeight:700, color:'var(--text)' }}>Syntax Reference</span>
-          <button onClick={onClose} style={{ background:'none', border:'none', color:'var(--textDim)', cursor:'pointer', fontSize:18, lineHeight:1 }}>×</button>
+          <button onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg></button>
         </div>
         <div style={{ overflow:'auto', padding:'14px 20px 20px' }}>
-          {SECTIONS.map(sec => (
+          {SECS.map(sec => (
             <div key={sec.title} style={{ marginBottom:18 }}>
-              <div style={{ fontSize:10, fontWeight:700, letterSpacing:'0.08em', textTransform:'uppercase', color:'var(--textDim)', opacity:0.6, marginBottom:8 }}>{sec.title}</div>
-              {sec.rows.map(({keys,desc}) => (
-                <div key={keys} style={{ display:'flex', alignItems:'baseline', gap:12, padding:'4px 0', borderBottom:'1px solid var(--borderSubtle)' }}>
-                  <code style={{ fontFamily:'SF Mono,Menlo,Consolas,monospace', fontSize:11, background:'var(--surfaceAlt)', border:'1px solid var(--border)', borderRadius:5, padding:'2px 8px', color:'var(--accent)', flexShrink:0, minWidth:130, display:'inline-block' }}>{keys}</code>
-                  <span style={{ fontSize:12, color:'var(--textDim)' }}>{desc}</span>
+              <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:'var(--textDim)', opacity:.6, marginBottom:8 }}>{sec.title}</div>
+              {sec.rows.map(({k,d}) => (
+                <div key={k} style={{ display:'flex', alignItems:'baseline', gap:12, padding:'4px 0', borderBottom:'1px solid var(--borderSubtle)' }}>
+                  <code style={{ fontFamily:'SF Mono,Menlo,Consolas,monospace', fontSize:11, background:'var(--surfaceAlt)', border:'1px solid var(--border)', borderRadius:5, padding:'2px 8px', color:'var(--accent)', flexShrink:0, minWidth:130, display:'inline-block' }}>{k}</code>
+                  <span style={{ fontSize:12, color:'var(--textDim)' }}>{d}</span>
                 </div>
               ))}
             </div>

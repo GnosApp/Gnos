@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useContext } from 'react'
+import { PaneContext } from '@/lib/PaneContext'
 import useAppStore from '@/store/useAppStore'
 import { generateCoverColor } from '@/lib/utils'
 
@@ -119,7 +120,7 @@ function MiniCover({ item }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // NavDropdown — 10% shorter vertical padding on rows
 // ─────────────────────────────────────────────────────────────────────────────
-function NavDropdown({ items, onOpen }) {
+function NavDropdown({ items, onOpen, onMenu }) {
   if (!items.length) return (
     <div style={{ padding: '5px 16px 8px 38px', fontSize: 11, color: 'var(--textDim)', fontStyle: 'italic' }}>
       Nothing here yet
@@ -137,42 +138,61 @@ function NavDropdown({ items, onOpen }) {
   return (
     <div style={{ paddingBottom: 2 }}>
       {items.map(item => (
-        <button key={item.id}
-          onClick={() => onOpen(item)}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            width: '100%',
-            // 10% shorter: was 4px → ~3.5px → use 3px for crispness
-            padding: '3px 9px 3px 16px',
-            background: 'none', border: 'none', cursor: 'pointer',
-            textAlign: 'left', transition: 'background 0.1s',
-          }}
-          onMouseEnter={e => e.currentTarget.style.background = 'var(--hover)'}
-          onMouseLeave={e => e.currentTarget.style.background = 'none'}
+        <div key={item.id} style={{ display:'flex', alignItems:'center', position:'relative' }}
+          onMouseEnter={e => e.currentTarget.style.background='var(--hover)'}
+          onMouseLeave={e => e.currentTarget.style.background='none'}
         >
-          <MiniCover item={item} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{
-              fontSize: 12, fontWeight: 600, color: 'var(--text)',
-              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-              lineHeight: 1.3,
-            }}>{item.title}</div>
-            {item.author && (
+          <button
+            onClick={() => onOpen(item)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8, flex:1,
+              padding: '4px 6px 4px 16px',
+              background: 'none', border: 'none', cursor: 'pointer',
+              textAlign: 'left', minWidth:0,
+            }}
+          >
+            <MiniCover item={item} />
+            <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{
-                fontSize: 10, color: 'var(--textDim)', marginTop: 1,
+                fontSize: 12, fontWeight: 600, color: 'var(--text)',
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-              }}>{item.author}</div>
-            )}
-          </div>
-          <div style={{
-            fontSize: 9, fontWeight: 700, color: 'var(--textDim)',
-            letterSpacing: '0.05em', flexShrink: 0,
-            background: 'var(--surfaceAlt)', borderRadius: 3,
-            padding: '2px 4px', border: '1px solid var(--borderSubtle)',
-          }}>
-            {fmtLabel(item)}
-          </div>
-        </button>
+                lineHeight: 1.3,
+              }}>{item.title}</div>
+              {item.author && (
+                <div style={{
+                  fontSize: 10, color: 'var(--textDim)', marginTop: 1,
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>{item.author}</div>
+              )}
+            </div>
+            <div style={{
+              fontSize: 9, fontWeight: 700, color: 'var(--textDim)',
+              letterSpacing: '0.05em', flexShrink: 0,
+              background: 'var(--surfaceAlt)', borderRadius: 3,
+              padding: '2px 4px', border: '1px solid var(--borderSubtle)',
+            }}>
+              {fmtLabel(item)}
+            </div>
+          </button>
+          {/* Dots menu button */}
+          <button
+            onClick={e => { e.stopPropagation(); onMenu && onMenu(e, item) }}
+            title="More options"
+            style={{
+              width:24, height:24, borderRadius:5, flexShrink:0, marginRight:6,
+              border:'none', background:'none', color:'var(--textDim)', cursor:'pointer',
+              display:'flex', alignItems:'center', justifyContent:'center',
+              opacity:0, transition:'opacity 0.1s, background 0.1s',
+            }}
+            onMouseEnter={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.opacity='1'}}
+            onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.opacity='0'}}
+            ref={el => { if (el) { const p = el.closest('div[style]'); if (p) { p.addEventListener('mouseenter', ()=>el.style.opacity='1'); p.addEventListener('mouseleave', ()=>el.style.opacity='0') } } }}
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+              <circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/>
+            </svg>
+          </button>
+        </div>
       ))}
     </div>
   )
@@ -276,7 +296,7 @@ function SettingsSectionLabel({ children }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // UniversalSettingsModal — tabbed settings for all views
 // ─────────────────────────────────────────────────────────────────────────────
-function UniversalSettingsModal({ onClose }) {
+export function UniversalSettingsModal({ onClose }) {
   const [tab, setTab] = useState('appearance')
 
   const setPref            = useAppStore(s => s.setPref)
@@ -290,21 +310,35 @@ function UniversalSettingsModal({ onClose }) {
   const highlightWords     = useAppStore(s => s.highlightWords)
   const underlineLine      = useAppStore(s => s.underlineLine)
   const themeKey           = useAppStore(s => s.themeKey)
+  const customThemes       = useAppStore(s => s.customThemes)
+  const library            = useAppStore(s => s.library)
+  const persistLibrary     = useAppStore(s => s.persistLibrary)
+  const addBook            = useAppStore(s => s.addBook)
+
+  const importInputRef = useRef()
+  const themeInputRef  = useRef()
+  const fileInputRef   = useRef()
 
   function pref(key, val) { setPref(key, val); persistPreferences() }
 
   const TABS = [
     { id: 'appearance', label: 'Appearance' },
+    { id: 'library',    label: 'Archive' },
     { id: 'reader',     label: 'Reader' },
     { id: 'notebook',   label: 'Notebook' },
     { id: 'audio',      label: 'Audio' },
     { id: 'about',      label: 'About' },
   ]
 
-  const THEMES = {
-    dark:  { name: 'Dark',          bg: '#0d1117', surface: '#161b22', accent: '#388bfd' },
-    light: { name: 'Light (Cream)', bg: '#f5f0e8', surface: '#fdfaf4', accent: '#7c6034' },
+  const BUILT_IN_THEMES_LOCAL = {
+    sepia:  { name: 'Sepia',  bg: '#f4efe6', surface: '#faf6ef', accent: '#8b5e3c' },
+    dark:   { name: 'Dark',   bg: '#0d1117', surface: '#161b22', accent: '#388bfd' },
+    light:  { name: 'Light',  bg: '#f6f8fa', surface: '#ffffff', accent: '#0969da' },
+    cherry: { name: 'Cherry', bg: '#0e0608', surface: '#170b0d', accent: '#e05c7a' },
+    sunset: { name: 'Sunset', bg: '#0f0a04', surface: '#1a1008', accent: '#e8922a' },
+    moss:   { name: 'Moss',   bg: '#f2f5ee', surface: '#f8faf5', accent: '#4a7c3f' },
   }
+  const allThemes = { ...BUILT_IN_THEMES_LOCAL, ...customThemes }
 
   const selectStyle = { background: 'var(--surfaceAlt)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12, padding: '4px 8px' }
 
@@ -317,18 +351,18 @@ function UniversalSettingsModal({ onClose }) {
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px 12px', borderBottom: '1px solid var(--borderSubtle)', flexShrink: 0 }}>
           <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>Settings</span>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--textDim)', cursor: 'pointer', fontSize: 18, lineHeight: 1, padding: '0 2px' }}>×</button>
+          <button onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg></button>
         </div>
 
         {/* Tab strip */}
-        <div style={{ display: 'flex', gap: 0, padding: '0 20px', borderBottom: '1px solid var(--borderSubtle)', flexShrink: 0 }}>
+        <div style={{ display:'flex', gap:0, padding:'0 12px', borderBottom:'1px solid var(--borderSubtle)', flexShrink:0, overflow:'hidden' }}>
           {TABS.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)} style={{
-              padding: '8px 12px', background: 'none', border: 'none',
+              padding:'7px 10px', background:'none', border:'none',
               borderBottom: tab === t.id ? '2px solid var(--accent)' : '2px solid transparent',
               color: tab === t.id ? 'var(--accent)' : 'var(--textDim)',
-              fontSize: 12, fontWeight: 600, cursor: 'pointer', transition: 'color 0.12s',
-              marginBottom: -1,
+              fontSize:11, fontWeight:600, cursor:'pointer', transition:'color 0.12s',
+              marginBottom:-1, whiteSpace:'nowrap', flexShrink:0,
             }}>{t.label}</button>
           ))}
         </div>
@@ -339,22 +373,47 @@ function UniversalSettingsModal({ onClose }) {
           {tab === 'appearance' && (
             <>
               <SettingsSectionLabel>Theme</SettingsSectionLabel>
-              <div style={{ display: 'flex', gap: 10, marginTop: 8, marginBottom: 4 }}>
-                {Object.entries(THEMES).map(([k, t]) => (
-                  <button key={k} onClick={() => pref('themeKey', k)}
-                    style={{
-                      flex: 1, padding: '10px 12px', borderRadius: 8, cursor: 'pointer',
-                      border: `2px solid ${themeKey === k ? 'var(--accent)' : 'var(--border)'}`,
-                      background: t.bg, display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-start',
-                    }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8, marginBottom: 4 }}>
+                {Object.entries(allThemes).map(([k, t]) => (
+                  <label key={k} style={{
+                    display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px',
+                    borderRadius: 8, cursor: 'pointer',
+                    border: themeKey === k ? '1px solid var(--accent)' : '1px solid var(--border)',
+                    background: themeKey === k ? 'rgba(56,139,253,0.06)' : 'transparent',
+                  }}>
+                    <input type="radio" name="theme" value={k} checked={themeKey === k}
+                      onChange={() => { pref('themeKey', k); useAppStore.getState().setTheme?.(k) }}
+                      style={{ display: 'none' }} />
                     <div style={{ display: 'flex', gap: 4 }}>
-                      {[t.bg, t.surface, t.accent].map((c, i) => (
-                        <div key={i} style={{ width: 14, height: 14, borderRadius: 3, background: c, border: '1px solid rgba(255,255,255,0.15)' }} />
+                      {['bg', 'surface', 'accent'].map(p => (
+                        <div key={p} style={{ width: 14, height: 14, borderRadius: 3, background: t[p] || '#888', border: '1px solid rgba(255,255,255,0.1)' }} />
                       ))}
                     </div>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: t.accent }}>{t.name}</span>
-                  </button>
+                    <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)', flex: 1 }}>{t.name}</span>
+                    {k.startsWith('custom_') && <span style={{ fontSize: 10, color: 'var(--textDim)' }}>Custom</span>}
+                  </label>
                 ))}
+              </div>
+              <div style={{ marginTop: 12, paddingTop: 4, borderTop: '1px solid var(--borderSubtle)' }}>
+                <button style={{ fontSize: 12, color: 'var(--textDim)', background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 12px', cursor: 'pointer' }}
+                  onClick={() => themeInputRef.current?.click()}>
+                  Import custom theme (.json)
+                </button>
+                <input ref={themeInputRef} type="file" accept=".json" style={{ display: 'none' }}
+                  onChange={async e => {
+                    const file = e.target.files[0]; if (!file) return
+                    try {
+                      const p = JSON.parse(await file.text())
+                      if (p.name && p.bg && p.text) {
+                        const k = `custom_${Date.now()}`
+                        const next = { ...customThemes, [k]: p }
+                        setPref('customThemes', next)
+                        useAppStore.getState().setTheme?.(k)
+                        await persistPreferences()
+                      }
+                    } catch { alert('Invalid theme file') }
+                    e.target.value = ''
+                  }} />
               </div>
 
               <SettingsSectionLabel>Typography</SettingsSectionLabel>
@@ -373,6 +432,75 @@ function UniversalSettingsModal({ onClose }) {
                   <option value="system-ui, sans-serif">System UI</option>
                 </select>
               </SettingsRow>
+            </>
+          )}
+
+          {tab === 'library' && (
+            <>
+              <SettingsSectionLabel>Discover Books</SettingsSectionLabel>
+              <a href="https://www.gutenberg.org" target="_blank" rel="noopener" style={{
+                display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
+                background: 'var(--surfaceAlt)', border: '1px solid var(--border)',
+                borderRadius: 8, marginBottom: 6, textDecoration: 'none', color: 'var(--text)',
+                transition: 'border-color 0.15s',
+              }}>
+                <span style={{ fontSize: 18 }}>📚</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>Project Gutenberg</div>
+                  <div style={{ fontSize: 11, color: 'var(--textDim)' }}>Free public domain ebooks — 70,000+ titles</div>
+                </div>
+                <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M3 7h8M8 4l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </a>
+              <a href="https://librivox.org" target="_blank" rel="noopener" style={{
+                display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
+                background: 'var(--surfaceAlt)', border: '1px solid var(--border)',
+                borderRadius: 8, marginBottom: 6, textDecoration: 'none', color: 'var(--text)',
+                transition: 'border-color 0.15s',
+              }}>
+                <span style={{ fontSize: 18 }}>🎧</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>LibriVox</div>
+                  <div style={{ fontSize: 11, color: 'var(--textDim)' }}>Free public domain audiobooks — 20,000+ titles</div>
+                </div>
+                <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M3 7h8M8 4l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </a>
+
+              <SettingsSectionLabel>Archive Data</SettingsSectionLabel>
+              <div style={{ fontSize: 12, color: 'var(--textDim)', marginBottom: 10, lineHeight: 1.6 }}>
+                Export your archive as <strong>gnos-library.json</strong> to back it up.
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                <button style={{ flex: 1, padding: '8px 0', background: 'var(--surfaceAlt)', border: '1px solid var(--border)', borderRadius: 7, color: 'var(--text)', fontSize: 12, cursor: 'pointer', fontWeight: 500 }}
+                  onClick={() => {
+                    const blob = new Blob([JSON.stringify({ _readme: 'Gnos Archive', books: library }, null, 2)], { type: 'application/json' })
+                    const url = URL.createObjectURL(blob)
+                    Object.assign(document.createElement('a'), { href: url, download: 'gnos-library.json' }).click()
+                    URL.revokeObjectURL(url)
+                  }}>↓ Export</button>
+                <button style={{ flex: 1, padding: '8px 0', background: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 7, color: '#fff', fontSize: 12, cursor: 'pointer', fontWeight: 500 }}
+                  onClick={() => importInputRef.current?.click()}>↑ Import</button>
+              </div>
+              <input ref={fileInputRef} type="file" accept=".epub,.txt,.md,.pdf" multiple style={{ display: 'none' }}
+                onChange={async e => {
+                  const { importBooks } = await import('@/lib/bookImport')
+                  const { added } = await importBooks(e.target.files)
+                  for (const book of added) addBook(book)
+                  if (added.length) await persistLibrary()
+                  e.target.value = ''
+                }} />
+              <input ref={importInputRef} type="file" accept=".json" style={{ display: 'none' }}
+                onChange={async e => {
+                  const file = e.target.files[0]; if (!file) return
+                  try {
+                    const d = JSON.parse(await file.text())
+                    if (Array.isArray(d.books)) {
+                      const ids = new Set(library.map(b => b.id))
+                      d.books.filter(b => !ids.has(b.id)).forEach(b => addBook(b))
+                      await persistLibrary()
+                    }
+                  } catch { alert('Invalid archive file') }
+                  e.target.value = ''
+                }} />
             </>
           )}
 
@@ -464,15 +592,71 @@ function UniversalSettingsModal({ onClose }) {
 // The chevron flips direction when the sidebar is open, staying INSIDE the
 // button — no translation outside the button boundaries.
 // ─────────────────────────────────────────────────────────────────────────────
+function SideNavCtxMenu({ x, y, items, onClose }) {
+  const ref = useRef()
+  useEffect(() => {
+    const h = e => { if (ref.current && !ref.current.contains(e.target)) onClose() }
+    setTimeout(() => document.addEventListener('mousedown', h), 0)
+    return () => document.removeEventListener('mousedown', h)
+  }, [onClose])
+  const safeX = Math.min(x, window.innerWidth - 180)
+  const safeY = Math.min(y, window.innerHeight - 160)
+  return (
+    <div ref={ref} style={{
+      position:'fixed', left:safeX, top:safeY, zIndex:99999,
+      background:'var(--surface)', border:'1px solid var(--border)',
+      borderRadius:10, padding:4, minWidth:168,
+      boxShadow:'0 10px 28px rgba(0,0,0,0.5)',
+    }}>
+      {items.map((item,i) => (
+        <button key={i} style={{
+          width:'100%', display:'flex', alignItems:'center', gap:8,
+          padding:'7px 10px', background:'none', border:'none', cursor:'pointer',
+          color: item.danger ? '#ef5350' : 'var(--text)', fontSize:12, fontWeight:500,
+          textAlign:'left', borderRadius:6, transition:'background 0.1s',
+        }}
+          onMouseEnter={e=>e.currentTarget.style.background='var(--hover)'}
+          onMouseLeave={e=>e.currentTarget.style.background='none'}
+          onClick={()=>{ item.action(); onClose() }}
+        >
+          {item.icon && <svg width="13" height="13" viewBox="0 0 16 16" fill="none" dangerouslySetInnerHTML={{__html:item.icon}}/>}
+          {item.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export function GnosNavButton() {
-  const openSideNav  = useAppStore(s => s.openSideNav)
-  const closeSideNav = useAppStore(s => s.closeSideNav)
-  const sideNavOpen  = useAppStore(s => s.sideNavOpen)
+  const openSideNav      = useAppStore(s => s.openSideNav)
+  const closeSideNav     = useAppStore(s => s.closeSideNav)
+  const sideNavOpen      = useAppStore(s => s.sideNavOpen)
+  const view             = useAppStore(s => s.view)
+  const setView          = useAppStore(s => s.setView)
+  const setActiveLibTab  = useAppStore(s => s.setActiveLibTab)
+  const paneTabId        = useContext(PaneContext)
+
+  function handleLogoClick() {
+    if (sideNavOpen) {
+      const tabMap = { reader:'books', pdf:'books', 'audio-player':'audiobooks', notebook:'notebooks', sketchbook:'notebooks' }
+      if (paneTabId) {
+        useAppStore.getState().updateTab(paneTabId, { view: 'library', activeLibTab: tabMap[view] || 'library' })
+        useAppStore.getState().switchTab(paneTabId)
+      } else {
+        setActiveLibTab(tabMap[view] || 'library')
+        setView('library')
+      }
+      closeSideNav()
+    } else {
+      openSideNav()
+    }
+  }
+
   return (
     <button
       className={`gnos-nav-btn${sideNavOpen ? ' gnos-nav-btn--open' : ''}`}
-      onClick={sideNavOpen ? closeSideNav : openSideNav}
-      title={sideNavOpen ? 'Close navigation' : 'Open navigation'}
+      onClick={handleLogoClick}
+      title={sideNavOpen ? 'Go to Library' : 'Open navigation'}
     >
       <span className="gnos-nav-logo">Gnos</span>
       <svg className="gnos-nav-chevron" width="11" height="11" viewBox="0 0 12 12" fill="none">
@@ -582,17 +766,21 @@ export default function SideNav() {
   const library             = useAppStore(s => s.library)
   const notebooks           = useAppStore(s => s.notebooks)
   const sketchbooks         = useAppStore(s => s.sketchbooks)
-  const setActiveBook       = useAppStore(s => s.setActiveBook)
   const setActiveNotebook   = useAppStore(s => s.setActiveNotebook)
-  const setActiveAudioBook  = useAppStore(s => s.setActiveAudioBook)
-  const setActiveSketchbook = useAppStore(s => s.setActiveSketchbook)
   const addNotebook         = useAppStore(s => s.addNotebook)
+  const openNewTab          = useAppStore(s => s.openNewTab)
+  const updateTab           = useAppStore(s => s.updateTab)
 
-  const [expanded,     setExpanded]     = useState({})
+  const VIEW_TO_TAB = { reader:'books', pdf:'books', 'audio-player':'audiobooks', notebook:'notebooks', sketchbook:'notebooks' }
+
+  // User-controlled expand/collapse state. Auto-expansion of the active section
+  // is derived at render time (see isOpen below) so no effect is needed.
+  const [expanded, setExpanded] = useState({})
   const [_addOpen,     setAddOpen]      = useState(false)
   // Derive: popup can only be open when the sidebar itself is open
   const addOpen = _addOpen && sideNavOpen
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [sideNavMenu,  setSideNavMenu]  = useState(null) // { x, y, items }
 
   const fileInputRef  = useRef(null)
   const audioInputRef = useRef(null)
@@ -613,7 +801,10 @@ export default function SideNav() {
     return () => { clearTimeout(id); document.removeEventListener('click', h) }
   }, [addOpen])
 
-  function handleNavItem(id) { setView('library'); setActiveLibTab(id); closeSideNav() }
+  function handleNavItem(id) {
+    updateTab(activeTabId, { view: 'library', activeLibTab: id })
+    setView('library'); setActiveLibTab(id); closeSideNav()
+  }
   function toggleExpanded(id, e) { e.stopPropagation(); setExpanded(p => ({ ...p, [id]: !p[id] })) }
   function handleTabSwitch(tabId) { switchTab(tabId); closeSideNav() }
   function handleTabClose(e, tabId) { e.stopPropagation(); closeTab(tabId) }
@@ -633,12 +824,38 @@ export default function SideNav() {
     }
   }
 
-  function openItem(item) {
-    if (item._isNotebook)        { setActiveNotebook(item);   setView('notebook') }
-    else if (item._isSketchbook) { setActiveSketchbook(item); setView('sketchbook') }
-    else if (item.type === 'audio') { setActiveAudioBook(item); setView('audio-player') }
-    else { setActiveBook(item); setView(item.format === 'pdf' ? 'pdf' : 'reader') }
+  // openItem — opens in the current tab (default single-click behaviour)
+  function openItem(item) { openItemInCurrentTab(item) }
+
+  // openItemInNewTab — explicitly opens a new tab (used by context menu)
+  function openItemInNewTab(item) {
+    const store = useAppStore.getState()
+    if (item._isNotebook) {
+      store.setActiveNotebook(item)
+      openNewTab({ view: 'notebook', activeNotebook: item })
+    } else if (item._isSketchbook) {
+      store.setActiveSketchbook(item)
+      openNewTab({ view: 'sketchbook', activeSketchbook: item })
+    } else if (item.type === 'audio') {
+      store.setActiveAudioBook(item)
+      openNewTab({ view: 'audio-player', activeAudioBook: item })
+    } else {
+      store.setActiveBook(item)
+      openNewTab({ view: item.format === 'pdf' ? 'pdf' : 'reader', activeBook: item })
+    }
     closeSideNav()
+  }
+
+  // openItemInCurrentTab — replaces the active tab's view
+  function openItemInCurrentTab(item) {
+    let newView
+    const store = useAppStore.getState()
+    if (item._isNotebook)           { store.setActiveNotebook(item);   newView = 'notebook' }
+    else if (item._isSketchbook)    { store.setActiveSketchbook(item); newView = 'sketchbook' }
+    else if (item.type === 'audio') { store.setActiveAudioBook(item);  newView = 'audio-player' }
+    else { store.setActiveBook(item); newView = item.format === 'pdf' ? 'pdf' : 'reader' }
+    updateTab(activeTabId, { view: newView })
+    setView(newView); closeSideNav()
   }
 
   // File import — fire custom events so LibraryView can handle them
@@ -767,7 +984,7 @@ export default function SideNav() {
 
         /* ── Panel — overlay, does not push content ───────────────────────── */
         .sidenav-panel {
-          position: fixed; top: 0; left: 0; bottom: 0;
+          position: fixed; top: 34px; left: 0; bottom: 0;
           width: ${SIDEBAR_WIDTH}px;
           z-index: 8001;
           background: var(--surface);
@@ -782,16 +999,25 @@ export default function SideNav() {
           box-shadow: 6px 0 32px rgba(0,0,0,0.28);
         }
 
-        /* ── Header — 10% shorter: was 16/12 padding → 14/11 ─────────────── */
+        /* ── Header — matches gnos-header style across all views ─────────── */
         .sidenav-header {
           display: flex; align-items: center; justify-content: space-between;
-          padding: 13px 12px 10px 16px; flex-shrink: 0;
+          height: 52px; padding: 0 12px 0 16px; flex-shrink: 0;
+          background: var(--headerBg);
           border-bottom: 1px solid var(--borderSubtle);
+          box-shadow: 0 1px 0 var(--borderSubtle);
         }
         .sidenav-logo {
           font-family: Georgia, serif; font-size: 17px; font-weight: 700;
           color: var(--text); letter-spacing: -0.4px;
         }
+        .sidenav-logo-btn {
+          background: none; border: none; padding: 4px 6px; cursor: pointer;
+          border-radius: 6px;
+          transition: background 0.12s;
+        }
+        .sidenav-logo-btn:hover { background: var(--hover); }
+        .sidenav-logo-btn:active { opacity: 0.75; }
 
         /* Close button — shows a < that "flips in" as the sidebar opens */
         .sidenav-close-btn {
@@ -901,7 +1127,7 @@ export default function SideNav() {
           transition: margin-left 0.22s cubic-bezier(0.4, 0, 0.2, 1);
           min-height: 100vh;
         }
-        .sidenav-push-wrapper.pushed { margin-left: ${SIDEBAR_WIDTH}px; }
+        .sidenav-push-wrapper.pushed { /* overlay mode — no margin push */ }
 
         /* The sidebar close button is shown inside the panel */
         .sidenav-close-btn { display: flex; }
@@ -919,7 +1145,11 @@ export default function SideNav() {
 
         {/* Header */}
         <div className="sidenav-header">
-          <span className="sidenav-logo">Gnos</span>
+          <button
+            className="sidenav-logo sidenav-logo-btn"
+            onClick={() => { updateTab(activeTabId, { view: 'library', activeLibTab: 'library' }); setView('library'); setActiveLibTab('library'); closeSideNav() }}
+            title="Back to Library"
+          >Gnos</button>
           <button className="sidenav-close-btn" onClick={closeSideNav} title="Close navigation">
             {/* < chevron — starts rotated 180° (= >) and flips to < when open */}
             <svg className="sidenav-close-chevron" width="11" height="11" viewBox="0 0 12 12" fill="none">
@@ -966,7 +1196,7 @@ export default function SideNav() {
             <div className="sidenav-section-label">Library</div>
             {NAV_ITEMS.map(item => {
               const isActive = view === 'library' && activeLibTab === item.id
-              const isOpen   = !!expanded[item.id]
+              const isOpen   = !!expanded[item.id] || (sideNavOpen && VIEW_TO_TAB[view] === item.id)
               const items    = getItemsForTab(item.id)
               return (
                 <div key={item.id}>
@@ -989,7 +1219,34 @@ export default function SideNav() {
                       </button>
                     )}
                   </div>
-                  {isOpen && <NavDropdown items={items} onOpen={openItem} />}
+                  {isOpen && <NavDropdown items={items} onOpen={openItem} onMenu={(e, item) => {
+                    e.stopPropagation()
+                    const isAudio = item.type === 'audio'
+                    const isNb = item._isNotebook
+                    const isSb = item._isSketchbook
+                    const ICON_BOOK = '<path d="M3 14V3a1.5 1.5 0 0 1 1.5-1.5h9V14H4.5A1.5 1.5 0 0 1 3 12.5v0A1.5 1.5 0 0 1 4.5 11H13.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+                    const ICON_NEWTAB = '<path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1h4v4M14 1l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+                    const ICON_TRASH = '<polyline points="3,6 5,6 13,6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 6V4H5v2M14 6l-.867 9.143A1.5 1.5 0 0 1 11.64 16.5H4.36A1.5 1.5 0 0 1 2.867 15.143L2 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+                    const ICON_SEARCH = '<circle cx="6" cy="6" r="4" stroke="currentColor" stroke-width="1.4"/><path d="M9.5 9.5l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'
+                    const items2 = isNb
+                      ? [ { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
+                          { label:'Open Here', icon:ICON_BOOK, action:()=>openItemInCurrentTab(item) },
+                          { label:'Delete', icon:ICON_TRASH, danger:true, action:()=>{ useAppStore.getState().removeNotebook?.(item.id); useAppStore.getState().persistNotebooks?.() } } ]
+                      : isSb
+                      ? [ { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
+                          { label:'Open Here', icon:ICON_BOOK, action:()=>openItemInCurrentTab(item) },
+                          { label:'Delete', icon:ICON_TRASH, danger:true, action:()=>{ useAppStore.getState().removeSketchbook?.(item.id); useAppStore.getState().persistSketchbooks?.() } } ]
+                      : isAudio
+                      ? [ { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
+                          { label:'Open Here', icon:ICON_BOOK, action:()=>openItemInCurrentTab(item) },
+                          { label:'Delete', icon:ICON_TRASH, danger:true, action:()=>useAppStore.getState().removeBook?.(item.id) } ]
+                      : [ { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
+                          { label:'Open Here', icon:ICON_BOOK, action:()=>openItemInCurrentTab(item) },
+                          { label:'Search title', icon:ICON_SEARCH, action:()=>window.open(`https://www.google.com/search?q=${encodeURIComponent(item.title)}`,'_blank') },
+                          { label:'Search author', icon:ICON_SEARCH, action:()=>window.open(`https://www.google.com/search?q=${encodeURIComponent(item.author||item.title+' author')}`,'_blank') },
+                          { label:'Delete', icon:ICON_TRASH, danger:true, action:()=>useAppStore.getState().removeBook?.(item.id) } ]
+                    setSideNavMenu({ x: e.clientX, y: e.clientY, items: items2 })
+                  }} />}
                 </div>
               )
             })}
@@ -1033,6 +1290,14 @@ export default function SideNav() {
 
       {/* Universal Settings Modal */}
       {settingsOpen && <UniversalSettingsModal onClose={() => setSettingsOpen(false)} />}
+      {/* SideNav item context menu */}
+      {sideNavMenu && (
+        <SideNavCtxMenu
+          x={sideNavMenu.x} y={sideNavMenu.y}
+          items={sideNavMenu.items}
+          onClose={() => setSideNavMenu(null)}
+        />
+      )}
     </>
   )
 }
