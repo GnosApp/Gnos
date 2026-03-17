@@ -26,8 +26,10 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import useAppStore from '@/store/useAppStore'
-import { loadNotebookContent, saveNotebookContent } from '@/lib/storage'
+import { loadNotebookContent, saveNotebookContent, saveNotebookImage } from '@/lib/storage'
 import { GnosNavButton } from '@/components/SideNav'
+import { listen } from '@tauri-apps/api/event'
+import { readFile } from '@tauri-apps/plugin-fs'
 
 // ─── Tiny id helper ───────────────────────────────────────────────────────────
 function makeId(prefix = 'id') {
@@ -60,20 +62,19 @@ function getKaTeX() {
   if (_ktP) return _ktP
   _ktP = (async () => {
     try {
-      if (window.katex) return window.katex
+      // Load KaTeX from npm package (bundled, no CDN needed)
+      const katex = await import('katex')
+      // Inject KaTeX CSS if not already present
       if (!document.getElementById('katex-css')) {
-        const link = document.createElement('link')
-        link.id = 'katex-css'; link.rel = 'stylesheet'
-        link.href = 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.10/katex.min.css'
-        document.head.appendChild(link)
+        const css = await import('katex/dist/katex.min.css?inline').catch(() => null)
+        if (css?.default) {
+          const style = document.createElement('style')
+          style.id = 'katex-css'
+          style.textContent = css.default
+          document.head.appendChild(style)
+        }
       }
-      await new Promise((res, rej) => {
-        const s = document.createElement('script')
-        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.10/katex.min.js'
-        s.onload = res; s.onerror = rej
-        document.head.appendChild(s)
-      })
-      return window.katex ?? null
+      return katex.default || katex
     } catch (e) {
       console.warn('[KaTeX] failed to load:', e)
       return null
@@ -132,7 +133,7 @@ function getMQ() {
 const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
 
 // ─── Inline markdown → HTML ───────────────────────────────────────────────────
-function inlineToHtml(text, notebooks = [], library = []) {
+function inlineToHtml(text, notebooks = [], library = [], sketchbooks = [], flashcardDecks = []) {
   const buckets = []
   const ph = html => { const k = `\x02${buckets.length}\x03`; buckets.push(html); return k }
 
@@ -174,14 +175,18 @@ function inlineToHtml(text, notebooks = [], library = []) {
   // Footnote refs [^id]
   s = s.replace(/\[\^([^\]\n]+)\]/g, (_, id) =>
     ph(`<sup class="nb-fn-ref"><a href="#fn-${esc(id)}">[${esc(id)}]</a></sup>`))
-  // Wikilinks [[Title]]
-  s = s.replace(/\[\[([^\]\n]{1,120})\]\]/g, (_, raw) => {
+  // Wikilinks [[Title]] with optional (sketch) or (flash) suffix
+  s = s.replace(/\[\[([^\]\n]{1,120})\]\](?:\((sketch|flash)\))?/g, (_, raw, suffix) => {
     const title = raw.trim()
     const nb = notebooks.find(n => n.title?.toLowerCase() === title.toLowerCase())
     const bk = !nb && library.find(b => b.title?.toLowerCase() === title.toLowerCase())
-    const cls  = nb ? 'wikilink wikilink-nb' : bk ? 'wikilink wikilink-bk' : 'wikilink wikilink-new'
-    const type = nb ? 'notebook' : bk ? 'book' : 'new'
-    const id   = nb ? nb.id : bk ? bk.id : ''
+    const sb = !nb && !bk && sketchbooks.find(s => s.title?.toLowerCase() === title.toLowerCase())
+    const fd = !nb && !bk && !sb && flashcardDecks.find(d => d.title?.toLowerCase() === title.toLowerCase())
+    // Suffix overrides type for new items
+    const forceType = suffix === 'sketch' ? 'new-sketch' : suffix === 'flash' ? 'new-flash' : null
+    const cls  = nb ? 'wikilink wikilink-nb' : bk ? 'wikilink wikilink-bk' : sb ? 'wikilink wikilink-sb' : fd ? 'wikilink wikilink-fd' : 'wikilink wikilink-new'
+    const type = nb ? 'notebook' : bk ? 'book' : sb ? 'sketchbook' : fd ? 'flashcard' : (forceType || 'new')
+    const id   = nb ? nb.id : bk ? bk.id : sb ? sb.id : fd ? fd.id : ''
     return ph(`<span class="${cls}" data-wl-type="${type}" data-wl-id="${esc(id)}" data-wl-title="${esc(title)}">${esc(title)}</span>`)
   })
 
@@ -231,8 +236,8 @@ function renderList(rawLines, il) {
   return html
 }
 
-function blockToHtml(raw, notebooks, library, footnotesBuf) {
-  const il = t => inlineToHtml(t, notebooks, library)
+function blockToHtml(raw, notebooks, library, footnotesBuf, sketchbooks = [], flashcardDecks = []) {
+  const il = t => inlineToHtml(t, notebooks, library, sketchbooks, flashcardDecks)
   const lines = raw.split('\n')
   const first = lines[0]
 
@@ -353,17 +358,17 @@ function parseBlocks(text) {
   return blocks
 }
 
-function renderMarkdown(text, notebooks = [], library = []) {
+function renderMarkdown(text, notebooks = [], library = [], sketchbooks = [], flashcardDecks = []) {
   if (!text?.trim()) return ''
   const footnotes = []
   const blocks = parseBlocks(text)
   const html = blocks.map((raw, i) =>
-    blockToHtml(raw, notebooks, library, footnotes)
+    blockToHtml(raw, notebooks, library, footnotes, sketchbooks, flashcardDecks)
       .replace(/^(<\w+)/, `$1 data-bi="${i}"`)
   ).join('\n')
   if (!footnotes.length) return html
   const fnHtml = `<section class="nb-fns"><hr>${footnotes.map(f =>
-    `<div id="fn-${esc(f.id)}" class="nb-fn-def"><sup>${esc(f.id)}</sup> ${inlineToHtml(f.text)} <a href="#fnref-${esc(f.id)}" class="nb-fn-back">↩</a></div>`
+    `<div id="fn-${esc(f.id)}" class="nb-fn-def"><sup>${esc(f.id)}</sup> ${inlineToHtml(f.text, notebooks, library, sketchbooks, flashcardDecks)} <a href="#fnref-${esc(f.id)}" class="nb-fn-back">↩</a></div>`
   ).join('')}</section>`
   return html + fnHtml
 }
@@ -403,31 +408,10 @@ function makeTheme(cm) {
       background: 'var(--nb-sel, rgba(56,139,253,0.28)) !important',
     },
     '.cm-activeLine': { background: 'transparent' },
-    // Wikilink autocomplete tooltip — card style
-    '.cm-tooltip.cm-wl-tooltip': {
-      background: 'var(--surface)',
-      border: '1px solid var(--border)',
-      borderRadius: '12px',
-      boxShadow: '0 12px 40px rgba(0,0,0,0.45)',
-      padding: '6px',
-      minWidth: '220px',
-    },
-    '.cm-tooltip': {
-      background: 'var(--surface)',
-      border: '1px solid var(--border)',
-      borderRadius: '10px',
-      boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
-    },
-    '.cm-tooltip-autocomplete > ul': { fontFamily: 'inherit', fontSize: '13px', maxHeight: '220px' },
-    '.cm-tooltip-autocomplete > ul > li': { padding: '6px 12px', lineHeight: '1.5' },
-    '.cm-tooltip-autocomplete > ul > li[aria-selected]': { background: 'var(--accent)', color: '#fff', borderRadius: '4px' },
-    '.cm-completionLabel': { fontWeight: '500' },
-    '.cm-completionDetail': { opacity: '0.6', fontSize: '11px', marginLeft: '6px' },
     '.cm-searchMatch': { background: 'rgba(210,153,34,0.35)', borderRadius: '2px' },
     '.cm-searchMatch.cm-searchMatch-selected': { background: 'rgba(56,139,253,0.45)' },
-    '.cm-panels': { background: 'var(--surface)', borderTop: '1px solid var(--border)' },
-    '.cm-panel': { padding: '6px 10px', background: 'var(--surface)' },
-    '.cm-panel input': { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--text)', padding: '3px 8px', fontFamily: 'inherit', fontSize: '12px', outline: 'none' },
+    '.cm-panels': { display: 'none' },
+    '.cm-panel': { display: 'none' },
     '.cm-panel button': { background: 'var(--surfaceAlt)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--text)', cursor: 'pointer', padding: '3px 8px', fontFamily: 'inherit', fontSize: '12px' },
     '.cm-scroller': { overflow: 'auto', fontFamily: 'inherit' },
   }, { dark: true })
@@ -458,83 +442,144 @@ function makeHighlight(cm) {
   ])
 }
 
-// ─── Wiki-link autocomplete (Obsidian-style live dropdown) ───────────────────
-// • Appears as soon as user types [[
-// • Filters live as they type the title
-// • Confirms ONLY on Tab or by typing ]] — never on Enter (which would be intrusive)
-// • Arrow keys navigate; Escape dismisses without inserting
-// • The completion replaces from the [[ all the way to the current cursor
-function makeWikiSource(notebooks, library) {
-  return ctx => {
-    // Only activate inside an open [[…  that has no closing ]]
-    const before = ctx.matchBefore(/\[\[[^\]]*/)
-    if (!before) return null
-    // Always show if we are inside [[, even with zero chars typed after it
-    // (but only auto-open when something after [[ is typed, i.e. before.to > before.from+2)
-    const query = before.text.slice(2).toLowerCase()
+// ─── Wiki-link dropdown (custom React-driven, no CM6 autocompletion) ─────────
+// A ViewPlugin detects [[…  before the cursor and pushes state to React via
+// a callback. React renders the floating dropdown. The plugin also provides
+// a keymap (Tab confirm, ArrowUp/Down navigate, Escape dismiss).
+function makeWikiDropdownPlugin(cm, _notebooks, _library, _sketchbooks, _flashcardDecks, onStateChange) {
+  const { Prec } = cm.state
+  const { ViewPlugin, EditorView, keymap: keymapFacet } = cm.view
 
-    const nbOpts = notebooks
-      .filter(n => n.title?.toLowerCase().includes(query))
-      .slice(0, 8)
-      .map(n => ({
-        label: n.title,
-        type: 'keyword',
-        detail: '📓 Note',
-        // apply replaces from the [[ to cursor and closes with ]]
-        apply: (view, _c, from, to) => {
-          view.dispatch({ changes: { from, to, insert: `[[${n.title}]]` } })
-        },
-        boost: 2,
-      }))
+  // Shared mutable state the keymap closures can read
+  const shared = { active: false, options: [], selectedIdx: 0, from: 0, to: 0 }
 
-    const bkOpts = library
-      .filter(b => b.title?.toLowerCase().includes(query))
-      .slice(0, Math.max(0, 8 - nbOpts.length))
-      .map(b => ({
-        label: b.title,
-        type: 'variable',
-        detail: '📖 Book',
-        apply: (view, _c, from, to) => {
-          view.dispatch({ changes: { from, to, insert: `[[${b.title}]]` } })
-        },
-      }))
-
-    const options = [...nbOpts, ...bkOpts]
-    if (!options.length) return null
-
-    return {
-      from: before.from,   // replace from the opening [[
-      options,
-      validFor: /\[\[[^\]]*/,
+  function buildOptions(query) {
+    const q = query.toLowerCase()
+    // Always read fresh data from the store to avoid stale closures
+    const store = typeof useAppStore !== 'undefined' ? useAppStore.getState() : {}
+    const notebooks = store.notebooks || _notebooks || []
+    const library = store.library || _library || []
+    const sketchbooks = store.sketchbooks || _sketchbooks || []
+    const flashcardDecks = store.flashcardDecks || _flashcardDecks || []
+    const make = (items, detail) =>
+      items.filter(i => i.title?.toLowerCase().includes(q))
+        .slice(0, 6)
+        .map(i => ({ label: i.title, detail, insert: `[[${i.title}]]` }))
+    const opts = [
+      ...make(notebooks, 'Notebook'),
+      ...make(library.filter(b => b.format !== 'audiofolder' && b.format !== 'audio'), 'Book'),
+      ...make(library.filter(b => b.format === 'audiofolder' || b.format === 'audio'), 'Audio'),
+      ...make(sketchbooks, 'Sketchbook'),
+      ...make(flashcardDecks, 'Flashcards'),
+    ].slice(0, 8)
+    // "Create new" options
+    const trimmed = query.trim()
+    if (trimmed.length > 0 && !opts.some(o => o.label.toLowerCase() === trimmed.toLowerCase())) {
+      opts.push({ label: trimmed, detail: '+ New notebook', insert: `[[${trimmed}]]` })
+      opts.push({ label: trimmed, detail: '+ New sketchbook', insert: `[[${trimmed}]](sketch)` })
+      opts.push({ label: trimmed, detail: '+ New flashcards', insert: `[[${trimmed}]](flash)` })
     }
+    return opts
   }
-}
 
-// ─── Custom keymap for wikilink completion ────────────────────────────────────
-// Only Tab confirms; Enter is left for newline. Escape dismisses.
-function makeWikiCompletionKeymap(cm) {
-  const { acceptCompletion, closeCompletion, completionStatus } = cm.autocomplete
-  return cm.view.keymap.of([
+  function detectWiki(state) {
+    const cur = state.selection.main.head
+    const line = state.doc.lineAt(cur)
+    const col = cur - line.from
+    const textBefore = line.text.slice(0, col)
+    // Find last [[ that isn't closed
+    const idx = textBefore.lastIndexOf('[[')
+    if (idx === -1) return null
+    const afterBrackets = textBefore.slice(idx + 2)
+    // If there's a ]] inside, the wikilink is already closed
+    if (afterBrackets.includes(']]')) return null
+    // If there's a newline, not valid
+    if (afterBrackets.includes('\n')) return null
+    return { from: line.from + idx, query: afterBrackets }
+  }
+
+  function pushState(view) {
+    const result = detectWiki(view.state)
+    if (!result) {
+      if (shared.active) {
+        shared.active = false
+        shared.options = []
+        onStateChange(null)
+      }
+      return
+    }
+    const opts = buildOptions(result.query)
+    shared.active = opts.length > 0
+    shared.options = opts
+    shared.from = result.from
+    shared.to = view.state.selection.main.head
+    if (shared.selectedIdx >= opts.length) shared.selectedIdx = 0
+    if (!shared.active) { onStateChange(null); return }
+    // Get cursor coordinates for positioning
+    const coords = view.coordsAtPos(view.state.selection.main.head)
+    onStateChange({
+      options: opts,
+      selectedIdx: shared.selectedIdx,
+      coords: coords ? { left: coords.left, top: coords.bottom + 4 } : null,
+    })
+  }
+
+  function confirmSelection(view) {
+    if (!shared.active || !shared.options.length) return false
+    const opt = shared.options[shared.selectedIdx]
+    if (!opt) return false
+    view.dispatch({ changes: { from: shared.from, to: shared.to, insert: opt.insert } })
+    shared.active = false
+    shared.options = []
+    onStateChange(null)
+    return true
+  }
+
+  const plugin = ViewPlugin.fromClass(class {
+    constructor(view) { this._raf = null; this._schedule(view) }
+    update(upd) { if (upd.docChanged || upd.startState.selection.main.head !== upd.state.selection.main.head) this._schedule(upd.view) }
+    _schedule(view) {
+      if (this._raf) cancelAnimationFrame(this._raf)
+      this._raf = requestAnimationFrame(() => { this._raf = null; pushState(view) })
+    }
+    destroy() { if (this._raf) cancelAnimationFrame(this._raf); onStateChange(null) }
+  })
+
+  const wikiKeymap = Prec.high(keymapFacet.of([
     {
       key: 'Tab',
-      run: view => {
-        if (completionStatus(view.state) === 'active') {
-          return acceptCompletion(view)
-        }
-        return false
-      },
+      run: view => shared.active ? confirmSelection(view) : false,
     },
     {
       key: 'Escape',
-      run: view => {
-        if (completionStatus(view.state) === 'active') {
-          closeCompletion(view)
-          return true
-        }
-        return false
+      run: _view => {
+        if (!shared.active) return false
+        shared.active = false; shared.options = []
+        onStateChange(null)
+        return true
       },
     },
-  ])
+    {
+      key: 'ArrowDown',
+      run: view => {
+        if (!shared.active) return false
+        shared.selectedIdx = (shared.selectedIdx + 1) % shared.options.length
+        pushState(view)
+        return true
+      },
+    },
+    {
+      key: 'ArrowUp',
+      run: view => {
+        if (!shared.active) return false
+        shared.selectedIdx = (shared.selectedIdx - 1 + shared.options.length) % shared.options.length
+        pushState(view)
+        return true
+      },
+    },
+  ]))
+
+  return [plugin, wikiKeymap]
 }
 
 // ─── Paired-syntax auto-wrap (transaction filter — no dropdown) ───────────────
@@ -542,43 +587,21 @@ function makeWikiCompletionKeymap(cm) {
 // a word to the left and wrap it. If nothing is selected, we insert both tokens
 // and place the cursor in the middle. This is the Obsidian-style approach.
 function makePairInputHandler(cm) {
-  const PAIRS = {
-    '**': '**',
-    '*':  '*',
-    '`':  '`',
-    '~~': '~~',
-    '==': '==',
-    '$':  '$',
-  }
-  // We use an InputHandler to intercept typed characters
+  // Obsidian-style: only auto-wrap when there's a selection.
+  // No selection → just type the character normally (no auto-closing).
+  // Exception: backtick and $ get lightweight auto-close (easy to dismiss).
+  const WRAP_PAIRS = { '*':'*', '_':'_', '~':'~', '=':'=', '`':'`', '$':'$' }
   return cm.view.EditorView.inputHandler.of((view, _from, _to, text) => {
-    // Check if we just completed an opening token
-    // We check the text being inserted + what's already immediately before cursor
+    if (!WRAP_PAIRS[text]) return false
     const sel = view.state.selection.main
-    const before2 = sel.from >= 2 ? view.state.doc.sliceString(sel.from - 2, sel.from) : ''
-    const before1 = sel.from >= 1 ? view.state.doc.sliceString(sel.from - 1, sel.from) : ''
 
-    // Map of what full typed sequence → pair close
-    let open = null, close = null
-
-    if (text === '*' && before1 === '*' && before2[0] !== '*') {
-      open = '**'; close = '**'
-    } else if (text === '~' && before1 === '~') {
-      open = '~~'; close = '~~'
-    } else if (text === '=' && before1 === '=') {
-      open = '=='; close = '=='
-    } else {
-      // Single-char pairs
-      const singlePair = { '*': '*', '`': '`', '$': '$' }
-      if (singlePair[text] && before1 !== text) {
-        open = text; close = singlePair[text]
-      }
-    }
-
-    if (!open) return false
-
-    // If there's a non-empty selection, wrap it
+    // ── Selection → wrap it (like Obsidian) ─────────────────────────────
     if (!sel.empty) {
+      const selected = view.state.doc.sliceString(sel.from, sel.to)
+      // Determine the wrapper based on what's already around the selection
+      let open = text, close = WRAP_PAIRS[text]
+      // If wrapping with * or _, check if we should use ** or *** based on context
+      // Simple: just wrap with whatever the user typed
       view.dispatch({
         changes: [
           { from: sel.from, to: sel.from, insert: open },
@@ -589,35 +612,24 @@ function makePairInputHandler(cm) {
       return true
     }
 
-    // No selection: insert open+close and place cursor between
-    // But first insert the final char of open (the one being typed)
-    const insert = text + close
-    view.dispatch({
-      changes: { from: sel.from, to: sel.to, insert },
-      selection: { anchor: sel.from + text.length },
-    })
-    return true
-  })
-}
-
-// ─── Auto-confirm wikilink when user closes ]] ────────────────────────────────
-// If the completion is active and user types ]], we accept the top completion
-// then append ]] naturally (or let the apply fn handle the full [[title]] insert).
-function makeWikiCloseHandler(cm) {
-  return cm.view.EditorView.inputHandler.of((view, _from, _to, text) => {
-    if (text !== ']') return false
-    const { completionStatus, acceptCompletion } = cm.autocomplete
-    if (completionStatus(view.state) !== 'active') return false
-    // Check if the char before cursor is already ]
-    const sel = view.state.selection.main
-    const prev = sel.from >= 1 ? view.state.doc.sliceString(sel.from - 1, sel.from) : ''
-    if (prev === ']') {
-      // User is closing the bracket — accept the highlighted completion
-      return acceptCompletion(view)
+    // ── No selection → skip-over if next char matches (prevents doubled closers) ──
+    const after1 = view.state.doc.sliceString(sel.from, sel.from + 1)
+    if (after1 === text) {
+      // Check if we're inside a pair (simple heuristic: char before us is not whitespace
+      // and char after is the same as what we're typing)
+      const before1 = sel.from >= 1 ? view.state.doc.sliceString(sel.from - 1, sel.from) : ''
+      if (before1 && before1 !== ' ' && before1 !== '\n') {
+        // Skip over the existing character
+        view.dispatch({ selection: { anchor: sel.from + 1 } })
+        return true
+      }
     }
+
+    // ── No selection → no auto-close, let character type naturally ──────
     return false
   })
 }
+
 function makeSmartEnter(cm) {
   return cm.view.keymap.of([{ key: 'Enter', run: cm.commands.insertNewlineAndIndentContinueMarkupList }])
 }
@@ -649,16 +661,19 @@ function makeFormatKeys(cm) {
 
 // ─── Ghost hint plugin ────────────────────────────────────────────────────────
 // Shows placeholder ghost text after typing an opening syntax token.
-// Tab accepts, any other key dismisses. Non-intrusive — never auto-inserts.
+// Tab accepts. Ghost dismisses automatically when cursor moves away or a space
+// is typed. The opening syntax markers are NEVER removed — space after syntax
+// means the user intended them as literal text.
 function makeGhostHintPlugin(cm) {
   const { ViewPlugin, Decoration, WidgetType } = cm.view
 
-  // Ghost shows only the closing syntax token — no placeholder text.
-  // Obsidian style: type ** → see faint ** after cursor, Tab to accept.
   const HINTS = {
     '***': '***',
     '**':  '**',
     '*':   '*',
+    '___': '___',
+    '__':  '__',
+    '_':   '_',
     '~~':  '~~',
     '==':  '==',
     '`':   '`',
@@ -680,31 +695,53 @@ function makeGhostHintPlugin(cm) {
   }
 
   const ghostPlugin = ViewPlugin.fromClass(class {
-    constructor(view) { this.deco = Decoration.none; this._hint = null; this._compute(view) }
-    update(upd) { if (upd.docChanged || upd.selectionSet) this._compute(upd.view) }
+    constructor(view) { this.deco = Decoration.none; this._hint = null; this._activeToken = null; this._compute(view) }
+    update(upd) { if (upd.docChanged || upd.startState.selection.main.head !== upd.state.selection.main.head) this._compute(upd.view) }
     _compute(view) {
       const { state } = view
       const cur = state.selection.main
-      if (!cur.empty) { this.deco = Decoration.none; this._hint = null; return }
+      if (!cur.empty) { this.deco = Decoration.none; this._hint = null; this._activeToken = null; return }
       const line = state.doc.lineAt(cur.head)
       const col = cur.head - line.from
       const textBefore = line.text.slice(0, col)
       const after = line.text.slice(col)
 
       let matched = null
-      for (const token of ['***', '$$', '**', '~~', '==', '*', '`', '$']) {
-        if (textBefore.endsWith(token) && !after.includes(token)) {
-          matched = token; break
+      for (const token of ['***', '___', '$$', '**', '__', '~~', '==', '*', '_', '`', '$']) {
+        if (textBefore.endsWith(token)) {
+          const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          const count = (textBefore.match(new RegExp(escaped, 'g')) || []).length
+          if (count % 2 === 1 && !after.includes(token)) {
+            matched = token; break
+          }
         }
       }
 
-      if (!matched || !HINTS[matched]) { this.deco = Decoration.none; this._hint = null; return }
+      // If we had a ghost and user typed a letter (not space), persist it
+      if (!matched && this._activeToken && this._hint) {
+        const lastChar = col > 0 ? line.text[col - 1] : ''
+        // Space or moving away → dismiss ghost, keep syntax as-is
+        if (lastChar === ' ' || lastChar === '') {
+          this.deco = Decoration.none; this._hint = null; this._activeToken = null; return
+        }
+        const close = HINTS[this._activeToken]
+        const escaped = this._activeToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const count = (textBefore.match(new RegExp(escaped, 'g')) || []).length
+        if (count % 2 === 1 && !after.includes(close)) {
+          const builder = new cm.state.RangeSetBuilder()
+          try {
+            builder.add(cur.head, cur.head, Decoration.widget({ widget: new GhostWidget(close), side: 1 }))
+          } catch { /* ignore */ }
+          this.deco = builder.finish()
+          this._hint = { pos: cur.head, insert: close }
+          return
+        }
+      }
+
+      if (!matched || !HINTS[matched]) { this.deco = Decoration.none; this._hint = null; this._activeToken = null; return }
       const close = HINTS[matched]
 
-      // Don't show ghost if pair handler already inserted the close
-      // (pair handler fires on the second * of **, so by the time ghost
-      //  computes, the close is already there — detect and skip)
-      if (after.startsWith(close)) { this.deco = Decoration.none; this._hint = null; return }
+      if (after.startsWith(close)) { this.deco = Decoration.none; this._hint = null; this._activeToken = null; return }
 
       const builder = new cm.state.RangeSetBuilder()
       try {
@@ -712,29 +749,211 @@ function makeGhostHintPlugin(cm) {
       } catch { /* ignore */ }
       this.deco = builder.finish()
       this._hint = { pos: cur.head, insert: close }
+      this._activeToken = matched
     }
     get decorations() { return this.deco }
   }, { decorations: v => v.decorations })
 
-  const ghostKeymap = cm.view.keymap.of([{
+  // Only Tab to accept — no Enter handler, no space handler
+  // Ghost dismisses automatically when cursor moves away (handled by _compute)
+  const ghostKeymap = cm.state.Prec.high(cm.view.keymap.of([
+    {
+      key: 'Tab',
+      run: view => {
+        const plugin = view.plugin(ghostPlugin)
+        if (!plugin?._hint) return false
+        const { pos, insert } = plugin._hint
+        if (view.state.selection.main.head !== pos) return false
+        view.dispatch({
+          changes: { from: pos, to: pos, insert },
+          selection: { anchor: pos },
+        })
+        return true
+      },
+    },
+  ]))
+
+  return [ghostPlugin, ghostKeymap]
+}
+
+
+// ─── Math.js + Algebrite inline calculator (ghost hint for `expr=`) ─────────
+// Lazy-loads mathjs and algebrite. Shows result as ghost text after `=`.
+let _mathP = null
+function getMathjs() {
+  if (_mathP) return _mathP
+  _mathP = import('mathjs').then(m => m).catch(() => null)
+  return _mathP
+}
+let _algP = null
+function getAlgebrite() {
+  if (_algP) return _algP
+  _algP = import('algebrite').then(m => m.default || m).catch(() => null)
+  return _algP
+}
+
+function makeMathCalcPlugin(cm) {
+  const { ViewPlugin, Decoration, WidgetType } = cm.view
+
+  class MathGhostWidget extends WidgetType {
+    constructor(text) { super(); this.text = text }
+    toDOM() {
+      const span = document.createElement('span')
+      span.className = 'cm-ghost-hint cm-math-ghost'
+      span.textContent = this.text
+      span.setAttribute('aria-hidden', 'true')
+      return span
+    }
+    eq(o) { return o instanceof MathGhostWidget && o.text === this.text }
+    ignoreEvent() { return true }
+  }
+
+  let mathLib = null
+  let algLib = null
+  getMathjs().then(m => {
+    if (m) {
+      try {
+        m.import({
+          FV: function(rate, nper, pmt, pv) {
+            pv = pv || 0
+            return pv * Math.pow(1 + rate, nper) + pmt * (Math.pow(1 + rate, nper) - 1) / rate
+          },
+          PV: function(rate, nper, pmt, fv) {
+            fv = fv || 0
+            return (pmt * (1 - Math.pow(1 + rate, -nper)) / rate) + fv * Math.pow(1 + rate, -nper)
+          },
+          PMT: function(rate, nper, pv, fv) {
+            fv = fv || 0
+            return (pv * rate * Math.pow(1 + rate, nper) + fv * rate) / (Math.pow(1 + rate, nper) - 1)
+          },
+          NPV: function(rate, ...cashflows) {
+            return cashflows.reduce((sum, cf, t) => sum + cf / Math.pow(1 + rate, t + 1), 0)
+          },
+        }, { override: false })
+      } catch { /* ignore */ }
+    }
+    mathLib = m
+  })
+  getAlgebrite().then(a => { algLib = a })
+
+  // Patterns that should go directly to Algebrite (symbolic CAS)
+  const CAS_RE = /\b(integral|integrate|roots|solve|factor|expand|taylor|defint|laplace)\b/i
+
+  function evalExpr(expr) {
+    // Route CAS-like expressions to Algebrite first
+    if (algLib && CAS_RE.test(expr)) {
+      try {
+        const r = algLib.run(expr)
+        if (r && r !== 'Stop' && r !== 'nil') return r
+      } catch { /* fall through to mathjs */ }
+    }
+    // Try math.js
+    if (mathLib) {
+      try {
+        const result = mathLib.evaluate(expr)
+        if (result === undefined || result === null || typeof result === 'function') return null
+        return String(typeof result === 'object' && result.toString ? result.toString() : result)
+      } catch { /* fall through to algebrite fallback */ }
+    }
+    // Algebrite fallback for anything math.js couldn't handle
+    if (algLib) {
+      try {
+        const r = algLib.run(expr)
+        if (r && r !== 'Stop' && r !== 'nil') return r
+      } catch { /* give up */ }
+    }
+    return null
+  }
+
+  const mathPlugin = ViewPlugin.fromClass(class {
+    constructor(view) { this.deco = Decoration.none; this._hint = null; this._compute(view) }
+    update(upd) { if (upd.docChanged || upd.selectionSet) this._compute(upd.view) }
+    _compute(view) {
+      if (!mathLib && !algLib) { this.deco = Decoration.none; this._hint = null; return }
+      const { state } = view
+      const cur = state.selection.main
+      if (!cur.empty) { this.deco = Decoration.none; this._hint = null; return }
+      const line = state.doc.lineAt(cur.head)
+      const col = cur.head - line.from
+      const textBefore = line.text.slice(0, col)
+
+      const match = textBefore.match(/^(.*?)([^=\n]+)=\s*$/)
+      if (!match) { this.deco = Decoration.none; this._hint = null; return }
+      let expr = match[2].trim()
+      // Strip list prefixes
+      expr = expr.replace(/^(?:[-*+]|\d+\.)\s+/, '')
+      // Strip markdown formatting
+      expr = expr.replace(/[*_~`]+/g, '')
+      // Isolate math from surrounding prose:
+      // Remove everything before the last occurrence of a math-starting character
+      // Math expressions start with digits, parens, minus, or known functions
+      const mathStart = expr.match(/((?:(?:sin|cos|tan|log|ln|sqrt|abs|ceil|floor|round|exp|pow|FV|PV|PMT|NPV|integral|solve|factor|expand)\s*\(|[-+]?\s*[\d(]).*$)/i)
+      if (mathStart) expr = mathStart[1].trim()
+      else {
+        // Try to find any part that looks like math (has operators and numbers)
+        const mathPart = expr.match(/([\d(][\d\s+\-*/^().,%]*[\d)])\s*$/)
+        if (mathPart) expr = mathPart[1].trim()
+      }
+      // If result is empty or still has long prose, skip
+      if (!expr || /^[a-zA-Z]{4,}$/.test(expr)) { this.deco = Decoration.none; this._hint = null; return }
+
+      const result = evalExpr(expr)
+      if (!result) { this.deco = Decoration.none; this._hint = null; return }
+
+      const resultStr = ' ' + result
+      const builder = new cm.state.RangeSetBuilder()
+      try {
+        builder.add(cur.head, cur.head, Decoration.widget({ widget: new MathGhostWidget(resultStr), side: 1 }))
+      } catch { /* ignore */ }
+      this.deco = builder.finish()
+      this._hint = { pos: cur.head, insert: resultStr }
+    }
+    get decorations() { return this.deco }
+  }, { decorations: v => v.decorations })
+
+  const mathKeymap = cm.view.keymap.of([{
     key: 'Tab',
     run: view => {
-      const plugin = view.plugin(ghostPlugin)
+      const plugin = view.plugin(mathPlugin)
       if (!plugin?._hint) return false
       const { pos, insert } = plugin._hint
       if (view.state.selection.main.head !== pos) return false
-      // Insert closing token and place cursor between open and close
       view.dispatch({
         changes: { from: pos, to: pos, insert },
-        selection: { anchor: pos },
+        selection: { anchor: pos + insert.length },
       })
       return true
     },
   }])
 
-  return [ghostPlugin, ghostKeymap]
+  return [mathPlugin, mathKeymap]
 }
 
+// ─── /table slash command ────────────────────────────────────────────────────
+// Typing `/table` or `/table NxM` then Enter inserts a markdown table template.
+function makeTableCommand(cm) {
+  const { Prec } = cm.state
+  return Prec.high(cm.view.keymap.of([{
+    key: 'Enter',
+    run: (view) => {
+      const { state } = view
+      const line = state.doc.lineAt(state.selection.main.head)
+      const match = line.text.match(/^\s*\/table(?:\s+(\d+)x(\d+))?\s*$/)
+      if (!match) return false
+      const cols = Math.min(parseInt(match[1]) || 3, 10)
+      const rows = Math.min(parseInt(match[2]) || 2, 20)
+      const header = '| ' + Array.from({ length: cols }, (_, i) => `Header ${i + 1}`).join(' | ') + ' |'
+      const sep = '| ' + Array.from({ length: cols }, () => '---').join(' | ') + ' |'
+      const row = '| ' + Array.from({ length: cols }, () => '   ').join(' | ') + ' |'
+      const table = [header, sep, ...Array(rows).fill(row)].join('\n')
+      view.dispatch({
+        changes: { from: line.from, to: line.to, insert: table },
+        selection: { anchor: line.from + 2 },
+      })
+      return true
+    },
+  }]))
+}
 
 // ─── Widgets ─────────────────────────────────────────────────────────────────
 class HRWidget {
@@ -793,6 +1012,23 @@ class ImgWidget {
   coordsAt() { return null }
 }
 
+// List marker widget — shows styled bullet or number when cursor is off the line
+class ListMarkerWidget {
+  constructor(text, isOrdered) { this.text = text; this.isOrdered = isOrdered }
+  toDOM() {
+    const span = document.createElement('span')
+    span.className = this.isOrdered ? 'cm-list-marker cm-list-marker-ord' : 'cm-list-marker'
+    span.textContent = this.isOrdered ? this.text : '•'
+    return span
+  }
+  eq(w) { return w instanceof ListMarkerWidget && w.text === this.text && w.isOrdered === this.isOrdered }
+  compare(w) { return w instanceof ListMarkerWidget && w.text === this.text && w.isOrdered === this.isOrdered }
+  destroy() {}
+  ignoreEvent() { return true }
+  get estimatedHeight() { return -1 }
+  coordsAt() { return null }
+}
+
 // MathQuill-backed widget — renders math, clicking opens an inline MathQuill editor
 class MathWidget {
   constructor(tex, display, from, to) {
@@ -828,7 +1064,7 @@ class WikiWidget {
     s.className = this.cls
     s.textContent = this.title
     s.dataset.wlType = this.type; s.dataset.wlId = this.id; s.dataset.wlTitle = this.title
-    s.title = this.type === 'new' ? `Create note: ${this.title}` : `Open ${this.type}`
+    s.title = this.type.startsWith('new') ? `Create: ${this.title}` : `Open ${this.type}`
     return s
   }
   eq(o) { return o instanceof WikiWidget && o.title === this.title && o.cls === this.cls }
@@ -858,10 +1094,34 @@ class LinkWidget {
   coordsAt() { return null }
 }
 
+// Table widget — renders markdown table as HTML table in live view
+class TableWidget {
+  constructor(html) { this.html = html }
+  toDOM() {
+    const wrap = document.createElement('div')
+    wrap.className = 'cm-table-wrap'
+    wrap.innerHTML = this.html
+    return wrap
+  }
+  eq(o) { return o instanceof TableWidget && o.html === this.html }
+  compare(o) { return o instanceof TableWidget && o.html === this.html }
+  destroy() {}
+  ignoreEvent() { return false }
+  get estimatedHeight() { return 80 }
+  coordsAt() { return null }
+}
+
 // ─── Live preview plugin ──────────────────────────────────────────────────────
-function makeLivePlugin(cm, RangeSetBuilder, notebooks, library) {
-  const { ViewPlugin, Decoration } = cm.view
+function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [], flashcardDecks = []) {
+  const { ViewPlugin, Decoration, WidgetType } = cm.view
   const { syntaxTree } = cm.language
+
+  // Patch widget classes to extend WidgetType so CM6 properly handles them
+  for (const Cls of [HRWidget, CheckboxWidget, ImgWidget, ListMarkerWidget, MathWidget, WikiWidget, LinkWidget, TableWidget]) {
+    if (!(Cls.prototype instanceof WidgetType)) {
+      Object.setPrototypeOf(Cls.prototype, WidgetType.prototype)
+    }
+  }
 
   const PUNCT_NODES = new Set([
     'EmphasisMark', 'HeaderMark', 'CodeMark', 'StrikethroughMark',
@@ -922,6 +1182,35 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library) {
             return false
           }
 
+          // ── Table — render as HTML table when cursor is outside ────────
+          if (name === 'Table') {
+            const tableText = doc.sliceString(from, to)
+            if (!inCur(from, to)) {
+              const lines = tableText.split('\n').filter(l => l.trim())
+              if (lines.length >= 2) {
+                const parseRow = row => {
+                  const trimmed = row.trim()
+                  const inner = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed
+                  const end = inner.endsWith('|') ? inner.slice(0, -1) : inner
+                  return end.split('|').map(c => c.trim())
+                }
+                const headers = parseRow(lines[0])
+                const sep = lines[1] ? parseRow(lines[1]) : []
+                const aligns = sep.map(c => /^:-+:$/.test(c) ? 'center' : /-+:$/.test(c) ? 'right' : 'left')
+                const rows = lines.slice(2).filter(l => /\|/.test(l) && !/^[\s|:-]+$/.test(l))
+                const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                const thHtml = headers.map((h, i) => `<th style="text-align:${aligns[i]||'left'}">${esc(h)}</th>`).join('')
+                const tbHtml = rows.map(r => {
+                  const cells = parseRow(r)
+                  return `<tr>${cells.map((c, i) => `<td style="text-align:${aligns[i]||'left'}">${esc(c)}</td>`).join('')}</tr>`
+                }).join('')
+                const html = `<table class="nb-table"><thead><tr>${thHtml}</tr></thead><tbody>${tbHtml}</tbody></table>`
+                inlines.push({ from, to, deco: Decoration.replace({ widget: new TableWidget(html), block: true }) })
+              }
+            }
+            return false
+          }
+
           // ── Task checkbox ────────────────────────────────────────────────
           if (name === 'TaskMarker') {
             const raw = doc.sliceString(from, to)
@@ -964,7 +1253,15 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library) {
           if (name === 'ListMark') {
             const ln = doc.lineAt(from)
             if (!inCur(ln.from, ln.to)) {
-              inlines.push({ from, to, deco: Decoration.replace({}) })
+              let isOrdered = false
+              let p = node.node.parent
+              while (p) {
+                if (p.name === 'OrderedList') { isOrdered = true; break }
+                if (p.name === 'BulletList') break
+                p = p.parent
+              }
+              const markerText = isOrdered ? doc.sliceString(from, to) : '•'
+              inlines.push({ from, to, deco: Decoration.replace({ widget: new ListMarkerWidget(markerText, isOrdered) }) })
             } else {
               inlines.push({ from, to, deco: Decoration.mark({ class: 'cm-lv-p' }) })
             }
@@ -1013,27 +1310,74 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library) {
           // dimly (cursor on). This avoids the RangeSetBuilder overlap-skip
           // issue that causes the opening ** to remain visible.
           if (name === 'StrongEmphasis') {
-            const raw = doc.sliceString(from, to)
-            const cls = raw.startsWith('***') ? 'cm-lv-bi' : 'cm-lv-b'
             const cursorInSpan = inCur(from, to)
-
-            inlines.push({ from, to, deco: Decoration.mark({ class: cls }) })
-
+            // Check if this contains an Emphasis child (making it bold-italic)
+            let hasEmphasis = false
             let child = node.node.firstChild
             while (child) {
-              if (child.name === 'EmphasisMark') {
-                inlines.push({
-                  from: child.from, to: child.to,
-                  deco: Decoration.mark({ class: cursorInSpan ? 'cm-lv-p' : 'cm-lv-hidden' }),
-                })
-              }
+              if (child.name === 'Emphasis') { hasEmphasis = true; break }
               child = child.nextSibling
             }
+            // Check if there's actual non-whitespace text content between markers
+            const rawContent = doc.sliceString(from, to)
+            const markerLen = hasEmphasis ? 3 : 2
+            const innerText = rawContent.slice(markerLen, rawContent.length - markerLen)
+            const hasRealContent = innerText.trim().length > 0
+
+            if (hasRealContent) {
+              const cls = hasEmphasis ? 'cm-lv-bi' : 'cm-lv-b'
+              inlines.push({ from, to, deco: Decoration.mark({ class: cls }) })
+
+              // Hide ALL EmphasisMark nodes (covers **, ***, etc.)
+              child = node.node.firstChild
+              while (child) {
+                if (child.name === 'EmphasisMark') {
+                  inlines.push({
+                    from: child.from, to: child.to,
+                    deco: Decoration.mark({ class: cursorInSpan ? 'cm-lv-p' : 'cm-lv-hidden' }),
+                  })
+                }
+                if (child.name === 'Emphasis') {
+                  let grandchild = child.firstChild
+                  while (grandchild) {
+                    if (grandchild.name === 'EmphasisMark') {
+                      inlines.push({
+                        from: grandchild.from, to: grandchild.to,
+                        deco: Decoration.mark({ class: cursorInSpan ? 'cm-lv-p' : 'cm-lv-hidden' }),
+                      })
+                    }
+                    grandchild = grandchild.nextSibling
+                  }
+                }
+                child = child.nextSibling
+              }
+            }
+            // If no real content, don't hide syntax — show as-is
             return false
           } else if (SPAN_MAP[name] !== undefined) {
             if (SPAN_MAP[name]) {
               const cursorInSpan = inCur(from, to)
-              inlines.push({ from, to, deco: Decoration.mark({ class: SPAN_MAP[name] }) })
+              // Check if Emphasis wraps StrongEmphasis (bold-italic: ***text***)
+              let emphCls = SPAN_MAP[name]
+              if (name === 'Emphasis') {
+                let ch = node.node.firstChild
+                while (ch) {
+                  if (ch.name === 'StrongEmphasis') { emphCls = 'cm-lv-bi'; break }
+                  ch = ch.nextSibling
+                }
+              }
+              // Check if there's actual non-whitespace text wrapped
+              const rawContent = doc.sliceString(from, to)
+              const markLen = name === 'InlineCode' ? 1 : name === 'Strikethrough' || name === 'Highlight' ? 2 : 1
+              const innerText = rawContent.slice(markLen, rawContent.length - markLen)
+              const hasRealContent = innerText.trim().length > 0 || name === 'Link' || name === 'Image'
+
+              if (!hasRealContent) {
+                // No real content — don't format or hide, show syntax as-is
+                return false
+              }
+
+              inlines.push({ from, to, deco: Decoration.mark({ class: emphCls }) })
               // Hide marks as zero-width (Obsidian style) rather than replace
               let child = node.node.firstChild
               while (child) {
@@ -1042,6 +1386,19 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library) {
                     from: child.from, to: child.to,
                     deco: Decoration.mark({ class: cursorInSpan ? 'cm-lv-p' : 'cm-lv-hidden' }),
                   })
+                }
+                // Also hide marks inside nested StrongEmphasis (for ***text***)
+                if (child.name === 'StrongEmphasis') {
+                  let gc = child.firstChild
+                  while (gc) {
+                    if (gc.name === 'EmphasisMark') {
+                      inlines.push({
+                        from: gc.from, to: gc.to,
+                        deco: Decoration.mark({ class: cursorInSpan ? 'cm-lv-p' : 'cm-lv-hidden' }),
+                      })
+                    }
+                    gc = gc.nextSibling
+                  }
                 }
                 child = child.nextSibling
               }
@@ -1121,23 +1478,78 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library) {
       }
     } catch { /**/ }
 
-    // ── Wikilinks via regex ───────────────────────────────────────────────
+    // ── Wikilinks via regex (with optional (sketch)/(flash) suffix) ─────
     try {
       const full = doc.toString()
-      const re = /\[\[([^\]\n]{1,120})\]\]/g
+      const re = /\[\[([^\]\n]{1,120})\]\](?:\((sketch|flash)\))?/g
       let m
       while ((m = re.exec(full)) !== null) {
         const wf = m.index, wt = m.index + m[0].length
         const title = m[1].trim()
+        const suffix = m[2] // 'sketch', 'flash', or undefined
         const nb = notebooks.find(n => n.title?.toLowerCase() === title.toLowerCase())
         const bk = !nb && library.find(b => b.title?.toLowerCase() === title.toLowerCase())
+        const sb = !nb && !bk && sketchbooks.find(s => s.title?.toLowerCase() === title.toLowerCase())
+        const fd = !nb && !bk && !sb && flashcardDecks.find(d => d.title?.toLowerCase() === title.toLowerCase())
         if (inCur(wf, wt)) {
           inlines.push({ from: wf, to: wt, deco: Decoration.mark({ class: 'cm-lv-p' }) })
         } else {
-          const type = nb ? 'notebook' : bk ? 'book' : 'new'
-          const id   = nb ? nb.id : bk ? bk.id : ''
-          const cls  = nb ? 'cm-wl cm-wl-nb' : bk ? 'cm-wl cm-wl-bk' : 'cm-wl cm-wl-new'
+          const forceType = suffix === 'sketch' ? 'new-sketch' : suffix === 'flash' ? 'new-flash' : null
+          const type = nb ? 'notebook' : bk ? 'book' : sb ? 'sketchbook' : fd ? 'flashcard' : (forceType || 'new')
+          const id   = nb ? nb.id : bk ? bk.id : sb ? sb.id : fd ? fd.id : ''
+          const cls  = nb ? 'cm-wl cm-wl-nb' : bk ? 'cm-wl cm-wl-bk' : sb ? 'cm-wl cm-wl-sb' : fd ? 'cm-wl cm-wl-fd' : 'cm-wl cm-wl-new'
           inlines.push({ from: wf, to: wt, deco: Decoration.replace({ widget: new WikiWidget(title, cls, type, id) }) })
+        }
+      }
+    } catch { /**/ }
+
+    // ── Predictive formatting from opening syntax ─────────────────────────
+    // When the cursor is on a line with unclosed formatting tokens,
+    // apply the formatting class from the opening token to the cursor position
+    try {
+      const curLine = doc.lineAt(cur)
+      const lineText = curLine.text
+      const colPos = cur - curLine.from
+      const textBeforeCursor = lineText.slice(0, colPos)
+
+      const OPEN_TOKENS = [
+        { token: '***', cls: 'cm-lv-bi' },
+        { token: '___', cls: 'cm-lv-bi' },
+        { token: '**',  cls: 'cm-lv-b' },
+        { token: '__',  cls: 'cm-lv-b' },
+        { token: '*',   cls: 'cm-lv-i' },
+        { token: '_',   cls: 'cm-lv-i' },
+        { token: '~~',  cls: 'cm-lv-s' },
+        { token: '==',  cls: 'cm-lv-hl' },
+      ]
+
+      for (const { token, cls } of OPEN_TOKENS) {
+        const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const count = (textBeforeCursor.match(new RegExp(escaped, 'g')) || []).length
+        if (count % 2 === 1) {
+          // Found unclosed opening token — apply formatting from token to cursor
+          const lastIdx = textBeforeCursor.lastIndexOf(token)
+          if (lastIdx >= 0) {
+            // If the character immediately after the opening token is a space,
+            // don't treat it as formatting (user rejected formatting)
+            const charAfterToken = lineText[lastIdx + token.length]
+            if (charAfterToken === ' ' || charAfterToken === undefined) break
+
+            const fmtFrom = curLine.from + lastIdx + token.length
+            const fmtTo = cur
+            if (fmtFrom < fmtTo) {
+              // Check if this range isn't already decorated
+              const alreadyDeco = inlines.some(d => d.from <= fmtFrom && d.to >= fmtTo && d.deco.spec?.class === cls)
+              if (!alreadyDeco) {
+                inlines.push({ from: fmtFrom, to: fmtTo, deco: Decoration.mark({ class: cls }) })
+                // Also dim the opening token
+                const tokenFrom = curLine.from + lastIdx
+                const tokenTo = tokenFrom + token.length
+                inlines.push({ from: tokenFrom, to: tokenTo, deco: Decoration.mark({ class: 'cm-lv-p' }) })
+              }
+            }
+          }
+          break // only match the first (longest) unclosed token
         }
       }
     } catch { /**/ }
@@ -1149,7 +1561,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library) {
     let lastReplTo = -1
     for (const { from, to, deco } of inlines) {
       if (from < 0 || to > doc.length || from >= to) continue
-      const isReplace = !!deco.spec?.widget || (deco.spec?.block === undefined && !deco.spec?.class)
+      const isReplace = !!deco.spec?.widget
       if (isReplace && from < lastReplTo) continue
       try {
         sb.add(from, to, deco)
@@ -1217,13 +1629,23 @@ function makeCheckboxHandler(cm) {
 }
 
 // ─── Wikilink click handler (live mode) ──────────────────────────────────────
-function makeWikiHandler(cm, onNav) {
+function makeWikiHandler(cm, onNavRef) {
   return cm.view.EditorView.domEventHandlers({
     click(e) {
       const el = e.target.closest('.cm-wl')
       if (!el) return false
-      onNav(el.dataset.wlTitle, el.dataset.wlType, el.dataset.wlId)
+      const fn = typeof onNavRef === 'function' ? onNavRef : onNavRef?.current
+      if (fn) fn(el.dataset.wlTitle, el.dataset.wlType, el.dataset.wlId)
       e.preventDefault(); return true
+    },
+    mousedown(e) {
+      // Also handle mousedown for replace-decoration widgets where click may not fire
+      const el = e.target.closest('.cm-wl')
+      if (!el) return false
+      e.preventDefault()
+      const fn = typeof onNavRef === 'function' ? onNavRef : onNavRef?.current
+      if (fn) fn(el.dataset.wlTitle, el.dataset.wlType, el.dataset.wlId)
+      return true
     },
   })
 }
@@ -1342,11 +1764,12 @@ const IconPrev = () => (
   </svg>
 )
 const IconLive = () => (
-  <svg width="17" height="17" viewBox="0 0 20 20" fill="none">
-    <path d="M1.5 6.5C1.5 6.5 3.5 3.5 6.5 3.5s5 3 5 3-2 3-5 3-5-3-5-3z" stroke="currentColor" strokeWidth="1.15" strokeLinejoin="round" opacity="0.6"/>
-    <circle cx="6.5" cy="6.5" r="1.3" stroke="currentColor" strokeWidth="1.05" opacity="0.6"/>
-    <path d="M11 13.5l2.5-2.5 2 2-2.5 2.5H11v-2z" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" strokeLinecap="round"/>
-    <path d="M13.5 11l1-1 2 2-1 1" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" strokeLinecap="round"/>
+  <svg width="15" height="15" viewBox="0 0 32 32" fill="none">
+    <path d="M26 3C22 5 14 10 10 18C8 22 7 25 6.5 28" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" />
+    <path d="M26 3C24 8 18 15 10 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" opacity="0.6" />
+    <path d="M26 3C25 6 22 10 16 14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" opacity="0.45" />
+    <path d="M6.5 28L9 23" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" />
+    <path d="M3 30h26" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" opacity="0.55" />
   </svg>
 )
 const MODE_META = {
@@ -1418,7 +1841,11 @@ export default function NotebookView() {
   const notebooks      = useAppStore(s => s.notebooks)
   const updateNotebook = useAppStore(s => s.updateNotebook)
   const setView        = useAppStore(s => s.setView)
+  const updateTab      = useAppStore(s => s.updateTab)
+  const activeTabId    = useAppStore(s => s.activeTabId)
   const library        = useAppStore(s => s.library)
+  const sketchbooks    = useAppStore(s => s.sketchbooks)
+  const flashcardDecks = useAppStore(s => s.flashcardDecks)
   const addNotebook    = useAppStore(s => s.addNotebook)
 
   const notebookId    = notebook?.id
@@ -1446,6 +1873,8 @@ export default function NotebookView() {
   const hitsRef    = useRef([])
   const hitIdxRef  = useRef(0)
   const loadedFor  = useRef(null)
+  const wikiNavRef = useRef(null)
+  const [wikiDrop, setWikiDrop] = useState(null) // { options, selectedIdx, coords }
 
   contentRef.current = content
   titleRef.current   = noteTitle
@@ -1453,8 +1882,8 @@ export default function NotebookView() {
   const isLoaded = loaded && loadedFor.current === notebookId
 
   const previewHtml = useMemo(
-    () => renderMarkdown(content, notebooks, library),
-    [content, notebooks, library]
+    () => renderMarkdown(content, notebooks, library, sketchbooks, flashcardDecks),
+    [content, notebooks, library, sketchbooks, flashcardDecks]
   )
 
   // Hydrate MathQuill after preview renders
@@ -1487,24 +1916,65 @@ export default function NotebookView() {
 
   // ── Wikilink navigation ───────────────────────────────────────────────────
   const handleWikiNav = useCallback((title, type, id) => {
+    // Always read fresh state from the store to avoid stale closures
+    const s = useAppStore.getState()
+    const tabId = s.activeTabId
+    const nbs = s.notebooks || []
+    const lib = s.library || []
+    const sbs = s.sketchbooks || []
+    const fds = s.flashcardDecks || []
     if (type === 'notebook') {
-      const nb = notebooks.find(n => n.id === id)
-      if (nb) { useAppStore.getState().setActiveNotebook(nb); setView('notebook') }
-      else createAndOpenNote(title)
+      const nb = nbs.find(n => n.id === id)
+      if (nb) { s.setActiveNotebook(nb); s.updateTab(tabId, { view: 'notebook' }); s.setView('notebook') }
+      else createAndOpenItem(title, 'notebook')
     } else if (type === 'book') {
-      const bk = library.find(b => b.id === id)
-      if (bk) { useAppStore.getState().setActiveBook(bk); setView(bk.format === 'audiofolder' || bk.format === 'audio' ? 'audio-player' : 'reader') }
+      const bk = lib.find(b => b.id === id)
+      if (bk) {
+        const v = bk.format === 'audiofolder' || bk.format === 'audio' ? 'audio-player' : (bk.format === 'pdf' ? 'pdf' : 'reader')
+        s.setActiveBook(bk); s.updateTab(tabId, { view: v }); s.setView(v)
+      }
+    } else if (type === 'sketchbook') {
+      const sb = sbs.find(n => n.id === id)
+      if (sb) { s.setActiveSketchbook(sb); s.updateTab(tabId, { view: 'sketchbook' }); s.setView('sketchbook') }
+    } else if (type === 'flashcard') {
+      const deck = fds.find(d => d.id === id)
+      if (deck) { s.setActiveFlashcardDeck(deck); s.updateTab(tabId, { view: 'flashcard' }); s.setView('flashcard') }
+    } else if (type === 'new-sketch') {
+      createAndOpenItem(title, 'sketchbook')
+    } else if (type === 'new-flash') {
+      createAndOpenItem(title, 'flashcard')
     } else {
-      createAndOpenNote(title)
+      createAndOpenItem(title, 'notebook')
     }
-  }, [notebooks, library, setView]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [setView]) // eslint-disable-line react-hooks/exhaustive-deps
+  wikiNavRef.current = handleWikiNav
 
-  function createAndOpenNote(title) {
-    const newNb = { id: makeId('nb'), title, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), wordCount: 0 }
-    addNotebook(newNb)
-    useAppStore.getState().persistNotebooks?.()
-    useAppStore.getState().setActiveNotebook(newNb)
-    setView('notebook')
+  function createAndOpenItem(title, kind) {
+    const s = useAppStore.getState()
+    const tabId = s.activeTabId
+    const now = new Date().toISOString()
+    if (kind === 'sketchbook') {
+      const newSb = { id: makeId('sb'), title, createdAt: now, updatedAt: now, _isSketchbook: true }
+      s.addSketchbook?.(newSb)
+      s.persistSketchbooks?.()
+      s.setActiveSketchbook(newSb)
+      s.updateTab(tabId, { view: 'sketchbook' })
+      s.setView('sketchbook')
+    } else if (kind === 'flashcard') {
+      const newFd = { id: makeId('fd'), title, createdAt: now, updatedAt: now, cards: [] }
+      s.addDeck?.(newFd)
+      s.persistFlashcardDecks?.()
+      s.setActiveFlashcardDeck(newFd)
+      s.updateTab(tabId, { view: 'flashcard' })
+      s.setView('flashcard')
+    } else {
+      const newNb = { id: makeId('nb'), title, createdAt: now, updatedAt: now, wordCount: 0 }
+      s.addNotebook?.(newNb) || addNotebook(newNb)
+      s.persistNotebooks?.()
+      s.setActiveNotebook(newNb)
+      s.updateTab(tabId, { view: 'notebook' })
+      s.setView('notebook')
+    }
   }
 
   // ── Mount CodeMirror ──────────────────────────────────────────────────────
@@ -1521,7 +1991,6 @@ export default function NotebookView() {
         commands: { defaultKeymap, indentWithTab, history, historyKeymap },
         language: { indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap },
         langMd, lezerMd,
-        autocomplete: { autocompletion },
         search: { search: searchExt, searchKeymap },
       } = cm
 
@@ -1535,37 +2004,23 @@ export default function NotebookView() {
         drawSelection(), dropCursor(),
         indentOnInput(), bracketMatching(), history(),
         langMd.markdown({ extensions: gfmExts }),
-        // Wikilink autocomplete — Tab to confirm, never Enter (non-intrusive)
-        autocompletion({
-          override: [makeWikiSource(notebooks, library)],
-          activateOnTyping: true,
-          maxRenderedOptions: 8,
-          tooltipClass: () => 'cm-wl-tooltip',
-          // Disable default accept keys — we handle Tab ourselves
-          defaultKeymap: false,
-          // Don't show info panel, keep it minimal
-          addToOptions: [],
-        }),
-        // Custom wikilink keymap — Tab confirms, Escape dismisses, arrows navigate
-        makeWikiCompletionKeymap(cm),
-        // Standard navigation within completion (up/down arrows) — but NOT Enter
-        cm.view.keymap.of([
-          { key: 'ArrowDown', run: cm.autocomplete.moveCompletionSelection(true) },
-          { key: 'ArrowUp',   run: cm.autocomplete.moveCompletionSelection(false) },
-        ]),
+        // Wikilink dropdown (custom React-driven — bypasses CM6 autocompletion)
+        ...makeWikiDropdownPlugin(cm, notebooks, library, sketchbooks, flashcardDecks, setWikiDrop),
         searchExt({ top: false }),
         makeFormatKeys(cm),
+        // /table slash command — inserts markdown table template (must be before smartEnter)
+        makeTableCommand(cm),
         makeSmartEnter(cm),
         // Pair auto-wrap via input handler
         makePairInputHandler(cm),
         // Ghost hint — Tab to accept, any other key dismisses
         ...makeGhostHintPlugin(cm),
-        // Auto-confirm wikilink when user types ]]
-        makeWikiCloseHandler(cm),
+        // Math.js inline calculator — shows result after `expr=`
+        ...makeMathCalcPlugin(cm),
         ...(isLive ? [
-          makeLivePlugin(cm, RangeSetBuilder, notebooks, library),
+          makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks, flashcardDecks),
           makeCheckboxHandler(cm),
-          makeWikiHandler(cm, handleWikiNav),
+          makeWikiHandler(cm, wikiNavRef),
           makeMathClickHandler(cm),
         ] : []),
         keymap.of([
@@ -1573,19 +2028,62 @@ export default function NotebookView() {
           ...searchKeymap,
           ...historyKeymap,
           ...foldKeymap,
-          // Note: completionKeymap intentionally excluded — we use makeWikiCompletionKeymap
-          // which only confirms on Tab, not Enter
           indentWithTab,
           { key: 'Mod-s', run: () => { flushSave(); return true } },
           { key: 'Mod-f', run: () => { findRef.current?.focus(); findRef.current?.select(); return true } },
         ]),
         EditorView.updateListener.of(upd => {
-          if (!upd.docChanged) return
+          if (dead || !upd.docChanged) return
           const t = upd.state.doc.toString()
-          setContent(t); scheduleSave(t)
+          contentRef.current = t; setContent(t); scheduleSave(t)
         }),
         EditorView.lineWrapping,
         placeholder('Create something…'),
+        // Image drag-and-drop + paste handler
+        EditorView.domEventHandlers({
+          drop(e, view) {
+            const files = e.dataTransfer?.files
+            if (!files?.length) return false
+            const imgFile = Array.from(files).find(f => f.type.startsWith('image/'))
+            if (!imgFile || !notebook?.id) return false
+            e.preventDefault()
+            const dropPos = view.posAtCoords({ x: e.clientX, y: e.clientY }) ?? view.state.selection.main.head
+            ;(async () => {
+              const buf = new Uint8Array(await imgFile.arrayBuffer())
+              const fname = `${Date.now()}_${imgFile.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+              const relPath = await saveNotebookImage(notebook.id, fname, buf)
+              if (relPath) {
+                const md = `![${imgFile.name}](${relPath})`
+                view.dispatch({ changes: { from: dropPos, insert: md } })
+              }
+            })()
+            return true
+          },
+          paste(e, view) {
+            const items = e.clipboardData?.items
+            if (!items) return false
+            // If clipboard has text, let the default paste handle it
+            const hasText = Array.from(items).some(i => i.type === 'text/plain')
+            if (hasText) return false
+            const imgItem = Array.from(items).find(i => i.type.startsWith('image/'))
+            if (!imgItem || !notebook?.id) return false
+            const blob = imgItem.getAsFile()
+            if (!blob) return false
+            e.preventDefault()
+            // Handle async image save without blocking — already prevented default
+            ;(async () => {
+              const buf = new Uint8Array(await blob.arrayBuffer())
+              const fname = `${Date.now()}_paste.${blob.type.split('/')[1] || 'png'}`
+              const relPath = await saveNotebookImage(notebook.id, fname, buf)
+              if (relPath) {
+                const pos = view.state.selection.main.head
+                const md = `![pasted image](${relPath})`
+                view.dispatch({ changes: { from: pos, insert: md } })
+              }
+            })()
+            return true  // synchronously return true — we've already called preventDefault
+          },
+        }),
       ]
 
       if (cmRef.current) { cmRef.current.destroy(); cmRef.current = null }
@@ -1606,13 +2104,14 @@ export default function NotebookView() {
   const animateSave = useCallback(() => {
     const el = document.getElementById('nb-save-icon')
     if (!el) return
-    el.classList.remove('anim', 'vis'); void el.offsetWidth
+    el.classList.remove('anim', 'vis', 'closing'); void el.offsetWidth
     el.classList.add('anim', 'vis')
     clearTimeout(saveVisT.current)
     saveVisT.current = setTimeout(() => {
       el.classList.remove('anim')
-      saveVisT.current = setTimeout(() => el.classList.remove('vis'), 600)
-    }, 1200)
+      el.classList.add('closing')
+      saveVisT.current = setTimeout(() => el.classList.remove('vis', 'closing'), 450)
+    }, 600)
   }, [])
 
   const doSave = useCallback(async (text, title) => {
@@ -1646,8 +2145,82 @@ export default function NotebookView() {
     return () => window.removeEventListener('keydown', h)
   }, [])
 
-  // ── Find in preview ────────────────────────────────────────────────────────
+  // ── Tauri native file drop (Finder drag-and-drop) ───────────────────────────
+  useEffect(() => {
+    if (!notebook?.id) return
+    const unlisteners = []
+
+    const handleDrop = async (event) => {
+      const payload = event.payload
+      // Tauri 2 drag-drop payload: { paths: string[], position: {x,y} }
+      const paths = payload?.paths || (Array.isArray(payload) ? payload : null)
+      if (!paths?.length || !cmRef.current) return
+      const IMG_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i
+      for (const p of paths) {
+        if (!IMG_EXT.test(p)) continue
+        try {
+          let buf
+          try {
+            // Use Rust command to read file bytes — bypasses FS scope restrictions
+            const { invoke } = await import('@tauri-apps/api/core')
+            const bytes = await invoke('copy_file_bytes', { source: p })
+            buf = new Uint8Array(bytes)
+          } catch {
+            try {
+              const data = await readFile(p)
+              buf = data instanceof Uint8Array ? data : new Uint8Array(data)
+            } catch {
+              const { convertFileSrc } = await import('@tauri-apps/api/core')
+              const url = convertFileSrc(p)
+              const resp = await fetch(url)
+              buf = new Uint8Array(await resp.arrayBuffer())
+            }
+          }
+          const name = p.split('/').pop().split('\\').pop()
+          const fname = `${Date.now()}_${name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+          const relPath = await saveNotebookImage(notebook.id, fname, buf)
+          if (relPath) {
+            const pos = cmRef.current.state.selection.main.head
+            const md = `![${name}](${relPath})\n`
+            cmRef.current.dispatch({ changes: { from: pos, insert: md } })
+          }
+        } catch (err) { console.warn('[Gnos] File drop error:', p, err) }
+      }
+    }
+
+    // Tauri 2 drag-drop events
+    listen('tauri://drag-drop', handleDrop).then(u => unlisteners.push(u))
+    listen('tauri://file-drop', handleDrop).then(u => unlisteners.push(u)).catch(() => {})
+
+    return () => { unlisteners.forEach(u => u?.()) }
+  }, [notebook?.id])
+
+  // ── Find in preview / live ──────────────────────────────────────────────────
   function doFind(q) {
+    // Live mode — use CodeMirror's built-in search highlighting
+    if (viewMode === 'live' && cmRef.current && cmMods.current) {
+      const searchMod = cmMods.current.search
+      const view = cmRef.current
+      if (!q) {
+        view.dispatch({ effects: searchMod.setSearchQuery.of(new searchMod.SearchQuery({ search: '' })) })
+        setFindCount(0); setFindCurD(0)
+        hitsRef.current = []; return
+      }
+      const query = new searchMod.SearchQuery({ search: q, caseSensitive: false })
+      view.dispatch({ effects: searchMod.setSearchQuery.of(query) })
+      // Count matches by iterating the query cursor
+      const cursor = query.getCursor(view.state.doc)
+      let count = 0
+      while (!cursor.next().done) count++
+      hitsRef.current = Array(count) // placeholder array for length
+      hitIdxRef.current = 0
+      setFindCount(count)
+      setFindCurD(0)
+      if (count > 0) searchMod.findNext(view)
+      return
+    }
+
+    // Preview mode — DOM text search
     const el = previewRef.current
     if (!el || !q) {
       el?.querySelectorAll('mark.nb-fhl').forEach(m => m.replaceWith(document.createTextNode(m.textContent)))
@@ -1677,6 +2250,17 @@ export default function NotebookView() {
   }
 
   function findNav(dir) {
+    // Live mode — use CodeMirror findNext / findPrevious
+    if (viewMode === 'live' && cmRef.current && cmMods.current) {
+      const searchMod = cmMods.current.search
+      const view = cmRef.current
+      if (dir > 0) searchMod.findNext(view)
+      else searchMod.findPrevious(view)
+      hitIdxRef.current = (hitIdxRef.current + dir + findCount) % Math.max(findCount, 1)
+      setFindCurD(hitIdxRef.current)
+      return
+    }
+    // Preview mode
     const hits = hitsRef.current
     if (!hits.length) return
     hits[hitIdxRef.current]?.classList.remove('nb-fhl-a')
@@ -1771,7 +2355,7 @@ export default function NotebookView() {
     /* ── CM host ───────────────────────────────────────── */
     .nb-cm { flex:1; overflow:hidden; position:relative; display:flex; flex-direction:column; }
     .nb-cm .cm-editor { height:100%; flex:1; }
-    .nb-cm .cm-scroller { padding: var(--nb-py) 0 60px; box-sizing:border-box; overflow-x: hidden; }
+    .nb-cm .cm-scroller { padding: var(--nb-py) 0 60px; box-sizing:border-box; overflow-x: hidden; overflow-y: auto; }
     .nb-cm .cm-content {
       max-width: var(--nb-max); margin: 0 auto;
       padding: 0 var(--nb-px);
@@ -1822,7 +2406,7 @@ export default function NotebookView() {
     /* Inline formats — exact match to preview */
     .nb-live .cm-lv-b  { font-weight:700; color: var(--nb-bold-color); }
     .nb-live .cm-lv-i  { font-style:italic; color: var(--nb-italic-color); }
-    .nb-live .cm-lv-bi { font-weight:700; font-style:italic; color: var(--nb-italic-color); }
+    .nb-live .cm-lv-bi { font-weight:700; font-style:italic; color: var(--nb-bi-color); }
     .nb-live .cm-lv-s  { text-decoration:line-through; opacity:.75; color: var(--nb-strike-color); }
     .nb-live .cm-lv-c  {
       font-family: SF Mono,Menlo,Consolas,monospace; font-size:.87em;
@@ -1908,6 +2492,7 @@ export default function NotebookView() {
     .cm-link-widget:hover { opacity: .75; }
 
     /* Math widgets */
+    .cm-math-mq { cursor: pointer; padding: 0 2px; }
     .cm-math-inline {
       display:inline-block; vertical-align:middle;
       color:var(--text); cursor:pointer;
@@ -1921,73 +2506,20 @@ export default function NotebookView() {
     }
     .cm-math-block:hover { background: rgba(56,139,253,.06); border-radius:4px; }
 
-    /* ── Wikilink autocomplete dropdown — Obsidian card style ── */
-    .cm-tooltip.cm-wl-tooltip {
-      background: var(--surface) !important;
-      border: 1px solid var(--border) !important;
-      border-radius: 12px !important;
-      box-shadow: 0 16px 48px rgba(0,0,0,.55) !important;
-      padding: 6px !important;
-      overflow: hidden;
-      min-width: 260px !important;
-      max-width: 360px !important;
-    }
-    .cm-tooltip.cm-wl-tooltip .cm-completionLabel { font-size:13px; font-weight:500; }
-    .cm-tooltip.cm-wl-tooltip .cm-completionDetail {
-      font-size:12px; opacity: 0.65;
-      margin-left: auto; padding-left: 8px; flex-shrink: 0;
-    }
-    .cm-tooltip.cm-wl-tooltip ul { padding: 0 !important; margin: 0 !important; list-style: none; }
-    .cm-tooltip.cm-wl-tooltip li {
-      padding: 9px 12px !important;
-      border-radius: 8px !important;
-      margin: 1px 0 !important;
-      display: flex !important;
-      align-items: center !important;
-      gap: 8px !important;
-      cursor: pointer;
-      transition: background 0.08s;
-      color: var(--text) !important;
-    }
-    .cm-tooltip.cm-wl-tooltip li:hover {
-      background: var(--surfaceAlt) !important;
-    }
-    .cm-tooltip.cm-wl-tooltip li[aria-selected] {
-      background: rgba(56,139,253,.18) !important;
-      color: var(--accent) !important;
-    }
-    /* Tab hint shown at bottom of dropdown */
-    .cm-tooltip.cm-wl-tooltip::after {
-      content: 'Tab to confirm · Esc to dismiss';
-      display: block;
-      padding: 5px 12px 6px;
-      font-size: 10.5px;
-      color: var(--textDim);
-      opacity: 0.65;
-      border-top: 1px solid var(--borderSubtle);
-      margin-top: 4px;
-      text-align: center;
-      letter-spacing: 0.01em;
-    }
+    /* ── Table widget in live view ── */
+    .cm-table-wrap { margin: 0.5em 0; overflow-x: auto; }
+    .cm-table-wrap table.nb-table { border-collapse:collapse; width:100%; font-size:.93em; }
+    .cm-table-wrap table.nb-table th,.cm-table-wrap table.nb-table td { border:1px solid var(--border); padding:6px 10px; }
+    .cm-table-wrap table.nb-table th { background:var(--surfaceAlt); font-weight:600; }
 
-    /* ── Live list item indentation ── */
-    .nb-live { counter-reset: nb-ol-c1 nb-ol-c2 nb-ol-c3 nb-ol-c4; }
-    .nb-live .cm-lv-li { padding-left: 1.6em; position: relative; }
-    .nb-live .cm-lv-li::before {
-      content: '•'; position: absolute; left: 0.4em;
-      color: var(--textDim); top: 0;
+    /* ── Wiki dropdown rendered by React (positioned fixed) ── */
+
+    /* ── Live list items ── */
+    .nb-live .cm-lv-li { position: relative; }
+    .cm-list-marker {
+      display: inline; color: var(--textDim); margin-right: 0.2em;
     }
-    .nb-live .cm-lv-oli { counter-increment: nb-ol-c1; }
-    .nb-live .cm-lv-oli::before {
-      content: counter(nb-ol-c1) '.';
-      font-variant-numeric: tabular-nums;
-      color: var(--textDim);
-    }
-    .nb-live .cm-lv-depth-2 { padding-left: 3.0em; }
-    .nb-live .cm-lv-depth-3 { padding-left: 4.4em; }
-    .nb-live .cm-lv-depth-4 { padding-left: 5.8em; }
-    .nb-live .cm-lv-depth-2:not(.cm-lv-oli)::before { content: '◦'; }
-    .nb-live .cm-lv-depth-3:not(.cm-lv-oli)::before { content: '▸'; font-size: 0.75em; }
+    .cm-list-marker-ord { font-weight: 600; color: var(--text); opacity: 0.6; }
 
     /* ══════════════════════════════════════════════════════
        PREVIEW — identical typography to live
@@ -2003,21 +2535,21 @@ export default function NotebookView() {
       box-sizing: border-box;
     }
     /* Headings — match live exactly */
-    .nb-prev h1 { font-size:var(--nb-h1); font-weight:700; margin:1.15em 0 .45em; font-family:var(--nb-ff); color:var(--text); line-height:1.25; }
-    .nb-prev h2 { font-size:var(--nb-h2); font-weight:700; margin:1.1em 0 .4em;  font-family:var(--nb-ff); color:var(--text); line-height:1.3; }
-    .nb-prev h3 { font-size:var(--nb-h3); font-weight:600; margin:1em 0 .35em;   color:var(--text); line-height:1.4; }
-    .nb-prev h4 { font-size:var(--nb-h4); font-weight:600; margin:.9em 0 .3em;   color:var(--text); }
-    .nb-prev h5 { font-size:var(--nb-h5); font-weight:600; margin:.85em 0 .25em; color:var(--text); }
-    .nb-prev h6 { font-size:var(--nb-h6); font-weight:600; margin:.8em 0 .25em;  color:var(--text); opacity:.65; }
+    .nb-prev h1 { font-size:var(--nb-h1); font-weight:700; margin:1.15em 0 .45em; font-family:var(--nb-ff); color:var(--nb-h1-color); line-height:1.25; }
+    .nb-prev h2 { font-size:var(--nb-h2); font-weight:700; margin:1.1em 0 .4em;  font-family:var(--nb-ff); color:var(--nb-h2-color); line-height:1.3; }
+    .nb-prev h3 { font-size:var(--nb-h3); font-weight:600; margin:1em 0 .35em;   color:var(--nb-h3-color); line-height:1.4; }
+    .nb-prev h4 { font-size:var(--nb-h4); font-weight:600; margin:.9em 0 .3em;   color:var(--nb-h4-color); }
+    .nb-prev h5 { font-size:var(--nb-h5); font-weight:600; margin:.85em 0 .25em; color:var(--nb-h5-color); }
+    .nb-prev h6 { font-size:var(--nb-h6); font-weight:600; margin:.8em 0 .25em;  color:var(--nb-h6-color); opacity:.65; }
     .nb-prev p  { margin: 0 0 var(--nb-para-gap); }
     .nb-prev blockquote {
-      border-left: 3px solid var(--accent); margin: .8em 0; padding: 8px 14px;
-      color: var(--textDim); border-radius: 0 4px 4px 0;
-      background: rgba(56,139,253,.04); font-style: italic;
+      border-left: 3px solid var(--nb-quote-border); margin: .8em 0; padding: 8px 14px;
+      color: var(--nb-quote-color); border-radius: 0 4px 4px 0;
+      background: var(--nb-quote-bg); font-style: italic;
     }
     .nb-prev pre.nb-pre { background:var(--surfaceAlt); border:1px solid var(--border); border-radius:8px; padding:14px 16px; overflow-x:auto; margin:.8em 0; }
     .nb-prev code { font-family:SF Mono,Menlo,Consolas,monospace; font-size:.87em; }
-    .nb-ic { background:rgba(56,139,253,.1); border-radius:4px; padding:1px 5px; font-family:SF Mono,Menlo,Consolas,monospace; font-size:.87em; color:var(--accent); }
+    .nb-ic { background:var(--nb-code-bg); border-radius:4px; padding:1px 5px; font-family:SF Mono,Menlo,Consolas,monospace; font-size:.87em; color:var(--nb-code-color); }
     .nb-prev table.nb-table { border-collapse:collapse; width:100%; margin:.8em 0; font-size:.93em; }
     .nb-prev table.nb-table th,.nb-prev table.nb-table td { border:1px solid var(--border); padding:6px 10px; }
     .nb-prev table.nb-table th { background:var(--surfaceAlt); font-weight:600; }
@@ -2030,14 +2562,14 @@ export default function NotebookView() {
     .nb-prev .nb-cb { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border:1.5px solid var(--border); border-radius:3px; font-size:10px; flex-shrink:0; cursor:pointer; user-select:none; transition:background .1s,border-color .1s; }
     .nb-prev li.checked .nb-cb { background:var(--accent); border-color:var(--accent); color:#fff; }
     .nb-prev li.checked>span:last-child { text-decoration:line-through; opacity:.55; }
-    .nb-hl { background:rgba(210,153,34,.28); border-radius:2px; padding:0 2px; }
+    .nb-hl { background:var(--nb-hl-bg); border-radius:2px; padding:0 2px; }
     /* Inline text formats — match live */
     .nb-bold   { font-weight:700; color:var(--nb-bold-color); }
     .nb-italic { font-style:italic; color:var(--nb-italic-color); }
-    .nb-strike { text-decoration:line-through; color:var(--textDim); }
-    .nb-sup    { font-size:.75em; vertical-align:super; color:var(--accent); }
-    .nb-sub    { font-size:.75em; vertical-align:sub;   color:var(--accent); }
-    .wikilink     { border-bottom:1px solid var(--accent); cursor:pointer; color:var(--accent); }
+    .nb-strike { text-decoration:line-through; color:var(--nb-strike-color); opacity:.75; }
+    .nb-sup    { font-size:.75em; vertical-align:super; color:var(--nb-link-color); }
+    .nb-sub    { font-size:.75em; vertical-align:sub;   color:var(--nb-link-color); }
+    .wikilink     { border-bottom:1px solid var(--nb-wikilink-color); cursor:pointer; color:var(--nb-wikilink-color); }
     .wikilink:hover { opacity:.8; }
     .wikilink-new { color:var(--textDim); border-bottom-color:var(--textDim); }
     /* Images in preview */
@@ -2048,7 +2580,7 @@ export default function NotebookView() {
     }
     .nb-img[src=""],
     .nb-img:not([src]) { display: none; }
-    .nb-prev a { color:var(--accent); text-decoration:underline; }
+    .nb-prev a { color:var(--nb-link-color); text-decoration:underline; }
     .nb-prev hr { border:none; border-top:1px solid var(--border); margin:1.2em 0; }
     /* MathQuill static display in preview */
     .nb-math { display:inline-block; }
@@ -2077,13 +2609,15 @@ export default function NotebookView() {
     .nb2-fc:hover { opacity:1; }
 
     /* ── Save indicator animation ──────────────────────── */
-    .nb-save-indicator { display:flex; align-items:center; opacity:0; transition:opacity .3s; }
+    .nb-save-indicator { display:flex; align-items:center; opacity:1; transition:opacity .3s; }
     .nb-save-icon { width:18px; height:18px; color:var(--accent); }
     .nb-save-icon.vis { opacity:1; }
     .nb-save-ring { stroke-dasharray:47; stroke-dashoffset:47; transition:stroke-dashoffset 0s; }
-    .nb-save-icon.anim .nb-save-ring { stroke-dashoffset:0; transition:stroke-dashoffset 0.6s ease; }
+    .nb-save-icon.anim .nb-save-ring { stroke-dashoffset:0; transition:stroke-dashoffset 0.3s ease; }
     .nb-save-check { stroke-dasharray:12; stroke-dashoffset:12; transition:stroke-dashoffset 0s; }
-    .nb-save-icon.anim .nb-save-check { stroke-dashoffset:0; transition:stroke-dashoffset 0.3s ease 0.5s; }
+    .nb-save-icon.anim .nb-save-check { stroke-dashoffset:0; transition:stroke-dashoffset 0.15s ease 0.25s; }
+    .nb-save-icon.closing .nb-save-check { stroke-dashoffset:12; transition:stroke-dashoffset 0.15s ease; }
+    .nb-save-icon.closing .nb-save-ring { stroke-dashoffset:47; transition:stroke-dashoffset 0.3s ease 0.1s; }
   `
 
 
@@ -2091,49 +2625,67 @@ export default function NotebookView() {
   // Derived directly from themes.js exact palette values
   const THEME_SYNTAX = {
     dark: {
-      italic:'#58a6ff', h1:'#e6edf3', h2:'#58a6ff', h3:'#79c0ff',
+      italic:'#79b8ff', bold:'#f0883e', bi:'#d2a8ff', h1:'#e6edf3', h2:'#79b8ff', h3:'#56d4dd',
+      h4:'#b392f0', h5:'#f97583', h6:'#8b949e',
       quote:'#8b949e', quoteBg:'rgba(56,139,253,.07)', quoteBorder:'#388bfd',
-      link:'#58a6ff', wiki:'#58a6ff', hl:'rgba(210,153,34,.30)',
-      code:'#79c0ff', codeBg:'rgba(56,139,253,.13)',
+      link:'#58a6ff', wiki:'#58a6ff', hl:'rgba(255,212,59,.35)',
+      code:'#e2c08d', codeBg:'rgba(255,218,120,.10)',
+      strike:'#f85149',
     },
     sepia: {
-      italic:'#a0714e', h1:'#3b2f20', h2:'#8b5e3c', h3:'#a0714e',
+      italic:'#b06830', bold:'#c44d2a', bi:'#a05020', h1:'#3b2f20', h2:'#9b5430', h3:'#b87340',
+      h4:'#8a6040', h5:'#7a5030', h6:'#7a6652',
       quote:'#7a6652', quoteBg:'rgba(139,94,60,.09)', quoteBorder:'#8b5e3c',
-      link:'#8b5e3c', wiki:'#a0714e', hl:'rgba(180,155,90,.42)',
-      code:'#8b5e3c', codeBg:'rgba(139,94,60,.13)',
+      link:'#8b5e3c', wiki:'#a0714e', hl:'rgba(210,170,60,.45)',
+      code:'#9b5e3c', codeBg:'rgba(139,94,60,.15)',
+      strike:'#c0392b',
     },
     light: {
-      italic:'#0969da', h1:'#1f2328', h2:'#0969da', h3:'#0860c7',
+      italic:'#0550ae', bold:'#9a3412', bi:'#6639a6', h1:'#1f2328', h2:'#0550ae', h3:'#0969da',
+      h4:'#8250df', h5:'#cf222e', h6:'#636c76',
       quote:'#636c76', quoteBg:'rgba(9,105,218,.05)', quoteBorder:'#0969da',
-      link:'#0969da', wiki:'#0860c7', hl:'rgba(255,212,0,.50)',
-      code:'#0969da', codeBg:'rgba(9,105,218,.10)',
+      link:'#0550ae', wiki:'#0860c7', hl:'rgba(255,212,0,.55)',
+      code:'#0550ae', codeBg:'rgba(9,105,218,.12)',
+      strike:'#cf222e',
     },
     moss: {
-      italic:'#4a7c3f', h1:'#2a3320', h2:'#4a7c3f', h3:'#3d6934',
+      italic:'#2d8a2d', bold:'#b5651d', bi:'#5a8a1d', h1:'#2a3320', h2:'#2d8a2d', h3:'#4a9a3f',
+      h4:'#6a8c3f', h5:'#3d6934', h6:'#5a7048',
       quote:'#5a7048', quoteBg:'rgba(74,124,63,.08)', quoteBorder:'#4a7c3f',
-      link:'#4a7c3f', wiki:'#3d6934', hl:'rgba(160,200,120,.42)',
-      code:'#4a7c3f', codeBg:'rgba(74,124,63,.13)',
+      link:'#2d8a2d', wiki:'#3d6934', hl:'rgba(180,220,80,.45)',
+      code:'#2d8a2d', codeBg:'rgba(74,124,63,.15)',
+      strike:'#d44040',
     },
     cherry: {
-      italic:'#f07090', h1:'#f2dde1', h2:'#e05c7a', h3:'#f07090',
+      italic:'#ff7eb3', bold:'#f5a623', bi:'#ff5c8a', h1:'#f2dde1', h2:'#ff5c8a', h3:'#ff7eb3',
+      h4:'#d88ca0', h5:'#f07090', h6:'#9e6d76',
       quote:'#9e6d76', quoteBg:'rgba(224,92,122,.09)', quoteBorder:'#e05c7a',
-      link:'#e05c7a', wiki:'#f07090', hl:'rgba(224,92,122,.26)',
-      code:'#f07090', codeBg:'rgba(224,92,122,.15)',
+      link:'#ff5c8a', wiki:'#f07090', hl:'rgba(255,100,140,.30)',
+      code:'#ff7eb3', codeBg:'rgba(255,126,179,.15)',
+      strike:'#f85149',
     },
     sunset: {
-      italic:'#f0a840', h1:'#f5e6c8', h2:'#e8922a', h3:'#f0a840',
+      italic:'#ffb347', bold:'#e84855', bi:'#ff8c42', h1:'#f5e6c8', h2:'#ffa020', h3:'#ffb347',
+      h4:'#e8b060', h5:'#f0a840', h6:'#a07840',
       quote:'#a07840', quoteBg:'rgba(232,146,42,.09)', quoteBorder:'#e8922a',
-      link:'#e8922a', wiki:'#f0a840', hl:'rgba(232,146,42,.30)',
-      code:'#f0a840', codeBg:'rgba(232,146,42,.14)',
+      link:'#ffa020', wiki:'#f0a840', hl:'rgba(255,170,40,.35)',
+      code:'#ffb347', codeBg:'rgba(255,179,71,.15)',
+      strike:'#e84855',
     },
   }
   const tc = THEME_SYNTAX[themeKey] || THEME_SYNTAX.dark
   const THEME_CSS = `
     .nb-root {
+      --nb-bold-color:     ${tc.bold || 'var(--text)'};
+      --nb-bi-color:       ${tc.bi || tc.bold || 'var(--text)'};
       --nb-italic-color:   ${tc.italic};
+      --nb-strike-color:   ${tc.strike || 'var(--textDim)'};
       --nb-h1-color:       ${tc.h1};
       --nb-h2-color:       ${tc.h2};
       --nb-h3-color:       ${tc.h3};
+      --nb-h4-color:       ${tc.h4 || tc.h3};
+      --nb-h5-color:       ${tc.h5 || tc.h3};
+      --nb-h6-color:       ${tc.h6 || 'var(--textDim)'};
       --nb-quote-color:    ${tc.quote};
       --nb-quote-bg:       ${tc.quoteBg};
       --nb-quote-border:   ${tc.quoteBorder};
@@ -2150,57 +2702,58 @@ export default function NotebookView() {
       <style>{CSS}</style>
       <style>{THEME_CSS}</style>
 
-      {/* ── Header — 3-column grid: [left] [center] [right] ────────────── */}
+      {/* ── Header — flex: [nav] [save + search (centered)] [mode + settings] ── */}
       <header className="nb-header gnos-header">
-        {/* Left: nav + save indicator */}
-        <div style={{ display:'flex', alignItems:'center', gap:8, flex:'0 0 auto', minWidth:0 }}>
+        {/* Far left: nav button */}
+        <div style={{ display:'flex', alignItems:'center', flex:'0 0 auto', minWidth:0 }}>
           <GnosNavButton />
-          <div style={{ width:1, height:16, background:'var(--border)', flexShrink:0 }} />
-          <div className="nb-save-indicator">
+        </div>
+
+        {/* Center: save indicator + search bar (centered) */}
+        <div style={{ display:'flex', alignItems:'center', flex:'1 1 0', minWidth:0, gap:8, margin:'0 8px', justifyContent:'center' }}>
+          <div className="nb-save-indicator" style={{ flexShrink:0 }}>
             <svg id="nb-save-icon" className="nb-save-icon" viewBox="0 0 18 18" fill="none">
               <circle className="nb-save-ring" cx="9" cy="9" r="7.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
               <polyline className="nb-save-check" points="5.5,9 7.8,11.5 12.5,6.5" stroke="currentColor" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </div>
-        </div>
-
-        {/* Center: search bar — flex grows to fill all available middle space */}
-        <div style={{ flex:'1 1 0', minWidth:0, margin:'0 8px' }}>
-          <div className={`search-bar${findQ?' focused':''}`} style={{ background:'var(--surfaceAlt)' }}
-            onClick={() => findRef.current?.focus()}>
-            <svg className="search-icon" width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5"/>
-              <path d="M10 10l3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-            </svg>
-            <input ref={findRef} id="nb-search-input"
-              style={{ background:'none', border:'none', color:'var(--text)', outline:'none', fontSize:13, flex:1, minWidth:0 }}
-              placeholder={noteTitle || notebook?.title || 'Find…'} value={findQ}
-              onChange={e => { setFindQ(e.target.value); doFind(e.target.value) }}
-              onKeyDown={e => {
-                if (e.key==='Enter') { e.preventDefault(); findNav(e.shiftKey?-1:1) }
-                if (e.key==='Escape') { setFindQ(''); doFind('') }
-              }}
-            />
-            {findQ ? (
-              <span style={{ fontSize:11, color:'var(--textDim)', whiteSpace:'nowrap', marginRight:4 }}>
-                {findCount>0?`${findCurD+1}/${findCount}`:'Not found'}
-              </span>
-            ) : (
-              <span style={{ fontSize:11, color:'var(--textDim)', whiteSpace:'nowrap', paddingLeft:8, flexShrink:0 }}>
-                {wordCount.toLocaleString()} words
-              </span>
-            )}
-            {findQ && (
-              <>
-                <button className="nb2-fb" onClick={() => findNav(-1)} title="Previous">↑</button>
-                <button className="nb2-fb" onClick={() => findNav(1)}  title="Next">↓</button>
-                <button className="nb2-fc" onClick={() => { setFindQ(''); doFind('') }} title="Clear">×</button>
-              </>
-            )}
+          <div style={{ flex:'0 1 520px', minWidth:0 }}>
+            <div className={`search-bar${findQ?' focused':''}`} style={{ background:'var(--surfaceAlt)' }}
+              onClick={() => findRef.current?.focus()}>
+              <svg className="search-icon" width="13" height="13" viewBox="0 0 16 16" fill="none">
+                <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5"/>
+                <path d="M10 10l3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+              <input ref={findRef} id="nb-search-input"
+                style={{ background:'none', border:'none', color:'var(--text)', outline:'none', fontSize:13, flex:1, minWidth:0 }}
+                placeholder={noteTitle || notebook?.title || 'Find…'} value={findQ}
+                onChange={e => { setFindQ(e.target.value); doFind(e.target.value) }}
+                onKeyDown={e => {
+                  if (e.key==='Enter') { e.preventDefault(); findNav(e.shiftKey?-1:1) }
+                  if (e.key==='Escape') { setFindQ(''); doFind('') }
+                }}
+              />
+              {findQ ? (
+                <span style={{ fontSize:11, color:'var(--textDim)', whiteSpace:'nowrap', marginRight:4 }}>
+                  {findCount>0?`${findCurD+1}/${findCount}`:'Not found'}
+                </span>
+              ) : (
+                <span style={{ fontSize:11, color:'var(--textDim)', whiteSpace:'nowrap', paddingLeft:8, flexShrink:0 }}>
+                  {wordCount.toLocaleString()} words
+                </span>
+              )}
+              {findQ && (
+                <>
+                  <button className="nb2-fb" onClick={() => findNav(-1)} title="Previous">↑</button>
+                  <button className="nb2-fb" onClick={() => findNav(1)}  title="Next">↓</button>
+                  <button className="nb2-fc" onClick={() => { setFindQ(''); doFind('') }} title="Clear">×</button>
+                </>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Right: view mode + syntax help */}
+        {/* Far right: view mode + settings */}
         <div style={{ display:'flex', alignItems:'center', gap:6, flex:'0 0 auto' }}>
           <ViewModeBtn viewMode={viewMode} setViewMode={switchMode} />
           <button onClick={() => setEditModal(true)} title="Syntax reference"
@@ -2245,6 +2798,72 @@ export default function NotebookView() {
           </div>
           {/* CodeMirror */}
           <div ref={editorRef} className={`nb-cm${viewMode==='live'?' nb-live':''}`} style={{ flex:1, overflow:'hidden', minHeight:0 }} />
+          {/* Wiki-link dropdown */}
+          {wikiDrop && wikiDrop.coords && (
+            <div className="nb-wiki-dropdown" style={{
+              position: 'fixed',
+              left: Math.min(wikiDrop.coords.left, window.innerWidth - 370),
+              top: Math.min(wikiDrop.coords.top, window.innerHeight - 340),
+              zIndex: 9999,
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              borderRadius: 12,
+              boxShadow: '0 16px 48px rgba(0,0,0,0.55)',
+              padding: 6,
+              minWidth: 260,
+              maxWidth: 360,
+              maxHeight: 320,
+              overflow: 'auto',
+            }}>
+              <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                {wikiDrop.options.map((opt, i) => (
+                  <li key={`${opt.detail}-${opt.label}-${i}`}
+                    onMouseDown={e => {
+                      e.preventDefault()
+                      // Confirm this option
+                      const view = cmRef.current
+                      if (view) {
+                        const state = view.state
+                        const cur = state.selection.main.head
+                        const line = state.doc.lineAt(cur)
+                        const col = cur - line.from
+                        const textBefore = line.text.slice(0, col)
+                        const idx = textBefore.lastIndexOf('[[')
+                        if (idx !== -1) {
+                          view.dispatch({ changes: { from: line.from + idx, to: cur, insert: opt.insert } })
+                        }
+                      }
+                      setWikiDrop(null)
+                    }}
+                    style={{
+                      padding: '9px 12px',
+                      borderRadius: 8,
+                      margin: '1px 0',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      cursor: 'pointer',
+                      transition: 'background 0.08s',
+                      background: i === wikiDrop.selectedIdx ? 'rgba(56,139,253,0.18)' : 'transparent',
+                      color: i === wikiDrop.selectedIdx ? 'var(--accent)' : 'var(--text)',
+                    }}>
+                    <span style={{ flex: 1, fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{opt.label}</span>
+                    <span style={{ fontSize: 12, opacity: 0.65, flexShrink: 0, paddingLeft: 8 }}>{opt.detail}</span>
+                  </li>
+                ))}
+              </ul>
+              <div style={{
+                padding: '5px 12px 6px',
+                fontSize: 10.5,
+                color: 'var(--textDim)',
+                opacity: 0.65,
+                borderTop: '1px solid var(--borderSubtle)',
+                marginTop: 4,
+                textAlign: 'center',
+                letterSpacing: '0.01em',
+              }}>Tab to confirm · Esc to dismiss</div>
+            </div>
+          )}
         </div>
       )}
 
@@ -2299,7 +2918,7 @@ function SyntaxPanel({ onClose }) {
   ]
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.55)', zIndex:10000, display:'flex', alignItems:'center', justifyContent:'center' }} onClick={onClose}>
-      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:14, width:440, maxWidth:'94vw', maxHeight:'82vh', display:'flex', flexDirection:'column', boxShadow:'0 20px 60px rgba(0,0,0,.55)' }} onClick={e=>e.stopPropagation()}>
+      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:14, width:620, maxWidth:'94vw', maxHeight:'70vh', display:'flex', flexDirection:'column', boxShadow:'0 20px 60px rgba(0,0,0,.55)' }} onClick={e=>e.stopPropagation()}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'16px 20px 12px', borderBottom:'1px solid var(--borderSubtle)', flexShrink:0 }}>
           <span style={{ fontSize:14, fontWeight:700, color:'var(--text)' }}>Syntax Reference</span>
           <button onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg></button>

@@ -1,0 +1,711 @@
+/* FlashcardView.jsx — Anki/Quizlet-style spaced repetition flashcard view
+ *
+ * Two modes: Study and Edit
+ * - Study: shows cards one at a time with flip animation, rate with SM-2
+ * - Edit: list all cards, add/delete/edit inline
+ */
+
+import { useState, useEffect, useRef, useCallback } from 'react'
+import useAppStore from '@/store/useAppStore'
+import { GnosNavButton } from '@/components/SideNav'
+import { saveNotebookImage } from '@/lib/storage'
+import JSZip from 'jszip'
+import initSqlJs from 'sql.js/dist/sql-asm.js'
+
+// ─── SM-2 Algorithm ──────────────────────────────────────────────────────────
+function sm2(card, quality) {
+  const q = [0, 0, 2, 3, 5][quality] ?? 3
+  let { interval = 1, ease = 2.5, repetitions = 0 } = card
+  if (q < 3) {
+    repetitions = 0; interval = 1
+  } else {
+    repetitions++
+    if (repetitions === 1) interval = 1
+    else if (repetitions === 2) interval = 6
+    else interval = Math.round(interval * ease)
+  }
+  ease = Math.max(1.3, ease + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)))
+  const nextReview = Date.now() + interval * 24 * 60 * 60 * 1000
+  return { ...card, interval, ease, repetitions, nextReview }
+}
+
+// ─── Tiny id helper ──────────────────────────────────────────────────────────
+function makeId(prefix = 'id') {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
+}
+
+// ─── CSS ─────────────────────────────────────────────────────────────────────
+const FLASHCARD_CSS = `
+  .fc-container {
+    display: flex; flex-direction: column; height: 100%;
+    background: var(--bg); color: var(--text); overflow: hidden;
+  }
+  .fc-header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 18px; border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .fc-header-title {
+    font-size: 16px; font-weight: 700; flex: 1;
+    background: none; border: none; color: var(--text);
+    font-family: inherit; outline: none; padding: 2px 6px;
+    border-radius: 6px;
+  }
+  .fc-header-title:focus {
+    background: var(--surfaceAlt); box-shadow: 0 0 0 2px var(--accent);
+  }
+  .fc-mode-btn {
+    padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: none; color: var(--textDim); cursor: pointer;
+    font-size: 12px; font-weight: 600; font-family: inherit;
+    transition: all 0.12s;
+  }
+  .fc-mode-btn.active {
+    background: var(--accent); color: #fff; border-color: var(--accent);
+  }
+  .fc-mode-btn:hover:not(.active) {
+    background: var(--surfaceAlt); color: var(--text);
+  }
+  .fc-stats {
+    font-size: 11px; color: var(--textDim); display: flex; gap: 12px;
+  }
+  .fc-stats span { font-weight: 600; }
+
+  /* Study mode */
+  .fc-study {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 32px; gap: 24px; overflow-y: auto;
+  }
+  .fc-card-wrapper {
+    perspective: 1000px; width: 100%; max-width: 500px;
+    aspect-ratio: 5/3; cursor: pointer;
+  }
+  .fc-card-inner {
+    position: relative; width: 100%; height: 100%;
+    transition: transform 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+    transform-style: preserve-3d;
+  }
+  .fc-card-inner.flipped { transform: rotateY(180deg); }
+  .fc-card-face {
+    position: absolute; inset: 0;
+    backface-visibility: hidden; -webkit-backface-visibility: hidden;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px; border-radius: 16px;
+    font-size: 18px; font-weight: 500; text-align: center;
+    line-height: 1.5; word-break: break-word;
+    font-family: Georgia, serif;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+    border: 1px solid var(--border);
+  }
+  .fc-card-front {
+    background: var(--surface);
+    color: var(--text);
+  }
+  .fc-card-back {
+    background: var(--surfaceAlt);
+    color: var(--text);
+    transform: rotateY(180deg);
+  }
+  .fc-card-label {
+    position: absolute; top: 10px; left: 14px;
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--textDim); opacity: 0.6;
+  }
+  .fc-rating-bar {
+    display: flex; gap: 10px;
+  }
+  .fc-rate-btn {
+    padding: 8px 20px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); cursor: pointer;
+    font-size: 13px; font-weight: 600; font-family: inherit;
+    transition: all 0.12s; min-width: 70px;
+  }
+  .fc-rate-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+  .fc-rate-btn.again { border-color: #ef5350; color: #ef5350; }
+  .fc-rate-btn.again:hover { background: rgba(239,83,80,0.1); }
+  .fc-rate-btn.hard { border-color: #ff9800; color: #ff9800; }
+  .fc-rate-btn.hard:hover { background: rgba(255,152,0,0.1); }
+  .fc-rate-btn.good { border-color: #4caf50; color: #4caf50; }
+  .fc-rate-btn.good:hover { background: rgba(76,175,80,0.1); }
+  .fc-rate-btn.easy { border-color: #2196f3; color: #2196f3; }
+  .fc-rate-btn.easy:hover { background: rgba(33,150,243,0.1); }
+  .fc-hint-text {
+    font-size: 12px; color: var(--textDim); opacity: 0.7;
+  }
+  .fc-done-msg {
+    text-align: center; color: var(--textDim);
+  }
+  .fc-done-msg h3 { font-size: 20px; margin: 0 0 8px; color: var(--text); }
+  .fc-done-msg p { font-size: 13px; }
+
+  /* Edit mode */
+  .fc-edit {
+    flex: 1; overflow-y: auto; padding: 18px;
+  }
+  .fc-card-row {
+    display: flex; gap: 10px; align-items: flex-start;
+    padding: 10px 12px; border-radius: 10px;
+    border: 1px solid var(--borderSubtle);
+    margin-bottom: 8px; background: var(--surface);
+    transition: border-color 0.12s;
+  }
+  .fc-card-row:hover { border-color: var(--border); }
+  .fc-card-row .fc-num {
+    font-size: 11px; color: var(--textDim); min-width: 22px;
+    text-align: right; padding-top: 6px; flex-shrink: 0;
+  }
+  .fc-card-row .fc-fields { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+  .fc-card-input {
+    width: 100%; padding: 5px 8px; border-radius: 6px;
+    border: 1px solid var(--borderSubtle); background: var(--bg);
+    color: var(--text); font-size: 13px; font-family: inherit;
+    outline: none; resize: none;
+  }
+  .fc-card-input:focus { border-color: var(--accent); }
+  .fc-card-input::placeholder { color: var(--textDim); opacity: 0.5; }
+  .fc-del-btn {
+    background: none; border: none; color: var(--textDim); cursor: pointer;
+    padding: 4px; border-radius: 4px; opacity: 0; transition: opacity 0.12s;
+    flex-shrink: 0; margin-top: 4px;
+  }
+  .fc-card-row:hover .fc-del-btn { opacity: 0.5; }
+  .fc-del-btn:hover { opacity: 1 !important; color: #ef5350; }
+  .fc-add-btn {
+    width: 100%; padding: 10px; border: 1px dashed var(--border);
+    border-radius: 10px; background: none; color: var(--textDim);
+    cursor: pointer; font-size: 13px; font-family: inherit;
+    transition: all 0.12s; margin-top: 4px;
+  }
+  .fc-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Card color stripe */
+  .fc-card-row[data-color] { border-left: 3px solid; }
+  .fc-card-tools {
+    display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap;
+  }
+  .fc-tool-btn {
+    padding: 3px 8px; border-radius: 5px; border: 1px solid var(--borderSubtle);
+    background: none; color: var(--textDim); cursor: pointer; font-size: 10px;
+    font-family: inherit; transition: all 0.1s; display: flex; align-items: center; gap: 4px;
+  }
+  .fc-tool-btn:hover { background: var(--surfaceAlt); color: var(--text); border-color: var(--border); }
+  .fc-color-dot {
+    width: 14px; height: 14px; border-radius: 50%; cursor: pointer;
+    border: 2px solid transparent; transition: border-color 0.1s;
+  }
+  .fc-color-dot:hover, .fc-color-dot.active { border-color: var(--text); }
+  .fc-canvas-wrap {
+    margin-top: 6px; border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden; background: var(--bg);
+  }
+  .fc-canvas-wrap canvas { display: block; cursor: crosshair; }
+  .fc-img-preview {
+    max-width: 100%; max-height: 80px; border-radius: 6px; margin-top: 4px;
+    object-fit: contain;
+  }
+  .fc-audio-row {
+    display: flex; align-items: center; gap: 8px; margin-top: 4px;
+  }
+  .fc-audio-play {
+    width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.12s; flex-shrink: 0;
+  }
+  .fc-audio-play:hover { background: var(--surfaceAlt); border-color: var(--accent); }
+  .fc-audio-label { font-size: 10px; color: var(--textDim); }
+  .fc-audio-remove {
+    background: none; border: none; color: var(--textDim); cursor: pointer;
+    font-size: 11px; opacity: 0.5; padding: 2px 4px;
+  }
+  .fc-audio-remove:hover { opacity: 1; color: #ef5350; }
+`
+
+const CARD_COLORS = ['transparent', '#ef5350', '#ff9800', '#4caf50', '#2196f3', '#9c27b0', '#00bcd4', '#795548']
+
+function ImageUploadBtn({ label, onUpload, style }) {
+  return (
+    <button className="fc-tool-btn" onClick={() => {
+      const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/*'
+      input.onchange = (e) => { const f = e.target.files?.[0]; if (!f) return; const r = new FileReader(); r.onload = () => onUpload(r.result); r.readAsDataURL(f) }
+      input.click()
+    }} style={{ fontSize: 10, ...style }}>+ {label || 'Image'}</button>
+  )
+}
+
+function AudioUploadBtn({ label, onUpload, style }) {
+  return (
+    <button className="fc-tool-btn" onClick={() => {
+      const input = document.createElement('input'); input.type = 'file'; input.accept = 'audio/*,.mp3,.wav,.ogg,.m4a,.aac'
+      input.onchange = (e) => { const f = e.target.files?.[0]; if (!f) return; const r = new FileReader(); r.onload = () => onUpload(r.result); r.readAsDataURL(f) }
+      input.click()
+    }} style={{ fontSize: 10, ...style }}>+ {label || 'Audio'}</button>
+  )
+}
+
+function AudioPlayBtn({ src }) {
+  const audioRef = useRef(null)
+  const [playing, setPlaying] = useState(false)
+  const play = (e) => {
+    e.stopPropagation()
+    if (!audioRef.current) {
+      audioRef.current = new Audio(src)
+      audioRef.current.onended = () => setPlaying(false)
+    }
+    if (playing) { audioRef.current.pause(); audioRef.current.currentTime = 0; setPlaying(false) }
+    else { audioRef.current.play(); setPlaying(true) }
+  }
+  useEffect(() => () => { if (audioRef.current) { audioRef.current.pause(); audioRef.current = null } }, [])
+  return (
+    <button className="fc-audio-play" onClick={play} title="Play audio">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        {playing ? <><line x1="6" y1="4" x2="6" y2="20"/><line x1="18" y1="4" x2="18" y2="20"/></> : <polygon points="5,3 19,12 5,21" fill="currentColor" stroke="none"/>}
+      </svg>
+    </button>
+  )
+}
+
+/** Strip HTML tags and decode entities, extract [sound:xxx] references */
+function stripHtml(html) {
+  if (!html) return { text: '', sounds: [] }
+  const sounds = []
+  let cleaned = html.replace(/\[sound:([^\]]+)\]/g, (_, name) => { sounds.push(name); return '' })
+  cleaned = cleaned.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '')
+  const el = document.createElement('div'); el.innerHTML = cleaned
+  return { text: el.textContent?.trim() || '', sounds }
+}
+
+/** Parse .apkg file (ZIP containing SQLite) and return { cards, media } */
+async function parseApkg(arrayBuffer) {
+  const zip = await JSZip.loadAsync(arrayBuffer)
+
+  // Find the SQLite database file
+  let dbFile = zip.file('collection.anki21') || zip.file('collection.anki2')
+  if (!dbFile) {
+    // Try to find any .anki2/.anki21 file
+    const files = Object.keys(zip.files)
+    const dbName = files.find(f => f.endsWith('.anki2') || f.endsWith('.anki21'))
+    if (dbName) dbFile = zip.file(dbName)
+  }
+  if (!dbFile) throw new Error('No Anki database found in .apkg file')
+
+  const dbData = await dbFile.async('uint8array')
+  const SQL = await initSqlJs()
+  const db = new SQL.Database(dbData)
+
+  // Parse media mapping (JSON file mapping numeric keys to filenames)
+  let mediaMap = {}
+  const mediaFile = zip.file('media')
+  if (mediaFile) {
+    try {
+      const mediaJson = await mediaFile.async('text')
+      mediaMap = JSON.parse(mediaJson)
+    } catch { /* no media mapping */ }
+  }
+
+  // Extract media files as data URLs
+  const mediaData = {}
+  for (const [key, filename] of Object.entries(mediaMap)) {
+    const mf = zip.file(key)
+    if (mf) {
+      const data = await mf.async('uint8array')
+      const ext = filename.split('.').pop()?.toLowerCase() || ''
+      const isAudio = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'wma'].includes(ext)
+      const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)
+      const mime = isAudio ? `audio/${ext === 'mp3' ? 'mpeg' : ext}` : isImage ? `image/${ext === 'jpg' ? 'jpeg' : ext}` : `application/octet-stream`
+      const blob = new Blob([data], { type: mime })
+      mediaData[filename] = { url: URL.createObjectURL(blob), isAudio, isImage }
+    }
+  }
+
+  // Query notes table
+  let cards = []
+  try {
+    const results = db.exec('SELECT flds FROM notes')
+    if (results.length > 0) {
+      for (const row of results[0].values) {
+        const fields = (row[0] || '').split('\x1f') // Anki uses unit separator
+        const frontHtml = fields[0] || ''
+        const backHtml = fields[1] || ''
+        const front = stripHtml(frontHtml)
+        const back = stripHtml(backHtml)
+
+        const card = {
+          id: makeId('fc'),
+          front: front.text,
+          back: back.text,
+          nextReview: 0, interval: 1, ease: 2.5, repetitions: 0,
+        }
+
+        // Attach first image found
+        const allSounds = [...front.sounds, ...back.sounds]
+        for (const s of allSounds) {
+          const m = mediaData[s]
+          if (m?.isImage && !card.imageUrl) card.imageUrl = m.url
+          if (m?.isAudio && !card.audioUrl) card.audioUrl = m.url
+        }
+
+        // Check for inline images in HTML
+        const imgMatch = (frontHtml + backHtml).match(/<img[^>]+src="([^"]+)"/)
+        if (imgMatch && !card.imageUrl) {
+          const imgName = imgMatch[1]
+          if (mediaData[imgName]?.isImage) card.imageUrl = mediaData[imgName].url
+        }
+
+        cards.push(card)
+      }
+    }
+  } finally {
+    db.close()
+  }
+
+  return cards
+}
+
+export default function FlashcardView() {
+  const deck = useAppStore(s => s.activeFlashcardDeck)
+  const flashcardDecks = useAppStore(s => s.flashcardDecks)
+  const updateDeck = useAppStore(s => s.updateDeck)
+  const persistFlashcardDecks = useAppStore(s => s.persistFlashcardDecks)
+  const setView = useAppStore(s => s.setView)
+
+  const [mode, setMode] = useState('study') // 'study' | 'edit'
+  const [flipped, setFlipped] = useState(false)
+  const [currentIdx, setCurrentIdx] = useState(0)
+  const [title, setTitle] = useState(deck?.title || 'Untitled Deck')
+  const titleTimeout = useRef(null)
+
+  // Get the live deck from store (in case cards have been updated)
+  const liveDeck = flashcardDecks.find(d => d.id === deck?.id) || deck
+  const cards = liveDeck?.cards || []
+
+  // Due cards for study
+  const now = Date.now()
+  const dueCards = cards.filter(c => !c.nextReview || c.nextReview <= now)
+
+  // Study card
+  const studyCard = dueCards[currentIdx] || null
+
+  useEffect(() => {
+    setTitle(liveDeck?.title || 'Untitled Deck')
+  }, [liveDeck?.title])
+
+  // Keyboard: space/click to flip, 1-4 to rate
+  useEffect(() => {
+    if (mode !== 'study') return
+    const handler = (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
+      if (e.code === 'Space') {
+        e.preventDefault()
+        setFlipped(f => !f)
+      }
+      if (flipped && studyCard) {
+        if (e.key === '1') rateCard(1)
+        if (e.key === '2') rateCard(2)
+        if (e.key === '3') rateCard(3)
+        if (e.key === '4') rateCard(4)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, flipped, studyCard, currentIdx])
+
+  function rateCard(quality) {
+    if (!studyCard || !liveDeck) return
+    const updated = sm2(studyCard, quality)
+    const newCards = cards.map(c => c.id === updated.id ? updated : c)
+
+    // Streak tracking
+    const today = new Date().toISOString().slice(0, 10)
+    const lastDate = liveDeck.lastStudyDate
+    let streak = liveDeck.streak || 0
+    if (lastDate === today) {
+      // already studied today, no change
+    } else {
+      const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+      streak = lastDate === yesterday ? streak + 1 : 1
+    }
+
+    updateDeck(liveDeck.id, { cards: newCards, updatedAt: new Date().toISOString(), streak, lastStudyDate: today })
+    persistFlashcardDecks()
+    setFlipped(false)
+    // Move to next due card — recalculate due list
+    const newDue = newCards.filter(c => !c.nextReview || c.nextReview <= now)
+    if (currentIdx >= newDue.length) setCurrentIdx(0)
+  }
+
+  function handleTitleChange(val) {
+    setTitle(val)
+    clearTimeout(titleTimeout.current)
+    titleTimeout.current = setTimeout(() => {
+      if (liveDeck) {
+        updateDeck(liveDeck.id, { title: val, updatedAt: new Date().toISOString() })
+        persistFlashcardDecks()
+      }
+    }, 500)
+  }
+
+  // Import — supports CSV/TSV, .apkg (Anki), .colpkg
+  async function handleImport() {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const path = await open({ filters: [
+      { name: 'Anki Decks', extensions: ['apkg', 'colpkg'] },
+      { name: 'CSV/TSV', extensions: ['csv', 'tsv', 'txt'] },
+    ]})
+    if (!path) return
+
+    const ext = path.split('.').pop()?.toLowerCase()
+
+    if (ext === 'apkg' || ext === 'colpkg') {
+      try {
+        // Read binary file
+        const { readFile } = await import('@tauri-apps/plugin-fs')
+        const data = await readFile(path)
+        const buf = data instanceof Uint8Array ? data : new Uint8Array(data)
+        const newCards = await parseApkg(buf.buffer)
+        if (newCards.length) {
+          updateDeck(liveDeck.id, { cards: [...cards, ...newCards], updatedAt: new Date().toISOString() })
+          persistFlashcardDecks()
+        }
+      } catch (err) {
+        console.error('[Gnos] Anki import error:', err)
+        alert(`Failed to import Anki deck: ${err.message}`)
+      }
+      return
+    }
+
+    // CSV/TSV fallback
+    const { readTextFile } = await import('@tauri-apps/plugin-fs')
+    const text = await readTextFile(path)
+    const sep = text.includes('\t') ? '\t' : ','
+    const rows = text.trim().split('\n').map(line => line.split(sep))
+    const start = rows[0]?.[0]?.toLowerCase().includes('front') || rows[0]?.[0]?.toLowerCase().includes('question') ? 1 : 0
+    const newCards = rows.slice(start).filter(r => r[0]?.trim()).map(r => ({
+      id: makeId('fc'),
+      front: r[0]?.trim() || '',
+      back: r[1]?.trim() || '',
+      nextReview: 0, interval: 1, ease: 2.5, repetitions: 0,
+    }))
+    if (newCards.length) {
+      updateDeck(liveDeck.id, { cards: [...cards, ...newCards], updatedAt: new Date().toISOString() })
+      persistFlashcardDecks()
+    }
+  }
+
+  // Edit mode helpers
+  function addCard() {
+    if (!liveDeck) return
+    const card = { id: makeId('fc'), front: '', back: '', nextReview: 0, interval: 1, ease: 2.5, repetitions: 0 }
+    updateDeck(liveDeck.id, { cards: [...cards, card], updatedAt: new Date().toISOString() })
+    persistFlashcardDecks()
+  }
+
+  function deleteCard(cardId) {
+    if (!liveDeck) return
+    updateDeck(liveDeck.id, { cards: cards.filter(c => c.id !== cardId), updatedAt: new Date().toISOString() })
+    persistFlashcardDecks()
+  }
+
+  function updateCard(cardId, patch) {
+    if (!liveDeck) return
+    const newCards = cards.map(c => c.id === cardId ? { ...c, ...patch } : c)
+    updateDeck(liveDeck.id, { cards: newCards, updatedAt: new Date().toISOString() })
+    // Debounce persist for typing
+    clearTimeout(titleTimeout.current)
+    titleTimeout.current = setTimeout(() => persistFlashcardDecks(), 500)
+  }
+
+  if (!deck) {
+    return (
+      <div className="fc-container">
+        <style>{FLASHCARD_CSS}</style>
+        <div className="fc-header">
+          <GnosNavButton onClick={() => setView('library')} />
+          <span style={{ color: 'var(--textDim)', fontSize: 14 }}>No deck selected</span>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="fc-container">
+      <style>{FLASHCARD_CSS}</style>
+
+      {/* Header */}
+      <div className="fc-header">
+        <GnosNavButton onClick={() => setView('library')} />
+        <input
+          className="fc-header-title"
+          value={title}
+          onChange={e => handleTitleChange(e.target.value)}
+          onBlur={() => {
+            if (liveDeck && title !== liveDeck.title) {
+              updateDeck(liveDeck.id, { title, updatedAt: new Date().toISOString() })
+              persistFlashcardDecks()
+            }
+          }}
+        />
+        <div className="fc-stats">
+          <span>{cards.length} cards</span>
+          <span style={{ color: dueCards.length > 0 ? '#ff9800' : 'var(--textDim)' }}>
+            {dueCards.length} due
+          </span>
+          {(liveDeck?.streak || 0) > 0 && <span>🔥 {liveDeck.streak} day streak</span>}
+        </div>
+        <button className="fc-mode-btn" onClick={handleImport} title="Import CSV/TSV">Import</button>
+        <button className={`fc-mode-btn${mode === 'study' ? ' active' : ''}`} onClick={() => { setMode('study'); setFlipped(false); setCurrentIdx(0) }}>Study</button>
+        <button className={`fc-mode-btn${mode === 'edit' ? ' active' : ''}`} onClick={() => setMode('edit')}>Edit</button>
+      </div>
+
+      {/* Study Mode */}
+      {mode === 'study' && (
+        <div className="fc-study">
+          {studyCard ? (
+            <>
+              <div className="fc-card-wrapper" onClick={() => setFlipped(f => !f)}>
+                <div className={`fc-card-inner${flipped ? ' flipped' : ''}`}>
+                  <div className="fc-card-face fc-card-front" style={{ flexDirection: 'column', gap: 8, borderLeftColor: studyCard.color && studyCard.color !== 'transparent' ? studyCard.color : undefined, borderLeftWidth: studyCard.color && studyCard.color !== 'transparent' ? 4 : undefined }}>
+                    <div className="fc-card-label">Front</div>
+                    {studyCard.front || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>Empty card</span>}
+                    {studyCard.imageUrl && <img src={studyCard.imageUrl} alt="" style={{ maxWidth: '70%', maxHeight: 100, borderRadius: 8, objectFit: 'contain' }} />}
+                    {studyCard.sketchUrl && <img src={studyCard.sketchUrl} alt="" style={{ maxWidth: '80%', maxHeight: 80, borderRadius: 6 }} />}
+                    {studyCard.audioUrl && <AudioPlayBtn src={studyCard.audioUrl} />}
+                  </div>
+                  <div className="fc-card-face fc-card-back" style={{ flexDirection: 'column', gap: 8 }}>
+                    <div className="fc-card-label">Back</div>
+                    {studyCard.back || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>No answer</span>}
+                    {studyCard.backAudioUrl && <AudioPlayBtn src={studyCard.backAudioUrl} />}
+                  </div>
+                </div>
+              </div>
+              {flipped ? (
+                <div className="fc-rating-bar">
+                  <button className="fc-rate-btn again" onClick={() => rateCard(1)}>Again <span style={{ fontSize: 10, opacity: 0.6 }}>(1)</span></button>
+                  <button className="fc-rate-btn hard" onClick={() => rateCard(2)}>Hard <span style={{ fontSize: 10, opacity: 0.6 }}>(2)</span></button>
+                  <button className="fc-rate-btn good" onClick={() => rateCard(3)}>Good <span style={{ fontSize: 10, opacity: 0.6 }}>(3)</span></button>
+                  <button className="fc-rate-btn easy" onClick={() => rateCard(4)}>Easy <span style={{ fontSize: 10, opacity: 0.6 }}>(4)</span></button>
+                </div>
+              ) : (
+                <div className="fc-hint-text">Click card or press Space to flip</div>
+              )}
+              <div style={{ fontSize: 11, color: 'var(--textDim)', textAlign: 'center' }}>
+                Card {currentIdx + 1} of {dueCards.length} due
+                {studyCard?.interval > 1 && (
+                  <div style={{ marginTop: 4, fontSize: 10, opacity: 0.7 }}>
+                    Next review in ~{studyCard.interval} day{studyCard.interval !== 1 ? 's' : ''} if rated Good
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="fc-done-msg">
+              <h3>All caught up!</h3>
+              <p>No cards are due for review right now.</p>
+              <p style={{ marginTop: 8 }}>{cards.length} total cards in this deck</p>
+              <button
+                className="fc-mode-btn"
+                style={{ marginTop: 16 }}
+                onClick={() => setMode('edit')}
+              >Add more cards</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Edit Mode — card viewport */}
+      {mode === 'edit' && (
+        <div className="fc-edit" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: cards.length ? 'center' : 'flex-start', gap: 16, paddingTop: 24 }}>
+          {cards.length > 0 && (() => {
+            const editIdx = Math.min(currentIdx, cards.length - 1)
+            const card = cards[editIdx]
+            if (!card) return null
+            return (
+              <>
+                {/* Card navigation */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <button className="fc-mode-btn" onClick={() => setCurrentIdx(Math.max(0, editIdx - 1))} disabled={editIdx === 0}>&larr;</button>
+                  <span style={{ fontSize: 12, color: 'var(--textDim)' }}>Card {editIdx + 1} of {cards.length}</span>
+                  <button className="fc-mode-btn" onClick={() => setCurrentIdx(Math.min(cards.length - 1, editIdx + 1))} disabled={editIdx >= cards.length - 1}>&rarr;</button>
+                </div>
+                {/* Editable card viewport */}
+                <div style={{ width: '100%', maxWidth: 780, display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  {/* Front face — notecard proportions */}
+                  <div className="fc-card-face fc-card-front" style={{
+                    position: 'relative', minHeight: 200, aspectRatio: '5/3', flexDirection: 'column', gap: 8,
+                    borderLeft: card.color && card.color !== 'transparent' ? `4px solid ${card.color}` : undefined,
+                    borderTop: '3px solid var(--accent)',
+                  }}>
+                    <div className="fc-card-label">Front</div>
+                    <textarea className="fc-card-input" placeholder="Front (question)..."
+                      value={card.front} onChange={e => updateCard(card.id, { front: e.target.value })}
+                      style={{ background: 'transparent', border: 'none', textAlign: 'center', fontSize: 18, fontWeight: 500, resize: 'none', minHeight: 80, fontFamily: 'Georgia, serif' }} />
+                    {card.imageUrl && (
+                      <div style={{ position: 'relative', display: 'inline-block' }}>
+                        <img src={card.imageUrl} alt="" style={{ maxWidth: '80%', maxHeight: 120, borderRadius: 8, objectFit: 'contain' }} />
+                        <button onClick={() => updateCard(card.id, { imageUrl: '' })}
+                          style={{ position: 'absolute', top: 2, right: 2, width: 20, height: 20, borderRadius: 10, background: 'rgba(0,0,0,0.5)', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 11 }}>×</button>
+                      </div>
+                    )}
+                    {card.audioUrl && (
+                      <div className="fc-audio-row">
+                        <AudioPlayBtn src={card.audioUrl} />
+                        <span className="fc-audio-label">Audio attached</span>
+                        <button className="fc-audio-remove" onClick={() => updateCard(card.id, { audioUrl: '' })}>×</button>
+                      </div>
+                    )}
+                    <div style={{ position: 'absolute', bottom: 8, right: 8, display: 'flex', gap: 4 }}>
+                      <AudioUploadBtn label="Audio" onUpload={url => updateCard(card.id, { audioUrl: url })} />
+                      <ImageUploadBtn label="Image" onUpload={url => updateCard(card.id, { imageUrl: url })} />
+                    </div>
+                  </div>
+                  {/* Back face — notecard proportions */}
+                  <div className="fc-card-face fc-card-back" style={{
+                    position: 'relative', minHeight: 200, aspectRatio: '5/3', flexDirection: 'column', gap: 8, transform: 'none',
+                    borderTop: '3px solid var(--textDim)',
+                  }}>
+                    <div className="fc-card-label">Back</div>
+                    <textarea className="fc-card-input" placeholder="Back (answer)..."
+                      value={card.back} onChange={e => updateCard(card.id, { back: e.target.value })}
+                      style={{ background: 'transparent', border: 'none', textAlign: 'center', fontSize: 18, fontWeight: 500, resize: 'none', minHeight: 80, fontFamily: 'Georgia, serif' }} />
+                    {card.backImageUrl && (
+                      <div style={{ position: 'relative', display: 'inline-block' }}>
+                        <img src={card.backImageUrl} alt="" style={{ maxWidth: '80%', maxHeight: 120, borderRadius: 8, objectFit: 'contain' }} />
+                        <button onClick={() => updateCard(card.id, { backImageUrl: '' })}
+                          style={{ position: 'absolute', top: 2, right: 2, width: 20, height: 20, borderRadius: 10, background: 'rgba(0,0,0,0.5)', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 11 }}>×</button>
+                      </div>
+                    )}
+                    {card.backAudioUrl && (
+                      <div className="fc-audio-row">
+                        <AudioPlayBtn src={card.backAudioUrl} />
+                        <span className="fc-audio-label">Audio attached</span>
+                        <button className="fc-audio-remove" onClick={() => updateCard(card.id, { backAudioUrl: '' })}>×</button>
+                      </div>
+                    )}
+                    <div style={{ position: 'absolute', bottom: 8, right: 8, display: 'flex', gap: 4 }}>
+                      <AudioUploadBtn label="Audio" onUpload={url => updateCard(card.id, { backAudioUrl: url })} />
+                      <ImageUploadBtn label="Image" onUpload={url => updateCard(card.id, { backImageUrl: url })} />
+                    </div>
+                  </div>
+                </div>
+                {/* Color + delete row */}
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', maxWidth: 500, width: '100%' }}>
+                  {CARD_COLORS.map(c => (
+                    <span key={c} className={`fc-color-dot${card.color === c ? ' active' : ''}`}
+                      style={{ background: c === 'transparent' ? 'var(--surfaceAlt)' : c }}
+                      onClick={() => updateCard(card.id, { color: c })} />
+                  ))}
+                  <span style={{ flex: 1 }} />
+                  <button className="fc-mode-btn" style={{ color: '#ef5350', borderColor: '#ef5350' }}
+                    onClick={() => { deleteCard(card.id); setCurrentIdx(Math.max(0, editIdx - 1)) }}>Delete</button>
+                </div>
+              </>
+            )
+          })()}
+          <button className="fc-add-btn" style={{ maxWidth: 500 }} onClick={addCard}>+ Add Card</button>
+        </div>
+      )}
+    </div>
+  )
+}

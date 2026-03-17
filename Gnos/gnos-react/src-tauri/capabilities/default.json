@@ -17,6 +17,14 @@
     "fs:allow-write-file",
     "fs:allow-remove",
     "fs:allow-home-read-recursive",
+    "fs:allow-desktop-read-recursive",
+    "fs:allow-document-read-recursive",
+    "fs:allow-download-read-recursive",
+    "fs:allow-picture-read-recursive",
+    {
+      "identifier": "fs:scope",
+      "allow": [{"path": "/**"}, {"path": "$HOME/**"}, {"path": "$DESKTOP/**"}, {"path": "$DOWNLOAD/**"}, {"path": "$PICTURE/**"}, {"path": "$DOCUMENT/**"}]
+    },
     "dialog:default",
     "dialog:allow-open"
   ]

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { loadLibrary, saveLibrary, loadNotebooksMeta, saveNotebooksMeta, loadPreferences, savePreferences, loadSketchbooksMeta, saveSketchbooksMeta, migrateBooksToNamedFolders, migrateNotebooksToFolders, migrateSketchbooksToFolders, migrateAudiobooksToFolders, saveArchivePointer, loadArchivePointer } from '@/lib/storage'
+import { loadLibrary, saveLibrary, loadNotebooksMeta, saveNotebooksMeta, loadPreferences, savePreferences, loadSketchbooksMeta, saveSketchbooksMeta, migrateBooksToNamedFolders, migrateNotebooksToFolders, migrateSketchbooksToFolders, migrateAudiobooksToFolders, saveArchivePointer, loadArchivePointer, cleanupTrash, getJSON, setJSON } from '@/lib/storage'
 import { applyTheme, BUILT_IN_THEMES } from '@/lib/themes'
 import { makeId } from '@/lib/utils'
 
@@ -22,7 +22,7 @@ const useAppStore = create((set, get) => ({
 
   // ── Tabs (max 2) ─────────────────────────────────────────────────────────────
   // Each tab: { id, view, activeLibTab, activeBook, activeNotebook, activeAudioBook, activeSketchbook }
-  tabs: [{ id: 'tab_main', view: 'library', activeLibTab: 'library', activeBook: null, activeNotebook: null, activeAudioBook: null, activeSketchbook: null }],
+  tabs: [{ id: 'tab_main', view: 'library', activeLibTab: 'library', activeBook: null, activeNotebook: null, activeAudioBook: null, activeSketchbook: null, activeFlashcardDeck: null }],
   activeTabId: 'tab_main',
 
   /** Snapshot current view state into the active tab, then switch to target tab */
@@ -30,7 +30,7 @@ const useAppStore = create((set, get) => ({
     const s = get()
     const updatedTabs = s.tabs.map(t =>
       t.id === s.activeTabId
-        ? { ...t, view: s.view, activeLibTab: s.activeLibTab, activeBook: s.activeBook, activeNotebook: s.activeNotebook, activeAudioBook: s.activeAudioBook, activeSketchbook: s.activeSketchbook }
+        ? { ...t, view: s.view, activeLibTab: s.activeLibTab, activeBook: s.activeBook, activeNotebook: s.activeNotebook, activeAudioBook: s.activeAudioBook, activeSketchbook: s.activeSketchbook, activeFlashcardDeck: s.activeFlashcardDeck }
         : t
     )
     const target = updatedTabs.find(t => t.id === targetId)
@@ -44,6 +44,7 @@ const useAppStore = create((set, get) => ({
       activeNotebook: target.activeNotebook,
       activeAudioBook: target.activeAudioBook,
       activeSketchbook: target.activeSketchbook,
+      activeFlashcardDeck: target.activeFlashcardDeck,
     })
   },
 
@@ -53,7 +54,7 @@ const useAppStore = create((set, get) => ({
     // Save current state into active tab
     const updatedTabs = s.tabs.map(t =>
       t.id === s.activeTabId
-        ? { ...t, view: s.view, activeLibTab: s.activeLibTab, activeBook: s.activeBook, activeNotebook: s.activeNotebook, activeAudioBook: s.activeAudioBook, activeSketchbook: s.activeSketchbook }
+        ? { ...t, view: s.view, activeLibTab: s.activeLibTab, activeBook: s.activeBook, activeNotebook: s.activeNotebook, activeAudioBook: s.activeAudioBook, activeSketchbook: s.activeSketchbook, activeFlashcardDeck: s.activeFlashcardDeck }
         : t
     )
     const newTab = {
@@ -64,6 +65,7 @@ const useAppStore = create((set, get) => ({
       activeNotebook: snapshot.activeNotebook || null,
       activeAudioBook: snapshot.activeAudioBook || null,
       activeSketchbook: snapshot.activeSketchbook || null,
+      activeFlashcardDeck: snapshot.activeFlashcardDeck || null,
     }
     // Always append — no tab limit
     const finalTabs = [...updatedTabs, newTab]
@@ -76,6 +78,7 @@ const useAppStore = create((set, get) => ({
       activeNotebook: newTab.activeNotebook,
       activeAudioBook: newTab.activeAudioBook,
       activeSketchbook: newTab.activeSketchbook,
+      activeFlashcardDeck: newTab.activeFlashcardDeck,
     })
   },
 
@@ -102,6 +105,7 @@ const useAppStore = create((set, get) => ({
       activeNotebook: next.activeNotebook,
       activeAudioBook: next.activeAudioBook,
       activeSketchbook: next.activeSketchbook,
+      activeFlashcardDeck: next.activeFlashcardDeck,
     })
   },
 
@@ -154,6 +158,40 @@ const useAppStore = create((set, get) => ({
   })),
   removeSketchbook: (id) => set(s => ({ sketchbooks: s.sketchbooks.filter(sb => sb.id !== id) })),
 
+  // ── Flashcard Decks ────────────────────────────────────────────────────────
+  flashcardDecks: [],
+  activeFlashcardDeck: null,
+  setFlashcardDecks: (flashcardDecks) => set({ flashcardDecks }),
+  setActiveFlashcardDeck: (deck) => set({ activeFlashcardDeck: deck }),
+  addDeck: (deck) => set(s => ({ flashcardDecks: [deck, ...s.flashcardDecks] })),
+  updateDeck: (id, patch) => set(s => ({
+    flashcardDecks: s.flashcardDecks.map(d => d.id === id ? { ...d, ...patch } : d),
+  })),
+  removeDeck: (id) => set(s => ({ flashcardDecks: s.flashcardDecks.filter(d => d.id !== id) })),
+
+  // ── Collections ─────────────────────────────────────────────────────────────
+  collections: [],
+  setCollections: (collections) => set({ collections }),
+  addCollection: (col) => set(s => ({ collections: [col, ...s.collections] })),
+  updateCollection: (id, patch) => set(s => ({
+    collections: s.collections.map(c => c.id === id ? { ...c, ...patch } : c),
+  })),
+  removeCollection: (id) => set(s => ({ collections: s.collections.filter(c => c.id !== id) })),
+  addToCollection: (collectionId, itemId) => set(s => ({
+    collections: s.collections.map(c =>
+      c.id === collectionId && !c.items.includes(itemId)
+        ? { ...c, items: [...c.items, itemId] }
+        : c
+    ),
+  })),
+  removeFromCollection: (collectionId, itemId) => set(s => ({
+    collections: s.collections.map(c =>
+      c.id === collectionId
+        ? { ...c, items: c.items.filter(i => i !== itemId) }
+        : c
+    ),
+  })),
+
   // ── Active audio book ────────────────────────────────────────────────────────
   activeAudioBook: null,
   setActiveAudioBook: (book) => set({ activeAudioBook: book }),
@@ -176,6 +214,21 @@ const useAppStore = create((set, get) => ({
   justifyText: true,
   highlightWords: false,
   underlineLine: false,
+  // Notebook prefs
+  defaultViewMode: 'live',
+  autosave: true,
+  smartListContinuation: true,
+  syntaxAutocomplete: true,
+  // TTS prefs
+  ttsEnabled: false,
+  ttsVoice: '',
+  ttsSpeed: 1,
+  // Audio prefs
+  rememberPosition: true,
+  defaultPlaybackSpeed: 1,
+  // Filter persistence
+  libSubFilter: 'all',
+  setLibSubFilter: (f) => { set({ libSubFilter: f }); get().persistPreferences() },
   setPreference: (key, value) => set({ [key]: value }),
   setPref: (key, value) => set({ [key]: value }),
   updateBookProgress: (id, chapter, page) => set(s => ({
@@ -208,11 +261,13 @@ const useAppStore = create((set, get) => ({
     }
 
     // ── Step 2: load everything from the correct location ─────────────────────
-    const [library, notebooks, sketchbooks, prefs] = await Promise.all([
+    const [library, notebooks, sketchbooks, prefs, collections, flashcardDecks] = await Promise.all([
       loadLibrary(),
       loadNotebooksMeta(),
       loadSketchbooksMeta(),
       loadPreferences(),
+      getJSON('collections_meta', []),
+      getJSON('flashcard_decks', []),
     ])
 
     if (prefs) {
@@ -221,24 +276,32 @@ const useAppStore = create((set, get) => ({
         fontSize = 18, lineSpacing = 1.7, fontFamily = 'Georgia, serif',
         tapToTurn = true, twoPage = false,
         justifyText = true, highlightWords = false, underlineLine = false,
+        defaultViewMode = 'live', autosave = true, smartListContinuation = true, syntaxAutocomplete = true,
+        rememberPosition = true, defaultPlaybackSpeed = 1,
+        ttsEnabled = false, ttsVoice = '', ttsSpeed = 1,
         ollamaUrl = '', ollamaModel = 'llama3',
         username = '', archivePath = '', onboardingComplete = false,
+        libSubFilter = 'all',
       } = prefs
       // archivePath from prefs wins over the pointer (they should match, but prefs is authoritative)
       set({ themeKey, customThemes, fontSize, lineSpacing, fontFamily,
             tapToTurn, twoPage, justifyText, highlightWords, underlineLine,
-            ollamaUrl, ollamaModel, username,
+            defaultViewMode, autosave, smartListContinuation, syntaxAutocomplete,
+            rememberPosition, defaultPlaybackSpeed,
+            ttsEnabled, ttsVoice, ttsSpeed,
+            ollamaUrl, ollamaModel, username, libSubFilter,
             archivePath: archivePath || savedArchivePath,
             onboardingComplete })
       applyTheme(themeKey, customThemes)
     } else {
       applyTheme('dark')
     }
-    set({ library: library ?? [], notebooks: notebooks ?? [], sketchbooks: sketchbooks ?? [] })
+    set({ library: library ?? [], notebooks: notebooks ?? [], sketchbooks: sketchbooks ?? [], collections: collections ?? [], flashcardDecks: flashcardDecks ?? [] })
     migrateBooksToNamedFolders(library ?? []).catch(err => console.warn('[Gnos] Migration error:', err))
     migrateNotebooksToFolders(notebooks ?? []).catch(err => console.warn('[Gnos] Notebook migration error:', err))
     migrateSketchbooksToFolders(sketchbooks ?? []).catch(err => console.warn('[Gnos] Sketchbook migration error:', err))
     migrateAudiobooksToFolders(library ?? []).catch(err => console.warn('[Gnos] Audio migration error:', err))
+    cleanupTrash().catch(err => console.debug('[Gnos] Trash cleanup error:', err))
   },
 
   async persistLibrary() {
@@ -250,6 +313,12 @@ const useAppStore = create((set, get) => ({
   async persistSketchbooks() {
     await saveSketchbooksMeta(get().sketchbooks)
   },
+  async persistFlashcardDecks() {
+    await setJSON('flashcard_decks', get().flashcardDecks)
+  },
+  async persistCollections() {
+    await setJSON('collections_meta', get().collections)
+  },
   async persistPreferences() {
     const s = get()
     await savePreferences({
@@ -257,8 +326,13 @@ const useAppStore = create((set, get) => ({
       fontSize: s.fontSize, lineSpacing: s.lineSpacing, fontFamily: s.fontFamily,
       tapToTurn: s.tapToTurn, twoPage: s.twoPage,
       justifyText: s.justifyText, highlightWords: s.highlightWords, underlineLine: s.underlineLine,
+      defaultViewMode: s.defaultViewMode, autosave: s.autosave,
+      smartListContinuation: s.smartListContinuation, syntaxAutocomplete: s.syntaxAutocomplete,
+      rememberPosition: s.rememberPosition, defaultPlaybackSpeed: s.defaultPlaybackSpeed,
+      ttsEnabled: s.ttsEnabled, ttsVoice: s.ttsVoice, ttsSpeed: s.ttsSpeed,
       ollamaUrl: s.ollamaUrl, ollamaModel: s.ollamaModel,
       username: s.username, archivePath: s.archivePath, onboardingComplete: s.onboardingComplete,
+      libSubFilter: s.libSubFilter,
     })
     // Always keep the pointer file up to date so init() can find the archive on next launch
     if (s.archivePath) {

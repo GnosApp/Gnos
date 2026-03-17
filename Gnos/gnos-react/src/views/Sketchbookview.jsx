@@ -362,9 +362,17 @@ export default function SketchbookView() {
     })
     useAppStore.getState().persistSketchbooks?.()
     setSaving(false)
-    clearTimeout(saveVisTimer.current)
-    setSaveVisible(true)
-    saveVisTimer.current = setTimeout(() => setSaveVisible(false), 1800)
+    const el = document.getElementById('sk-save-icon')
+    if (el) {
+      el.classList.remove('anim', 'vis', 'closing'); void el.offsetWidth
+      el.classList.add('anim', 'vis')
+      clearTimeout(saveVisTimer.current)
+      saveVisTimer.current = setTimeout(() => {
+        el.classList.remove('anim')
+        el.classList.add('closing')
+        saveVisTimer.current = setTimeout(() => el.classList.remove('vis', 'closing'), 450)
+      }, 600)
+    }
   }, [sketchbook, updateSketchbook])
 
   const scheduleSave = useCallback((elements, appState, files) => {
@@ -556,8 +564,11 @@ export default function SketchbookView() {
         {/* Right-side actions */}
         <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'flex-end', gap:8 }}>
           {/* Save status */}
-          <div style={{ fontSize:11, color:'var(--textDim)', opacity: saving || saveVisible ? 0.75 : 0, transition:'opacity 0.3s ease', whiteSpace:'nowrap' }}>
-            {saving ? 'Saving…' : 'Saved'}
+          <div className="nb-save-indicator">
+            <svg id="sk-save-icon" className="nb-save-icon" viewBox="0 0 18 18" fill="none">
+              <circle className="nb-save-ring" cx="9" cy="9" r="7.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+              <polyline className="nb-save-check" points="5.5,9 7.8,11.5 12.5,6.5" stroke="currentColor" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
           </div>
 
           {sketchbook.elementCount > 0 && (
@@ -644,6 +655,15 @@ export default function SketchbookView() {
       <div style={{ flex:1, position:'relative', overflow:'auto', minHeight:0, minWidth:0, padding:0, margin:0 }}>
 
         <style>{`
+          .nb-save-indicator { display:flex; align-items:center; opacity:1; transition:opacity .3s; }
+          .nb-save-icon { width:18px; height:18px; color:var(--accent); }
+          .nb-save-icon.vis { opacity:1; }
+          .nb-save-ring { stroke-dasharray:47; stroke-dashoffset:47; transition:stroke-dashoffset 0s; }
+          .nb-save-icon.anim .nb-save-ring { stroke-dashoffset:0; transition:stroke-dashoffset 0.3s ease; }
+          .nb-save-check { stroke-dasharray:12; stroke-dashoffset:12; transition:stroke-dashoffset 0s; }
+          .nb-save-icon.anim .nb-save-check { stroke-dashoffset:0; transition:stroke-dashoffset 0.15s ease 0.25s; }
+          .nb-save-icon.closing .nb-save-check { stroke-dashoffset:12; transition:stroke-dashoffset 0.15s ease; }
+          .nb-save-icon.closing .nb-save-ring { stroke-dashoffset:47; transition:stroke-dashoffset 0.3s ease 0.1s; }
           @keyframes spin { to { transform: rotate(360deg); } }
           .excalidraw-wrapper {
             position: absolute !important; inset: 0 !important;

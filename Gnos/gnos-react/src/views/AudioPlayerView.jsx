@@ -3,6 +3,7 @@ import useAppStore from '@/store/useAppStore'
 import { loadAudioChapter, loadSingleAudioData, addReadingMinutes } from '@/lib/storage'
 import { generateCoverColor } from '@/lib/utils'
 import { GnosNavButton } from '@/components/SideNav'
+import { TITLEBAR_H } from '@/App'
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
 
@@ -29,6 +30,7 @@ export default function AudioPlayerView() {
   const [volume,    setVolume]    = useState(1)
   const [audioError, setAudioError] = useState(null)
   const [showSettings, setShowSettings] = useState(false)
+  const [chapOpen, setChapOpen] = useState(true)
 
   const chapIdxRef = useRef(0)
   const speedRef    = useRef(1)
@@ -434,7 +436,29 @@ export default function AudioPlayerView() {
             <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.07em', color: 'var(--textDim)', opacity: .6, marginBottom: 8 }}>Volume</div>
             <input type="range" min="0" max="1" step="0.02"
               value={volume} onChange={onVolChange}
-              style={{ width: '100%', accentColor: 'var(--accent)' }} />
+              style={{ width: '100%', accentColor: 'var(--accent)', marginBottom: 14 }} />
+
+            <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.07em', color: 'var(--textDim)', opacity: .6, marginBottom: 8 }}>Sleep Timer</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
+              {[15, 30, 45, 60, 90].map(m => (
+                <button key={m} onClick={() => {
+                  if (window._gnosSleepTimer) clearTimeout(window._gnosSleepTimer)
+                  window._gnosSleepTimer = setTimeout(() => { if (audioRef.current) audioRef.current.pause() }, m * 60000)
+                  setShowSettings(false)
+                }} style={{
+                  padding: '4px 10px', borderRadius: 6, fontSize: 12, fontWeight: 500,
+                  border: '1px solid var(--border)', background: 'var(--surfaceAlt)',
+                  color: 'var(--text)', cursor: 'pointer', transition: 'all .1s',
+                }}>
+                  {m}m
+                </button>
+              ))}
+              <button onClick={() => { if (window._gnosSleepTimer) { clearTimeout(window._gnosSleepTimer); window._gnosSleepTimer = null } }} style={{
+                padding: '4px 10px', borderRadius: 6, fontSize: 12, fontWeight: 500,
+                border: '1px solid var(--border)', background: 'var(--surfaceAlt)',
+                color: 'var(--textDim)', cursor: 'pointer',
+              }}>Off</button>
+            </div>
           </div>
         )}
         </div>
@@ -442,38 +466,57 @@ export default function AudioPlayerView() {
 
       <div className="ap-layout" style={{ flex: 1, overflow: 'hidden' }}>
 
-        {/* ── Sidebar ── */}
-        <aside className="ap-sidebar">
-          <div className="ap-sidebar-header">
-            <div className="ap-sidebar-title">Chapters</div>
-          </div>
-          <div className="ap-chapter-list">
-            {isMulti ? chaps.map((c, i) => (
-              <button key={i} className={`ap-chap-item${i === chapIdx ? ' active' : ''}`}
-                onClick={() => loadAndPlayChapter(i, true)}>
-                <span className="ap-chap-num">{i + 1}</span>
-                <span className="ap-chap-name">{c.title || `Chapter ${i + 1}`}</span>
-                {i === chapIdx && (
+        {/* ── Floating chapters button + popout panel ── */}
+        <button
+          onClick={() => setChapOpen(o => !o)}
+          style={{
+            position: 'fixed', left: chapOpen ? 280 : 16, top: TITLEBAR_H + 56,
+            zIndex: 1200, padding: '10px 14px', borderRadius: 10,
+            border: '1px solid var(--border)', background: 'var(--surface)',
+            color: 'var(--text)', cursor: 'pointer', fontFamily: 'inherit',
+            fontSize: 12, fontWeight: 700, letterSpacing: '0.03em',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.35)', transition: 'left 0.25s ease',
+            display: 'flex', alignItems: 'center', gap: 6,
+          }}
+        >
+          Chapters {chapOpen ? '\u2039' : '\u203A'}
+        </button>
+        {chapOpen && (
+          <aside style={{
+            position: 'fixed', left: 0, top: TITLEBAR_H + 48, bottom: 0, width: 270, zIndex: 1100,
+            background: 'var(--surface)', borderRight: '1px solid var(--border)',
+            boxShadow: '6px 0 24px rgba(0,0,0,0.35)', display: 'flex', flexDirection: 'column',
+            animation: 'ap-slide-in 0.2s ease',
+          }}>
+            <div style={{ padding: '14px 14px 8px', fontSize: 12, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--textDim)' }}>Chapters</div>
+            <div className="ap-chapter-list" style={{ flex: 1, overflow: 'auto', padding: '0 6px 12px' }}>
+              {isMulti ? chaps.map((c, i) => (
+                <button key={i} className={`ap-chap-item${i === chapIdx ? ' active' : ''}`}
+                  onClick={() => loadAndPlayChapter(i, true)}>
+                  <span className="ap-chap-num">{i + 1}</span>
+                  <span className="ap-chap-name">{c.title || `Chapter ${i + 1}`}</span>
+                  {i === chapIdx && (
+                    <span className="ap-chap-playing">
+                      <span className="ap-chap-bar" />
+                      <span className="ap-chap-bar" />
+                      <span className="ap-chap-bar" />
+                    </span>
+                  )}
+                </button>
+              )) : (
+                <button className="ap-chap-item active">
+                  <span className="ap-chap-num">1</span>
+                  <span className="ap-chap-name">{book.title || 'Track'}</span>
                   <span className="ap-chap-playing">
                     <span className="ap-chap-bar" />
                     <span className="ap-chap-bar" />
                     <span className="ap-chap-bar" />
                   </span>
-                )}
-              </button>
-            )) : (
-              <button className="ap-chap-item active">
-                <span className="ap-chap-num">1</span>
-                <span className="ap-chap-name">{book.title || 'Track'}</span>
-                <span className="ap-chap-playing">
-                  <span className="ap-chap-bar" />
-                  <span className="ap-chap-bar" />
-                  <span className="ap-chap-bar" />
-                </span>
-              </button>
-            )}
-          </div>
-        </aside>
+                </button>
+              )}
+            </div>
+          </aside>
+        )}
 
         {/* ── Main ── */}
         <main className="ap-main">

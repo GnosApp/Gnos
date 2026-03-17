@@ -36,11 +36,19 @@ function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose }) {
         <span className="reader-slider-icon-lg" style={{ fontFamily: 'Georgia, serif', fontWeight: 700 }}>A</span>
       </div>
       <div className="reader-slider-row">
-        <span className="reader-slider-icon-sm-line">≡</span>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+          <line x1="2" y1="4" x2="14" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+          <line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+          <line x1="2" y1="12" x2="14" y2="12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+        </svg>
         <input type="range" min="1.4" max="2.4" step="0.1" value={lineSpacing}
           onChange={e => onPrefChange('lineSpacing', +e.target.value)}
           onMouseUp={onRebuild} onTouchEnd={onRebuild} style={{ flex: 1 }} />
-        <span className="reader-slider-icon-lg-line" style={{ letterSpacing: '2px' }}>≡{'\n'}≡</span>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+          <line x1="2" y1="2" x2="14" y2="2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+          <line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+          <line x1="2" y1="14" x2="14" y2="14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+        </svg>
       </div>
       <label style={{ display: 'block', fontSize: 12, marginBottom: 12 }}>
         <div style={{ marginBottom: 5 }}>Font</div>

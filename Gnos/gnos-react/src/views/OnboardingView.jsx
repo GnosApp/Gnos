@@ -26,10 +26,11 @@ const CK = 15               // checkmark stroke length
 function QuillIcon({ accent = '#8b5e3c', size = 32, opacity = 0.4 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" fill="none" style={{ opacity }}>
-      <path d="M28 4C20 4 8 12 6 28" stroke={accent} strokeWidth="1.2" strokeLinecap="round" />
-      <path d="M28 4C26 10 18 18 6 28" stroke={accent} strokeWidth="0.8" strokeLinecap="round" />
-      <path d="M6 28L10 22" stroke={accent} strokeWidth="1.2" strokeLinecap="round" />
-      <path d="M28 4C22 8 16 14 12 20" stroke={accent} strokeWidth="0.6" strokeLinecap="round" strokeOpacity="0.5"/>
+      <path d="M26 3C22 5 14 10 10 18C8 22 7 25 6.5 28" stroke={accent} strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M26 3C24 8 18 15 10 18" stroke={accent} strokeWidth="1.2" strokeLinecap="round" opacity="0.6" />
+      <path d="M26 3C25 6 22 10 16 14" stroke={accent} strokeWidth="0.8" strokeLinecap="round" opacity="0.35" />
+      <path d="M6.5 28L9 23" stroke={accent} strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M3 30h26" stroke={accent} strokeWidth="1.8" strokeLinecap="round" opacity="0.5" />
     </svg>
   )
 }

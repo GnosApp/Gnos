@@ -1,4 +1,4 @@
-import { readTextFile, writeTextFile, remove, readDir, exists, mkdir } from '@tauri-apps/plugin-fs'
+import { readTextFile, writeTextFile, writeFile, remove, readDir, exists, mkdir } from '@tauri-apps/plugin-fs'
 import { appDataDir, join } from '@tauri-apps/api/path'
 
 // ── Base directory ────────────────────────────────────────────────────────────
@@ -127,6 +127,60 @@ const storage = {
 }
 
 export default storage
+
+// ── Trash system ──────────────────────────────────────────────────────────────
+
+async function getTrashDir() {
+  const base = await getBaseDir()
+  const dir = await join(base, 'trash')
+  if (!(await exists(dir))) await mkdir(dir, { recursive: true })
+  return dir
+}
+
+export async function moveToTrash(type, id, title) {
+  try {
+    const trashDir = await getTrashDir()
+    const timestamp = new Date().toISOString()
+    const safeName = (title || id).replace(/[^a-zA-Z0-9_\- ]/g, '_').slice(0, 80)
+    const trashEntry = await join(trashDir, `${type}_${safeName}_${Date.now()}`)
+    await mkdir(trashEntry, { recursive: true })
+    // Write a manifest so we know what this trash item is
+    await writeTextFile(await join(trashEntry, '_trash_meta.json'), JSON.stringify({
+      type, id, title, deletedAt: timestamp,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    }, null, 2))
+    return trashEntry
+  } catch (err) {
+    console.warn('[Gnos] moveToTrash failed:', err)
+    return null
+  }
+}
+
+export async function cleanupTrash() {
+  try {
+    const trashDir = await getTrashDir()
+    const entries = await readDir(trashDir)
+    const now = Date.now()
+    for (const entry of entries) {
+      if (!entry.name) continue
+      const metaPath = await join(trashDir, entry.name, '_trash_meta.json')
+      if (await exists(metaPath)) {
+        try {
+          const meta = JSON.parse(await readTextFile(metaPath))
+          if (meta.expiresAt && new Date(meta.expiresAt).getTime() < now) {
+            // Expired — permanently delete
+            const entryPath = await join(trashDir, entry.name)
+            const files = await readDir(entryPath)
+            for (const f of files) {
+              if (f.name) await remove(await join(entryPath, f.name))
+            }
+            try { await remove(entryPath) } catch { /* not empty */ }
+          }
+        } catch { /* skip corrupt */ }
+      }
+    }
+  } catch (err) { console.debug('[Gnos] cleanupTrash error:', err) }
+}
 
 // ── JSON helpers ──────────────────────────────────────────────────────────────
 
@@ -277,6 +331,30 @@ export async function saveNotebookContent(notebookOrId, content) {
     return true
   } catch (err) { console.debug('[Gnos] saveNotebookContent named folder failed', err) }
   return setJSON(`notebook_${id}`, content)
+}
+
+/** Save an image (Uint8Array) into the notebook's images/ subfolder.
+ *  Returns the relative markdown path: `./images/filename` */
+export async function saveNotebookImage(notebookId, filename, data) {
+  try {
+    const notebooksDir = await getNotebooksDir()
+    const entries = await readDir(notebooksDir)
+    for (const entry of entries) {
+      if (!entry.name) continue
+      const metaPath = await join(notebooksDir, entry.name, 'meta.json')
+      if (await exists(metaPath)) {
+        const meta = JSON.parse(await readTextFile(metaPath))
+        if (meta.id === notebookId) {
+          const imagesDir = await join(notebooksDir, entry.name, 'images')
+          if (!(await exists(imagesDir))) await mkdir(imagesDir, { recursive: true })
+          const imgPath = await join(imagesDir, filename)
+          await writeFile(imgPath, data)
+          return `./images/${filename}`
+        }
+      }
+    }
+  } catch (err) { console.warn('[Gnos] saveNotebookImage failed:', err) }
+  return null
 }
 
 export async function deleteNotebookContent(id) {

@@ -13,10 +13,27 @@ import NotebookView    from '@/views/NotebookView'
 import PdfView         from '@/views/PdfView'
 import SketchbookView  from '@/views/SketchbookView'
 import SideNav         from '@/components/SideNav'
+import FlashcardView   from '@/views/FlashcardView'
 
 const VIEW_LABELS = {
   library: 'Library', reader: 'Reading', 'audio-player': 'Listening',
   notebook: 'Notebook', pdf: 'PDF', sketchbook: 'Sketchbook',
+  flashcard: 'Flashcards',
+}
+
+/** Derive a tab label from tab state — show file/content name when available */
+function getTabLabel(tab) {
+  if (tab.activeBook && (tab.view === 'reader' || tab.view === 'pdf'))
+    return tab.activeBook.title || VIEW_LABELS[tab.view] || tab.view
+  if (tab.activeNotebook && tab.view === 'notebook')
+    return tab.activeNotebook.title || 'Notebook'
+  if (tab.activeAudioBook && tab.view === 'audio-player')
+    return tab.activeAudioBook.title || 'Listening'
+  if (tab.activeSketchbook && tab.view === 'sketchbook')
+    return tab.activeSketchbook.title || 'Sketchbook'
+  if (tab.activeFlashcardDeck && tab.view === 'flashcard')
+    return tab.activeFlashcardDeck.title || 'Flashcards'
+  return VIEW_LABELS[tab.view] || tab.view
 }
 
 export const TITLEBAR_H = 34
@@ -29,6 +46,7 @@ function ViewPanel({ view }) {
   if (view === 'notebook')     return <NotebookView />
   if (view === 'pdf')          return <PdfView />
   if (view === 'sketchbook')   return <SketchbookView />
+  if (view === 'flashcard')    return <FlashcardView />
   return null
 }
 
@@ -36,33 +54,35 @@ function ViewPanel({ view }) {
 // Lazily mounts on first activation and stays mounted for the tab's lifetime.
 // Visibility is controlled by display:flex/none so the view doesn't remount on
 // every tab switch, but the component does unmount when the tab is closed.
-function TabPane({ tabId, isActive, isSplit, onFocus }) {
+function TabPane({ tabId, isActive, isLastActive, isSplit, onFocus }) {
   const tab = useAppStore(s => s.tabs.find(t => t.id === tabId))
-  const [everActive, setEverActive] = useState(isActive)
+  const shouldMount = isActive || isSplit || isLastActive
+  const [everActive, setEverActive] = useState(shouldMount)
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (isActive && !everActive) setEverActive(true)
-  }, [isActive]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (shouldMount && !everActive) setEverActive(true)
+  }, [shouldMount]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!tab || !everActive) return null
 
   return (
     <PaneContext.Provider value={tabId}>
-      <div style={{
-        ...(isSplit
-          ? { flex: 1, minWidth: 0, minHeight: 0, position: 'relative' }
-          : { position: 'absolute', inset: 0 }
-        ),
-        overflow: 'hidden',
-        display: isActive ? 'flex' : 'none',
-        flexDirection: 'column',
-      }}>
+      <div
+        onMouseDown={() => { if (isSplit && !isActive && onFocus) onFocus() }}
+        onFocusCapture={() => { if (isSplit && !isActive && onFocus) onFocus() }}
+        style={{
+          ...(isSplit
+            ? { flex: 1, minWidth: 0, minHeight: 0, position: 'relative' }
+            : { position: 'absolute', inset: 0 }
+          ),
+          overflow: 'hidden',
+          display: (isSplit || isActive) ? 'flex' : 'none',
+          flexDirection: 'column',
+        }}>
         <ViewPanel view={tab.view} />
-        {isSplit && !isActive && (
+        {isSplit && isActive && (
           <div
-            style={{ position: 'absolute', inset: 0, zIndex: 300, cursor: 'pointer', background: 'transparent' }}
-            onClick={onFocus}
-            title="Click to focus this pane"
+            style={{ position: 'absolute', inset: 0, zIndex: 300, pointerEvents: 'none', border: '2px solid var(--accent)', opacity: 0.3 }}
           />
         )}
       </div>
@@ -213,7 +233,7 @@ const TAB_CSS = `
     -webkit-app-region: no-drag;
     display: flex; align-items: center;
     height: 100%; padding-bottom: 3px;
-    margin-left: auto; flex-shrink: 0;
+    flex-shrink: 0;
   }
   .gnos-settings-btn {
     width: 26px; height: 22px; border-radius: 5px;
@@ -233,9 +253,9 @@ const TAB_CSS = `
   }
   .gnos-tab-body {
     display: flex; align-items: center; gap: 8px;
-    height: calc(100% + 1px); bottom: -1px; position: relative;
-    padding: 0 12px 1px 18px;
-    border-radius: 10px 10px 0 0;
+    height: calc(100% - 4px); bottom: -1px; position: relative;
+    padding: 0 12px 1px 16px;
+    border-radius: 12px 12px 0 0;
     border: 1px solid transparent; border-bottom: none;
     cursor: pointer;
     transition: background 0.14s, border-color 0.14s;
@@ -279,7 +299,82 @@ const TAB_CSS = `
   .gnos-split-divider:hover { background: var(--accent); }
   .gnos-split-divider.h { width: 1px; cursor: col-resize; align-self: stretch; }
   .gnos-split-divider.v { height: 1px; cursor: row-resize; align-self: stretch; }
+  @media all and (display-mode: fullscreen) {
+    .gnos-titlebar { padding-left: 12px; }
+  }
+  .gnos-titlebar.is-fullscreen { padding-left: 12px; }
 `
+
+// ── Theme palettes for loading screen ─────────────────────────────────────────
+const LOADING_THEMES = {
+  sepia:  { bg: '#f4efe6', accent: '#8b5e3c', text: '#3b2f20', dim: '#7a6652', border: '#c8b89a' },
+  light:  { bg: '#f6f8fa', accent: '#0969da', text: '#1f2328', dim: '#636c76', border: '#d0d7de' },
+  moss:   { bg: '#f2f5ee', accent: '#4a7c3f', text: '#2a3320', dim: '#5a7048', border: '#b8c9a8' },
+  dark:   { bg: '#0d1117', accent: '#388bfd', text: '#e6edf3', dim: '#8b949e', border: '#30363d' },
+  cherry: { bg: '#0e0608', accent: '#e05c7a', text: '#f2dde1', dim: '#9e6d76', border: '#3d1a20' },
+  sunset: { bg: '#0f0a04', accent: '#e8922a', text: '#f5e6c8', dim: '#a07840', border: '#4a3010' },
+}
+
+// ── Loading Screen ────────────────────────────────────────────────────────────
+function GnosLoadingScreen({ onDone }) {
+  const themeKey = useAppStore(s => s.themeKey) || 'sepia'
+  const p = LOADING_THEMES[themeKey] || LOADING_THEMES.sepia
+  const isLight = themeKey === 'sepia' || themeKey === 'light' || themeKey === 'moss'
+  const ruleOpacity = isLight ? 0.05 : 0.03
+
+  const [fade, setFade] = useState(false)
+  useEffect(() => {
+    const t1 = setTimeout(() => setFade(true), 600)
+    const t2 = setTimeout(onDone, 1000)
+    return () => { clearTimeout(t1); clearTimeout(t2) }
+  }, [onDone])
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 99999,
+      background: p.bg,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      gap: 16,
+      opacity: fade ? 0 : 1,
+      transition: 'opacity 0.4s ease',
+      pointerEvents: fade ? 'none' : 'auto',
+    }}>
+      {/* Ruled paper lines */}
+      <div style={{
+        position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0,
+        backgroundImage: `repeating-linear-gradient(transparent, transparent 27px, ${p.accent} 28px)`,
+        backgroundSize: '100% 28px', opacity: ruleOpacity,
+      }} />
+
+      {/* Corner brackets */}
+      <svg style={{ position: 'absolute', top: 18, right: 22, opacity: 0.16, pointerEvents: 'none', transform: 'scaleX(-1)' }}
+        width="48" height="48" viewBox="0 0 48 48" fill="none">
+        <path d="M4 44 L4 4 L44 4" stroke={p.accent} strokeWidth="1.2" fill="none" />
+        <path d="M4 4 L13 4 M4 4 L4 13" stroke={p.accent} strokeWidth="2" strokeLinecap="round"/>
+      </svg>
+      <svg style={{ position: 'absolute', bottom: 18, left: 22, opacity: 0.16, pointerEvents: 'none', transform: 'scaleY(-1)' }}
+        width="48" height="48" viewBox="0 0 48 48" fill="none">
+        <path d="M4 44 L4 4 L44 4" stroke={p.accent} strokeWidth="1.2" fill="none" />
+        <path d="M4 4 L13 4 M4 4 L4 13" stroke={p.accent} strokeWidth="2" strokeLinecap="round"/>
+      </svg>
+
+      {/* Quill icon */}
+      <svg width="44" height="44" viewBox="0 0 32 32" fill="none" style={{ opacity: 0.45, position: 'relative', zIndex: 1 }}>
+        <path d="M26 3C22 5 14 10 10 18C8 22 7 25 6.5 28" stroke={p.dim} strokeWidth="1.1" strokeLinecap="round" />
+        <path d="M26 3C24 8 18 15 10 18" stroke={p.dim} strokeWidth="0.7" strokeLinecap="round" opacity="0.6" />
+        <path d="M26 3C25 6 22 10 16 14" stroke={p.dim} strokeWidth="0.5" strokeLinecap="round" opacity="0.35" />
+        <path d="M6.5 28L9 23" stroke={p.dim} strokeWidth="1.1" strokeLinecap="round" />
+      </svg>
+      <div style={{
+        fontFamily: 'Georgia, serif', fontSize: 36, fontWeight: 700,
+        color: p.text, letterSpacing: '-1px', position: 'relative', zIndex: 1,
+      }}>Gnos</div>
+      <div style={{
+        width: 36, height: 2, borderRadius: 1,
+        background: p.dim, opacity: 0.5, position: 'relative', zIndex: 1,
+      }} />
+    </div>
+  )
+}
 
 export default function App() {
   const init        = useAppStore(s => s.init)
@@ -294,8 +389,20 @@ export default function App() {
   const [splitDir,        setSplitDir]        = useState(null)
   const [splitPanes,      setSplitPanes]      = useState([])
   const [tabSettingsOpen, setTabSettingsOpen] = useState(false)
+  const [showLoading, setShowLoading] = useState(true)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [prevActiveTabId, setPrevActiveTabId] = useState(null)
 
   const contentRef = useRef(null)
+
+  // Track previous active tab so we keep it mounted
+  const prevActiveRef = useRef(null)
+  useEffect(() => {
+    if (prevActiveRef.current && prevActiveRef.current !== activeTabId) {
+      setPrevActiveTabId(prevActiveRef.current)
+    }
+    prevActiveRef.current = activeTabId
+  }, [activeTabId])
 
   const isSplit = splitDir !== null
     && splitPanes.length === 2
@@ -304,6 +411,11 @@ export default function App() {
   const hasMultipleTabs = tabs.length > 1
 
   useEffect(() => {
+    // Detect fullscreen to move tabs left
+    const onResize = () => setIsFullscreen(window.innerHeight === screen.height && window.innerWidth === screen.width)
+    window.addEventListener('resize', onResize)
+    onResize()
+
     init()
     const unlisten = listen('menu', (event) => {
       const id = event.payload
@@ -336,8 +448,12 @@ export default function App() {
         } catch (err) { console.error('Failed to read file:', path, err) }
       }
     })
-    return () => { unlisten.then(fn => fn()); unlistenFiles.then(fn => fn()) }
+    return () => { unlisten.then(fn => fn()); unlistenFiles.then(fn => fn()); window.removeEventListener('resize', onResize) }
   }, [init])
+
+  if (showLoading) {
+    return <GnosLoadingScreen onDone={() => setShowLoading(false)} />
+  }
 
   if (!onboardingComplete) {
     return <OnboardingView onComplete={() => setOnboardingComplete(true)} />
@@ -348,10 +464,10 @@ export default function App() {
       <style>{TAB_CSS}</style>
 
       {/* ── Title bar ──────────────────────────────────────────────────────── */}
-      <div className="gnos-titlebar">
+      <div className={`gnos-titlebar${isFullscreen ? ' is-fullscreen' : ''}`}>
         {tabs.map(tab => {
           const isActive = tab.id === activeTabId
-          const label = VIEW_LABELS[tab.view] || tab.view
+          const label = getTabLabel(tab)
           return (
             <div
               key={tab.id}
@@ -377,7 +493,7 @@ export default function App() {
         })}
 
         {/* Draggable empty space — fills gap between tabs and settings button */}
-        <div style={{ flex: 1, height: '100%', WebkitAppRegion: 'drag' }} />
+        <div style={{ flex: 1, height: '100%', minWidth: 20 }} />
 
         {/* Layout settings button — right side on macOS, handled via CSS on Windows */}
         <div className="gnos-titlebar-settings">
@@ -385,10 +501,12 @@ export default function App() {
             className="gnos-settings-btn"
             title="Tab layout"
             onClick={() => setTabSettingsOpen(true)}
+            style={{ border: '1px solid var(--border)', borderRadius: 5 }}
           >
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <rect x="1" y="2" width="6" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
-              <rect x="9" y="2" width="6" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
+              {/* Safari-style tab overview icon: overlapping rounded rects */}
+              <rect x="5" y="5" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="1.3" fill="none" opacity="0.45"/>
+              <rect x="2" y="2" width="9" height="9" rx="2" stroke="currentColor" strokeWidth="1.3" fill="var(--surface)"/>
             </svg>
           </button>
         </div>
@@ -430,6 +548,7 @@ export default function App() {
                 key={tab.id}
                 tabId={tab.id}
                 isActive={tab.id === activeTabId}
+                isLastActive={tab.id === prevActiveTabId}
                 isSplit={false}
               />
             ))}

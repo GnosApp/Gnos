@@ -1,21 +1,22 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
-  <rect width="1024" height="1024" rx="210" fill="#2c1e0f"/>
-  <rect x="54" y="54" width="916" height="916" rx="174"
-    fill="none"
-    stroke="#c9873a"
-    stroke-width="4.5"
-    stroke-opacity="0.45"
-    stroke-dasharray="18 12"
-  />
+  <!-- Background with warm dark tone matching Gnos branding -->
+  <rect width="1024" height="1024" rx="228" fill="#2c1e0f"/>
+  <!-- Subtle inner border -->
+  <rect x="48" y="48" width="928" height="928" rx="196"
+    fill="none" stroke="#c9873a" stroke-width="3" stroke-opacity="0.25"/>
+  <!-- Quill accent (subtle, top-right) -->
+  <path d="M720 180C640 220 540 290 480 380C460 420 445 455 435 490"
+    stroke="#c9873a" stroke-width="2.5" stroke-linecap="round" stroke-opacity="0.2" fill="none"/>
+  <!-- G monogram in Georgia serif style -->
   <text
     x="512"
-    y="550"
+    y="560"
     dominant-baseline="middle"
     text-anchor="middle"
-    font-family="Georgia, serif"
-    font-size="300"
-    font-weight="800"
-    letter-spacing="-6"
+    font-family="Georgia, 'Times New Roman', serif"
+    font-size="520"
+    font-weight="700"
+    letter-spacing="-8"
     fill="#e8c97a"
-  >Gnos</text>
+  >G</text>
 </svg>

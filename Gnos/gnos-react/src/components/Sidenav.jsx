@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useContext } from 'react'
+import { createPortal } from 'react-dom'
 import { PaneContext } from '@/lib/PaneContext'
 import useAppStore from '@/store/useAppStore'
 import { generateCoverColor } from '@/lib/utils'
@@ -121,6 +122,7 @@ function MiniCover({ item }) {
 // NavDropdown — 10% shorter vertical padding on rows
 // ─────────────────────────────────────────────────────────────────────────────
 function NavDropdown({ items, onOpen, onMenu }) {
+
   if (!items.length) return (
     <div style={{ padding: '5px 16px 8px 38px', fontSize: 11, color: 'var(--textDim)', fontStyle: 'italic' }}>
       Nothing here yet
@@ -139,8 +141,8 @@ function NavDropdown({ items, onOpen, onMenu }) {
     <div style={{ paddingBottom: 2 }}>
       {items.map(item => (
         <div key={item.id} style={{ display:'flex', alignItems:'center', position:'relative' }}
-          onMouseEnter={e => e.currentTarget.style.background='var(--hover)'}
-          onMouseLeave={e => e.currentTarget.style.background='none'}
+          onMouseEnter={e => { e.currentTarget.style.background='var(--hover)' }}
+          onMouseLeave={e => { e.currentTarget.style.background='none' }}
         >
           <button
             onClick={() => onOpen(item)}
@@ -164,6 +166,20 @@ function NavDropdown({ items, onOpen, onMenu }) {
                   whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                 }}>{item.author}</div>
               )}
+              {/* Progress bar for books/audiobooks */}
+              {(() => {
+                const pct = item.type === 'audio'
+                  ? (item.listenProgress ? Math.round(item.listenProgress * 100) : 0)
+                  : (item.totalChapters > 1 ? Math.round(((item.currentChapter || 0) / (item.totalChapters - 1)) * 100) : 0)
+                return pct > 0 ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                    <div style={{ flex: 1, height: 2, borderRadius: 1, background: 'var(--borderSubtle)', overflow: 'hidden' }}>
+                      <div style={{ width: `${pct}%`, height: '100%', borderRadius: 1, background: 'var(--accent)' }} />
+                    </div>
+                    <span style={{ fontSize: 8, fontWeight: 600, color: 'var(--textDim)', flexShrink: 0 }}>{pct}%</span>
+                  </div>
+                ) : null
+              })()}
             </div>
             <div style={{
               fontSize: 9, fontWeight: 700, color: 'var(--textDim)',
@@ -194,6 +210,7 @@ function NavDropdown({ items, onOpen, onMenu }) {
           </button>
         </div>
       ))}
+      {/* Hover preview removed per user request */}
     </div>
   )
 }
@@ -293,6 +310,74 @@ function SettingsSectionLabel({ children }) {
   )
 }
 
+// ── Piper TTS settings helpers ────────────────────────────────────────────────
+function PiperVoiceSelect({ pref }) {
+  const [voices, setVoices] = useState([])
+  const selectStyle = { background: 'var(--surfaceAlt)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12, padding: '4px 8px' }
+  useEffect(() => {
+    import('@tauri-apps/api/core').then(({ invoke }) => {
+      invoke('piper_list_voices').then(setVoices).catch(() => setVoices([]))
+    })
+  }, [])
+  if (!voices.length) return <span style={{ fontSize: 11, color: 'var(--textDim)' }}>No models found</span>
+  return (
+    <select style={selectStyle} value={useAppStore.getState().ttsVoice || voices[0]}
+      onChange={e => pref('ttsVoice', e.target.value)}>
+      {voices.map(v => <option key={v} value={v}>{v}</option>)}
+    </select>
+  )
+}
+function PiperStatusRow() {
+  const [installed, setInstalled] = useState(null)
+  const [showGuide, setShowGuide] = useState(false)
+  useEffect(() => {
+    import('@tauri-apps/api/core').then(({ invoke }) => {
+      invoke('piper_check').then(setInstalled).catch(() => setInstalled(false))
+    })
+  }, [])
+
+  const openDownload = () => {
+    import('@tauri-apps/api/core').then(({ invoke }) => {
+      invoke('plugin:shell|open', { path: 'https://github.com/rhasspy/piper/releases' }).catch(() => {
+        window.open('https://github.com/rhasspy/piper/releases', '_blank')
+      })
+    })
+  }
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ padding: '8px 12px', background: 'var(--surfaceAlt)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11, color: 'var(--textDim)', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ flex: 1 }}>
+          {installed === null ? 'Checking Piper…' : installed
+            ? '✓ Piper is installed'
+            : 'Piper not found'}
+        </span>
+        {!installed && installed !== null && (
+          <button onClick={openDownload} style={{ padding: '3px 10px', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 5, fontSize: 10, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            Download Piper
+          </button>
+        )}
+        <button onClick={() => setShowGuide(!showGuide)} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 5, padding: '2px 8px', fontSize: 10, color: 'var(--textDim)', cursor: 'pointer' }}>
+          {showGuide ? 'Hide' : 'Setup Guide'}
+        </button>
+      </div>
+      {showGuide && (
+        <div style={{ marginTop: 6, padding: '10px 12px', background: 'var(--surfaceAlt)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11, color: 'var(--textDim)', lineHeight: 1.7 }}>
+          <div style={{ fontWeight: 700, marginBottom: 4, color: 'var(--text)' }}>Installation Steps:</div>
+          <ol style={{ margin: '0 0 0 16px', padding: 0 }}>
+            <li>Download the Piper release for your OS from GitHub</li>
+            <li>Extract the archive and find the <code>piper</code> binary</li>
+            <li>Place it in your app data folder: <code>piper/piper</code></li>
+            <li>Download voice models (.onnx + .onnx.json) from the Piper voices page</li>
+            <li>Place voice files in: <code>piper/models/</code></li>
+            <li>Restart Gnos and select your voice above</li>
+          </ol>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // UniversalSettingsModal — tabbed settings for all views
 // ─────────────────────────────────────────────────────────────────────────────
@@ -327,7 +412,6 @@ export function UniversalSettingsModal({ onClose }) {
     { id: 'reader',     label: 'Reader' },
     { id: 'notebook',   label: 'Notebook' },
     { id: 'audio',      label: 'Audio' },
-    { id: 'about',      label: 'About' },
   ]
 
   const BUILT_IN_THEMES_LOCAL = {
@@ -345,7 +429,7 @@ export function UniversalSettingsModal({ onClose }) {
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 20000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
       onClick={onClose}>
-      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 560, maxWidth: '95vw', height: 520, maxHeight: '90vh', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 80px rgba(0,0,0,0.6)' }}
+      <div style={{ position: 'relative', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 620, maxWidth: '95vw', height: 460, maxHeight: '90vh', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 80px rgba(0,0,0,0.6)' }}
         onClick={e => e.stopPropagation()}>
 
         {/* Header */}
@@ -429,7 +513,22 @@ export function UniversalSettingsModal({ onClose }) {
                 <select value={fontFamily} onChange={e => pref('fontFamily', e.target.value)} style={selectStyle}>
                   <option value="Georgia, serif">Georgia</option>
                   <option value="'Palatino Linotype', serif">Palatino</option>
+                  <option value="'Times New Roman', serif">Times New Roman</option>
+                  <option value="'Baskerville', serif">Baskerville</option>
+                  <option value="'Garamond', serif">Garamond</option>
+                  <option value="'Charter', serif">Charter</option>
+                  <option value="'Bookman Old Style', serif">Bookman</option>
                   <option value="system-ui, sans-serif">System UI</option>
+                  <option value="'Helvetica Neue', Helvetica, sans-serif">Helvetica</option>
+                  <option value="'Avenir Next', 'Avenir', sans-serif">Avenir</option>
+                  <option value="'SF Pro Text', system-ui, sans-serif">SF Pro</option>
+                  <option value="'Segoe UI', sans-serif">Segoe UI</option>
+                  <option value="'Literata', Georgia, serif">Literata</option>
+                  <option value="'Merriweather', Georgia, serif">Merriweather</option>
+                  <option value="'Lora', Georgia, serif">Lora</option>
+                  <option value="'Inter', system-ui, sans-serif">Inter</option>
+                  <option value="'JetBrains Mono', monospace">JetBrains Mono</option>
+                  <option value="'SF Mono', Menlo, monospace">SF Mono</option>
                 </select>
               </SettingsRow>
             </>
@@ -524,6 +623,22 @@ export function UniversalSettingsModal({ onClose }) {
               <SettingsRow label="Underline current line" desc="Underlines all words on the hovered line">
                 <SettingsToggle on={!!underlineLine} onClick={() => pref('underlineLine', !underlineLine)} />
               </SettingsRow>
+              <SettingsSectionLabel>Text-to-Speech (Piper)</SettingsSectionLabel>
+              <SettingsRow label="TTS enabled" desc="Read selected text or full chapters aloud using local Piper TTS">
+                <SettingsToggle on={!!useAppStore.getState().ttsEnabled} onClick={() => pref('ttsEnabled', !useAppStore.getState().ttsEnabled)} />
+              </SettingsRow>
+              <SettingsRow label="Voice model" desc="Piper voice to use (place .onnx files in app data/piper/models/)">
+                <PiperVoiceSelect pref={pref} />
+              </SettingsRow>
+              <SettingsRow label="Speech speed">
+                <select style={selectStyle} value={useAppStore.getState().ttsSpeed || 1}
+                  onChange={e => pref('ttsSpeed', +e.target.value)}>
+                  {[0.5, 0.75, 1, 1.25, 1.5, 2].map(s => (
+                    <option key={s} value={s}>{s}×</option>
+                  ))}
+                </select>
+              </SettingsRow>
+              <PiperStatusRow />
             </>
           )}
 
@@ -531,7 +646,8 @@ export function UniversalSettingsModal({ onClose }) {
             <>
               <SettingsSectionLabel>Editor</SettingsSectionLabel>
               <SettingsRow label="Default view mode" desc="Which editing mode opens when you open a note">
-                <select style={selectStyle} defaultValue="live">
+                <select style={selectStyle} value={useAppStore.getState().defaultViewMode || 'live'}
+                  onChange={e => pref('defaultViewMode', e.target.value)}>
                   <option value="live">Live</option>
                   <option value="source">Source</option>
                   <option value="preview">Preview</option>
@@ -539,13 +655,13 @@ export function UniversalSettingsModal({ onClose }) {
               </SettingsRow>
               <SettingsSectionLabel>Behaviour</SettingsSectionLabel>
               <SettingsRow label="Autosave" desc="Notes save automatically as you type">
-                <SettingsToggle on={true} onClick={() => {}} />
+                <SettingsToggle on={useAppStore.getState().autosave !== false} onClick={() => pref('autosave', useAppStore.getState().autosave === false)} />
               </SettingsRow>
               <SettingsRow label="Smart list continuation" desc="Press Enter in a list to continue it automatically">
-                <SettingsToggle on={true} onClick={() => {}} />
+                <SettingsToggle on={useAppStore.getState().smartListContinuation !== false} onClick={() => pref('smartListContinuation', useAppStore.getState().smartListContinuation === false)} />
               </SettingsRow>
               <SettingsRow label="Syntax autocomplete" desc="Auto-close ** [ ` marker pairs as you type">
-                <SettingsToggle on={true} onClick={() => {}} />
+                <SettingsToggle on={useAppStore.getState().syntaxAutocomplete !== false} onClick={() => pref('syntaxAutocomplete', useAppStore.getState().syntaxAutocomplete === false)} />
               </SettingsRow>
             </>
           )}
@@ -554,10 +670,11 @@ export function UniversalSettingsModal({ onClose }) {
             <>
               <SettingsSectionLabel>Playback</SettingsSectionLabel>
               <SettingsRow label="Remember position" desc="Resume from where you left off">
-                <SettingsToggle on={true} onClick={() => {}} />
+                <SettingsToggle on={useAppStore.getState().rememberPosition !== false} onClick={() => pref('rememberPosition', useAppStore.getState().rememberPosition === false)} />
               </SettingsRow>
               <SettingsRow label="Default playback speed">
-                <select style={selectStyle} defaultValue="1">
+                <select style={selectStyle} value={useAppStore.getState().defaultPlaybackSpeed || 1}
+                  onChange={e => pref('defaultPlaybackSpeed', +e.target.value)}>
                   {[0.75, 1, 1.25, 1.5, 1.75, 2].map(s => (
                     <option key={s} value={s}>{s}×</option>
                   ))}
@@ -566,21 +683,9 @@ export function UniversalSettingsModal({ onClose }) {
             </>
           )}
 
-          {tab === 'about' && (
-            <div style={{ padding: '20px 0' }}>
-              <div style={{ fontFamily: 'Georgia, serif', fontSize: 22, fontWeight: 800, color: 'var(--text)', marginBottom: 8 }}>Gnos</div>
-              <div style={{ fontSize: 13, color: 'var(--textDim)', lineHeight: 1.65, maxWidth: 400 }}>
-                A personal reading and writing environment. Supports ebooks (EPUB, TXT),
-                audiobooks (MP3, M4B), PDF, and Markdown notebooks with live preview,
-                wikilink navigation, and callout blocks.
-              </div>
-              <div style={{ marginTop: 20, fontSize: 11, color: 'var(--textDim)', opacity: 0.55 }}>
-                Built with React + Vite
-              </div>
-            </div>
-          )}
 
         </div>
+
       </div>
     </div>
   )
@@ -594,6 +699,7 @@ export function UniversalSettingsModal({ onClose }) {
 // ─────────────────────────────────────────────────────────────────────────────
 function SideNavCtxMenu({ x, y, items, onClose }) {
   const ref = useRef()
+  const [openSub, setOpenSub] = useState(null)
   useEffect(() => {
     const h = e => { if (ref.current && !ref.current.contains(e.target)) onClose() }
     setTimeout(() => document.addEventListener('mousedown', h), 0)
@@ -609,19 +715,54 @@ function SideNavCtxMenu({ x, y, items, onClose }) {
       boxShadow:'0 10px 28px rgba(0,0,0,0.5)',
     }}>
       {items.map((item,i) => (
-        <button key={i} style={{
-          width:'100%', display:'flex', alignItems:'center', gap:8,
-          padding:'7px 10px', background:'none', border:'none', cursor:'pointer',
-          color: item.danger ? '#ef5350' : 'var(--text)', fontSize:12, fontWeight:500,
-          textAlign:'left', borderRadius:6, transition:'background 0.1s',
-        }}
-          onMouseEnter={e=>e.currentTarget.style.background='var(--hover)'}
-          onMouseLeave={e=>e.currentTarget.style.background='none'}
-          onClick={()=>{ item.action(); onClose() }}
+        <div key={i} style={{ position:'relative' }}
+          onMouseEnter={()=>item.submenu && setOpenSub(i)}
+          onMouseLeave={()=>item.submenu && setOpenSub(null)}
         >
-          {item.icon && <svg width="13" height="13" viewBox="0 0 16 16" fill="none" dangerouslySetInnerHTML={{__html:item.icon}}/>}
-          {item.label}
-        </button>
+          <button style={{
+            width:'100%', display:'flex', alignItems:'center', gap:8,
+            padding:'7px 10px', background:'none', border:'none', cursor:'pointer',
+            color: item.danger ? '#ef5350' : 'var(--text)', fontSize:12, fontWeight:500,
+            textAlign:'left', borderRadius:6, transition:'background 0.1s',
+          }}
+            onMouseEnter={e=>e.currentTarget.style.background='var(--hover)'}
+            onMouseLeave={e=>e.currentTarget.style.background='none'}
+            onClick={()=>{ if (!item.submenu) { item.action(); onClose() } }}
+          >
+            {item.icon && <svg width="13" height="13" viewBox="0 0 16 16" fill="none" dangerouslySetInnerHTML={{__html:item.icon}}/>}
+            {item.label}
+            {item.submenu && <svg width="8" height="8" viewBox="0 0 8 8" fill="none" style={{marginLeft:'auto',opacity:0.5}}><path d="M2 1l4 3-4 3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+          </button>
+          {item.submenu && openSub === i && (
+            <div style={{
+              position:'absolute', left:'100%', top:-4, zIndex:100000,
+              background:'var(--surface)', border:'1px solid var(--border)',
+              borderRadius:10, padding:4, minWidth:130,
+              boxShadow:'0 8px 24px rgba(0,0,0,0.4)',
+            }}>
+              {item.submenu.map((sub,j)=>(
+                <button key={j} style={{
+                  width:'100%', display:'flex', alignItems:'center', gap:8,
+                  padding:'6px 10px', background:'none', border:'none', cursor:'pointer',
+                  color:'var(--text)', fontSize:12, fontWeight:500,
+                  textAlign:'left', borderRadius:6, transition:'background 0.1s',
+                }}
+                  onMouseEnter={e=>e.currentTarget.style.background='var(--hover)'}
+                  onMouseLeave={e=>e.currentTarget.style.background='none'}
+                  onClick={()=>{ sub.action(); onClose() }}
+                >
+                  {sub.label?.startsWith('#') && (
+                    <span style={{ width:14, height:14, borderRadius:3, background:sub.label, flexShrink:0, border:'1px solid rgba(255,255,255,0.15)' }} />
+                  )}
+                  {sub.label?.startsWith('#') ? '' : sub.label}
+                </button>
+              ))}
+              {item.submenu.length === 0 && (
+                <div style={{padding:'6px 10px',fontSize:11,color:'var(--textDim)',fontStyle:'italic'}}>No collections</div>
+              )}
+            </div>
+          )}
+        </div>
       ))}
     </div>
   )
@@ -752,6 +893,57 @@ function SideNavSearch({ library, notebooks, sketchbooks, onOpen }) {
 }
 
 
+// ── Inline edit modal for sidebar items ──────────────────────────────────────
+function SideEditModal({ item, isNb, isSb, isAudio, colors, onClose, onSave }) {
+  const [title, setTitle] = useState(item.title || '')
+  const [author, setAuthor] = useState(item.author || '')
+  const [color, setColor] = useState(item.coverColor || colors[0])
+  const heading = isNb ? 'Edit Notebook' : isSb ? 'Edit Sketchbook' : isAudio ? 'Edit Audiobook' : 'Edit Book'
+  return createPortal(
+    <div style={{ position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:11000,display:'flex',alignItems:'center',justifyContent:'center' }}
+      onClick={onClose}>
+      <div style={{ background:'var(--surface)',border:'1px solid var(--border)',borderRadius:14,padding:24,width:320,boxShadow:'0 16px 48px rgba(0,0,0,0.5)' }}
+        onClick={e => e.stopPropagation()}>
+        <div style={{ fontSize:14,fontWeight:700,marginBottom:16,color:'var(--text)' }}>{heading}</div>
+        <div style={{ marginBottom:12 }}>
+          <div style={{ fontSize:11,color:'var(--textDim)',marginBottom:4,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em' }}>Title</div>
+          <input value={title} onChange={e => setTitle(e.target.value)}
+            style={{ width:'100%',background:'var(--bg)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:7,padding:'7px 10px',fontSize:13,outline:'none',boxSizing:'border-box' }} />
+        </div>
+        {(isAudio || (!isNb && !isSb)) && (
+          <div style={{ marginBottom:12 }}>
+            <div style={{ fontSize:11,color:'var(--textDim)',marginBottom:4,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em' }}>Author</div>
+            <input value={author} onChange={e => setAuthor(e.target.value)}
+              style={{ width:'100%',background:'var(--bg)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:7,padding:'7px 10px',fontSize:13,outline:'none',boxSizing:'border-box' }} />
+          </div>
+        )}
+        <div style={{ marginBottom:20 }}>
+          <div style={{ fontSize:11,color:'var(--textDim)',marginBottom:8,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em' }}>Cover Color</div>
+          <div style={{ display:'flex',gap:8,flexWrap:'wrap' }}>
+            {colors.map(c => (
+              <button key={c} onClick={() => setColor(c)} style={{
+                width:28,height:28,borderRadius:6,background:c,
+                border: c === color ? '2px solid var(--accent)' : '2px solid transparent',
+                cursor:'pointer',outline: c === color ? '2px solid var(--accent)' : 'none',outlineOffset:1
+              }} />
+            ))}
+          </div>
+        </div>
+        <div style={{ display:'flex',gap:8,justifyContent:'flex-end' }}>
+          <button onClick={onClose} style={{ background:'none',border:'1px solid var(--border)',color:'var(--textDim)',borderRadius:7,padding:'7px 16px',fontSize:13,cursor:'pointer' }}>Cancel</button>
+          <button onClick={() => {
+            const changes = { title: title.trim() || item.title, coverColor: color }
+            if (isAudio || (!isNb && !isSb)) changes.author = author.trim()
+            onSave(changes)
+          }}
+            style={{ background:'var(--accent)',border:'none',color:'#fff',borderRadius:7,padding:'7px 16px',fontSize:13,cursor:'pointer',fontWeight:600 }}>Save</button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
 export default function SideNav() {
   const sideNavOpen         = useAppStore(s => s.sideNavOpen)
   const closeSideNav        = useAppStore(s => s.closeSideNav)
@@ -766,6 +958,7 @@ export default function SideNav() {
   const library             = useAppStore(s => s.library)
   const notebooks           = useAppStore(s => s.notebooks)
   const sketchbooks         = useAppStore(s => s.sketchbooks)
+  const collections         = useAppStore(s => s.collections)
   const setActiveNotebook   = useAppStore(s => s.setActiveNotebook)
   const addNotebook         = useAppStore(s => s.addNotebook)
   const openNewTab          = useAppStore(s => s.openNewTab)
@@ -781,6 +974,9 @@ export default function SideNav() {
   const addOpen = _addOpen && sideNavOpen
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [sideNavMenu,  setSideNavMenu]  = useState(null) // { x, y, items }
+  const [editSideColId, setEditSideColId] = useState(null)
+  const [editSideColName, setEditSideColName] = useState('')
+  const [editSideItem, setEditSideItem] = useState(null) // item being edited inline
 
   const fileInputRef  = useRef(null)
   const audioInputRef = useRef(null)
@@ -804,6 +1000,11 @@ export default function SideNav() {
   function handleNavItem(id) {
     updateTab(activeTabId, { view: 'library', activeLibTab: id })
     setView('library'); setActiveLibTab(id); closeSideNav()
+    // Reset notebook sub-filter when switching away from notebooks tab
+    if (id !== 'notebooks') {
+      const setLibSubFilter = useAppStore.getState().setLibSubFilter
+      if (setLibSubFilter) setLibSubFilter('all')
+    }
   }
   function toggleExpanded(id, e) { e.stopPropagation(); setExpanded(p => ({ ...p, [id]: !p[id] })) }
   function handleTabSwitch(tabId) { switchTab(tabId); closeSideNav() }
@@ -819,9 +1020,19 @@ export default function SideNav() {
       case 'books':       return books
       case 'audiobooks':  return audios
       case 'notebooks':   return [...nbs, ...sbs]
-      case 'collections': return []
+      case 'collections': return collections || []
       default:            return []
     }
+  }
+
+  /** Resolve a collection's item IDs into actual item objects */
+  function resolveCollectionItems(col) {
+    if (!col?.items?.length) return []
+    const allItems = new Map()
+    for (const b of library) allItems.set(b.id, b.type === 'audio' ? b : b)
+    for (const n of (notebooks || [])) allItems.set(n.id, { ...n, _isNotebook: true })
+    for (const s of (sketchbooks || [])) allItems.set(s.id, { ...s, _isSketchbook: true })
+    return col.items.map(id => allItems.get(id)).filter(Boolean)
   }
 
   // openItem — opens in the current tab (default single-click behaviour)
@@ -1196,7 +1407,8 @@ export default function SideNav() {
             <div className="sidenav-section-label">Library</div>
             {NAV_ITEMS.map(item => {
               const isActive = view === 'library' && activeLibTab === item.id
-              const isOpen   = !!expanded[item.id] || (sideNavOpen && VIEW_TO_TAB[view] === item.id)
+              const autoOpen = sideNavOpen && VIEW_TO_TAB[view] === item.id
+              const isOpen   = expanded[item.id] !== undefined ? !!expanded[item.id] : autoOpen
               const items    = getItemsForTab(item.id)
               return (
                 <div key={item.id}>
@@ -1219,34 +1431,159 @@ export default function SideNav() {
                       </button>
                     )}
                   </div>
-                  {isOpen && <NavDropdown items={items} onOpen={openItem} onMenu={(e, item) => {
+                  {isOpen && item.id === 'collections' ? (
+                    /* Collections render as sub-folders, each expandable */
+                    <div style={{ paddingBottom: 2 }}>
+                      {(!collections || !collections.length) && (
+                        <div style={{ padding: '5px 16px 8px 38px', fontSize: 11, color: 'var(--textDim)', fontStyle: 'italic' }}>
+                          No collections yet
+                        </div>
+                      )}
+                      {(collections || []).map(col => {
+                        const colOpen = !!expanded[`col_${col.id}`]
+                        const colItems = resolveCollectionItems(col)
+                        return (
+                          <div key={col.id}>
+                            <div
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: 6,
+                                padding: '4px 6px 4px 24px', cursor: 'pointer',
+                                transition: 'background 0.1s',
+                              }}
+                              onMouseEnter={e => e.currentTarget.style.background='var(--hover)'}
+                              onMouseLeave={e => e.currentTarget.style.background='none'}
+                              onClick={() => setExpanded(p => ({ ...p, [`col_${col.id}`]: !p[`col_${col.id}`] }))}
+                              onContextMenu={e => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                const COLLECTION_COLORS = ['#388bfd', '#e05c7a', '#4a7c3f', '#e8922a', '#8250df', '#f0883e', '#56d4dd']
+                                const ICON_EDIT = '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+                                const ICON_COLOR = '<circle cx="8" cy="8" r="5" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2" fill="currentColor"/>'
+                                const ICON_TRASH = '<polyline points="3,6 5,6 13,6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 6V4H5v2M14 6l-.867 9.143A1.5 1.5 0 0 1 11.64 16.5H4.36A1.5 1.5 0 0 1 2.867 15.143L2 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+                                setSideNavMenu({ x: e.clientX, y: e.clientY, items: [
+                                  { label: 'Edit Name', icon: ICON_EDIT, action: () => {
+                                    setEditSideColId(col.id); setEditSideColName(col.name)
+                                  }},
+                                  { label: 'Change Color', icon: ICON_COLOR,
+                                    submenu: COLLECTION_COLORS.map(c => ({
+                                      label: c,
+                                      action: () => { useAppStore.getState().updateCollection(col.id, { color: c }); useAppStore.getState().persistCollections() },
+                                    })),
+                                  },
+                                  { label: 'Delete', icon: ICON_TRASH, danger: true, action: () => { useAppStore.getState().removeCollection(col.id); useAppStore.getState().persistCollections() } },
+                                ]})
+                              }}
+                            >
+                              <ChevronIcon open={colOpen} />
+                              {col.color
+                                ? <span style={{ width: 13, height: 13, borderRadius: 4, background: col.color, flexShrink: 0 }} />
+                                : <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, opacity: 0.6 }}>
+                                    <rect x="2" y="3" width="12" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
+                                    <path d="M2 6h12" stroke="currentColor" strokeWidth="1" opacity="0.5"/>
+                                    <path d="M2 9h12" stroke="currentColor" strokeWidth="1" opacity="0.3"/>
+                                  </svg>
+                              }
+                              {editSideColId === col.id ? (
+                                <input
+                                  autoFocus
+                                  value={editSideColName}
+                                  onChange={e => setEditSideColName(e.target.value)}
+                                  onBlur={() => {
+                                    if (editSideColName.trim()) { useAppStore.getState().updateCollection(col.id, { name: editSideColName.trim() }); useAppStore.getState().persistCollections() }
+                                    setEditSideColId(null)
+                                  }}
+                                  onKeyDown={e => {
+                                    e.stopPropagation()
+                                    if (e.key === 'Enter') e.target.blur()
+                                    if (e.key === 'Escape') setEditSideColId(null)
+                                  }}
+                                  onClick={e => e.stopPropagation()}
+                                  style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'none', border: '1px solid var(--accent)', borderRadius: 3, padding: '0 4px', outline: 'none', fontFamily: 'inherit', minWidth: 0 }}
+                                />
+                              ) : (
+                                <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {col.name}
+                                </span>
+                              )}
+                              <span style={{ fontSize: 10, color: 'var(--textDim)', flexShrink: 0 }}>
+                                {col.items?.length || 0}
+                              </span>
+                            </div>
+                            {colOpen && (
+                              <div style={{ paddingLeft: 12 }}>
+                                <NavDropdown items={colItems} onOpen={openItem} onMenu={(e, ci) => {
+                                  e.stopPropagation()
+                                  const ICON_EDIT_CI = '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+                                  const ICON_NEWTAB = '<path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1h4v4M14 1l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+                                  const ICON_REMOVE = '<path d="M4 8h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2"/>'
+                                  const editAction = () => {
+                                    setEditSideItem(ci)
+                                    setSideNavMenu(null)
+                                  }
+                                  setSideNavMenu({ x: e.clientX, y: e.clientY, items: [
+                                    { label: 'Edit', icon: ICON_EDIT_CI, action: editAction },
+                                    { label: 'Open in New Tab', icon: ICON_NEWTAB, action: () => openItemInNewTab(ci) },
+                                    { label: 'Remove from Collection', icon: ICON_REMOVE, danger: true, action: () => {
+                                      useAppStore.getState().removeFromCollection(col.id, ci.id)
+                                      useAppStore.getState().persistCollections()
+                                    }},
+                                  ]})
+                                }} />
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : isOpen && (
+                    <NavDropdown items={items} onOpen={openItem} onMenu={(e, item) => {
                     e.stopPropagation()
                     const isAudio = item.type === 'audio'
                     const isNb = item._isNotebook
                     const isSb = item._isSketchbook
+                    const ICON_EDIT_ITEM = '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
                     const ICON_BOOK = '<path d="M3 14V3a1.5 1.5 0 0 1 1.5-1.5h9V14H4.5A1.5 1.5 0 0 1 3 12.5v0A1.5 1.5 0 0 1 4.5 11H13.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
                     const ICON_NEWTAB = '<path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1h4v4M14 1l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
                     const ICON_TRASH = '<polyline points="3,6 5,6 13,6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 6V4H5v2M14 6l-.867 9.143A1.5 1.5 0 0 1 11.64 16.5H4.36A1.5 1.5 0 0 1 2.867 15.143L2 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
                     const ICON_SEARCH = '<circle cx="6" cy="6" r="4" stroke="currentColor" stroke-width="1.4"/><path d="M9.5 9.5l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'
+                    const ICON_COL = '<rect x="2" y="4" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M5 4V3a3 3 0 0 1 6 0v1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'
+                    const colSub = collections.length > 0 ? [{
+                      label:'Add to Collection', icon:ICON_COL,
+                      submenu: collections.map(c => ({
+                        label: c.name, action: () => { useAppStore.getState().addToCollection(c.id, item.id); useAppStore.getState().persistCollections() }
+                      })),
+                    }] : []
+                    const editAction = () => {
+                      setEditSideItem(item)
+                      setSideNavMenu(null)
+                    }
                     const items2 = isNb
-                      ? [ { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
+                      ? [ { label:'Edit', icon:ICON_EDIT_ITEM, action: editAction },
+                          { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
                           { label:'Open Here', icon:ICON_BOOK, action:()=>openItemInCurrentTab(item) },
+                          ...colSub,
                           { label:'Delete', icon:ICON_TRASH, danger:true, action:()=>{ useAppStore.getState().removeNotebook?.(item.id); useAppStore.getState().persistNotebooks?.() } } ]
                       : isSb
-                      ? [ { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
+                      ? [ { label:'Edit', icon:ICON_EDIT_ITEM, action: editAction },
+                          { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
                           { label:'Open Here', icon:ICON_BOOK, action:()=>openItemInCurrentTab(item) },
-                          { label:'Delete', icon:ICON_TRASH, danger:true, action:()=>{ useAppStore.getState().removeSketchbook?.(item.id); useAppStore.getState().persistSketchbooks?.() } } ]
+                          ...colSub,
+                          { label:'Delete', icon:ICON_TRASH, danger:true, action: async ()=>{ const { deleteSketchbookContent } = await import('@/lib/storage'); await deleteSketchbookContent(item.id); useAppStore.getState().removeSketchbook?.(item.id); useAppStore.getState().persistSketchbooks?.() } } ]
                       : isAudio
-                      ? [ { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
+                      ? [ { label:'Edit', icon:ICON_EDIT_ITEM, action: editAction },
+                          { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
                           { label:'Open Here', icon:ICON_BOOK, action:()=>openItemInCurrentTab(item) },
+                          ...colSub,
                           { label:'Delete', icon:ICON_TRASH, danger:true, action:()=>useAppStore.getState().removeBook?.(item.id) } ]
-                      : [ { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
+                      : [ { label:'Edit', icon:ICON_EDIT_ITEM, action: editAction },
+                          { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
                           { label:'Open Here', icon:ICON_BOOK, action:()=>openItemInCurrentTab(item) },
                           { label:'Search title', icon:ICON_SEARCH, action:()=>window.open(`https://www.google.com/search?q=${encodeURIComponent(item.title)}`,'_blank') },
                           { label:'Search author', icon:ICON_SEARCH, action:()=>window.open(`https://www.google.com/search?q=${encodeURIComponent(item.author||item.title+' author')}`,'_blank') },
+                          ...colSub,
                           { label:'Delete', icon:ICON_TRASH, danger:true, action:()=>useAppStore.getState().removeBook?.(item.id) } ]
                     setSideNavMenu({ x: e.clientX, y: e.clientY, items: items2 })
-                  }} />}
+                  }} />)}
                 </div>
               )
             })}
@@ -1298,6 +1635,24 @@ export default function SideNav() {
           onClose={() => setSideNavMenu(null)}
         />
       )}
+
+      {/* Inline edit modal for sidebar items */}
+      {editSideItem && (() => {
+        const item = editSideItem
+        const isNb = item._isNotebook
+        const isSb = item._isSketchbook
+        const isAudio = item.type === 'audio'
+        const COLORS = ['#2d1b69','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#6b3fa0','#0f4c75']
+        return <SideEditModal item={item} isNb={isNb} isSb={isSb} isAudio={isAudio} colors={COLORS}
+          onClose={() => setEditSideItem(null)}
+          onSave={async (changes) => {
+            const s = useAppStore.getState()
+            if (isNb) { s.updateNotebook(item.id, changes); await s.persistNotebooks() }
+            else if (isSb) { s.updateSketchbook(item.id, changes); await s.persistSketchbooks() }
+            else { s.updateBook(item.id, changes); await s.persistLibrary() }
+            setEditSideItem(null)
+          }} />
+      })()}
     </>
   )
 }

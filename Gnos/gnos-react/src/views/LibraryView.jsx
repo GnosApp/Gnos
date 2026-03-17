@@ -65,16 +65,12 @@ function BookCard({ book, onOpen, onMenu }) {
           {book.author && <div className="cover-author">{book.author}</div>}
         </>}
         <div className="cover-badge">{fmt}</div>
-        {pct > 0 && <div className="cover-prog-bg"><div className="cover-prog-fill" style={{ width: `${pct}%` }} /></div>}
       </div>
+      {pct > 0 && <div className="meta-prog-row" style={{ marginTop: 4, padding: '0 2px' }}><div className="meta-prog-track"><div className="meta-prog-fill" style={{ width: `${pct}%` }} /></div><span className="meta-prog-pct">{pct}%</span></div>}
       <div className="book-meta">
         <div className="meta-text">
           <div className="meta-title">{book.title}</div>
           {book.author && <div className="meta-author">{book.author}</div>}
-          {pct > 0 && <div className="meta-prog-row">
-            <div className="meta-prog-track"><div className="meta-prog-fill" style={{ width: `${pct}%` }} /></div>
-            <span className="meta-prog-pct">{pct}%</span>
-          </div>}
         </div>
         <button className="btn-dots" onClick={e => onMenu(e, book)}><DotsIcon /></button>
       </div>
@@ -118,6 +114,7 @@ function AudiobookCard({ book, onOpen, onMenu }) {
 
 function ContextMenu({ x, y, items, onClose }) {
   const ref = useRef()
+  const [openSub, setOpenSub] = useState(null) // index of hovered submenu item
   useEffect(() => {
     const h = e => { if (ref.current && !ref.current.contains(e.target)) onClose() }
     setTimeout(() => document.addEventListener('mousedown', h), 0)
@@ -133,19 +130,48 @@ function ContextMenu({ x, y, items, onClose }) {
       boxShadow: '0 10px 28px rgba(0,0,0,0.5)',
     }}>
       {items.map((item, i) => (
-        <button key={i} className="lib-ctx-item"
-          style={{ width: '100%', ...(item.danger ? { color: '#ef5350' } : {}) }}
-          onClick={() => { item.action(); onClose() }}>
-          {item.icon && <svg width="14" height="14" viewBox="0 0 16 16" fill="none"
-            dangerouslySetInnerHTML={{ __html: item.icon }} />}
-          {item.label}
-        </button>
+        <div key={i} style={{ position: 'relative' }}
+          onMouseEnter={() => item.submenu && setOpenSub(i)}
+          onMouseLeave={() => item.submenu && setOpenSub(null)}
+        >
+          <button className="lib-ctx-item"
+            style={{ width: '100%', ...(item.danger ? { color: '#ef5350' } : {}) }}
+            onClick={() => { if (!item.submenu) { item.action(); onClose() } }}>
+            {item.icon && <svg width="14" height="14" viewBox="0 0 16 16" fill="none"
+              dangerouslySetInnerHTML={{ __html: item.icon }} />}
+            {item.label}
+            {item.submenu && <svg width="8" height="8" viewBox="0 0 8 8" fill="none" style={{ marginLeft: 'auto', opacity: 0.5 }}>
+              <path d="M2 1l4 3-4 3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>}
+          </button>
+          {item.submenu && openSub === i && (
+            <div style={{
+              position: 'absolute', left: '100%', top: -4, zIndex: 10000,
+              background: 'var(--surface)', border: '1px solid var(--border)',
+              borderRadius: 10, padding: 4, minWidth: 140,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+            }}>
+              {item.submenu.map((sub, j) => (
+                <button key={j} className="lib-ctx-item" style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8 }}
+                  onClick={() => { sub.action(); onClose() }}>
+                  {sub.label?.startsWith('#') && (
+                    <span style={{ width: 16, height: 16, borderRadius: 4, background: sub.label, flexShrink: 0, border: '1px solid rgba(255,255,255,0.15)' }} />
+                  )}
+                  {sub.label?.startsWith('#') ? '' : sub.label}
+                </button>
+              ))}
+              {item.submenu.length === 0 && (
+                <div style={{ padding: '6px 12px', fontSize: 12, color: 'var(--textDim)', fontStyle: 'italic' }}>No collections</div>
+              )}
+            </div>
+          )}
+        </div>
       ))}
     </div>
   )
 }
 
-function AddPopup({ onClose, onAddBook, onAddAudio, onNewNotebook, onNewSketchbook, onNewCollection }) {
+function AddPopup({ onClose, onAddBook, onAddAudio, onNewNotebook, onNewSketchbook, onNewCollection, onNewFlashcardDeck, onImportFlashcards }) {
   const ref = useRef()
   useEffect(() => {
     const h = e => { if (ref.current && !ref.current.contains(e.target)) onClose() }
@@ -201,6 +227,28 @@ function AddPopup({ onClose, onAddBook, onAddAudio, onNewNotebook, onNewSketchbo
           <small>Excalidraw canvas · draw &amp; diagram</small>
         </div>
       </button>
+      <button className="add-choice-btn" onClick={() => { onNewFlashcardDeck(); onClose() }}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+          <rect x="2" y="4" width="16" height="12" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+          <rect x="6" y="8" width="16" height="12" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+        </svg>
+        <div className="add-choice-text">
+          <span>New Flashcard Deck</span>
+          <small>Create empty · spaced repetition</small>
+        </div>
+      </button>
+      <button className="add-choice-btn" onClick={() => { onImportFlashcards?.(); onClose() }}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          <polyline points="14,2 14,8 20,8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          <line x1="9" y1="15" x2="15" y2="15" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+          <line x1="9" y1="18" x2="15" y2="18" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+        </svg>
+        <div className="add-choice-text">
+          <span>Import Flashcards</span>
+          <small>.csv · .tsv — front/back columns</small>
+        </div>
+      </button>
       <button className="add-choice-btn" onClick={() => { onNewCollection(); onClose() }}>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
           <rect x="2" y="7" width="20" height="14" rx="2" stroke="currentColor" strokeWidth="1.6"/>
@@ -218,18 +266,48 @@ function AddPopup({ onClose, onAddBook, onAddAudio, onNewNotebook, onNewSketchbo
 }
 
 function StreakFooter() {
+  const [streakDays, setStreakDays] = useState(0)
+  const [weekActivity, setWeekActivity] = useState([false, false, false, false, false, false, false])
+  const flashcardDecks = useAppStore(s => s.flashcardDecks)
+
+  useEffect(() => {
+    (async () => {
+      const log = await loadReadingLog().catch(() => ({})) || {}
+      const today = new Date()
+      const week = []
+      const startOfWeek = new Date(today)
+      startOfWeek.setDate(today.getDate() - ((today.getDay() + 6) % 7))
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(startOfWeek)
+        d.setDate(startOfWeek.getDate() + i)
+        const key = d.toISOString().slice(0, 10)
+        week.push(!!log[key])
+      }
+      let streak = 0
+      for (let i = 0; i < 365; i++) {
+        const d = new Date(today)
+        d.setDate(today.getDate() - i)
+        const key = d.toISOString().slice(0, 10)
+        if (log[key]) streak++
+        else if (i > 0) break
+      }
+      const maxFcStreak = flashcardDecks.reduce((max, d) => Math.max(max, d.streak || 0), 0)
+      setStreakDays(Math.max(streak, maxFcStreak))
+      setWeekActivity(week)
+    })()
+  }, [flashcardDecks])
+
   const days = ['M','T','W','T','F','S','S']
-  const today = new Date().getDay()
   return (
     <div className="library-footer">
       <div className="streak-section">
         <span className="streak-label">STREAK</span>
         <div className="streak-dots">
           {days.map((d, i) => (
-            <div key={i} className={`streak-dot${i < today ? ' filled' : i === today ? ' today-empty' : ''}`} title={d} />
+            <div key={i} className={`streak-dot${weekActivity[i] ? ' filled' : ''}`} title={d} />
           ))}
         </div>
-        <span className="streak-count">0 days</span>
+        <span className="streak-count">{streakDays} day{streakDays !== 1 ? 's' : ''}</span>
       </div>
     </div>
   )
@@ -269,7 +347,7 @@ function LibContextMenu({ x, y, onClose, onAddBook, onAddAudio }) {
 function EditAudiobookModal({ book, onSave, onClose }) {
   const [title,  setTitle]  = useState(book.title  || '')
   const [author, setAuthor] = useState(book.author || '')
-  const COLORS = ['#1a1a2e','#2d1b69','#1b4332','#7f1d1d','#1e3a5f','#3d2b1f','#4a1942','#0f4c75']
+  const COLORS = ['#2d1b69','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#6b3fa0','#0f4c75']
   const [color,  setColor]  = useState(book.coverColor || COLORS[0])
 
   return (
@@ -395,7 +473,7 @@ function SearchDropdown({ query, library, notebooks, onOpenBook, onOpenAudio, on
 // NotebookCard — bold title + date top, ruled lines near bottom
 // ─────────────────────────────────────────────────────────────────────────────
 function NotebookCard({ nb, onOpen, onMenu }) {
-  const color = nb.coverColor || '#c0392b'
+  const color = nb.coverColor || '#2d1b69'
   const dateStr = nb.updatedAt || nb.createdAt
     ? new Date(nb.updatedAt || nb.createdAt).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })
     : ''
@@ -447,7 +525,7 @@ function NotebookCard({ nb, onOpen, onMenu }) {
 // SketchbookCard — whiteboard/sketch cover design
 // ─────────────────────────────────────────────────────────────────────────────
 function SketchbookCard({ sb, onOpen, onMenu }) {
-  const color = sb.coverColor || '#1a1a2e'
+  const color = sb.coverColor || '#0d5eaf'
   const dateStr = sb.updatedAt || sb.createdAt
     ? new Date(sb.updatedAt || sb.createdAt).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })
     : ''
@@ -494,9 +572,72 @@ function SketchbookCard({ sb, onOpen, onMenu }) {
     </div>
   )
 }
+// ─────────────────────────────────────────────────────────────────────────────
+// FlashcardDeckCard — Anki-style deck card with card count + due count
+// ─────────────────────────────────────────────────────────────────────────────
+function FlashcardDeckCard({ deck, onOpen, onMenu }) {
+  const color = deck.color || '#6b3fa0'
+  const cards = deck.cards || []
+  const now = Date.now()
+  const dueSoon = cards.filter(c => c.nextReview && c.nextReview <= now + 86400000 * 1).length || 0
+  const nextDue = cards.reduce((min, c) => {
+    if (!c.nextReview) return 0
+    const days = Math.max(0, Math.ceil((c.nextReview - now) / 86400000))
+    return Math.min(min, days)
+  }, Infinity)
+  const dueText = dueSoon > 0 ? `${dueSoon} due` : nextDue < Infinity ? `${nextDue}d` : ''
+  const dueUrgent = dueSoon > 0
+  return (
+    <div className="book-card-container" style={{ cursor:'pointer' }}
+      onClick={() => onOpen(deck)}
+      onContextMenu={e => { e.preventDefault(); onMenu(e, deck) }}>
+      <div className="book-cover" style={{ background: color, padding: 0, justifyContent: 'flex-start', alignItems: 'stretch' }}>
+        {/* Left spine shadow */}
+        <div style={{ position:'absolute', left:0, top:0, bottom:0, width:8,
+          background:'rgba(0,0,0,0.18)', zIndex:1 }} />
+        {/* Flashcard icon + title */}
+        <div style={{ position:'relative', padding:'14px 12px 0 16px', flex:1, zIndex:2 }}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ marginBottom: 6, opacity: 0.7 }}>
+            <rect x="2" y="4" width="16" height="12" rx="2" stroke="rgba(255,255,255,0.8)" strokeWidth="1.5"/>
+            <rect x="6" y="8" width="16" height="12" rx="2" stroke="rgba(255,255,255,0.5)" strokeWidth="1.5"/>
+          </svg>
+          <div style={{ fontSize:13, fontWeight:800, color:'#fff',
+            lineHeight:1.25, wordBreak:'break-word',
+            overflow:'hidden', display:'-webkit-box',
+            WebkitLineClamp:3, WebkitBoxOrient:'vertical' }}>
+            {deck.title}
+          </div>
+        </div>
+        {/* Card count + due badge */}
+        <div style={{ position:'relative', padding:'0 16px 14px', zIndex:2, display:'flex', gap:8, alignItems:'center' }}>
+          <span style={{ fontSize:11, color:'rgba(255,255,255,0.7)' }}>{cards.length} cards</span>
+          {dueText && (
+            <span style={{ fontSize:10, fontWeight:700,
+              background: dueUrgent ? 'var(--accent, rgba(255,152,0,0.85))' : 'rgba(255,255,255,0.18)',
+              color:'#fff', borderRadius:8, padding:'1px 7px' }}>{dueText}</span>
+          )}
+        </div>
+      </div>
+      <div className="book-meta">
+        <div className="meta-text">
+          <div className="meta-title">{deck.title}</div>
+          <div className="meta-author" style={{ display:'flex', alignItems:'center', gap:6 }}>
+            {cards.length} cards
+            {dueText && (
+              <span style={{ fontSize:10, fontWeight:600,
+                color: dueUrgent ? 'var(--accent, #ff9800)' : 'var(--textDim)' }}>{dueText}</span>
+            )}
+          </div>
+        </div>
+        <button className="btn-dots" onClick={e => { e.stopPropagation(); onMenu(e, deck) }}><DotsIcon /></button>
+      </div>
+    </div>
+  )
+}
+
 function EditNotebookModal({ nb, onSave, onClose }) {
   const [title, setTitle] = useState(nb.title || '')
-  const COLORS = ['#1a1a2e','#0f3460','#1b4332','#4a1942','#7f1d1d','#1e3a5f','#2d2d2d','#1c2b1c','#2a1a0e','#0d2137']
+  const COLORS = ['#2d1b69','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#6b3fa0','#2e7d32','#c0392b','#00838f']
   const [color, setColor] = useState(nb.coverColor || COLORS[0])
   return (
     <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:10000,display:'flex',alignItems:'center',justifyContent:'center'}}
@@ -795,6 +936,17 @@ export default function LibraryView() {
   const persistNotebooks = useAppStore(s => s.persistNotebooks)
   const addSketchbook    = useAppStore(s => s.addSketchbook)
   const persistSketchbooks = useAppStore(s => s.persistSketchbooks)
+  const collections      = useAppStore(s => s.collections)
+  const addCollection    = useAppStore(s => s.addCollection)
+  const removeCollection = useAppStore(s => s.removeCollection)
+  const updateCollection = useAppStore(s => s.updateCollection)
+  const addToCollection  = useAppStore(s => s.addToCollection)
+  const persistCollections = useAppStore(s => s.persistCollections)
+  const flashcardDecks        = useAppStore(s => s.flashcardDecks)
+  const addDeck               = useAppStore(s => s.addDeck)
+  const removeDeck            = useAppStore(s => s.removeDeck)
+  const setActiveFlashcardDeck = useAppStore(s => s.setActiveFlashcardDeck)
+  const persistFlashcardDecks  = useAppStore(s => s.persistFlashcardDecks)
   const activeTab = useAppStore(s => s.activeLibTab)
 
   const [search,     setSearch]     = useState('')
@@ -808,8 +960,13 @@ export default function LibraryView() {
   const [toast,      setToast]      = useState(null) // { message, error }
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [profileOpen,  setProfileOpen]  = useState(false)
+  const [activeCollection, setActiveCollection] = useState(null)
+  const [editColId, setEditColId] = useState(null)
+  const [editColName, setEditColName] = useState('')
 
   const [searchFocused, setSearchFocused] = useState(false)
+  const nbSubFilter = useAppStore(s => s.libSubFilter)
+  const setNbSubFilter = useAppStore(s => s.setLibSubFilter)
   const searchRef = useRef()
 
   const fileInputRef   = useRef()
@@ -829,8 +986,16 @@ export default function LibraryView() {
       else if (added.length) setToast({ message: `Added ${added.length} book${added.length > 1 ? 's' : ''}!` })
       setTimeout(() => setToast(null), 2500)
     }
+    const editHandler = (e) => {
+      const { item } = e.detail
+      if (!item) return
+      if (item._isNotebook) setEditNb(item)
+      else if (item._isSketchbook) setEditSb(item)
+      else setEditBook(item)
+    }
     window.addEventListener('open-file', handler)
-    return () => window.removeEventListener('open-file', handler)
+    window.addEventListener('gnos:edit-item', editHandler)
+    return () => { window.removeEventListener('open-file', handler); window.removeEventListener('gnos:edit-item', editHandler) }
   }, [addBook, persistLibrary])
 
   async function handleBookFiles(e) {
@@ -901,6 +1066,11 @@ export default function LibraryView() {
     if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'sketchbook', activeSketchbook: sb })
     setView('sketchbook')
   }
+  function openFlashcardDeck(deck) {
+    setActiveFlashcardDeck(deck)
+    if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'flashcard', activeFlashcardDeck: deck })
+    setView('flashcard')
+  }
 
   function openBookInNewTab(book) {
     useAppStore.getState().setActiveBook(book)
@@ -918,6 +1088,10 @@ export default function LibraryView() {
     useAppStore.getState().setActiveSketchbook(sb)
     openNewTab({ view: 'sketchbook', activeSketchbook: sb })
   }
+  function openFlashcardDeckInNewTab(deck) {
+    useAppStore.getState().setActiveFlashcardDeck(deck)
+    openNewTab({ view: 'flashcard', activeFlashcardDeck: deck })
+  }
 
   const ICON_BOOK   = '<path d="M3 14V3a1.5 1.5 0 0 1 1.5-1.5h9V14H4.5A1.5 1.5 0 0 1 3 12.5v0A1.5 1.5 0 0 1 4.5 11H13.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
   const ICON_AUDIO  = '<path d="M3 6h3l3-3.5v11L6 10H3V6z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M11 5c.8.7 1.3 1.6 1.3 3s-.5 2.3-1.3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'
@@ -933,7 +1107,18 @@ export default function LibraryView() {
       { label: 'Open in New Tab', icon: ICON_NEWTAB, action: () => openBookInNewTab(book) },
       { label: 'Search title', icon: ICON_SEARCH, action: () => window.open(`https://www.google.com/search?q=${encodeURIComponent(book.title)}`, '_blank') },
       { label: 'Search author', icon: ICON_SEARCH, action: () => window.open(`https://www.google.com/search?q=${encodeURIComponent(book.author || book.title + ' author')}`, '_blank') },
-      { label: 'Delete', icon: ICON_TRASH, danger: true, action: () => removeBook(book.id) },
+      ...(collections.length > 0 ? [{
+        label: 'Add to Collection', icon: '<rect x="2" y="4" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M5 4V3a3 3 0 0 1 6 0v1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>',
+        submenu: collections.map(c => ({
+          label: c.name, action: () => { addToCollection(c.id, book.id); persistCollections() }
+        })),
+      }] : []),
+      { label: 'Delete', icon: ICON_TRASH, danger: true, action: async () => {
+        const { moveToTrash } = await import('@/lib/storage')
+        await moveToTrash('book', book.id, book.title)
+        removeBook(book.id)
+        persistLibrary()
+      }},
     ]})
   }
   function showAudioMenu(e, book) {
@@ -942,7 +1127,18 @@ export default function LibraryView() {
       { label: 'Play',            icon: ICON_AUDIO,  action: () => openAudio(book) },
       { label: 'Open in New Tab', icon: ICON_NEWTAB,  action: () => openAudioInNewTab(book) },
       { label: 'Edit',   icon: '<path d="M11.5 2.5a2.121 2.121 0 0 1 3 3L5 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>', action: () => setEditBook(book) },
-      { label: 'Delete', icon: ICON_TRASH, danger: true, action: () => removeBook(book.id) },
+      ...(collections.length > 0 ? [{
+        label: 'Add to Collection', icon: '<rect x="2" y="4" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M5 4V3a3 3 0 0 1 6 0v1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>',
+        submenu: collections.map(c => ({
+          label: c.name, action: () => { addToCollection(c.id, book.id); persistCollections() }
+        })),
+      }] : []),
+      { label: 'Delete', icon: ICON_TRASH, danger: true, action: async () => {
+        const { moveToTrash } = await import('@/lib/storage')
+        await moveToTrash('audio', book.id, book.title)
+        removeBook(book.id)
+        persistLibrary()
+      }},
     ]})
   }
   function showNbMenu(e, nb) {
@@ -951,7 +1147,18 @@ export default function LibraryView() {
       { label: 'Open',            icon: ICON_NB,     action: () => openNotebook(nb) },
       { label: 'Open in New Tab', icon: ICON_NEWTAB,  action: () => openNotebookInNewTab(nb) },
       { label: 'Edit',   icon: '<path d="M11.5 2.5a2.121 2.121 0 0 1 3 3L5 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>', action: () => setEditNb(nb) },
-      { label: 'Delete', icon: ICON_TRASH, danger: true, action: () => removeNotebook(nb.id) },
+      ...(collections.length > 0 ? [{
+        label: 'Add to Collection', icon: '<rect x="2" y="4" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M5 4V3a3 3 0 0 1 6 0v1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>',
+        submenu: collections.map(c => ({
+          label: c.name, action: () => { addToCollection(c.id, nb.id); persistCollections() }
+        })),
+      }] : []),
+      { label: 'Delete', icon: ICON_TRASH, danger: true, action: async () => {
+        const { moveToTrash } = await import('@/lib/storage')
+        await moveToTrash('notebook', nb.id, nb.title)
+        removeNotebook(nb.id)
+        useAppStore.getState().persistNotebooks?.()
+      }},
     ]})
   }
   const ICON_SKETCH = '<path d="M11.5 2.5a2.121 2.121 0 0 1 3 3L5 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>'
@@ -961,11 +1168,30 @@ export default function LibraryView() {
       { label: 'Open',            icon: ICON_SKETCH, action: () => openSketchbook(sb) },
       { label: 'Open in New Tab', icon: ICON_NEWTAB,  action: () => openSketchbookInNewTab(sb) },
       { label: 'Edit',   icon: '<path d="M11.5 2.5a2.121 2.121 0 0 1 3 3L5 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>', action: () => setEditSb(sb) },
+      ...(collections.length > 0 ? [{
+        label: 'Add to Collection', icon: '<rect x="2" y="4" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M5 4V3a3 3 0 0 1 6 0v1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>',
+        submenu: collections.map(c => ({
+          label: c.name, action: () => { addToCollection(c.id, sb.id); persistCollections() }
+        })),
+      }] : []),
       { label: 'Delete', icon: ICON_TRASH, danger: true, action: async () => {
-        const { deleteSketchbookContent } = await import('@/lib/storage')
+        const { moveToTrash, deleteSketchbookContent } = await import('@/lib/storage')
+        await moveToTrash('sketchbook', sb.id, sb.title)
         await deleteSketchbookContent(sb.id)
         removeSketchbook(sb.id)
         useAppStore.getState().persistSketchbooks?.()
+      }},
+    ]})
+  }
+
+  function showDeckMenu(e, deck) {
+    e.stopPropagation()
+    setMenu({ x: e.clientX, y: e.clientY, items: [
+      { label: 'Open',            icon: '<rect x="2" y="4" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/><rect x="4" y="6" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/>', action: () => openFlashcardDeck(deck) },
+      { label: 'Open in New Tab', icon: ICON_NEWTAB,  action: () => openFlashcardDeckInNewTab(deck) },
+      { label: 'Delete', icon: ICON_TRASH, danger: true, action: () => {
+        removeDeck(deck.id)
+        persistFlashcardDecks()
       }},
     ]})
   }
@@ -974,7 +1200,8 @@ export default function LibraryView() {
     const lib = library
     const nbs = notebooks
     const sbs = sketchbooks
-    if (!lib.length && !nbs.length && !sbs.length) return (
+    const fds = flashcardDecks
+    if (!lib.length && !nbs.length && !sbs.length && !fds.length) return (
       <div className="lib-empty-state" style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10}}>
         <button className="lib-empty-plus" onClick={() => fileInputRef.current?.click()}>
           <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
@@ -993,6 +1220,9 @@ export default function LibraryView() {
       )),
       ...sbs.map(sb => (
         <SketchbookCard key={sb.id} sb={sb} onOpen={openSketchbook} onMenu={showSbMenu} />
+      )),
+      ...fds.map(deck => (
+        <FlashcardDeckCard key={deck.id} deck={deck} onOpen={openFlashcardDeck} onMenu={showDeckMenu} />
       )),
     ]
   }
@@ -1042,26 +1272,203 @@ export default function LibraryView() {
       )
     }
     if (activeTab === 'notebooks') {
-      const combined = [
-        ...notebooks.map(nb => ({ ...nb, _kind: 'notebook' })),
-        ...sketchbooks.map(sb => ({ ...sb, _kind: 'sketchbook' })),
+      const NB_SUB_FILTERS = [
+        { id: 'all', label: 'All' },
+        { id: 'notebooks', label: 'Notebooks' },
+        { id: 'sketchbooks', label: 'Sketchbooks' },
+        { id: 'flashcards', label: 'Flashcards' },
       ]
+      let combined = []
+      if (nbSubFilter === 'all' || nbSubFilter === 'notebooks')
+        combined.push(...notebooks.map(nb => ({ ...nb, _kind: 'notebook' })))
+      if (nbSubFilter === 'all' || nbSubFilter === 'sketchbooks')
+        combined.push(...sketchbooks.map(sb => ({ ...sb, _kind: 'sketchbook' })))
+      if (nbSubFilter === 'all' || nbSubFilter === 'flashcards')
+        combined.push(...flashcardDecks.map(d => ({ ...d, _kind: 'flashcard' })))
       return (
         <div className="lib-tab-inner">
+          {/* Sub-filter pills */}
+          <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
+            {NB_SUB_FILTERS.map(f => (
+              <button key={f.id} onClick={() => setNbSubFilter(f.id)}
+                style={{
+                  padding:'4px 12px', borderRadius:14, border:'1px solid',
+                  borderColor: nbSubFilter === f.id ? 'var(--accent)' : 'var(--border)',
+                  background: nbSubFilter === f.id ? 'var(--accent)' : 'none',
+                  color: nbSubFilter === f.id ? '#fff' : 'var(--textDim)',
+                  fontSize:11, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
+                  transition:'all 0.12s',
+                }}>{f.label}</button>
+            ))}
+          </div>
           <div className="library-grid" style={{gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))"}}>
             {combined.length ? combined.map(item =>
               item._kind === 'sketchbook'
                 ? <SketchbookCard key={item.id} sb={item} onOpen={openSketchbook} onMenu={showSbMenu} />
+                : item._kind === 'flashcard'
+                ? <FlashcardDeckCard key={item.id} deck={item} onOpen={openFlashcardDeck} onMenu={showDeckMenu} />
                 : <NotebookCard   key={item.id} nb={item} onOpen={openNotebook}   onMenu={showNbMenu} />
             ) : null}
           </div>
           {!combined.length && (
-            <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10}}>
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10,paddingTop:60,paddingBottom:40}}>
               <button className="lib-empty-plus" onClick={() => setAddOpen(true)}>
                 <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
               </button>
-              <p className="lib-empty-hint">Click + to create a notebook or sketchbook</p>
-              <p className="lib-empty-formats">Markdown · wikilinks · Excalidraw canvas</p>
+              <p className="lib-empty-hint">
+                {nbSubFilter !== 'all'
+                  ? `No ${nbSubFilter} yet.`
+                  : 'Click + to create a notebook, sketchbook, or flashcard deck'}
+              </p>
+              {nbSubFilter !== 'all' && (
+                <button onClick={() => setNbSubFilter('all')} style={{
+                  padding: '6px 16px', borderRadius: 8, border: '1px solid var(--border)',
+                  background: 'none', color: 'var(--accent)', fontSize: 12, fontWeight: 600,
+                  cursor: 'pointer', fontFamily: 'inherit',
+                }}>Show All</button>
+              )}
+              <p className="lib-empty-formats">Markdown · wikilinks · Excalidraw canvas · Flashcards</p>
+            </div>
+          )}
+        </div>
+      )
+    }
+    if (activeTab === 'collections') {
+      // Collection detail view — show items inside a collection
+      if (activeCollection) {
+        const col = collections.find(c => c.id === activeCollection)
+        if (!col) { setActiveCollection(null); return null }
+        const colItems = [
+          ...library.filter(i => col.items.includes(i.id)),
+          ...notebooks.filter(n => col.items.includes(n.id)).map(n => ({ ...n, _isNotebook: true })),
+          ...sketchbooks.filter(s => col.items.includes(s.id)).map(s => ({ ...s, _isSketchbook: true })),
+          ...flashcardDecks.filter(d => col.items.includes(d.id)).map(d => ({ ...d, _isDeck: true })),
+        ]
+        return (
+          <div className="lib-tab-inner">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+              <button onClick={() => setActiveCollection(null)} style={{ padding: '4px 10px', fontSize: 11, border: '1px solid var(--border)', background: 'none', color: 'var(--textDim)', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit' }}>&larr; Back</button>
+              {col.color && <span style={{ width: 14, height: 14, borderRadius: 4, background: col.color }} />}
+              <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{col.name}</span>
+              <span style={{ fontSize: 11, color: 'var(--textDim)' }}>{colItems.length} items</span>
+            </div>
+            <div className="library-grid" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(110px,1fr))' }}>
+              {colItems.map(item =>
+                item._isDeck ? <FlashcardDeckCard key={item.id} deck={item} onOpen={openFlashcardDeck} onMenu={showDeckMenu} />
+                : item._isSketchbook ? <SketchbookCard key={item.id} sb={item} onOpen={openSketchbook} onMenu={showSbMenu} />
+                : item._isNotebook ? <NotebookCard key={item.id} nb={item} onOpen={openNotebook} onMenu={showNbMenu} />
+                : item.type === 'audio' ? <AudiobookCard key={item.id} book={item} onOpen={openAudio} onMenu={showAudioMenu} />
+                : <BookCard key={item.id} book={item} onOpen={openBook} onMenu={showBookMenu} />
+              )}
+            </div>
+            {!colItems.length && (
+              <div style={{ textAlign: 'center', padding: 40, color: 'var(--textDim)', fontSize: 13 }}>
+                This collection is empty. Add items using the context menu on any library item.
+              </div>
+            )}
+          </div>
+        )
+      }
+      // Collections grid
+      return (
+        <div className="lib-tab-inner">
+          {collections.length > 0 && (
+            <div className="library-grid" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(140px,1fr))', gap: 14 }}>
+              {collections.map(col => {
+                const colItems = [...library, ...notebooks.map(n => ({ ...n, _isNotebook: true })), ...sketchbooks.map(s => ({ ...s, _isSketchbook: true })), ...flashcardDecks.map(d => ({ ...d, _isDeck: true }))].filter(i => col.items.includes(i.id))
+                const COLLECTION_COLORS = ['#388bfd', '#e05c7a', '#4a7c3f', '#e8922a', '#8250df', '#f0883e', '#56d4dd']
+                return (
+                  <div key={col.id} style={{
+                    background: 'var(--surfaceAlt)', border: '1px solid var(--border)', borderRadius: 10,
+                    padding: 14, cursor: 'pointer', transition: 'border-color 0.12s, box-shadow 0.12s',
+                    display: 'flex', flexDirection: 'column', gap: 8, minHeight: 120, position: 'relative',
+                  }}
+                    onClick={() => setActiveCollection(col.id)}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.boxShadow = '0 4px 16px rgba(0,0,0,0.2)' }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.boxShadow = 'none' }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {col.color
+                        ? <span style={{ width: 20, height: 20, borderRadius: 6, background: col.color, flexShrink: 0 }} />
+                        : <svg width="20" height="20" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, opacity: 0.6 }}>
+                            <rect x="2" y="1" width="12" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
+                            <rect x="2" y="9" width="12" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
+                            <line x1="6.5" y1="4" x2="9.5" y2="4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                            <line x1="6.5" y1="12" x2="9.5" y2="12" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                          </svg>
+                      }
+                      {editColId === col.id ? (
+                        <input
+                          autoFocus
+                          value={editColName}
+                          onChange={e => setEditColName(e.target.value)}
+                          onBlur={() => {
+                            if (editColName.trim()) { updateCollection(col.id, { name: editColName.trim() }); persistCollections() }
+                            setEditColId(null)
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') { e.target.blur() }
+                            if (e.key === 'Escape') { setEditColId(null) }
+                          }}
+                          onClick={e => e.stopPropagation()}
+                          style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', flex: 1, background: 'none', border: '1px solid var(--accent)', borderRadius: 4, padding: '1px 4px', outline: 'none', fontFamily: 'inherit' }}
+                        />
+                      ) : (
+                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', flex: 1 }}>{col.name}</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--textDim)' }}>
+                      {colItems.length} item{colItems.length !== 1 ? 's' : ''}
+                    </div>
+                    {colItems.slice(0, 3).map(item => (
+                      <div key={item.id} style={{ fontSize: 11, color: 'var(--textMuted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {item.title}
+                      </div>
+                    ))}
+                    {/* Dots menu button — bottom right */}
+                    <button onClick={e => {
+                      e.stopPropagation()
+                      setMenu({ x: e.clientX, y: e.clientY, items: [
+                        { label: 'Edit Name', icon: '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>', action: () => {
+                          setEditColId(col.id); setEditColName(col.name)
+                        }},
+                        { label: 'Change Color', icon: '<circle cx="8" cy="8" r="5" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2" fill="currentColor"/>',
+                          submenu: COLLECTION_COLORS.map(c => ({
+                            label: c,
+                            action: () => { updateCollection(col.id, { color: c }); persistCollections() },
+                          })),
+                        },
+                        { label: 'Delete Collection', icon: '<polyline points="3,6 5,6 13,6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 6V4H5v2M14 6l-.867 9.143A1.5 1.5 0 0 1 11.64 16.5H4.36A1.5 1.5 0 0 1 2.867 15.143L2 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>', danger: true, action: () => { removeCollection(col.id); persistCollections() } },
+                      ]})
+                    }} style={{
+                      position: 'absolute', bottom: 8, right: 8, width: 24, height: 24, borderRadius: 6,
+                      border: 'none', background: 'none', color: 'var(--textDim)', cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.4,
+                      transition: 'opacity 0.12s, background 0.12s',
+                    }}
+                      onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'var(--surface)' }}
+                      onMouseLeave={e => { e.currentTarget.style.opacity = '0.4'; e.currentTarget.style.background = 'none' }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                        <circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/>
+                      </svg>
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          {!collections.length && (
+            <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10}}>
+              <button className="lib-empty-plus" onClick={() => {
+                const col = { id: makeId('col'), name: 'New Collection', items: [], createdAt: new Date().toISOString() }
+                addCollection(col)
+                persistCollections()
+              }}>
+                <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
+              </button>
+              <p className="lib-empty-hint">Create a collection to organize your library</p>
+              <p className="lib-empty-formats">Group books, notes, and more</p>
             </div>
           )}
         </div>
@@ -1149,7 +1556,7 @@ export default function LibraryView() {
                     setAddOpen(false)
                   }}
                   onNewSketchbook={() => {
-                    const COLORS = ['#1a1a2e','#0f3460','#1b4332','#4a1942','#7f1d1d','#1e3a5f','#2d2d2d','#3d2b1f']
+                    const COLORS = ['#2d1b69','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#6b3fa0','#2e7d32']
                     const sb = { id: makeId('sb'), title: 'Untitled Sketch', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), coverColor: COLORS[Math.floor(sketchbooks.length % COLORS.length)] }
                     addSketchbook(sb)
                     persistSketchbooks()
@@ -1157,7 +1564,49 @@ export default function LibraryView() {
                     setView('sketchbook')
                     setAddOpen(false)
                   }}
+                  onNewFlashcardDeck={() => {
+                    const COLORS = ['#6b3fa0','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#2e7d32','#c0392b']
+                    const deck = {
+                      id: makeId('deck'), title: 'Untitled Deck', cards: [],
+                      color: COLORS[Math.floor(flashcardDecks.length % COLORS.length)],
+                      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+                    }
+                    addDeck(deck)
+                    persistFlashcardDecks()
+                    setActiveFlashcardDeck(deck)
+                    setView('flashcard')
+                    setAddOpen(false)
+                  }}
                   onNewCollection={() => setAddOpen(false)}
+                  onImportFlashcards={() => {
+                    import('@tauri-apps/plugin-dialog').then(({ open }) =>
+                      open({ filters: [{ name: 'Flashcards', extensions: ['csv', 'tsv', 'txt'] }] })
+                    ).then(path => {
+                      if (!path) return
+                      import('@tauri-apps/plugin-fs').then(({ readTextFile }) =>
+                        readTextFile(path)
+                      ).then(text => {
+                        const sep = text.includes('\t') ? '\t' : ','
+                        const rows = text.trim().split('\n').map(line => line.split(sep))
+                        const start = rows[0]?.[0]?.toLowerCase().includes('front') || rows[0]?.[0]?.toLowerCase().includes('question') ? 1 : 0
+                        const cards = rows.slice(start).filter(r => r[0]?.trim()).map(r => ({
+                          id: makeId('fc'), front: r[0]?.trim() || '', back: r[1]?.trim() || '',
+                          nextReview: 0, interval: 1, ease: 2.5, repetitions: 0,
+                        }))
+                        if (cards.length) {
+                          const COLORS = ['#6b3fa0','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#2e7d32','#c0392b']
+                          const fileName = typeof path === 'string' ? path.split('/').pop().split('\\').pop().replace(/\.\w+$/, '') : 'Imported Deck'
+                          const deck = {
+                            id: makeId('deck'), title: fileName, cards,
+                            color: COLORS[Math.floor(flashcardDecks.length % COLORS.length)],
+                            createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+                          }
+                          addDeck(deck); persistFlashcardDecks()
+                          setActiveFlashcardDeck(deck); setView('flashcard')
+                        }
+                      })
+                    })
+                  }}
                 />
               )}
             </div>
