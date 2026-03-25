@@ -1,5 +1,6 @@
 body {
   background-color: #0d1117;
+  overscroll-behavior: none;
 }
 
 :root {
@@ -27,13 +28,25 @@ body {
   --addBookText: #8b949e;
   --tagBg: #21262d;
 
-  --font-ui: system-ui, -apple-system, sans-serif;
-  --font-serif: Georgia, serif;
+  --font-ui: 'Author', system-ui, -apple-system, sans-serif;
+  --font-logo: 'Britney', Georgia, serif;
+  --font-title: 'Clash Display', 'Author', system-ui, sans-serif;
+  --font-sub: 'Satoshi', 'Author', system-ui, sans-serif;
+  --font-body: 'Author', system-ui, -apple-system, sans-serif;
+  --font-prose: 'Erode', Georgia, serif;
+  --font-serif: 'Erode', Georgia, serif;
 }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
 body { background: var(--bg); color: var(--text); font-family: var(--font-ui); transition: background 0.3s, color 0.3s; overflow-x: hidden; }
+
+/* Prevent text selection on draggable elements and nav items */
+[data-drag-item], [data-drag-item] * { user-select: none; -webkit-user-select: none; }
+[data-nav-item], [data-nav-item] * { user-select: none; -webkit-user-select: none; }
+.sidenav-panel * { user-select: none; -webkit-user-select: none; }
+.sidenav-panel input, .sidenav-panel textarea { user-select: text; -webkit-user-select: text; }
+.gnos-titlebar * { user-select: none; -webkit-user-select: none; }
 
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
@@ -113,7 +126,9 @@ button { font-family: inherit; }
   border-radius: 8px;
   padding: 6px 12px;
   transition: border-color 0.15s, box-shadow 0.15s;
+  user-select: none; -webkit-user-select: none;
 }
+.search-bar input { user-select: text; -webkit-user-select: text; }
 .search-bar:focus-within {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(56,139,253,0.15);
@@ -262,8 +277,8 @@ button { font-family: inherit; }
 .cover-spine { position: absolute; left: 0; top: 0; bottom: 0; width: 7px; background: rgba(0,0,0,0.3); border-radius: 7px 0 0 7px; z-index: 1; }
 .cover-crease { position: absolute; left: 7px; top: 0; bottom: 0; width: 1px; background: rgba(255,255,255,0.06); z-index: 1; }
 .cover-edge { position: absolute; right: 0; top: 3px; bottom: 3px; width: 2px; background: rgba(255,255,255,0.08); border-radius: 0 3px 3px 0; z-index: 1; }
-.cover-title { color: rgba(255,255,255,0.93); font-size: 11px; font-weight: 700; text-align: center; line-height: 1.3; font-family: var(--font-serif); text-shadow: 0 2px 6px rgba(0,0,0,0.5); z-index: 1; overflow-wrap: break-word; width: 100%; padding-left: 4px; }
-.cover-author { color: rgba(255,255,255,0.55); font-size: 9px; margin-top: 8px; text-align: center; font-family: var(--font-serif); z-index: 1; padding-left: 4px; }
+.cover-title { color: rgba(255,255,255,0.93); font-size: 11px; font-weight: 600; text-align: center; line-height: 1.35; font-family: var(--font-serif); text-shadow: 0 2px 6px rgba(0,0,0,0.5); z-index: 1; overflow-wrap: break-word; width: 100%; padding-left: 4px; letter-spacing: 0.2px; }
+.cover-author { color: rgba(255,255,255,0.55); font-size: 9px; margin-top: 8px; text-align: center; font-family: var(--font-serif); z-index: 1; padding-left: 4px; letter-spacing: 0.3px; }
 .cover-badge { position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.35); border-radius: 4px; padding: 2px 5px; font-size: 9px; color: rgba(255,255,255,0.6); font-weight: 700; z-index: 2; }
 .cover-audio { position: absolute; bottom: 8px; left: 18px; font-size: 11px; opacity: 0.65; z-index: 2; }
 .cover-prog-bg { position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: rgba(0,0,0,0.35); z-index: 2; }
@@ -271,8 +286,8 @@ button { font-family: inherit; }
 
 .book-meta { padding-top: 10px; padding-bottom: 2px; display: flex; justify-content: space-between; gap: 4px; }
 .meta-text { flex: 1; min-width: 0; }
-.meta-title { font-size: 11px; color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.3; font-family: var(--font-serif, Georgia, serif); }
-.meta-author { font-size: 11px; color: var(--textDim); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-ui, system-ui); }
+.meta-title { font-size: 11px; color: var(--text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.35; font-family: var(--font-serif, Georgia, serif); letter-spacing: 0.2px; }
+.meta-author { font-size: 11px; color: var(--textDim); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-ui, system-ui); letter-spacing: 0.15px; }
 .card-prog-bar { width: 100%; height: 3px; background: var(--progressTrack, var(--surfaceAlt)); border-radius: 2px; overflow: hidden; display: flex; align-items: center; gap: 6px; }
 .card-prog-fill { height: 100%; background: var(--accent); transition: width 0.4s; border-radius: 2px; }
 .meta-prog-row { margin-top: 6px; display: flex; align-items: center; gap: 6px; }
@@ -425,7 +440,7 @@ button { font-family: inherit; }
 .profile-name-input::placeholder { color: var(--textDim); }
 .profile-stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px; }
 .profile-stat-card { background: var(--surfaceAlt); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; text-align: center; }
-.profile-stat-value { font-size: 22px; font-weight: 800; color: var(--accent); font-family: var(--font-serif); line-height: 1.1; }
+.profile-stat-value { font-size: 22px; font-weight: 600; color: var(--accent); font-family: var(--font-title); line-height: 1.1; }
 .profile-stat-label { font-size: 11px; color: var(--textDim); margin-top: 3px; text-transform: uppercase; letter-spacing: 0.06em; }
 
 .profile-section-title { font-size: 13px; font-weight: 700; color: var(--textMuted); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 12px; }
@@ -531,7 +546,7 @@ button { font-family: inherit; }
   background: var(--headerBg); position: relative; z-index: 50;
 }
 
-.text-logo { font-size: 18px; font-weight: 800; letter-spacing: -0.6px; color: var(--text); font-family: var(--font-serif); background: none; border: none; cursor: pointer; padding: 4px 6px; border-radius: 6px; transition: background 0.15s; }
+.text-logo { font-size: 18px; font-weight: 600; letter-spacing: -0.3px; color: var(--text); font-family: Georgia, serif; background: none; border: none; cursor: pointer; padding: 4px 6px; border-radius: 6px; transition: background 0.15s; user-select: none; -webkit-user-select: none; }
 .text-logo:hover { background: var(--surfaceAlt); }
 
 /* True-center the chapter button regardless of left/right item widths.
@@ -1440,6 +1455,33 @@ mark.nb-find-mark-active {
   box-shadow: 0 1px 0 var(--borderSubtle);
   flex-shrink: 0;
   z-index: 50;
+  transition: max-height 0.22s cubic-bezier(0.4,0,0.2,1), opacity 0.18s, min-height 0.22s;
+}
+
+/* ── Zen mode — hide all view headers while active ───────────────────────── */
+body.zen-active .gnos-header,
+body.zen-active .app-header,
+body.zen-active .app-header-top,
+body.zen-active .reader-header,
+body.zen-active .nb-header,
+body.zen-active .fc-header {
+  max-height: 0 !important;
+  min-height: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+  opacity: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+.gnos-header,
+.app-header,
+.app-header-top,
+.reader-header,
+.nb-header,
+.fc-header {
+  transition: max-height 0.22s cubic-bezier(0.4,0,0.2,1), height 0.22s cubic-bezier(0.4,0,0.2,1), opacity 0.18s, border 0.18s;
 }
 
 .nb-header {
@@ -1574,8 +1616,8 @@ mark.nb-find-mark-active {
 .nb-page-title {
   display: block; width: 100%;
   background: transparent; border: none; outline: none;
-  font-family: var(--font-serif, Georgia, serif);
-  font-size: 36px; font-weight: 800;
+  font-family: var(--font-title);
+  font-size: 36px; font-weight: 600;
   color: var(--readerText, var(--text));
   caret-color: var(--accent);
   margin-bottom: 6px;
@@ -1595,7 +1637,7 @@ mark.nb-find-mark-active {
 .nb-block-editor[data-placeholder]:not(:focus-within):has(.nb-block:only-child[data-empty])::after {
   content: attr(data-placeholder);
   color: var(--textDim); opacity: 0.4;
-  font-family: var(--font-serif, Georgia, serif);
+  font-family: var(--font-prose);
   font-size: 17px; pointer-events: none;
   position: absolute; top: 4px; left: 0;
 }
@@ -1603,7 +1645,7 @@ mark.nb-find-mark-active {
 /* ── Individual blocks ────────────────────────────────────────────────────────── */
 .nb-block {
   outline: none;
-  font-family: var(--font-ui, system-ui, sans-serif);
+  font-family: var(--font-body);
   font-size: 15px;
   line-height: 1.75;
   color: var(--text);
@@ -2002,6 +2044,7 @@ mark.nb-find-mark-active {
   background: none; border: none; cursor: pointer;
   padding: 0; flex-shrink: 0;
   transition: opacity 0.15s;
+  user-select: none; -webkit-user-select: none;
 }
 .ap-gnos-logo:hover { opacity: 0.7; }
 .ap-back-btn {

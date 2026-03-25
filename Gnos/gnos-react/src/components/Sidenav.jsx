@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, useContext } from 'react'
+import { useEffect, useRef, useState, useContext, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { PaneContext } from '@/lib/PaneContext'
 import useAppStore from '@/store/useAppStore'
-import { generateCoverColor } from '@/lib/utils'
+import { generateCoverColor, makeId } from '@/lib/utils'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Icons
@@ -70,8 +70,9 @@ const NAV_ITEMS = [
     id: 'collections', label: 'Collections',
     icon: (
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-        <rect x="1" y="5" width="14" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
-        <path d="M5 5V4a3 3 0 0 1 6 0v1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+        <rect x="2" y="7" width="12" height="8" rx="1" stroke="currentColor" strokeWidth="1.4"/>
+        <rect x="1" y="4.5" width="14" height="3" rx="1" stroke="currentColor" strokeWidth="1.2"/>
+        <rect x="4.5" y="9.5" width="7" height="3" rx="0.6" stroke="currentColor" strokeWidth="1.1"/>
       </svg>
     ),
   },
@@ -97,7 +98,7 @@ function MiniCover({ item }) {
   const isAudio = item.type === 'audio'
   return (
     <div style={{
-      width: 29, height: 40, borderRadius: 4, flexShrink: 0,
+      width: 20, height: 28, borderRadius: 4, flexShrink: 0,
       overflow: 'hidden', position: 'relative',
       background: item._isNotebook || item._isSketchbook
         ? (item.coverColor || '#1a1a2e')
@@ -105,7 +106,7 @@ function MiniCover({ item }) {
       boxShadow: '0 1px 5px rgba(0,0,0,0.4)',
     }}>
       {item.coverDataUrl
-        ? <img src={item.coverDataUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        ? <img src={item.coverDataUrl} alt="" draggable="false" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
         : <div style={{
             position: 'absolute', inset: 0, display: 'flex',
             alignItems: 'center', justifyContent: 'center',
@@ -121,7 +122,56 @@ function MiniCover({ item }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // NavDropdown — 10% shorter vertical padding on rows
 // ─────────────────────────────────────────────────────────────────────────────
-function NavDropdown({ items, onOpen, onMenu }) {
+function NavDropdown({ items, onOpen, onMenu, onReorder }) {
+  const [draggingId, setDraggingId] = useState(null)
+  const [dropId,     setDropId]     = useState(null)
+  const dragRef = useRef(null) // { idx, id, startX, startY, dragging }
+  const onReorderRef = useRef(onReorder)
+  useEffect(() => { onReorderRef.current = onReorder }, [onReorder])
+
+  // Pointer-based drag for sidebar items (HTML5 drag API unreliable in Tauri/WebKit)
+  useEffect(() => {
+    function getNavRow(x, y) {
+      const draggingEl = document.querySelector('[data-nav-dragging="true"]')
+      if (draggingEl) draggingEl.style.pointerEvents = 'none'
+      const el = document.elementFromPoint(x, y)
+      if (draggingEl) draggingEl.style.pointerEvents = ''
+      return el?.closest('[data-nav-item]')
+    }
+    function onMove(e) {
+      const d = dragRef.current
+      if (!d) return
+      if (!d.dragging) {
+        if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) > 5) {
+          d.dragging = true
+          setDraggingId(d.id)
+        }
+        return
+      }
+      const row = getNavRow(e.clientX, e.clientY)
+      if (row && row.dataset.navItem !== d.id) setDropId(row.dataset.navItem)
+      else setDropId(null)
+    }
+    function onUp(e) {
+      const d = dragRef.current
+      if (!d) { setDraggingId(null); setDropId(null); return }
+      dragRef.current = null
+      if (!d.dragging) { setDraggingId(null); setDropId(null); return }
+      const row = getNavRow(e.clientX, e.clientY)
+      if (row && row.dataset.navItem !== d.id && onReorderRef.current) {
+        const toIdx = parseInt(row.dataset.navIdx, 10)
+        if (!isNaN(toIdx)) onReorderRef.current(d.idx, toIdx, d.id, row.dataset.navItem)
+      }
+      setDraggingId(null)
+      setDropId(null)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    return () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+  }, [])
 
   if (!items.length) return (
     <div style={{ padding: '5px 16px 8px 38px', fontSize: 11, color: 'var(--textDim)', fontStyle: 'italic' }}>
@@ -139,16 +189,30 @@ function NavDropdown({ items, onOpen, onMenu }) {
 
   return (
     <div style={{ paddingBottom: 2 }}>
-      {items.map(item => (
-        <div key={item.id} style={{ display:'flex', alignItems:'center', position:'relative' }}
-          onMouseEnter={e => { e.currentTarget.style.background='var(--hover)' }}
-          onMouseLeave={e => { e.currentTarget.style.background='none' }}
+      {items.map((item, i) => (
+        <div key={item.id}
+          data-nav-item={item.id} data-nav-idx={i}
+          data-nav-dragging={draggingId === item.id ? 'true' : undefined}
+          onMouseDown={onReorder ? e => {
+            if (e.button !== 0) return
+            e.preventDefault()
+            dragRef.current = { idx: i, id: item.id, startX: e.clientX, startY: e.clientY, dragging: false }
+          } : undefined}
+          style={{
+            display:'flex', alignItems:'center', position:'relative',
+            opacity: draggingId === item.id ? 0.4 : 1,
+            background: dropId === item.id ? 'var(--accent)18' : 'none',
+            borderLeft: dropId === item.id ? '2px solid var(--accent)' : '2px solid transparent',
+            cursor: onReorder ? 'grab' : undefined,
+          }}
+          onMouseEnter={e => { if (dropId !== item.id) e.currentTarget.style.background='var(--hover)' }}
+          onMouseLeave={e => { if (dropId !== item.id) e.currentTarget.style.background='none' }}
         >
           <button
             onClick={() => onOpen(item)}
             style={{
               display: 'flex', alignItems: 'center', gap: 8, flex:1,
-              padding: '4px 6px 4px 16px',
+              padding: '2px 6px 2px 16px',
               background: 'none', border: 'none', cursor: 'pointer',
               textAlign: 'left', minWidth:0,
             }}
@@ -156,16 +220,34 @@ function NavDropdown({ items, onOpen, onMenu }) {
             <MiniCover item={item} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{
-                fontSize: 12, fontWeight: 600, color: 'var(--text)',
+                fontSize: 11, fontWeight: 600, color: 'var(--text)',
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                 lineHeight: 1.3,
               }}>{item.title}</div>
-              {item.author && (
+              {item._isNotebook && item.dueDate ? (() => {
+                try {
+                  const d = new Date(item.dueDate)
+                  const now = new Date()
+                  const diffMs = d - now
+                  const overdue = diffMs < 0
+                  const today = !overdue && diffMs < 86400000
+                  const dateStr = d.toLocaleDateString('en-US', { month:'short', day:'numeric' })
+                  const h = d.getHours(), m = d.getMinutes()
+                  const timeStr = (h || m) ? ` @${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}` : ''
+                  const col = overdue ? '#ff8080' : today ? '#ffc060' : '#a0b8ff'
+                  return (
+                    <div style={{ fontSize:10, color: col, marginTop:1, fontWeight:600,
+                      whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                      {dateStr}{timeStr}
+                    </div>
+                  )
+                } catch { return null }
+              })() : item.author ? (
                 <div style={{
                   fontSize: 10, color: 'var(--textDim)', marginTop: 1,
                   whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                 }}>{item.author}</div>
-              )}
+              ) : null}
               {/* Progress bar for books/audiobooks */}
               {(() => {
                 const pct = item.type === 'audio'
@@ -222,22 +304,55 @@ function SidebarAddPopup({ onClose, onAddBook, onAddAudio, addNotebook, setActiv
   const choices = [
     {
       icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 14V3a1.5 1.5 0 0 1 1.5-1.5h9V14H4.5A1.5 1.5 0 0 1 3 12.5v0A1.5 1.5 0 0 1 4.5 11H13.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>,
-      label: 'Add Book (EPUB / TXT)',
+      label: 'Import Book',
+      sub: 'EPUB · TXT · PDF',
       action: () => { onAddBook(); onClose() },
     },
     {
       icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 6h3l3-3.5v11L6 10H3V6z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/><path d="M11 5c.8.7 1.3 1.6 1.3 3s-.5 2.3-1.3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>,
-      label: 'Add Audiobook (MP3…)',
+      label: 'Import Audiobook',
+      sub: 'MP3 · M4B · FLAC',
       action: () => { onAddAudio(); onClose() },
     },
     {
-      icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="12" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.4"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>,
+      icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="12" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.4"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="5" y1="11" x2="8" y2="11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>,
       label: 'New Notebook',
+      sub: 'Markdown · live preview',
       action: () => {
         const nb = { id: `nb-${Date.now()}`, title: 'Untitled Note', wordCount: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
         addNotebook(nb); setActiveNotebook(nb); setView('notebook')
         onClose(); closeSideNav()
       },
+    },
+    {
+      icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M9 3H3a1.5 1.5 0 0 0-1.5 1.5v9A1.5 1.5 0 0 0 3 15h10a1.5 1.5 0 0 0 1.5-1.5V7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/><path d="M14.5 1.5a1.5 1.5 0 0 1 0 2.12L9 9l-3 .5.5-3 5.88-5.88a1.5 1.5 0 0 1 2.12 0z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+      label: 'New Sketchbook',
+      sub: 'Excalidraw canvas',
+      action: () => {
+        const s = useAppStore.getState()
+        const COLORS = ['#2d1b69','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#6b3fa0','#2e7d32']
+        const sb = { id: `sb-${Date.now()}`, title: 'Untitled Sketch', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), coverColor: COLORS[Math.floor((s.sketchbooks?.length || 0) % COLORS.length)] }
+        s.addSketchbook?.(sb); s.persistSketchbooks?.(); s.setActiveSketchbook?.(sb)
+        setView('sketchbook'); onClose(); closeSideNav()
+      },
+    },
+    {
+      icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="2" width="10" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3"/><rect x="5" y="6" width="10" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3"/></svg>,
+      label: 'New Flashcard Deck',
+      sub: 'Spaced repetition',
+      action: () => {
+        const s = useAppStore.getState()
+        const COLORS = ['#6b3fa0','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#2e7d32','#c0392b']
+        const deck = { id: `deck-${Date.now()}`, title: 'Untitled Deck', cards: [], color: COLORS[Math.floor((s.flashcardDecks?.length || 0) % COLORS.length)], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+        s.addDeck?.(deck); s.persistFlashcardDecks?.(); s.setActiveFlashcardDeck?.(deck)
+        setView('flashcard'); onClose(); closeSideNav()
+      },
+    },
+    {
+      icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="7" width="12" height="8" rx="1" stroke="currentColor" strokeWidth="1.3"/><rect x="1" y="4.5" width="14" height="3" rx="1" stroke="currentColor" strokeWidth="1.2"/><rect x="4.5" y="9.5" width="7" height="3" rx="0.6" stroke="currentColor" strokeWidth="1.1"/></svg>,
+      label: 'New Collection',
+      sub: 'Group items',
+      action: () => { setView('library'); onClose(); closeSideNav() },
     },
   ]
 
@@ -246,15 +361,16 @@ function SidebarAddPopup({ onClose, onAddBook, onAddAudio, addNotebook, setActiv
       style={{
         position: 'absolute', bottom: 40, right: 0,
         background: 'var(--surface)', border: '1px solid var(--border)',
-        borderRadius: 10, padding: '6px 0', minWidth: 200,
+        borderRadius: 10, padding: '6px 0', minWidth: 220,
         boxShadow: '0 8px 32px rgba(0,0,0,0.35)', zIndex: 20,
       }}
       onClick={e => e.stopPropagation()}
     >
-      {choices.map(({ icon, label, action }) => (
+      <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.07em', textTransform: 'uppercase', color: 'var(--textDim)', padding: '6px 14px 4px', opacity: 0.6 }}>Add to Library</div>
+      {choices.map(({ icon, label, sub, action }) => (
         <button key={label} onClick={action} style={{
           display: 'flex', alignItems: 'center', gap: 10,
-          width: '100%', padding: '9px 14px',
+          width: '100%', padding: '8px 14px',
           background: 'none', border: 'none', cursor: 'pointer',
           color: 'var(--text)', fontSize: 12, fontWeight: 500,
           transition: 'background 0.1s', textAlign: 'left',
@@ -262,8 +378,11 @@ function SidebarAddPopup({ onClose, onAddBook, onAddAudio, addNotebook, setActiv
           onMouseEnter={e => e.currentTarget.style.background = 'var(--hover)'}
           onMouseLeave={e => e.currentTarget.style.background = 'none'}
         >
-          <span style={{ color: 'var(--textDim)', display: 'flex' }}>{icon}</span>
-          {label}
+          <span style={{ color: 'var(--textDim)', display: 'flex', flexShrink: 0 }}>{icon}</span>
+          <div>
+            <div>{label}</div>
+            {sub && <div style={{ fontSize: 10, color: 'var(--textDim)', marginTop: 1 }}>{sub}</div>}
+          </div>
         </button>
       ))}
     </div>
@@ -383,6 +502,14 @@ function PiperStatusRow() {
 // ─────────────────────────────────────────────────────────────────────────────
 export function UniversalSettingsModal({ onClose }) {
   const [tab, setTab] = useState('appearance')
+  const [zenMode, setZenModeLocal] = useState(false)
+
+  // Sync zenMode with a custom event so App.jsx can respond
+  function toggleZenMode() {
+    const next = !zenMode
+    setZenModeLocal(next)
+    window.dispatchEvent(new CustomEvent('gnos:zen-mode', { detail: { enabled: next } }))
+  }
 
   const setPref            = useAppStore(s => s.setPref)
   const persistPreferences = useAppStore(s => s.persistPreferences)
@@ -499,6 +626,11 @@ export function UniversalSettingsModal({ onClose }) {
                     e.target.value = ''
                   }} />
               </div>
+
+              <SettingsSectionLabel>Focus</SettingsSectionLabel>
+              <SettingsRow label="Zen Mode" desc="Hide the title bar and view headers. Move mouse to top edge to reveal. Toggle with Cmd+Shift+F">
+                <SettingsToggle on={zenMode} onClick={toggleZenMode} />
+              </SettingsRow>
 
               <SettingsSectionLabel>Typography</SettingsSectionLabel>
               <SettingsRow label="Font Size" desc={`${fontSize}px`}>
@@ -769,27 +901,35 @@ function SideNavCtxMenu({ x, y, items, onClose }) {
 }
 
 export function GnosNavButton() {
-  const openSideNav      = useAppStore(s => s.openSideNav)
-  const closeSideNav     = useAppStore(s => s.closeSideNav)
-  const sideNavOpen      = useAppStore(s => s.sideNavOpen)
+  const paneTabId         = useContext(PaneContext)
+  const setTabSideNavOpen = useAppStore(s => s.setTabSideNavOpen)
+  const tabs              = useAppStore(s => s.tabs)
+  const globalSideNavOpen = useAppStore(s => s.sideNavOpen)
+  const openSideNav       = useAppStore(s => s.openSideNav)
+  const closeSideNavGlobal = useAppStore(s => s.closeSideNav)
   const view             = useAppStore(s => s.view)
   const setView          = useAppStore(s => s.setView)
   const setActiveLibTab  = useAppStore(s => s.setActiveLibTab)
-  const paneTabId        = useContext(PaneContext)
+  const navigate         = useAppStore(s => s.navigate)
+
+  const paneTab = paneTabId ? tabs.find(t => t.id === paneTabId) : null
+  const sideNavOpen = paneTab ? (paneTab.sideNavOpen ?? globalSideNavOpen) : globalSideNavOpen
 
   function handleLogoClick() {
     if (sideNavOpen) {
       const tabMap = { reader:'books', pdf:'books', 'audio-player':'audiobooks', notebook:'notebooks', sketchbook:'notebooks' }
+      const libTab = tabMap[view] || 'library'
       if (paneTabId) {
-        useAppStore.getState().updateTab(paneTabId, { view: 'library', activeLibTab: tabMap[view] || 'library' })
+        useAppStore.getState().updateTab(paneTabId, { view: 'library', activeLibTab: libTab })
         useAppStore.getState().switchTab(paneTabId)
+        setTabSideNavOpen(paneTabId, false)
       } else {
-        setActiveLibTab(tabMap[view] || 'library')
-        setView('library')
+        navigate({ view: 'library', activeLibTab: libTab })
+        closeSideNavGlobal()
       }
-      closeSideNav()
     } else {
-      openSideNav()
+      if (paneTabId) setTabSideNavOpen(paneTabId, true)
+      else openSideNav()
     }
   }
 
@@ -944,11 +1084,20 @@ function SideEditModal({ item, isNb, isSb, isAudio, colors, onClose, onSave }) {
   )
 }
 
-export default function SideNav() {
-  const sideNavOpen         = useAppStore(s => s.sideNavOpen)
-  const closeSideNav        = useAppStore(s => s.closeSideNav)
+export default function SideNav({ isSplitPane = false }) {
+  const paneTabId           = useContext(PaneContext)
+  const setTabSideNavOpen   = useAppStore(s => s.setTabSideNavOpen)
+  const globalSideNavOpen   = useAppStore(s => s.sideNavOpen)
+  const globalCloseSideNav  = useAppStore(s => s.closeSideNav)
   const tabs                = useAppStore(s => s.tabs)
   const activeTabId         = useAppStore(s => s.activeTabId)
+  // In split-pane mode, read this pane's own sidebar state
+  const paneTab = isSplitPane && paneTabId ? tabs.find(t => t.id === paneTabId) : null
+  const sideNavOpen = paneTab ? (paneTab.sideNavOpen ?? false) : globalSideNavOpen
+  const closeSideNav = useCallback(() => {
+    if (isSplitPane && paneTabId) setTabSideNavOpen(paneTabId, false)
+    else globalCloseSideNav()
+  }, [isSplitPane, paneTabId, setTabSideNavOpen, globalCloseSideNav])
   const switchTab           = useAppStore(s => s.switchTab)
   const closeTab            = useAppStore(s => s.closeTab)
   const view                = useAppStore(s => s.view)
@@ -963,6 +1112,7 @@ export default function SideNav() {
   const addNotebook         = useAppStore(s => s.addNotebook)
   const openNewTab          = useAppStore(s => s.openNewTab)
   const updateTab           = useAppStore(s => s.updateTab)
+  const navigate            = useAppStore(s => s.navigate)
 
   const VIEW_TO_TAB = { reader:'books', pdf:'books', 'audio-player':'audiobooks', notebook:'notebooks', sketchbook:'notebooks' }
 
@@ -998,9 +1148,13 @@ export default function SideNav() {
   }, [addOpen])
 
   function handleNavItem(id) {
-    updateTab(activeTabId, { view: 'library', activeLibTab: id })
-    setView('library'); setActiveLibTab(id); closeSideNav()
-    // Reset notebook sub-filter when switching away from notebooks tab
+    if (paneTabId) {
+      updateTab(paneTabId, { view: 'library', activeLibTab: id })
+      setView('library'); setActiveLibTab(id)
+    } else {
+      navigate({ view: 'library', activeLibTab: id })
+    }
+    closeSideNav()
     if (id !== 'notebooks') {
       const setLibSubFilter = useAppStore.getState().setLibSubFilter
       if (setLibSubFilter) setLibSubFilter('all')
@@ -1059,13 +1213,14 @@ export default function SideNav() {
 
   // openItemInCurrentTab — replaces the active tab's view
   function openItemInCurrentTab(item) {
-    let newView
+    let newView, patch
     const store = useAppStore.getState()
-    if (item._isNotebook)           { store.setActiveNotebook(item);   newView = 'notebook' }
-    else if (item._isSketchbook)    { store.setActiveSketchbook(item); newView = 'sketchbook' }
-    else if (item.type === 'audio') { store.setActiveAudioBook(item);  newView = 'audio-player' }
-    else { store.setActiveBook(item); newView = item.format === 'pdf' ? 'pdf' : 'reader' }
-    updateTab(activeTabId, { view: newView })
+    if (item._isNotebook)           { store.setActiveNotebook(item);   newView = 'notebook';     patch = { view: newView, activeNotebook: item } }
+    else if (item._isSketchbook)    { store.setActiveSketchbook(item); newView = 'sketchbook';   patch = { view: newView, activeSketchbook: item } }
+    else if (item.type === 'audio') { store.setActiveAudioBook(item);  newView = 'audio-player'; patch = { view: newView, activeAudioBook: item } }
+    else { store.setActiveBook(item); newView = item.format === 'pdf' ? 'pdf' : 'reader'; patch = { view: newView, activeBook: item } }
+    // Use paneTabId when in split mode so we update the correct pane's tab
+    updateTab(paneTabId || activeTabId, patch)
     setView(newView); closeSideNav()
   }
 
@@ -1099,8 +1254,8 @@ export default function SideNav() {
         }
         .gnos-nav-btn:hover { background: var(--hover); }
         .gnos-nav-logo {
-          font-family: Georgia, serif; font-size: 15px; font-weight: 700;
-          color: var(--text); letter-spacing: -0.3px;
+          font-family: Georgia, serif; font-size: 15px; font-weight: 600;
+          color: var(--text); letter-spacing: 0.3px;
           transition: opacity 0.18s, transform 0.18s cubic-bezier(0.4,0,0.2,1);
         }
         .gnos-nav-btn--open .gnos-nav-logo {
@@ -1193,6 +1348,10 @@ export default function SideNav() {
           background: rgba(0,0,0,0.22);
         }
 
+        /* ── Split-pane overrides — position relative to pane container ───── */
+        .sidenav-backdrop.split-pane { position: absolute; }
+        .sidenav-panel.split-pane { position: absolute; top: 0; }
+
         /* ── Panel — overlay, does not push content ───────────────────────── */
         .sidenav-panel {
           position: fixed; top: 34px; left: 0; bottom: 0;
@@ -1202,7 +1361,8 @@ export default function SideNav() {
           border-right: 1px solid var(--border);
           display: flex; flex-direction: column;
           transform: translateX(-100%);
-          transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+          transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+                      top 0.22s cubic-bezier(0.4, 0, 0.2, 1);
           will-change: transform;
         }
         .sidenav-panel.open {
@@ -1349,16 +1509,16 @@ export default function SideNav() {
       <input ref={audioInputRef} type="file" accept="audio/*"   multiple style={{ display: 'none' }} onChange={handleAudioFiles} />
 
       {/* Backdrop — click to close */}
-      <div className={`sidenav-backdrop${sideNavOpen ? ' open' : ''}`} onClick={closeSideNav} />
+      <div className={`sidenav-backdrop${sideNavOpen ? ' open' : ''}${isSplitPane ? ' split-pane' : ''}`} onClick={closeSideNav} />
 
       {/* Panel */}
-      <div className={`sidenav-panel${sideNavOpen ? ' open' : ''}`} role="navigation" aria-label="Main navigation">
+      <div className={`sidenav-panel${sideNavOpen ? ' open' : ''}${isSplitPane ? ' split-pane' : ''}`} role="navigation" aria-label="Main navigation">
 
         {/* Header */}
         <div className="sidenav-header">
           <button
             className="sidenav-logo sidenav-logo-btn"
-            onClick={() => { updateTab(activeTabId, { view: 'library', activeLibTab: 'library' }); setView('library'); setActiveLibTab('library'); closeSideNav() }}
+            onClick={() => { if (paneTabId) { updateTab(paneTabId, { view: 'library', activeLibTab: 'library' }); setView('library'); setActiveLibTab('library') } else { navigate({ view: 'library', activeLibTab: 'library' }) } closeSideNav() }}
             title="Back to Library"
           >Gnos</button>
           <button className="sidenav-close-btn" onClick={closeSideNav} title="Close navigation">
@@ -1371,28 +1531,6 @@ export default function SideNav() {
 
         {/* Scrollable list */}
         <div className="sidenav-scroll">
-
-          {/* Open Tabs */}
-          {showTabs && (
-            <div className="sidenav-section">
-              <div className="sidenav-section-label">Open Tabs</div>
-              {tabs.map(tab => (
-                <button key={tab.id}
-                  className={`sidenav-tab-item${tab.id === activeTabId ? ' active' : ''}`}
-                  onClick={() => handleTabSwitch(tab.id)}
-                >
-                  <div className="sidenav-tab-indicator" />
-                  <span className="sidenav-tab-name">{VIEW_LABELS[tab.view] || tab.view}</span>
-                  <button className="sidenav-tab-close" onClick={e => handleTabClose(e, tab.id)} title="Close tab">
-                    <svg width="8" height="8" viewBox="0 0 10 10" fill="none">
-                      <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                    </svg>
-                  </button>
-                </button>
-              ))}
-              <div className="sidenav-divider" />
-            </div>
-          )}
 
           {/* Library search */}
           <SideNavSearch
@@ -1536,7 +1674,31 @@ export default function SideNav() {
                       })}
                     </div>
                   ) : isOpen && (
-                    <NavDropdown items={items} onOpen={openItem} onMenu={(e, item) => {
+                    <NavDropdown items={items} onOpen={openItem}
+                      onReorder={(item.id === 'notebooks' || item.id === 'books' || item.id === 'audiobooks' || item.id === 'library') ? (from, to, fromId, toId) => {
+                        const store = useAppStore.getState()
+                        if (item.id === 'notebooks') {
+                          const sbs = store.sketchbooks || []
+                          const nbs = store.notebooks || []
+                          const fromIsSb = sbs.some(s => s.id === fromId)
+                          const toIsSb   = sbs.some(s => s.id === toId)
+                          if (fromIsSb && toIsSb) {
+                            const fi = sbs.findIndex(s => s.id === fromId)
+                            const ti = sbs.findIndex(s => s.id === toId)
+                            if (fi !== -1 && ti !== -1) { store.reorderSketchbooks?.(fi, ti); store.persistSketchbooks?.() }
+                          } else if (!fromIsSb && !toIsSb) {
+                            const fi = nbs.findIndex(n => n.id === fromId)
+                            const ti = nbs.findIndex(n => n.id === toId)
+                            if (fi !== -1 && ti !== -1) { store.reorderNotebooks?.(fi, ti); store.persistNotebooks?.() }
+                          }
+                        } else {
+                          const lib = store.library || []
+                          const fi = lib.findIndex(b => b.id === fromId)
+                          const ti = lib.findIndex(b => b.id === toId)
+                          if (fi !== -1 && ti !== -1) { store.reorderLibrary?.(fi, ti); store.persistLibrary?.() }
+                        }
+                      } : undefined}
+                    onMenu={(e, item) => {
                     e.stopPropagation()
                     const isAudio = item.type === 'audio'
                     const isNb = item._isNotebook
@@ -1546,13 +1708,24 @@ export default function SideNav() {
                     const ICON_NEWTAB = '<path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1h4v4M14 1l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
                     const ICON_TRASH = '<polyline points="3,6 5,6 13,6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 6V4H5v2M14 6l-.867 9.143A1.5 1.5 0 0 1 11.64 16.5H4.36A1.5 1.5 0 0 1 2.867 15.143L2 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
                     const ICON_SEARCH = '<circle cx="6" cy="6" r="4" stroke="currentColor" stroke-width="1.4"/><path d="M9.5 9.5l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'
-                    const ICON_COL = '<rect x="2" y="4" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M5 4V3a3 3 0 0 1 6 0v1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'
-                    const colSub = collections.length > 0 ? [{
+                    const ICON_COL = '<rect x="2" y="7" width="12" height="8" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="1" y="4.5" width="14" height="3" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="4.5" y="9.5" width="7" height="3" rx="0.6" stroke="currentColor" stroke-width="1.1"/>'
+                    const colSub = [{
                       label:'Add to Collection', icon:ICON_COL,
-                      submenu: collections.map(c => ({
-                        label: c.name, action: () => { useAppStore.getState().addToCollection(c.id, item.id); useAppStore.getState().persistCollections() }
-                      })),
-                    }] : []
+                      submenu: [
+                        { label: '+ New Collection', action: () => {
+                            const s = useAppStore.getState()
+                            const newCol = { id: makeId('col'), name: 'New Collection', items: [item.id], color: '' }
+                            s.addCollection(newCol); s.addToCollection(newCol.id, item.id); s.persistCollections()
+                            s.setActiveLibTab('collections'); s.setView('library')
+                            if (activeTabId) s.updateTab(activeTabId, { view: 'library', activeLibTab: 'collections' })
+                            setSideNavMenu(null)
+                          }
+                        },
+                        ...collections.map(c => ({
+                          label: c.name, action: () => { useAppStore.getState().addToCollection(c.id, item.id); useAppStore.getState().persistCollections() }
+                        }))
+                      ],
+                    }]
                     const editAction = () => {
                       setEditSideItem(item)
                       setSideNavMenu(null)
@@ -1588,6 +1761,28 @@ export default function SideNav() {
               )
             })}
           </div>
+
+          {/* Open Tabs — at the bottom of the scroll area */}
+          {showTabs && (
+            <div className="sidenav-section">
+              <div className="sidenav-divider" />
+              <div className="sidenav-section-label">Open Tabs</div>
+              {tabs.map(tab => (
+                <button key={tab.id}
+                  className={`sidenav-tab-item${tab.id === activeTabId ? ' active' : ''}`}
+                  onClick={() => handleTabSwitch(tab.id)}
+                >
+                  <div className="sidenav-tab-indicator" />
+                  <span className="sidenav-tab-name">{VIEW_LABELS[tab.view] || tab.view}</span>
+                  <button className="sidenav-tab-close" onClick={e => handleTabClose(e, tab.id)} title="Close tab">
+                    <svg width="8" height="8" viewBox="0 0 10 10" fill="none">
+                      <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    </svg>
+                  </button>
+                </button>
+              ))}
+            </div>
+          )}
 
         </div>
 

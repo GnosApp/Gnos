@@ -24,12 +24,24 @@
  *   use the autocomplete tooltip.
  */
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, useContext } from 'react'
 import useAppStore from '@/store/useAppStore'
-import { loadNotebookContent, saveNotebookContent, saveNotebookImage } from '@/lib/storage'
+import { PaneContext } from '@/lib/PaneContext'
+import { loadNotebookContent, saveNotebookContent, saveNotebookImage, getNotebookFolderPath } from '@/lib/storage'
 import { GnosNavButton } from '@/components/SideNav'
 import { listen } from '@tauri-apps/api/event'
-import { readFile } from '@tauri-apps/plugin-fs'
+
+
+// ─── Tauri convertFileSrc cache (loaded once, used synchronously in widgets) ───
+let _convertFileSrc = null
+let _invoke = null
+;(async () => {
+  try {
+    const { convertFileSrc, invoke } = await import('@tauri-apps/api/core')
+    _convertFileSrc = convertFileSrc
+    _invoke = invoke
+  } catch { /* non-Tauri env — ignore */ }
+})()
 
 // ─── Tiny id helper ───────────────────────────────────────────────────────────
 function makeId(prefix = 'id') {
@@ -296,6 +308,22 @@ function blockToHtml(raw, notebooks, library, footnotesBuf, sketchbooks = [], fl
   if (/^\s*[-*+]\s/.test(first)) return renderList(lines, il)
   if (/^\s*\d+[.)]\s/.test(first)) return renderList(lines, il)
 
+  // Definition list: any line followed by ": definition"
+  if (lines.length >= 2 && lines.some(l => /^:\s+/.test(l))) {
+    let dlHtml = ''; let i = 0
+    while (i < lines.length) {
+      const l = lines[i]
+      if (/^:\s+/.test(l)) {
+        dlHtml += `<dd class="nb-dd">${il(l.replace(/^:\s+/, ''))}</dd>`
+        i++
+      } else if (l.trim()) {
+        dlHtml += `<dt class="nb-dt">${il(l.trim())}</dt>`
+        i++
+      } else { i++ }
+    }
+    return `<dl class="nb-dl">${dlHtml}</dl>`
+  }
+
   const fnM = first.match(/^\[\^([^\]]+)\]:\s*(.*)/)
   if (fnM) {
     footnotesBuf?.push({ id: fnM[1], text: fnM[2] })
@@ -306,6 +334,87 @@ function blockToHtml(raw, notebooks, library, footnotesBuf, sketchbooks = [], fl
   if (/^\$\$/.test(first)) {
     const body = raw.replace(/^\$\$\n?/, '').replace(/\n?\$\$$/, '')
     return `<div class="nb-math nb-math-block nb-math-mq" data-latex="${esc(body)}" data-display="1"></div>`
+  }
+
+  // /todo block — render as a styled checklist card (matches widget CSS)
+  if (/^\/todo(?::.*)?$/.test(first)) {
+    const block = parseTodoBlock(raw, 0)
+    if (block) {
+      const listName = block.listName
+      const doneCount = block.items.filter(it => it.checked).length
+      const itemsHtml = block.items.map(it => {
+        const checked = it.checked
+        const badges  = [it.dateStr ? `<span class="cm-todo-date">${esc(it.dateStr)}</span>` : '', it.timeStr ? `<span class="cm-todo-time">${esc(it.timeStr)}</span>` : ''].filter(Boolean).join(' ')
+        return `<div class="cm-todo-row${checked ? ' cm-todo-done' : ''}">
+          <span class="cm-todo-cb${checked ? ' cm-todo-cb-on' : ''}">${checked ? '✓' : ''}</span>
+          <span class="cm-todo-row-text">${esc(it.text)}</span>${badges}
+        </div>`
+      }).join('')
+      return `<div class="cm-todo-block-w">
+        <div class="cm-todo-hdr-w">
+          <span class="cm-todo-title">${esc(listName)}</span>
+          <span class="cm-todo-stats">${doneCount}/${block.items.length}</span>
+        </div>
+        <div class="cm-todo-list">${itemsHtml}</div>
+      </div>`
+    }
+  }
+
+  // /task block — render as a kanban board (matches widget CSS)
+  if (/^\/task(?::.*)?$/.test(first)) {
+    const block = parseTaskBlock(raw, 0)
+    if (block) {
+      const colsHtml = block.columns.map(col => {
+        const tasksHtml = col.tasks.map(t => `
+          <div class="cm-task-card-w${t.done ? ' cm-task-card-w-done' : ''}">
+            <div class="cm-task-card-body">
+              <span class="cm-cb${t.done ? ' cm-cb-on' : ''}">${t.done ? '✓' : ''}</span>
+              <span class="cm-task-card-text">${esc(t.text)}</span>
+            </div>
+          </div>`).join('')
+        return `<div class="cm-task-col-w">
+          <div class="cm-task-col-hdr-w">
+            <span class="cm-task-col-title">${esc(col.title)}</span>
+            <span class="cm-task-col-w-badge">${col.tasks.length}</span>
+          </div>
+          <div class="cm-task-cards-area">${tasksHtml}</div>
+        </div>`
+      }).join('')
+      const titleHtml = block.boardTitle ? `<div class="cm-task-titlebar"><span class="cm-task-title-w">${esc(block.boardTitle)}</span></div>` : ''
+      return `<div class="cm-task-board-w">${titleHtml}<div class="cm-task-cols-w">${colsHtml}</div></div>`
+    }
+  }
+
+  // /calendar block — render as a simple event summary in preview
+  if (/^\/calendar(?::.*)?$/.test(first)) {
+    let data = {}
+    try { const jsonPart = first.replace(/^\/calendar:/, ''); data = JSON.parse(jsonPart) } catch { /**/ }
+    const events = data.events || {}
+    const titleText = data.title || 'Calendar'
+    const today = new Date()
+    const todayKey = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`
+    // Show next 7 days of events
+    const days = []
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(today); d.setDate(d.getDate() + i)
+      const k = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+      if (events[k]?.length) days.push({ date: d, key: k, evts: events[k] })
+    }
+    const evtHtml = days.length ? days.map(({ date, evts }) => {
+      const label = date.toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' })
+      return `<div class="cm-cal-prev-day"><span class="cm-cal-prev-date">${esc(label)}</span>${evts.map(e => `<span class="cm-cal-prev-evt">${esc(e)}</span>`).join('')}</div>`
+    }).join('') : '<div style="font-size:11px;color:var(--textDim);padding:6px 0">No upcoming events</div>'
+    return `<div class="cm-cal-prev-block"><div class="cm-cal-prev-title">${esc(titleText)}</div>${evtHtml}</div>`
+  }
+
+  // /timer block — render as a simple timer display in preview
+  if (/^\/timer(?::.*)?$/.test(first)) {
+    const m = first.match(/^\/timer:(\d+)(?::(.+))?$/)
+    const totalSec = m ? parseInt(m[1]) : 0
+    const label = m?.[2] || ''
+    const h = Math.floor(totalSec / 3600), min = Math.floor((totalSec % 3600) / 60), sec = totalSec % 60
+    const display = totalSec > 0 ? (h > 0 ? `${h}:${String(min).padStart(2,'0')}:${String(sec).padStart(2,'0')}` : `${min}:${String(sec).padStart(2,'0')}`) : '0:00'
+    return `<div class="cm-timer-prev"><span class="cm-timer-prev-time">${esc(display)}</span>${label ? `<span class="cm-timer-prev-label">${esc(label)}</span>` : ''}</div>`
   }
 
   return `<p>${il(raw.replace(/\n/g, '<br>'))}</p>`
@@ -399,8 +508,9 @@ function makeTheme(cm) {
       background: 'transparent',
       color: 'var(--text)',
       height: '100%',
-      fontFamily: 'Georgia, serif',
+      fontFamily: 'Erode, Georgia, serif',
       fontSize: '15px',
+      fontWeight: '450',
     },
     '.cm-content': { caretColor: 'var(--accent)', padding: '16px 0' },
     '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)' },
@@ -421,12 +531,12 @@ function makeHighlight(cm) {
   const { tags } = cm.highlight
   const { HighlightStyle } = cm.language
   return HighlightStyle.define([
-    { tag: tags.heading1, color: 'var(--text)', fontWeight: '700', fontSize: '1.6em', fontFamily: 'Georgia, serif' },
-    { tag: tags.heading2, color: 'var(--text)', fontWeight: '700', fontSize: '1.35em', fontFamily: 'Georgia, serif' },
-    { tag: tags.heading3, color: 'var(--text)', fontWeight: '600', fontSize: '1.15em' },
-    { tag: tags.heading4, color: 'var(--text)', fontWeight: '600' },
-    { tag: tags.strong,   color: 'var(--nb-bold, var(--text))', fontWeight: '700' },
-    { tag: tags.emphasis, color: 'var(--nb-italic, #a5d6ff)', fontStyle: 'italic' },
+    { tag: tags.heading1, color: 'var(--text)', fontWeight: '600', fontSize: '1.6em', fontFamily: 'Erode, Georgia, serif', letterSpacing: '-0.3px' },
+    { tag: tags.heading2, color: 'var(--text)', fontWeight: '600', fontSize: '1.35em', fontFamily: 'Erode, Georgia, serif', letterSpacing: '-0.2px' },
+    { tag: tags.heading3, color: 'var(--text)', fontWeight: '600', fontSize: '1.15em', fontFamily: 'Satoshi, Author, sans-serif' },
+    { tag: tags.heading4, color: 'var(--text)', fontWeight: '600', fontFamily: 'Satoshi, Author, sans-serif' },
+    { tag: tags.strong,   color: 'var(--nb-bold-color)', fontWeight: '700' },
+    { tag: tags.emphasis, color: 'var(--nb-italic-color)', fontStyle: 'italic' },
     { tag: tags.strikethrough, color: 'var(--textDim)', textDecoration: 'line-through' },
     { tag: tags.link,   color: 'var(--accent)' },
     { tag: tags.url,    color: 'var(--accent)', textDecoration: 'underline' },
@@ -839,7 +949,158 @@ function makeMathCalcPlugin(cm) {
   // Patterns that should go directly to Algebrite (symbolic CAS)
   const CAS_RE = /\b(integral|integrate|roots|solve|factor|expand|taylor|defint|laplace)\b/i
 
+  // Comprehensive date/time math
+  function tryDateMath(expr) {
+    const lower = expr.toLowerCase().trim()
+    const DAY_NAMES = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday']
+    const UNITS = 'second|seconds|minute|minutes|min|mins|hour|hours|hr|hrs|day|days|week|weeks|month|months|year|years'
+
+    function parseBase(s) {
+      s = s.trim()
+      const now = new Date()
+      const today = new Date(now); today.setHours(0,0,0,0)
+      if (s === 'today') return new Date(today)
+      if (s === 'tomorrow')  { const d = new Date(today); d.setDate(d.getDate()+1); return d }
+      if (s === 'yesterday') { const d = new Date(today); d.setDate(d.getDate()-1); return d }
+      if (s === 'now') return new Date(now)
+      // next/last/this [weekday]
+      const nextDayM = s.match(/^(?:next|this)\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)$/)
+      if (nextDayM) {
+        const target = DAY_NAMES.indexOf(nextDayM[1])
+        const d = new Date(today); let diff = target - d.getDay(); if (diff <= 0) diff += 7
+        d.setDate(d.getDate() + diff); return d
+      }
+      const lastDayM = s.match(/^last\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)$/)
+      if (lastDayM) {
+        const target = DAY_NAMES.indexOf(lastDayM[1])
+        const d = new Date(today); let diff = d.getDay() - target; if (diff <= 0) diff += 7
+        d.setDate(d.getDate() - diff); return d
+      }
+      // next/last week/month/year
+      if (s === 'next week')  { const d = new Date(today); d.setDate(d.getDate()+7); return d }
+      if (s === 'last week')  { const d = new Date(today); d.setDate(d.getDate()-7); return d }
+      if (s === 'next month') { const d = new Date(today); d.setMonth(d.getMonth()+1); return d }
+      if (s === 'last month') { const d = new Date(today); d.setMonth(d.getMonth()-1); return d }
+      if (s === 'next year')  { const d = new Date(today); d.setFullYear(d.getFullYear()+1); return d }
+      if (s === 'last year')  { const d = new Date(today); d.setFullYear(d.getFullYear()-1); return d }
+      // time: "9am", "9:30am", "14:30"
+      const timeM = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/)
+      if (timeM) {
+        const d = new Date(now); let h = parseInt(timeM[1],10); const m = parseInt(timeM[2]||'0',10)
+        if (timeM[3]==='pm' && h!==12) h+=12; if (timeM[3]==='am' && h===12) h=0
+        d.setHours(h,m,0,0); return d
+      }
+      const time24M = s.match(/^(\d{1,2}):(\d{2})$/)
+      if (time24M) { const d = new Date(now); d.setHours(parseInt(time24M[1],10),parseInt(time24M[2],10),0,0); return d }
+      // Try JS date parsing
+      const parsed = new Date(s)
+      if (!isNaN(parsed.getTime())) return parsed
+      return null
+    }
+
+    function applyDur(d, sign, n, unit) {
+      const r = new Date(d)
+      const u = unit.toLowerCase()
+      if (u.startsWith('sec')) r.setSeconds(r.getSeconds()+sign*n)
+      else if (u.startsWith('min') || u==='min' || u==='mins') r.setMinutes(r.getMinutes()+sign*n)
+      else if (u.startsWith('hour') || u==='hr' || u==='hrs') r.setHours(r.getHours()+sign*n)
+      else if (u.startsWith('day')) r.setDate(r.getDate()+sign*n)
+      else if (u.startsWith('week')) r.setDate(r.getDate()+sign*n*7)
+      else if (u.startsWith('month')) r.setMonth(r.getMonth()+sign*n)
+      else if (u.startsWith('year')) r.setFullYear(r.getFullYear()+sign*n)
+      return r
+    }
+
+    function isTimeUnit(u) { return /^(sec|min|hour|hr)/.test(u.toLowerCase()) || u==='mins' || u==='hrs' }
+
+    function fmtDate(d) { return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'}) }
+    function fmtTime(d) { return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})+' @ '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) }
+    function fmt(d, wasTime) { return wasTime ? fmtTime(d) : fmtDate(d) }
+
+    // Standalone: "today", "tomorrow", "yesterday", "next monday", etc.
+    const base = parseBase(lower)
+    if (base) return fmtDate(base)
+
+    // "base +/- N units"
+    const durRe = new RegExp(`^(.+?)\\s*([+-])\\s*(\\d+)\\s*(${UNITS})$`)
+    const durM = lower.match(durRe)
+    if (durM) {
+      const b = parseBase(durM[1].trim())
+      if (b) {
+        const sign = durM[2]==='+' ? 1 : -1
+        const n = parseInt(durM[3],10), u = durM[4]
+        return fmt(applyDur(b, sign, n, u), isTimeUnit(u))
+      }
+    }
+
+    // "N units ago"
+    const agoM = lower.match(new RegExp(`^(\\d+)\\s*(${UNITS})\\s+ago$`))
+    if (agoM) {
+      const r = applyDur(new Date(), -1, parseInt(agoM[1],10), agoM[2])
+      return fmt(r, isTimeUnit(agoM[2]))
+    }
+    // "in N units"
+    const inM = lower.match(new RegExp(`^in\\s+(\\d+)\\s*(${UNITS})$`))
+    if (inM) {
+      const r = applyDur(new Date(), 1, parseInt(inM[1],10), inM[2])
+      return fmt(r, isTimeUnit(inM[2]))
+    }
+
+    // "days until [date]" / "hours until [date]"
+    const untilM = lower.match(/^(?:how many )?(days|hours|weeks) until (.+)$/)
+    if (untilM) {
+      const d = parseBase(untilM[2]) || new Date(untilM[2])
+      if (d && !isNaN(d.getTime())) {
+        const ms = d.getTime() - Date.now()
+        if (untilM[1]==='days')  { const n=Math.ceil(ms/86400000); return `${n} day${Math.abs(n)!==1?'s':''}` }
+        if (untilM[1]==='hours') { const n=Math.ceil(ms/3600000); return `${n} hour${Math.abs(n)!==1?'s':''}` }
+        if (untilM[1]==='weeks') { const n=Math.ceil(ms/604800000); return `${n} week${Math.abs(n)!==1?'s':''}` }
+      }
+    }
+
+    // "days/hours since [date]"
+    const sinceM = lower.match(/^(?:how many )?(days|hours|weeks) since (.+)$/)
+    if (sinceM) {
+      const d = parseBase(sinceM[2]) || new Date(sinceM[2])
+      if (d && !isNaN(d.getTime())) {
+        const ms = Date.now() - d.getTime()
+        if (sinceM[1]==='days')  { const n=Math.floor(ms/86400000); return `${n} day${n!==1?'s':''}` }
+        if (sinceM[1]==='hours') { const n=Math.floor(ms/3600000); return `${n} hour${n!==1?'s':''}` }
+        if (sinceM[1]==='weeks') { const n=Math.floor(ms/604800000); return `${n} week${n!==1?'s':''}` }
+      }
+    }
+
+    return null
+  }
+
+  // Convert natural language math to evaluatable expression
+  function naturalLangToExpr(expr) {
+    let s = expr.toLowerCase()
+    s = s.replace(/^(?:what is|calculate|compute|find|evaluate)\s+/i, '')
+    s = s.replace(/\bplus\b/g, '+')
+    s = s.replace(/\bminus\b/g, '-')
+    s = s.replace(/\btimes\b/g, '*')
+    s = s.replace(/\bdivided by\b/g, '/')
+    s = s.replace(/\bsquared\b/g, '^2')
+    s = s.replace(/\bcubed\b/g, '^3')
+    s = s.replace(/\bsquare root of\b/g, 'sqrt(')
+    // Close open sqrt( if we added it
+    if (s.includes('sqrt(') && !s.includes(')')) s += ')'
+    s = s.replace(/\bpercent of\b/g, '/100 *')
+    return s
+  }
+
   function evalExpr(expr) {
+    // Strip thousands-separator commas (e.g. 1,000 → 1000, 1,000,000 → 1000000)
+    expr = expr.replace(/\b(\d{1,3}(?:,\d{3})+)\b/g, m => m.replace(/,/g, ''))
+
+    // Try date math first
+    const dateResult = tryDateMath(expr)
+    if (dateResult !== null) return dateResult
+
+    // Natural language conversion
+    const naturalExpr = naturalLangToExpr(expr)
+
     // Route CAS-like expressions to Algebrite first
     if (algLib && CAS_RE.test(expr)) {
       try {
@@ -847,13 +1108,22 @@ function makeMathCalcPlugin(cm) {
         if (r && r !== 'Stop' && r !== 'nil') return r
       } catch { /* fall through to mathjs */ }
     }
-    // Try math.js
+    // Try math.js (also handles unit conversions like "5 km to miles")
     if (mathLib) {
       try {
         const result = mathLib.evaluate(expr)
         if (result === undefined || result === null || typeof result === 'function') return null
         return String(typeof result === 'object' && result.toString ? result.toString() : result)
-      } catch { /* fall through to algebrite fallback */ }
+      } catch { /* try natural language variant */ }
+      // Try the natural language converted expression
+      if (naturalExpr !== expr) {
+        try {
+          const result = mathLib.evaluate(naturalExpr)
+          if (result !== undefined && result !== null && typeof result !== 'function') {
+            return String(typeof result === 'object' && result.toString ? result.toString() : result)
+          }
+        } catch { /* fall through */ }
+      }
     }
     // Algebrite fallback for anything math.js couldn't handle
     if (algLib) {
@@ -877,13 +1147,17 @@ function makeMathCalcPlugin(cm) {
       const col = cur.head - line.from
       const textBefore = line.text.slice(0, col)
 
-      const match = textBefore.match(/^(.*?)([^=\n]+)=\s*$/)
+      // Support =:.N precision syntax: "2*32.12321 =:.2" rounds to 2 decimals
+      const precMatch = textBefore.match(/^(.*?)([^=\n]+)=:\.(\d+)\s*$/)
+      const plainMatch = textBefore.match(/^(.*?)([^=\n]+)=\s*$/)
+      const match = precMatch || plainMatch
       if (!match) { this.deco = Decoration.none; this._hint = null; return }
+      const precision = precMatch ? parseInt(precMatch[3]) : null
       let expr = match[2].trim()
       // Strip list prefixes
       expr = expr.replace(/^(?:[-*+]|\d+\.)\s+/, '')
       // Strip markdown formatting
-      expr = expr.replace(/[*_~`]+/g, '')
+      expr = expr.replace(/\*{2,}|[_~`]+/g, '')
       // Isolate math from surrounding prose:
       // Remove everything before the last occurrence of a math-starting character
       // Math expressions start with digits, parens, minus, or known functions
@@ -896,9 +1170,19 @@ function makeMathCalcPlugin(cm) {
       }
       // If result is empty or still has long prose, skip
       if (!expr || /^[a-zA-Z]{4,}$/.test(expr)) { this.deco = Decoration.none; this._hint = null; return }
+      // Require at least one math operator or function call to avoid suggesting results for plain words/numbers
+      if (!/[+\-*/^%()]/.test(expr) && !/\b(sin|cos|tan|log|ln|sqrt|abs|ceil|floor|round|exp|pow|FV|PV|PMT|NPV)\s*\(/i.test(expr) && !/\bto\b/i.test(expr)) {
+        this.deco = Decoration.none; this._hint = null; return
+      }
 
-      const result = evalExpr(expr)
+      let result = evalExpr(expr)
       if (!result) { this.deco = Decoration.none; this._hint = null; return }
+
+      // Apply precision rounding if =:.N was used
+      if (precision !== null) {
+        const num = parseFloat(result)
+        if (!isNaN(num)) result = num.toFixed(precision)
+      }
 
       const resultStr = ' ' + result
       const builder = new cm.state.RangeSetBuilder()
@@ -987,12 +1271,19 @@ class CheckboxWidget {
 }
 
 class ImgWidget {
-  constructor(src, alt) { this.src = src; this.alt = alt }
+  constructor(src, alt, notebookDir = null) { this.src = src; this.alt = alt; this.notebookDir = notebookDir }
   toDOM() {
     const wrap = document.createElement('div')
     wrap.className = 'cm-img-wrap'
     const img = document.createElement('img')
-    img.src = this.src; img.alt = this.alt; img.loading = 'lazy'
+    // Resolve relative paths (./images/...) or absolute paths to Tauri asset:// URLs
+    let resolvedSrc = this.src
+    if (this.src.startsWith('./') && this.notebookDir && _convertFileSrc) {
+      resolvedSrc = _convertFileSrc(this.notebookDir + '/' + this.src.slice(2))
+    } else if (_convertFileSrc && (this.src.startsWith('/') || /^[A-Za-z]:\\/.test(this.src))) {
+      resolvedSrc = _convertFileSrc(this.src)
+    }
+    img.src = resolvedSrc; img.alt = this.alt; img.loading = 'lazy'
     img.className = 'cm-img'
     img.onerror = () => {
       img.style.display = 'none'
@@ -1004,11 +1295,121 @@ class ImgWidget {
     wrap.appendChild(img)
     return wrap
   }
-  eq(o) { return o instanceof ImgWidget && o.src === this.src }
-  compare(o) { return o instanceof ImgWidget && o.src === this.src }
+  eq(o) { return o instanceof ImgWidget && o.src === this.src && o.notebookDir === this.notebookDir }
+  compare(o) { return o instanceof ImgWidget && o.src === this.src && o.notebookDir === this.notebookDir }
   destroy() {}
   ignoreEvent() { return false }
   get estimatedHeight() { return 160 }
+  coordsAt() { return null }
+}
+
+// ─── Due-date helpers ────────────────────────────────────────────────────────
+function parseDueDate(expr) {
+  try {
+    if (!expr) return null
+    // Relative: +2d, +3h
+    const rel = expr.match(/^\+(\d+)([dh])$/)
+    if (rel) {
+      const n = parseInt(rel[1]), unit = rel[2]
+      const d = new Date()
+      if (unit === 'd') d.setDate(d.getDate() + n)
+      else d.setHours(d.getHours() + n)
+      return d
+    }
+    // HH:MM (time today)
+    const tod = expr.match(/^(\d{1,2}):(\d{2})$/)
+    if (tod) {
+      const d = new Date()
+      d.setHours(parseInt(tod[1]), parseInt(tod[2]), 0, 0)
+      return d
+    }
+    // YYYY-MM-DD or YYYY-MM-DD,HH:MM
+    const ymd = expr.match(/^(\d{4}-\d{2}-\d{2})(?:,(\d{1,2}:\d{2}))?$/)
+    if (ymd) return new Date(ymd[2] ? `${ymd[1]}T${ymd[2]}` : `${ymd[1]}T00:00`)
+    // DD-MM-YYYY or DD-MM-YYYY,HH:MM
+    const dmy4 = expr.match(/^(\d{2})-(\d{2})-(\d{4})(?:,(\d{1,2}:\d{2}))?$/)
+    if (dmy4) {
+      const [, dd, mm, yyyy, t] = dmy4
+      return new Date(t ? `${yyyy}-${mm}-${dd}T${t}` : `${yyyy}-${mm}-${dd}T00:00`)
+    }
+    // DD-MM-YY or DD-MM-YY,HH:MM (2-digit year → 2000s)
+    const dmy2 = expr.match(/^(\d{2})-(\d{2})-(\d{2})(?:,(\d{1,2}:\d{2}))?$/)
+    if (dmy2) {
+      const [, dd, mm, yy, t] = dmy2
+      const yyyy = 2000 + parseInt(yy)
+      return new Date(t ? `${yyyy}-${mm}-${dd}T${t}` : `${yyyy}-${mm}-${dd}T00:00`)
+    }
+    return null
+  } catch { return null }
+}
+function formatDueBadge(expr) {
+  const d = parseDueDate(expr)
+  if (!d) return expr
+  // Relative: +2d or +2h → show as-is
+  if (/^\+\d+[dh]$/.test(expr)) return expr
+  // Time-only: @HH:MM
+  if (/^\d{1,2}:\d{2}$/.test(expr)) {
+    const [h, m] = expr.split(':')
+    return `@${h.padStart(2, '0')}:${m}`
+  }
+  // Any format with time (contains comma) → "Mar 18 @14:30"
+  const timeMatch = expr.match(/,(\d{1,2}:\d{2})$/)
+  if (timeMatch) return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} @${timeMatch[1]}`
+  // Date-only → "Mar 18"
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
+class DueDateWidget {
+  constructor(expr) { this.expr = expr }
+  toDOM() {
+    const span = document.createElement('span')
+    const d = parseDueDate(this.expr)
+    const now = new Date()
+    const isOverdue = d && d < now
+    const isSoon = d && !isOverdue && (d - now) < 1000 * 60 * 60 * 24
+    span.className = 'cm-due-badge' + (isOverdue ? ' cm-due-overdue' : isSoon ? ' cm-due-today' : '')
+    span.textContent = formatDueBadge(this.expr)
+    return span
+  }
+  eq(o) { return o instanceof DueDateWidget && o.expr === this.expr }
+  compare(o) { return o instanceof DueDateWidget && o.expr === this.expr }
+  destroy() {}
+  ignoreEvent() { return true }
+  get estimatedHeight() { return -1 }
+  coordsAt() { return null }
+}
+
+// Time reference widget — renders @HH:MM or @hh:mmam/pm as a styled time badge
+class TimeRefWidget {
+  constructor(raw, display) { this.raw = raw; this.display = display }
+  toDOM() {
+    const span = document.createElement('span')
+    span.className = 'cm-time-badge'
+    span.textContent = this.display
+    return span
+  }
+  eq(o) { return o instanceof TimeRefWidget && o.raw === this.raw }
+  compare(o) { return o instanceof TimeRefWidget && o.raw === this.raw }
+  destroy() {}
+  ignoreEvent() { return true }
+  get estimatedHeight() { return -1 }
+  coordsAt() { return null }
+}
+
+// Tag widget — renders ::tagname as a subtle #tag badge
+class TagWidget {
+  constructor(tag) { this.tag = tag }
+  toDOM() {
+    const span = document.createElement('span')
+    span.className = 'cm-tag-badge'
+    span.textContent = this.tag
+    return span
+  }
+  eq(o) { return o instanceof TagWidget && o.tag === this.tag }
+  compare(o) { return o instanceof TagWidget && o.tag === this.tag }
+  destroy() {}
+  ignoreEvent() { return true }
+  get estimatedHeight() { return -1 }
   coordsAt() { return null }
 }
 
@@ -1084,14 +1485,615 @@ class LinkWidget {
     a.target = '_blank'
     a.rel = 'noopener noreferrer'
     a.title = this.href
-    a.addEventListener('click', e => { e.preventDefault(); window.open(this.href, '_blank') })
+    a.addEventListener('click', e => {
+      e.preventDefault()
+      const href = this.href
+      if (/^https?:\/\//i.test(href)) {
+        if (_invoke) _invoke('plugin:shell|open', { path: href }).catch(() => window.open(href, '_blank'))
+        else window.open(href, '_blank')
+      } else if (_invoke) {
+        _invoke('open_in_finder', { path: href }).catch(() => {})
+      }
+    })
     return a
   }
   eq(o) { return o instanceof LinkWidget && o.text === this.text && o.href === this.href }
   compare(o) { return o instanceof LinkWidget && o.text === this.text && o.href === this.href }
   destroy() {}
-  ignoreEvent() { return false }
+  ignoreEvent() { return true }
   coordsAt() { return null }
+}
+
+// ─── /todo single-block widget ───────────────────────────────────────────────
+// ─── Widget helpers ───────────────────────────────────────────────────────────
+function _getEditorView(el) {
+  const content = el.closest('.cm-editor')?.querySelector('.cm-content')
+  return content?.cmView?.view ?? null
+}
+function _replaceInDoc(el, oldText, newText) {
+  const view = _getEditorView(el)
+  if (!view) return false
+  const doc = view.state.doc.toString()
+  const idx = doc.indexOf(oldText)
+  if (idx === -1) return false
+  view.dispatch({ changes: { from: idx, to: idx + oldText.length, insert: newText } })
+  return true
+}
+
+class TodoBlockWidget {
+  constructor(listName, items, rawMd) {
+    this.listName = listName
+    this.items = items // [{text, checked, dateStr, timeStr, cbPos}]
+    this.rawMd = rawMd
+  }
+  _serialize(title, items) {
+    const hdr = `/todo${title && title !== "Todo's" ? ':' + title : ''}`
+    const lines = [hdr]
+    for (const it of items) {
+      let line = `- ${it.checked ? '[x]' : '[ ]'} ${it.text}`
+      if (it.dateStr || it.timeStr) line += ':' + (it.dateStr || '') + (it.timeStr ? ':' + it.timeStr : '')
+      lines.push(line)
+    }
+    return lines.join('\n')
+  }
+  toDOM() {
+    const wrap = document.createElement('div')
+    wrap.className = 'cm-todo-block-w'
+    let titleText = this.listName || "Todo's"
+    const items = this.items.map(it => ({ ...it }))
+    const save = () => _replaceInDoc(wrap, this.rawMd, this._serialize(titleText, items))
+
+    const render = () => {
+      wrap.innerHTML = ''
+      const doneCount = items.filter(it => it.checked).length
+      const total = items.length
+      const pct = total > 0 ? Math.round((doneCount / total) * 100) : 0
+
+      // Header
+      const hdr = document.createElement('div')
+      hdr.className = 'cm-todo-hdr-w'
+      const titleEl = document.createElement('span')
+      titleEl.className = 'cm-todo-title'
+      titleEl.textContent = titleText
+      titleEl.onclick = () => {
+        const inp = document.createElement('input')
+        inp.className = 'cm-todo-title-inp'
+        inp.value = titleText; inp.type = 'text'
+        titleEl.textContent = ''; titleEl.appendChild(inp)
+        inp.focus(); inp.select()
+        const commit = () => { titleText = inp.value.trim() || "Todo's"; save(); render() }
+        inp.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); commit() } if (ev.key === 'Escape') render() }
+        inp.onblur = commit
+      }
+      const hdrRight = document.createElement('div')
+      hdrRight.className = 'cm-todo-hdr-right'
+      const countEl = document.createElement('span')
+      countEl.className = 'cm-todo-count'
+      countEl.textContent = `${doneCount}/${total}`
+      hdrRight.appendChild(countEl)
+      hdr.appendChild(titleEl)
+      hdr.appendChild(hdrRight)
+      wrap.appendChild(hdr)
+
+      // Progress bar
+      if (total > 0) {
+        const progressWrap = document.createElement('div')
+        progressWrap.className = 'cm-todo-progress'
+        const progressFill = document.createElement('div')
+        progressFill.className = 'cm-todo-progress-fill'
+        progressFill.style.width = `${pct}%`
+        if (pct === 100) progressFill.classList.add('cm-todo-progress-done')
+        progressWrap.appendChild(progressFill)
+        wrap.appendChild(progressWrap)
+      }
+
+      // Items
+      items.forEach((it, i) => {
+        const row = document.createElement('div')
+        row.className = 'cm-todo-row' + (it.checked ? ' cm-todo-row-done' : '')
+
+        // Animated checkbox
+        const cb = document.createElement('div')
+        cb.className = 'cm-todo-cb' + (it.checked ? ' cm-todo-cb-on' : '')
+        if (it.checked) {
+          cb.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+        }
+        cb.onclick = (e) => {
+          e.stopPropagation()
+          it.checked = !it.checked
+          save(); render()
+        }
+
+        const textWrap = document.createElement('div')
+        textWrap.className = 'cm-todo-text-wrap'
+        const txt = document.createElement('span')
+        txt.className = 'cm-todo-row-text'
+        txt.textContent = it.text
+        // Double-click to edit text
+        txt.ondblclick = (e) => {
+          e.stopPropagation()
+          const inp = document.createElement('input')
+          inp.className = 'cm-todo-edit-inp'
+          inp.value = it.text; inp.type = 'text'
+          txt.textContent = ''; txt.appendChild(inp)
+          inp.focus(); inp.select()
+          const commit = () => { const v = inp.value.trim(); if (v) { it.text = v; save() } render() }
+          inp.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); commit() } if (ev.key === 'Escape') render() }
+          inp.onblur = commit
+        }
+        textWrap.appendChild(txt)
+        if (it.dateStr || it.timeStr) {
+          const meta = document.createElement('div')
+          meta.className = 'cm-todo-meta'
+          if (it.dateStr) { const d = document.createElement('span'); d.className = 'cm-todo-date'; d.textContent = it.dateStr; meta.appendChild(d) }
+          if (it.timeStr) { const t = document.createElement('span'); t.className = 'cm-todo-time'; t.textContent = it.timeStr; meta.appendChild(t) }
+          textWrap.appendChild(meta)
+        }
+
+        const actions = document.createElement('div')
+        actions.className = 'cm-todo-actions'
+        const del = document.createElement('button')
+        del.className = 'cm-todo-del-btn'
+        del.textContent = '\u00d7'
+        del.title = 'Delete'
+        del.onclick = (e) => {
+          e.stopPropagation()
+          items.splice(i, 1)
+          save(); render()
+        }
+        actions.appendChild(del)
+
+        row.appendChild(cb)
+        row.appendChild(textWrap)
+        row.appendChild(actions)
+        wrap.appendChild(row)
+      })
+
+      // Add item row with + button
+      const addRow = document.createElement('div')
+      addRow.className = 'cm-todo-add-row'
+      const addBtn = document.createElement('button')
+      addBtn.className = 'cm-todo-add-btn'
+      addBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'
+      const addInput = document.createElement('input')
+      addInput.className = 'cm-todo-add-input'
+      addInput.type = 'text'
+      addInput.placeholder = 'Add a task...'
+      const doAdd = () => {
+        const val = addInput.value.trim()
+        if (!val) return
+        items.push({ text: val, checked: false, dateStr: '', timeStr: '', cbPos: 0 })
+        save(); render()
+      }
+      addInput.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); doAdd() } }
+      addBtn.onclick = doAdd
+      addRow.appendChild(addBtn)
+      addRow.appendChild(addInput)
+      wrap.appendChild(addRow)
+
+      // Empty state
+      if (total === 0) {
+        const empty = document.createElement('div')
+        empty.className = 'cm-todo-empty'
+        empty.textContent = 'No tasks yet — add one below'
+        wrap.insertBefore(empty, addRow)
+      }
+    }
+    render()
+    return wrap
+  }
+  eq(o) {
+    if (!(o instanceof TodoBlockWidget) || o.listName !== this.listName || o.items.length !== this.items.length) return false
+    return this.items.every((it, i) => o.items[i].checked === it.checked && o.items[i].text === it.text && o.items[i].cbPos === it.cbPos)
+  }
+  compare(o) { return this.eq(o) }
+  destroy() {}
+  ignoreEvent() { return true }
+  get estimatedHeight() { return 48 + this.items.length * 42 + 48 }
+  coordsAt() { return null }
+}
+
+// ─── /task single-block widget (interactive kanban) ───────────────────────────
+// Column color palette for kanban
+const KANBAN_COLORS = [
+  { name:'Blue',   bg:'rgba(56,139,253,.12)', accent:'#388bfd', hdr:'rgba(56,139,253,.18)' },
+  { name:'Green',  bg:'rgba(63,185,80,.12)',  accent:'#3fb950', hdr:'rgba(63,185,80,.18)' },
+  { name:'Purple', bg:'rgba(163,113,247,.12)',accent:'#a371f7', hdr:'rgba(163,113,247,.18)' },
+  { name:'Orange', bg:'rgba(210,153,34,.12)', accent:'#d29922', hdr:'rgba(210,153,34,.18)' },
+  { name:'Red',    bg:'rgba(248,81,73,.12)',  accent:'#f85149', hdr:'rgba(248,81,73,.18)' },
+  { name:'Teal',   bg:'rgba(57,211,183,.12)', accent:'#39d3b7', hdr:'rgba(57,211,183,.18)' },
+  { name:'Pink',   bg:'rgba(219,127,186,.12)',accent:'#db7fba', hdr:'rgba(219,127,186,.18)' },
+  { name:'Gray',   bg:'var(--surfaceAlt)',     accent:'var(--textDim)',hdr:'var(--surfaceAlt)' },
+]
+const CARD_LABELS = [
+  { name:'Red',    color:'#f85149' },
+  { name:'Orange', color:'#d29922' },
+  { name:'Green',  color:'#3fb950' },
+  { name:'Blue',   color:'#388bfd' },
+  { name:'Purple', color:'#a371f7' },
+  { name:'Pink',   color:'#db7fba' },
+]
+
+class TaskBlockWidget {
+  constructor(boardTitle, columns, rawMd) {
+    this.boardTitle = boardTitle
+    // Default kanban columns when empty
+    this.columns = columns.length ? columns : [
+      { title: 'To Do', tasks: [] },
+      { title: 'In Progress', tasks: [] },
+      { title: 'Done', tasks: [] },
+    ]
+    this.rawMd = rawMd
+    this._needsDefault = !columns.length
+  }
+  _serialize(title, cols) {
+    const lines = [`/task${title ? ':' + title : ''}`]
+    for (const col of cols) {
+      const colorTag = col.color != null ? `{color:${col.color}}` : ''
+      lines.push(`== ${col.title} ==${colorTag}`)
+      for (const t of col.tasks) {
+        const labelTag = t.label != null ? `{label:${t.label}}` : ''
+        lines.push(`- ${t.done ? '[x]' : '[ ]'} ${t.text}${labelTag}`)
+      }
+    }
+    return lines.join('\n')
+  }
+  toDOM() {
+    const wrap = document.createElement('div')
+    wrap.className = 'cm-task-board-w'
+    const cols = this.columns.map(c => ({
+      title: c.title, color: c.color ?? null,
+      tasks: c.tasks.map(t => ({ ...t, label: t.label ?? null })),
+    }))
+    const bt = this.boardTitle
+    const save = () => _replaceInDoc(wrap, this.rawMd, this._serialize(bt, cols))
+
+    if (this._needsDefault) {
+      this._needsDefault = false
+      setTimeout(() => save(), 0)
+    }
+
+    const render = () => {
+      wrap.innerHTML = ''
+
+      // Board title bar
+      const titleBar = document.createElement('div')
+      titleBar.className = 'cm-task-titlebar'
+      if (bt) {
+        const titleEl = document.createElement('span')
+        titleEl.className = 'cm-task-title-w'
+        titleEl.textContent = bt
+        titleBar.appendChild(titleEl)
+      }
+      wrap.appendChild(titleBar)
+
+      const colsRow = document.createElement('div')
+      colsRow.className = 'cm-task-cols-w'
+
+      cols.forEach((col, ci) => {
+        const pal = KANBAN_COLORS[col.color ?? 7] || KANBAN_COLORS[7]
+        const colDiv = document.createElement('div')
+        colDiv.className = 'cm-task-col-w'
+        colDiv.style.background = pal.bg
+
+        // Drop target
+        colDiv.ondragover = (e) => { e.preventDefault(); colDiv.classList.add('cm-task-col-drop') }
+        colDiv.ondragleave = () => colDiv.classList.remove('cm-task-col-drop')
+        colDiv.ondrop = (e) => {
+          e.preventDefault(); colDiv.classList.remove('cm-task-col-drop')
+          try {
+            const d = JSON.parse(e.dataTransfer.getData('text/plain'))
+            if (d._taskDrag) {
+              const task = cols[d.srcCol].tasks.splice(d.srcTask, 1)[0]
+              cols[ci].tasks.push(task)
+              save(); render()
+            }
+          } catch { /**/ }
+        }
+
+        // Column header
+        const colHdr = document.createElement('div')
+        colHdr.className = 'cm-task-col-hdr-w'
+        colHdr.style.background = pal.hdr
+        const colTitleEl = document.createElement('span')
+        colTitleEl.className = 'cm-task-col-title'
+        colTitleEl.textContent = col.title
+        // Click column title to rename
+        colTitleEl.onclick = () => {
+          const inp = document.createElement('input')
+          inp.className = 'cm-task-col-title-inp'
+          inp.value = col.title; inp.type = 'text'
+          colTitleEl.textContent = ''; colTitleEl.appendChild(inp)
+          inp.focus(); inp.select()
+          const commit = () => { col.title = inp.value.trim() || col.title; save(); render() }
+          inp.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); commit() } if (ev.key === 'Escape') render() }
+          inp.onblur = commit
+        }
+
+        const hdrRight = document.createElement('div')
+        hdrRight.className = 'cm-task-col-hdr-right'
+        const badge = document.createElement('span')
+        badge.className = 'cm-task-col-w-badge'
+        badge.textContent = String(col.tasks.length)
+
+        // Color picker button
+        const colorBtn = document.createElement('button')
+        colorBtn.className = 'cm-task-col-color-btn'
+        colorBtn.style.background = pal.accent
+        colorBtn.title = 'Column color'
+        colorBtn.onclick = (e) => {
+          e.stopPropagation()
+          // Toggle color picker dropdown
+          const existing = colDiv.querySelector('.cm-task-color-picker')
+          if (existing) { existing.remove(); return }
+          const picker = document.createElement('div')
+          picker.className = 'cm-task-color-picker'
+          KANBAN_COLORS.forEach((c, idx) => {
+            const swatch = document.createElement('div')
+            swatch.className = 'cm-task-color-swatch' + (col.color === idx ? ' cm-task-color-active' : '')
+            swatch.style.background = c.accent
+            swatch.title = c.name
+            swatch.onclick = (ev) => { ev.stopPropagation(); col.color = idx; save(); render() }
+            picker.appendChild(swatch)
+          })
+          colHdr.appendChild(picker)
+        }
+
+        // Delete column button
+        const delCol = document.createElement('button')
+        delCol.className = 'cm-task-col-del'
+        delCol.textContent = '\u00d7'
+        delCol.title = 'Delete column'
+        delCol.onclick = (e) => { e.stopPropagation(); cols.splice(ci, 1); save(); render() }
+
+        hdrRight.appendChild(badge)
+        hdrRight.appendChild(colorBtn)
+        hdrRight.appendChild(delCol)
+        colHdr.appendChild(colTitleEl)
+        colHdr.appendChild(hdrRight)
+        colDiv.appendChild(colHdr)
+
+        // Cards area
+        const cardsArea = document.createElement('div')
+        cardsArea.className = 'cm-task-cards-area'
+        col.tasks.forEach((task, ti) => {
+          const card = document.createElement('div')
+          card.className = 'cm-task-card-w' + (task.done ? ' cm-task-card-w-done' : '')
+          card.draggable = true
+          card.ondragstart = (e) => {
+            e.dataTransfer.setData('text/plain', JSON.stringify({ _taskDrag: true, srcCol: ci, srcTask: ti }))
+            e.dataTransfer.effectAllowed = 'move'
+            card.classList.add('cm-task-card-dragging')
+          }
+          card.ondragend = () => card.classList.remove('cm-task-card-dragging')
+
+          // Label bar at top of card
+          if (task.label != null) {
+            const labelBar = document.createElement('div')
+            labelBar.className = 'cm-task-card-label'
+            labelBar.style.background = (CARD_LABELS[task.label] || CARD_LABELS[0]).color
+            card.appendChild(labelBar)
+          }
+
+          const cardBody = document.createElement('div')
+          cardBody.className = 'cm-task-card-body'
+
+          const cb = document.createElement('span')
+          cb.className = 'cm-cb' + (task.done ? ' cm-cb-on' : '')
+          cb.textContent = task.done ? '\u2713' : ''
+          cb.onclick = (e) => { e.stopPropagation(); task.done = !task.done; save(); render() }
+
+          const txt = document.createElement('span')
+          txt.className = 'cm-task-card-text'
+          txt.textContent = task.text
+          // Double-click to edit card text
+          txt.ondblclick = (e) => {
+            e.stopPropagation()
+            const inp = document.createElement('input')
+            inp.className = 'cm-task-card-edit'
+            inp.value = task.text; inp.type = 'text'
+            txt.textContent = ''; txt.appendChild(inp)
+            inp.focus(); inp.select()
+            const commit = () => { const v = inp.value.trim(); if (v) { task.text = v; save() } render() }
+            inp.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); commit() } if (ev.key === 'Escape') render() }
+            inp.onblur = commit
+          }
+
+          const cardActions = document.createElement('div')
+          cardActions.className = 'cm-task-card-actions'
+
+          // Label button
+          const lblBtn = document.createElement('button')
+          lblBtn.className = 'cm-task-card-lbl-btn'
+          lblBtn.title = 'Set label'
+          lblBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2a1 1 0 011-1h4.586a1 1 0 01.707.293l7 7a1 1 0 010 1.414l-4.586 4.586a1 1 0 01-1.414 0l-7-7A1 1 0 012 6.586V2zm3.5 3a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/></svg>'
+          lblBtn.onclick = (e) => {
+            e.stopPropagation()
+            const existing = card.querySelector('.cm-task-label-picker')
+            if (existing) { existing.remove(); return }
+            const picker = document.createElement('div')
+            picker.className = 'cm-task-label-picker'
+            // None option
+            const none = document.createElement('div')
+            none.className = 'cm-task-label-opt'
+            none.textContent = 'None'
+            none.style.color = 'var(--textDim)'
+            none.onclick = (ev) => { ev.stopPropagation(); task.label = null; save(); render() }
+            picker.appendChild(none)
+            CARD_LABELS.forEach((lb, idx) => {
+              const opt = document.createElement('div')
+              opt.className = 'cm-task-label-opt' + (task.label === idx ? ' cm-task-label-active' : '')
+              opt.style.borderLeft = `4px solid ${lb.color}`
+              opt.textContent = lb.name
+              opt.onclick = (ev) => { ev.stopPropagation(); task.label = idx; save(); render() }
+              picker.appendChild(opt)
+            })
+            card.appendChild(picker)
+          }
+
+          const del = document.createElement('button')
+          del.className = 'cm-task-card-del-btn'
+          del.title = 'Delete'
+          del.textContent = '\u00d7'
+          del.onclick = (e) => { e.stopPropagation(); cols[ci].tasks.splice(ti, 1); save(); render() }
+
+          cardActions.appendChild(lblBtn)
+          cardActions.appendChild(del)
+          cardBody.appendChild(cb)
+          cardBody.appendChild(txt)
+          card.appendChild(cardBody)
+          card.appendChild(cardActions)
+          cardsArea.appendChild(card)
+        })
+        colDiv.appendChild(cardsArea)
+
+        // Add task input
+        const addRow = document.createElement('div')
+        addRow.className = 'cm-task-add-row'
+        const addInput = document.createElement('input')
+        addInput.className = 'cm-task-add-input'
+        addInput.type = 'text'
+        addInput.placeholder = '+ Add a card...'
+        addInput.onkeydown = (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            const val = addInput.value.trim()
+            if (!val) return
+            cols[ci].tasks.push({ text: val, done: false, label: null })
+            save(); render()
+          }
+        }
+        addRow.appendChild(addInput)
+        colDiv.appendChild(addRow)
+        colsRow.appendChild(colDiv)
+      })
+
+      // Add-column button
+      const addCol = document.createElement('div')
+      addCol.className = 'cm-task-add-col'
+      const addColBtn = document.createElement('button')
+      addColBtn.className = 'cm-task-add-col-btn'
+      addColBtn.textContent = '+'
+      addColBtn.onclick = () => {
+        addCol.innerHTML = ''
+        const inp = document.createElement('input')
+        inp.className = 'cm-task-add-col-input'
+        inp.type = 'text'
+        inp.placeholder = 'List name...'
+        inp.onkeydown = (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            const val = inp.value.trim() || 'New List'
+            cols.push({ title: val, tasks: [], color: null })
+            save(); render()
+          }
+          if (e.key === 'Escape') render()
+        }
+        inp.onblur = () => { setTimeout(() => render(), 150) }
+        addCol.appendChild(inp)
+        inp.focus()
+      }
+      addCol.appendChild(addColBtn)
+      colsRow.appendChild(addCol)
+      wrap.appendChild(colsRow)
+    }
+    render()
+    return wrap
+  }
+  eq(o) {
+    if (!(o instanceof TaskBlockWidget) || o.boardTitle !== this.boardTitle || o.columns.length !== this.columns.length) return false
+    return this.columns.every((col, ci) => {
+      const oc = o.columns[ci]
+      if (oc.title !== col.title || oc.tasks.length !== col.tasks.length) return false
+      return col.tasks.every((t, ti) => oc.tasks[ti].text === t.text && oc.tasks[ti].done === t.done)
+    })
+  }
+  compare(o) { return this.eq(o) }
+  destroy() {}
+  ignoreEvent() { return true }
+  get estimatedHeight() { return 38 + 32 + Math.max(...this.columns.map(c => c.tasks.length), 1) * 56 }
+  coordsAt() { return null }
+}
+
+// ─── Helpers for parsing inline block commands ────────────────────────────────
+/** Parse /todo block: returns { listName, items:[{text,checked,dateStr,timeStr,lineIdx}], startLine, endLine } or null */
+function parseTodoBlock(docStr, startLineIdx) {
+  const lines = docStr.split('\n')
+  const hdrLine = lines[startLineIdx]
+  const hdrM = hdrLine.match(/^\/todo(?::(.*))?$/)
+  if (!hdrM) return null
+  const listName = (hdrM[1] || "Todo's").trim()
+  let endLine = startLineIdx + 1
+  const items = []
+  while (endLine < lines.length) {
+    const l = lines[endLine]
+    if (!/^\s*[-*+]\s\[[ xX]\]/.test(l)) break
+    const checked = /\[[xX]\]/.test(l)
+    const raw = l.replace(/^\s*[-*+]\s\[[ xX]\]\s*/, '')
+    // Parse "task name: date: time" format
+    const parts = raw.split(':').map(s => s.trim())
+    const text = parts[0] || raw
+    const dateStr = parts[1] || ''
+    const timeStr = parts[2] || ''
+    items.push({ text, checked, dateStr, timeStr, lineIdx: endLine })
+    endLine++
+  }
+  return { listName, items, startLine: startLineIdx, endLine: endLine - 1 }
+}
+
+/** Parse /task block: returns { boardTitle, columns, startLine, endLine } */
+function parseTaskBlock(docStr, startLineIdx) {
+  const lines = docStr.split('\n')
+  const hdrLine = lines[startLineIdx]
+  const hdrM = hdrLine.match(/^\/task(?::(.*))?$/)
+  if (!hdrM) return null
+  const boardTitle = (hdrM[1] || '').trim()
+  let endLine = startLineIdx + 1
+  const columns = []
+  let currentCol = null
+
+  while (endLine < lines.length) {
+    const l = lines[endLine]
+    if (l.trim() === '') break // empty line ends the block
+    const colM = l.match(/^==\s*(.*?)\s*==(?:\{color:(\d+)\})?$/)
+    if (colM) {
+      currentCol = { title: colM[1], tasks: [], lineIdx: endLine, color: colM[2] != null ? parseInt(colM[2]) : null }
+      columns.push(currentCol)
+    } else if (currentCol && /^\s*[-*+]\s/.test(l)) {
+      const done = /\[[xX]\]/.test(l)
+      const raw = l.replace(/^\s*[-*+]\s(?:\[[ xX]\]\s*)?/, '').trim()
+      const lblM = raw.match(/^(.*?)\{label:(\d+)\}$/)
+      const text = lblM ? lblM[1].trim() : raw
+      const label = lblM ? parseInt(lblM[2]) : null
+      currentCol.tasks.push({ text, done, lineIdx: endLine, label })
+    } else if (!currentCol && /^\s*[-*+]\s/.test(l)) {
+      currentCol = { title: 'Tasks', tasks: [], lineIdx: endLine, color: null }
+      columns.push(currentCol)
+      const done = /\[[xX]\]/.test(l)
+      const raw = l.replace(/^\s*[-*+]\s(?:\[[ xX]\]\s*)?/, '').trim()
+      const lblM = raw.match(/^(.*?)\{label:(\d+)\}$/)
+      const text = lblM ? lblM[1].trim() : raw
+      const label = lblM ? parseInt(lblM[2]) : null
+      currentCol.tasks.push({ text, done, lineIdx: endLine, label })
+    } else {
+      break // non-task content ends the block
+    }
+    endLine++
+  }
+
+  return { boardTitle, columns, startLine: startLineIdx, endLine: endLine - 1 }
+}
+
+/** Serialize a parsed task board back to markdown lines */
+function serializeTaskBlock(boardTitle, columns) {
+  const lines = [`/task${boardTitle ? ':' + boardTitle : ''}`]
+  for (const col of columns) {
+    lines.push(`== ${col.title} ==`)
+    for (const t of col.tasks) {
+      lines.push(`- ${t.done ? '[x]' : '[ ]'} ${t.text}`)
+    }
+  }
+  return lines.join('\n')
 }
 
 // Table widget — renders markdown table as HTML table in live view
@@ -1111,13 +2113,552 @@ class TableWidget {
   coordsAt() { return null }
 }
 
+class SupWidget {
+  constructor(text) { this.text = text }
+  toDOM() {
+    const el = document.createElement('sup')
+    el.className = 'nb-sup'
+    el.textContent = this.text
+    return el
+  }
+  eq(o) { return o instanceof SupWidget && o.text === this.text }
+  compare(o) { return o instanceof SupWidget && o.text === this.text }
+  destroy() {}
+  ignoreEvent() { return true }
+  coordsAt() { return null }
+}
+
+class SubWidget {
+  constructor(text) { this.text = text }
+  toDOM() {
+    const el = document.createElement('sub')
+    el.className = 'nb-sub'
+    el.textContent = this.text
+    return el
+  }
+  eq(o) { return o instanceof SubWidget && o.text === this.text }
+  compare(o) { return o instanceof SubWidget && o.text === this.text }
+  destroy() {}
+  ignoreEvent() { return true }
+  coordsAt() { return null }
+}
+
+// ─── Footnote reference widget [^id] ─────────────────────────────────────────
+class FnRefWidget {
+  constructor(id) { this.id = id }
+  toDOM() {
+    const sup = document.createElement('sup')
+    sup.className = 'cm-fn-ref-widget'
+    sup.textContent = this.id
+    return sup
+  }
+  eq(o) { return o instanceof FnRefWidget && o.id === this.id }
+  compare(o) { return this.eq(o) }
+  destroy() {}
+  ignoreEvent() { return false }
+  coordsAt() { return null }
+}
+
+// ─── /timer widget (interactive: pause/resume/edit) ───────────────────────────
+class TimerWidget {
+  constructor(totalSec, label, rawLine) {
+    this.totalSec = totalSec; this.label = label; this.rawLine = rawLine
+    this._ref = { interval: null }
+  }
+  toDOM() {
+    const wrap = document.createElement('div')
+    wrap.className = 'cm-timer-widget'
+    const ref = this._ref
+    const fmt = (s) => {
+      const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60
+      if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+      return `${m}:${String(sec).padStart(2,'0')}`
+    }
+
+    // ── Empty state: no time set ─────────────────────────
+    if (this.totalSec === 0) {
+      const setup = document.createElement('div')
+      setup.className = 'cm-timer-setup'
+      const timeInp = document.createElement('input')
+      timeInp.className = 'cm-timer-input'
+      timeInp.placeholder = 'mm:ss or minutes'
+      timeInp.type = 'text'
+      const labelInp = document.createElement('input')
+      labelInp.className = 'cm-timer-input cm-timer-label-inp'
+      labelInp.placeholder = 'Label (optional)'
+      labelInp.type = 'text'
+      const startBtn = document.createElement('button')
+      startBtn.className = 'cm-timer-btn cm-timer-start'
+      startBtn.textContent = 'Start'
+      const doStart = () => {
+        const tv = timeInp.value.trim()
+        if (!tv) return
+        const lv = labelInp.value.trim()
+        _replaceInDoc(wrap, this.rawLine, lv ? `/timer ${tv} ${lv}` : `/timer ${tv}`)
+      }
+      startBtn.onclick = doStart
+      timeInp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); doStart() } }
+      labelInp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); doStart() } }
+      setup.appendChild(timeInp)
+      setup.appendChild(labelInp)
+      setup.appendChild(startBtn)
+      wrap.appendChild(setup)
+      return wrap
+    }
+
+    // ── Active timer ─────────────────────────────────────
+    const total = this.totalSec
+    let remaining = total
+    let paused = false
+
+    if (this.label) {
+      const lbl = document.createElement('div')
+      lbl.className = 'cm-timer-label'
+      lbl.textContent = this.label
+      wrap.appendChild(lbl)
+    }
+
+    const row = document.createElement('div')
+    row.className = 'cm-timer-row'
+    const timeText = document.createElement('div')
+    timeText.className = 'cm-timer-time'
+    timeText.textContent = fmt(remaining)
+
+    // Click time to edit (only when paused)
+    timeText.onclick = () => {
+      if (!paused) return
+      const inp = document.createElement('input')
+      inp.className = 'cm-timer-edit-input'
+      inp.value = fmt(remaining)
+      inp.type = 'text'
+      timeText.textContent = ''
+      timeText.appendChild(inp)
+      inp.focus(); inp.select()
+      const commit = () => {
+        const v = inp.value.trim()
+        let ns = 0
+        const hms = v.match(/^(\d+):(\d{2}):(\d{2})$/)
+        const ms = v.match(/^(\d+):(\d{2})$/)
+        const mn = v.match(/^(\d+)$/)
+        if (hms) ns = +hms[1]*3600 + +hms[2]*60 + +hms[3]
+        else if (ms) ns = +ms[1]*60 + +ms[2]
+        else if (mn) ns = +mn[1]*60
+        if (ns > 0) {
+          const newLine = this.label ? `/timer ${v} ${this.label}` : `/timer ${v}`
+          _replaceInDoc(wrap, this.rawLine, newLine)
+        } else {
+          timeText.textContent = fmt(remaining)
+        }
+      }
+      inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); commit() } if (e.key === 'Escape') timeText.textContent = fmt(remaining) }
+      inp.onblur = commit
+    }
+
+    const pauseBtn = document.createElement('button')
+    pauseBtn.className = 'cm-timer-btn'
+    pauseBtn.textContent = '\u23f8'
+    const resetBtn = document.createElement('button')
+    resetBtn.className = 'cm-timer-btn'
+    resetBtn.textContent = '\u21ba'
+
+    row.appendChild(timeText)
+    row.appendChild(pauseBtn)
+    row.appendChild(resetBtn)
+    wrap.appendChild(row)
+
+    const bar = document.createElement('div')
+    bar.className = 'cm-timer-bar'
+    const fill = document.createElement('div')
+    fill.className = 'cm-timer-fill'
+    fill.style.width = '100%'
+    bar.appendChild(fill)
+    wrap.appendChild(bar)
+
+    const tick = () => {
+      remaining--
+      if (remaining <= 0) {
+        remaining = 0; clearInterval(ref.interval); ref.interval = null
+        timeText.textContent = 'Done!'
+        timeText.classList.add('cm-timer-done')
+        fill.style.width = '0%'
+        pauseBtn.textContent = '\u23f8'
+        return
+      }
+      timeText.textContent = fmt(remaining)
+      fill.style.width = `${(remaining / total) * 100}%`
+    }
+    ref.interval = setInterval(tick, 1000)
+
+    pauseBtn.onclick = () => {
+      if (remaining <= 0) return
+      if (paused) {
+        paused = false; pauseBtn.textContent = '\u23f8'
+        ref.interval = setInterval(tick, 1000)
+      } else {
+        paused = true; pauseBtn.textContent = '\u25b6'
+        if (ref.interval) { clearInterval(ref.interval); ref.interval = null }
+      }
+    }
+    resetBtn.onclick = () => {
+      remaining = total; paused = false
+      timeText.textContent = fmt(remaining)
+      timeText.classList.remove('cm-timer-done')
+      fill.style.width = '100%'
+      pauseBtn.textContent = '\u23f8'
+      if (ref.interval) clearInterval(ref.interval)
+      ref.interval = setInterval(tick, 1000)
+    }
+
+    return wrap
+  }
+  eq(o) { return o instanceof TimerWidget && o.totalSec === this.totalSec && o.label === this.label }
+  compare(o) { return this.eq(o) }
+  destroy() { if (this._ref.interval) clearInterval(this._ref.interval) }
+  ignoreEvent() { return true }
+  get estimatedHeight() { return this.totalSec === 0 ? 48 : 72 }
+  coordsAt() { return null }
+}
+
+// ─── /calendar widget (full-width, day/week/month, inline events) ─────────────
+class CalendarWidget {
+  constructor(rawData, rawLine) { this.rawData = rawData || ''; this.rawLine = rawLine }
+  toDOM() {
+    let data = {}
+    if (this.rawData) { try { data = JSON.parse(this.rawData) } catch { data = { title: this.rawData } } }
+    const events = data.events || {} // { "2026-03-23": ["Meeting","Lunch"], ... }
+    // Migrate old string events to arrays
+    for (const k of Object.keys(events)) { if (typeof events[k] === 'string') events[k] = [events[k]] }
+    let titleText = data.title || 'Calendar'
+    let viewYear = data.year || new Date().getFullYear()
+    let viewMonth = data.month != null ? data.month : new Date().getMonth()
+    let viewMode = data.viewMode || 'month' // 'day','week','month'
+    let selectedDay = null
+    const today = new Date()
+    let viewDate = new Date(viewYear, viewMonth, today.getDate()) // used for day/week
+
+    const wrap = document.createElement('div')
+    wrap.className = 'cm-calendar-widget'
+
+    const dk = (y,m,d) => `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+    const save = () => {
+      const nd = JSON.stringify({ title: titleText, year: viewYear, month: viewMonth, viewMode, events })
+      _replaceInDoc(wrap, this.rawLine, `/calendar:${nd}`)
+    }
+
+    const renderEventList = (container, dateKey) => {
+      const evts = events[dateKey] || []
+      evts.forEach((ev, ei) => {
+        const row = document.createElement('div')
+        row.className = 'cm-cal-evt-row'
+        const dot = document.createElement('span')
+        dot.className = 'cm-cal-evt-dot'
+        const txt = document.createElement('span')
+        txt.className = 'cm-cal-evt-text'
+        txt.textContent = ev
+        const del = document.createElement('span')
+        del.className = 'cm-todo-del'
+        del.textContent = '\u00d7'
+        del.onclick = (e) => {
+          e.stopPropagation()
+          events[dateKey].splice(ei, 1)
+          if (!events[dateKey].length) delete events[dateKey]
+          save(); render()
+        }
+        row.appendChild(dot); row.appendChild(txt); row.appendChild(del)
+        container.appendChild(row)
+      })
+    }
+
+    const renderAddInput = (container, dateKey) => {
+      const inp = document.createElement('input')
+      inp.className = 'cm-cal-evt-add'
+      inp.type = 'text'; inp.placeholder = 'Add event...'
+      inp.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          const v = inp.value.trim()
+          if (!v) return
+          if (!events[dateKey]) events[dateKey] = []
+          events[dateKey].push(v)
+          save(); render()
+        }
+      }
+      container.appendChild(inp)
+    }
+
+    const render = () => {
+      wrap.innerHTML = ''
+      // Title row + view mode toggle
+      const topBar = document.createElement('div')
+      topBar.className = 'cm-cal-topbar'
+      const titleEl = document.createElement('span')
+      titleEl.className = 'cm-cal-main-title'
+      titleEl.textContent = titleText
+      titleEl.onclick = () => {
+        const inp = document.createElement('input')
+        inp.className = 'cm-cal-title-input'
+        inp.value = titleText; inp.type = 'text'
+        titleEl.textContent = ''; titleEl.appendChild(inp)
+        inp.focus(); inp.select()
+        const commit = () => { titleText = inp.value.trim() || 'Calendar'; titleEl.textContent = titleText; save() }
+        inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); commit() } }
+        inp.onblur = commit
+      }
+      const modeBar = document.createElement('div')
+      modeBar.className = 'cm-cal-mode-bar'
+      for (const [m, l] of [['day','Day'],['week','Week'],['month','Month']]) {
+        const btn = document.createElement('button')
+        btn.className = 'cm-cal-mode-btn' + (viewMode === m ? ' cm-cal-mode-active' : '')
+        btn.textContent = l
+        btn.onclick = () => { viewMode = m; render() }
+        modeBar.appendChild(btn)
+      }
+      topBar.appendChild(titleEl); topBar.appendChild(modeBar)
+      wrap.appendChild(topBar)
+
+      // Nav header
+      const hdr = document.createElement('div')
+      hdr.className = 'cm-cal-header'
+      const prevBtn = document.createElement('button')
+      prevBtn.className = 'cm-cal-nav'
+      prevBtn.textContent = '\u2039'
+      const nextBtn = document.createElement('button')
+      nextBtn.className = 'cm-cal-nav'
+      nextBtn.textContent = '\u203A'
+      const monthLbl = document.createElement('span')
+      monthLbl.className = 'cm-cal-month'
+
+      if (viewMode === 'month') {
+        monthLbl.textContent = new Date(viewYear, viewMonth).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+        prevBtn.onclick = () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear-- }; render() }
+        nextBtn.onclick = () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++ }; render() }
+      } else if (viewMode === 'week') {
+        const sun = new Date(viewDate); sun.setDate(sun.getDate() - sun.getDay())
+        const sat = new Date(sun); sat.setDate(sat.getDate() + 6)
+        monthLbl.textContent = `${sun.toLocaleDateString('en-US',{month:'short',day:'numeric'})} – ${sat.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`
+        prevBtn.onclick = () => { viewDate.setDate(viewDate.getDate() - 7); render() }
+        nextBtn.onclick = () => { viewDate.setDate(viewDate.getDate() + 7); render() }
+      } else {
+        monthLbl.textContent = viewDate.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric', year:'numeric' })
+        prevBtn.onclick = () => { viewDate.setDate(viewDate.getDate() - 1); render() }
+        nextBtn.onclick = () => { viewDate.setDate(viewDate.getDate() + 1); render() }
+      }
+      hdr.appendChild(prevBtn); hdr.appendChild(monthLbl); hdr.appendChild(nextBtn)
+      wrap.appendChild(hdr)
+
+      // Helper: render a 24-hour time grid for a given date
+      const renderTimeGrid = (container, dateKey) => {
+        const gridWrap = document.createElement('div')
+        gridWrap.className = 'cm-cal-time-grid'
+        const evts = events[dateKey] || []
+        for (let h = 0; h < 24; h++) {
+          const row = document.createElement('div')
+          row.className = 'cm-cal-time-row'
+          const label = document.createElement('div')
+          label.className = 'cm-cal-time-label'
+          label.textContent = h === 0 ? '12 AM' : h < 12 ? `${h} AM` : h === 12 ? '12 PM' : `${h-12} PM`
+          const slot = document.createElement('div')
+          slot.className = 'cm-cal-time-slot'
+          // Show events that match this hour (format: "HH:MM text" or just text on hour 0)
+          evts.forEach((ev, ei) => {
+            const hourMatch = ev.match(/^(\d{1,2}):(\d{2})\s+(.*)$/)
+            if (hourMatch && parseInt(hourMatch[1]) === h) {
+              const evEl = document.createElement('div')
+              evEl.className = 'cm-cal-time-evt'
+              evEl.textContent = hourMatch[3]
+              const del = document.createElement('span')
+              del.className = 'cm-todo-del'
+              del.textContent = '\u00d7'
+              del.onclick = (e) => { e.stopPropagation(); events[dateKey].splice(ei, 1); if (!events[dateKey].length) delete events[dateKey]; save(); render() }
+              evEl.appendChild(del)
+              slot.appendChild(evEl)
+            } else if (!hourMatch && h === 0) {
+              // Events without time go at midnight
+              const evEl = document.createElement('div')
+              evEl.className = 'cm-cal-time-evt'
+              evEl.textContent = ev
+              const del = document.createElement('span')
+              del.className = 'cm-todo-del'
+              del.textContent = '\u00d7'
+              del.onclick = (e) => { e.stopPropagation(); events[dateKey].splice(ei, 1); if (!events[dateKey].length) delete events[dateKey]; save(); render() }
+              evEl.appendChild(del)
+              slot.appendChild(evEl)
+            }
+          })
+          // Click on slot to add event at this hour
+          slot.onclick = () => {
+            if (slot.querySelector('.cm-cal-time-add')) return
+            const inp = document.createElement('input')
+            inp.className = 'cm-cal-time-add'
+            inp.type = 'text'
+            inp.placeholder = 'Event...'
+            inp.onkeydown = (e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                const v = inp.value.trim()
+                if (!v) return
+                const hStr = String(h).padStart(2,'0')
+                if (!events[dateKey]) events[dateKey] = []
+                events[dateKey].push(`${hStr}:00 ${v}`)
+                save(); render()
+              }
+              if (e.key === 'Escape') inp.remove()
+            }
+            inp.onblur = () => inp.remove()
+            slot.appendChild(inp)
+            inp.focus()
+          }
+          row.appendChild(label)
+          row.appendChild(slot)
+          gridWrap.appendChild(row)
+        }
+        container.appendChild(gridWrap)
+      }
+
+      // ── Month view ──
+      if (viewMode === 'month') {
+        const grid = document.createElement('div')
+        grid.className = 'cm-cal-grid'
+        ;['Su','Mo','Tu','We','Th','Fr','Sa'].forEach(d => {
+          const dh = document.createElement('div'); dh.className = 'cm-cal-day-hdr'; dh.textContent = d; grid.appendChild(dh)
+        })
+        const first = new Date(viewYear, viewMonth, 1).getDay()
+        const dim = new Date(viewYear, viewMonth + 1, 0).getDate()
+        for (let i = 0; i < first; i++) { const b = document.createElement('div'); b.className = 'cm-cal-blank'; grid.appendChild(b) }
+        for (let d = 1; d <= dim; d++) {
+          const cell = document.createElement('div')
+          cell.className = 'cm-cal-day'
+          const dateKey = dk(viewYear, viewMonth, d)
+          const evts = events[dateKey]
+          if (evts && evts.length) { cell.classList.add('cm-cal-has-event'); cell.title = evts.join(', ') }
+          if (d === today.getDate() && viewMonth === today.getMonth() && viewYear === today.getFullYear()) cell.classList.add('cm-cal-today')
+          if (selectedDay === d) cell.classList.add('cm-cal-selected')
+          const num = document.createElement('span')
+          num.textContent = d
+          cell.appendChild(num)
+          // Show first event text on the cell
+          if (evts && evts.length) {
+            const evLabel = document.createElement('div')
+            evLabel.className = 'cm-cal-day-evt'
+            evLabel.textContent = evts[0] + (evts.length > 1 ? ` +${evts.length-1}` : '')
+            cell.appendChild(evLabel)
+          }
+          const dn = d
+          cell.onclick = () => { selectedDay = selectedDay === dn ? null : dn; render() }
+          grid.appendChild(cell)
+        }
+        wrap.appendChild(grid)
+        // Expanded day view for selected day — shows 24-hour time grid
+        if (selectedDay !== null) {
+          const dateKey = dk(viewYear, viewMonth, selectedDay)
+          const ed = document.createElement('div')
+          ed.className = 'cm-cal-event-panel'
+          const edHdr = document.createElement('div')
+          edHdr.className = 'cm-cal-event-panel-hdr'
+          edHdr.textContent = new Date(viewYear, viewMonth, selectedDay).toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' })
+          const closeBtn = document.createElement('button')
+          closeBtn.className = 'cm-cal-nav'
+          closeBtn.textContent = '\u00d7'
+          closeBtn.style.marginLeft = 'auto'
+          closeBtn.onclick = (e) => { e.stopPropagation(); selectedDay = null; render() }
+          edHdr.style.display = 'flex'; edHdr.style.alignItems = 'center'
+          edHdr.appendChild(closeBtn)
+          ed.appendChild(edHdr)
+          renderTimeGrid(ed, dateKey)
+          wrap.appendChild(ed)
+        }
+      }
+
+      // ── Week view ──
+      if (viewMode === 'week') {
+        const sun = new Date(viewDate); sun.setDate(sun.getDate() - sun.getDay())
+        // Day headers
+        const weekHdrRow = document.createElement('div')
+        weekHdrRow.className = 'cm-cal-week-hdr-row'
+        const timeLabel = document.createElement('div')
+        timeLabel.className = 'cm-cal-week-time-gutter'
+        weekHdrRow.appendChild(timeLabel)
+        for (let i = 0; i < 7; i++) {
+          const d = new Date(sun); d.setDate(d.getDate() + i)
+          const hd = document.createElement('div')
+          hd.className = 'cm-cal-week-col-hdr'
+          if (d.toDateString() === today.toDateString()) hd.classList.add('cm-cal-week-today')
+          hd.textContent = d.toLocaleDateString('en-US', { weekday:'short', day:'numeric' })
+          weekHdrRow.appendChild(hd)
+        }
+        wrap.appendChild(weekHdrRow)
+        // Time grid rows
+        const weekBody = document.createElement('div')
+        weekBody.className = 'cm-cal-week-body'
+        for (let h = 0; h < 24; h++) {
+          const row = document.createElement('div')
+          row.className = 'cm-cal-week-time-row'
+          const label = document.createElement('div')
+          label.className = 'cm-cal-time-label cm-cal-week-time-gutter'
+          label.textContent = h === 0 ? '12 AM' : h < 12 ? `${h} AM` : h === 12 ? '12 PM' : `${h-12} PM`
+          row.appendChild(label)
+          for (let i = 0; i < 7; i++) {
+            const d = new Date(sun); d.setDate(d.getDate() + i)
+            const dateKey = dk(d.getFullYear(), d.getMonth(), d.getDate())
+            const cell = document.createElement('div')
+            cell.className = 'cm-cal-week-cell'
+            const evts = events[dateKey] || []
+            evts.forEach((ev, ei) => {
+              const hourMatch = ev.match(/^(\d{1,2}):(\d{2})\s+(.*)$/)
+              const showHere = (hourMatch && parseInt(hourMatch[1]) === h) || (!hourMatch && h === 0)
+              if (showHere) {
+                const evEl = document.createElement('div')
+                evEl.className = 'cm-cal-time-evt'
+                evEl.textContent = hourMatch ? hourMatch[3] : ev
+                cell.appendChild(evEl)
+              }
+            })
+            cell.onclick = () => {
+              if (cell.querySelector('.cm-cal-time-add')) return
+              const inp = document.createElement('input')
+              inp.className = 'cm-cal-time-add'
+              inp.type = 'text'; inp.placeholder = 'Event...'
+              inp.onkeydown = (e) => {
+                if (e.key === 'Enter') { e.preventDefault(); const v = inp.value.trim(); if (!v) return; const hStr = String(h).padStart(2,'0'); if (!events[dateKey]) events[dateKey] = []; events[dateKey].push(`${hStr}:00 ${v}`); save(); render() }
+                if (e.key === 'Escape') inp.remove()
+              }
+              inp.onblur = () => inp.remove()
+              cell.appendChild(inp); inp.focus()
+            }
+            row.appendChild(cell)
+          }
+          weekBody.appendChild(row)
+        }
+        wrap.appendChild(weekBody)
+      }
+
+      // ── Day view ──
+      if (viewMode === 'day') {
+        const dateKey = dk(viewDate.getFullYear(), viewDate.getMonth(), viewDate.getDate())
+        const dayPanel = document.createElement('div')
+        dayPanel.className = 'cm-cal-day-panel'
+        renderTimeGrid(dayPanel, dateKey)
+        wrap.appendChild(dayPanel)
+      }
+    }
+    render()
+    return wrap
+  }
+  eq(o) { return o instanceof CalendarWidget && o.rawData === this.rawData }
+  compare(o) { return this.eq(o) }
+  destroy() {}
+  ignoreEvent() { return true }
+  get estimatedHeight() { return 380 }
+  coordsAt() { return null }
+}
+
 // ─── Live preview plugin ──────────────────────────────────────────────────────
-function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [], flashcardDecks = []) {
+function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [], flashcardDecks = [], notebookDir = null) {
   const { ViewPlugin, Decoration, WidgetType } = cm.view
   const { syntaxTree } = cm.language
 
   // Patch widget classes to extend WidgetType so CM6 properly handles them
-  for (const Cls of [HRWidget, CheckboxWidget, ImgWidget, ListMarkerWidget, MathWidget, WikiWidget, LinkWidget, TableWidget]) {
+  for (const Cls of [HRWidget, CheckboxWidget, ImgWidget, ListMarkerWidget, MathWidget, WikiWidget, LinkWidget, TableWidget, TodoBlockWidget, TaskBlockWidget, SupWidget, SubWidget, TimerWidget, CalendarWidget, TimeRefWidget, FnRefWidget]) {
     if (!(Cls.prototype instanceof WidgetType)) {
       Object.setPrototypeOf(Cls.prototype, WidgetType.prototype)
     }
@@ -1147,6 +2688,37 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
 
   // The set of nodes whose marks we want to hide/show as a unit
   const INLINE_ANCESTORS = new Set(['Emphasis','StrongEmphasis','Strikethrough','InlineCode','Link','Image','Highlight'])
+
+  /** Shared: parse markdown table text and push a TableWidget decoration */
+  function _renderTableDeco(doc, from, to, inCur, inlines) {
+    const tableText = doc.sliceString(from, to)
+    const tableLines = tableText.split('\n').filter(l => l.trim())
+    if (tableLines.length < 2) return
+    // Must have a separator row (|---|---|)
+    if (!/^[\s|:-]+$/.test(tableLines[1])) return
+    const parseRow = row => {
+      const trimmed = row.trim()
+      const inner = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed
+      const end = inner.endsWith('|') ? inner.slice(0, -1) : inner
+      return end.split('|').map(c => c.trim())
+    }
+    const headers = parseRow(tableLines[0])
+    const sep = parseRow(tableLines[1])
+    const aligns = sep.map(c => /^:-+:$/.test(c) ? 'center' : /-+:$/.test(c) ? 'right' : 'left')
+    const rows = tableLines.slice(2).filter(l => /\|/.test(l) && !/^[\s|:-]+$/.test(l))
+    const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    const thHtml = headers.map((h, i) => `<th style="text-align:${aligns[i]||'left'}">${esc(h)}</th>`).join('')
+    const tbHtml = rows.map(r => {
+      const cells = parseRow(r)
+      return `<tr>${cells.map((c, i) => `<td style="text-align:${aligns[i]||'left'}">${esc(c)}</td>`).join('')}</tr>`
+    }).join('')
+    const html = `<table class="nb-table"><thead><tr>${thHtml}</tr></thead><tbody>${tbHtml}</tbody></table>`
+    // Align to line boundaries
+    const tLineFrom = doc.lineAt(from).from
+    const lastCharPos = Math.max(from, Math.min(to - 1, doc.length - 1))
+    const tLineTo = doc.lineAt(lastCharPos).to
+    inlines.push({ from: tLineFrom, to: tLineTo, deco: Decoration.replace({ widget: new TableWidget(html) }) })
+  }
 
   function build(view) {
     const { state } = view
@@ -1182,32 +2754,10 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
             return false
           }
 
-          // ── Table — render as HTML table when cursor is outside ────────
+          // ── Table — render as HTML table unless cursor is inside ──
           if (name === 'Table') {
-            const tableText = doc.sliceString(from, to)
-            if (!inCur(from, to)) {
-              const lines = tableText.split('\n').filter(l => l.trim())
-              if (lines.length >= 2) {
-                const parseRow = row => {
-                  const trimmed = row.trim()
-                  const inner = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed
-                  const end = inner.endsWith('|') ? inner.slice(0, -1) : inner
-                  return end.split('|').map(c => c.trim())
-                }
-                const headers = parseRow(lines[0])
-                const sep = lines[1] ? parseRow(lines[1]) : []
-                const aligns = sep.map(c => /^:-+:$/.test(c) ? 'center' : /-+:$/.test(c) ? 'right' : 'left')
-                const rows = lines.slice(2).filter(l => /\|/.test(l) && !/^[\s|:-]+$/.test(l))
-                const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-                const thHtml = headers.map((h, i) => `<th style="text-align:${aligns[i]||'left'}">${esc(h)}</th>`).join('')
-                const tbHtml = rows.map(r => {
-                  const cells = parseRow(r)
-                  return `<tr>${cells.map((c, i) => `<td style="text-align:${aligns[i]||'left'}">${esc(c)}</td>`).join('')}</tr>`
-                }).join('')
-                const html = `<table class="nb-table"><thead><tr>${thHtml}</tr></thead><tbody>${tbHtml}</tbody></table>`
-                inlines.push({ from, to, deco: Decoration.replace({ widget: new TableWidget(html), block: true }) })
-              }
-            }
+            if (inCur(from, to)) return false
+            try { _renderTableDeco(doc, from, to, inCur, inlines) } catch { /**/ }
             return false
           }
 
@@ -1230,7 +2780,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
             if (m) {
               if (!inCur(from, to)) {
                 // Replace only the image syntax, not the whole line
-                inlines.push({ from, to, deco: Decoration.replace({ widget: new ImgWidget(m[2], m[1]), block: false }) })
+                inlines.push({ from, to, deco: Decoration.replace({ widget: new ImgWidget(m[2], m[1], notebookDir), block: false }) })
                 return false
               }
             }
@@ -1253,15 +2803,34 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
           if (name === 'ListMark') {
             const ln = doc.lineAt(from)
             if (!inCur(ln.from, ln.to)) {
-              let isOrdered = false
-              let p = node.node.parent
-              while (p) {
-                if (p.name === 'OrderedList') { isOrdered = true; break }
-                if (p.name === 'BulletList') break
-                p = p.parent
+              // Don't show bullet for task list items — they have their own checkbox widget
+              let isTaskItem = false
+              const parentItem = node.node.parent // ListItem
+              if (parentItem && parentItem.name === 'ListItem') {
+                let sib = parentItem.firstChild
+                while (sib) {
+                  if (sib.name === 'TaskMarker') { isTaskItem = true; break }
+                  sib = sib.nextSibling
+                }
               }
-              const markerText = isOrdered ? doc.sliceString(from, to) : '•'
-              inlines.push({ from, to, deco: Decoration.replace({ widget: new ListMarkerWidget(markerText, isOrdered) }) })
+              if (isTaskItem) {
+                // Hide '- ' (dash + trailing space) so only the checkbox shows
+                const spaceAfter = to < doc.length && doc.sliceString(to, to + 1) === ' ' ? 1 : 0
+                inlines.push({ from, to: to + spaceAfter, deco: Decoration.mark({ class: 'cm-lv-hidden' }) })
+              } else {
+                let isOrdered = false
+                let p = node.node.parent
+                while (p) {
+                  if (p.name === 'OrderedList') { isOrdered = true; break }
+                  if (p.name === 'BulletList') break
+                  p = p.parent
+                }
+                const markerText = isOrdered ? doc.sliceString(from, to) : '•'
+                // Include the trailing space in the replace range so the widget
+                // controls the full "marker + gap" width, preventing text jump
+                const spaceAfter = to < doc.length && doc.sliceString(to, to + 1) === ' ' ? 1 : 0
+                inlines.push({ from, to: to + spaceAfter, deco: Decoration.replace({ widget: new ListMarkerWidget(markerText, isOrdered) }) })
+              }
             } else {
               inlines.push({ from, to, deco: Decoration.mark({ class: 'cm-lv-p' }) })
             }
@@ -1377,6 +2946,15 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
                 return false
               }
 
+              // For Link: replace whole syntax with a widget when cursor is off (no mark needed)
+              if (name === 'Link' && !cursorInSpan) {
+                const raw = doc.sliceString(from, to)
+                const lm = raw.match(/^\[([^\]]*)\]\(([^\s)]*)\)$/)
+                if (lm) {
+                  inlines.push({ from, to, deco: Decoration.replace({ widget: new LinkWidget(lm[1], lm[2]) }) })
+                  return false
+                }
+              }
               inlines.push({ from, to, deco: Decoration.mark({ class: emphCls }) })
               // Hide marks as zero-width (Obsidian style) rather than replace
               let child = node.node.firstChild
@@ -1401,14 +2979,6 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
                   }
                 }
                 child = child.nextSibling
-              }
-              // For Link: replace whole syntax with a widget when cursor is off
-              if (name === 'Link' && !cursorInSpan) {
-                const raw = doc.sliceString(from, to)
-                const lm = raw.match(/^\[([^\]]*)\]\(([^\s)]*)\)$/)
-                if (lm) {
-                  inlines.push({ from, to, deco: Decoration.replace({ widget: new LinkWidget(lm[1], lm[2]) }) })
-                }
               }
               return false
             }
@@ -1450,6 +3020,23 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
     } catch (e) {
       console.warn('[LivePreview] tree walk error (suppressed):', e?.message)
     }
+
+    // ── Headings without space (e.g. #Title treated same as # Title) ──────
+    try {
+      for (let li = 1; li <= doc.lines; li++) {
+        const ln = doc.line(li)
+        const m = ln.text.match(/^(#{1,6})([^\s#])/)
+        if (!m) continue
+        const level = m[1].length
+        // Skip if tree already handled this as ATXHeading
+        const alreadyDecorated = lineDecs.some(d => d.pos === ln.from)
+        if (alreadyDecorated) continue
+        lineDecs.push({ pos: ln.from, cls: `cm-lv-h${level}` })
+        const hashEnd = ln.from + m[1].length
+        const hashCls = inCur(ln.from, ln.to) ? 'cm-lv-p' : 'cm-lv-hidden'
+        inlines.push({ from: ln.from, to: hashEnd, deco: Decoration.mark({ class: hashCls }) })
+      }
+    } catch { /**/ }
 
     // ── Math via regex fallback ───────────────────────────────────────────
     try {
@@ -1503,6 +3090,208 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
       }
     } catch { /**/ }
 
+    // ── Superscript ^text^ and subscript ~text~ via regex ─────────────────
+    try {
+      const full = doc.toString()
+      const reSup = /\^([^\^\n]+)\^/g
+      let sm
+      while ((sm = reSup.exec(full)) !== null) {
+        const sf = sm.index, st = sm.index + sm[0].length
+        if (!inCur(sf, st)) {
+          inlines.push({ from: sf, to: st, deco: Decoration.replace({ widget: new SupWidget(sm[1]) }) })
+        }
+      }
+      const reSub = /(?<!~)~([^~\n]+)~(?!~)/g
+      let sbm
+      while ((sbm = reSub.exec(full)) !== null) {
+        const sbf = sbm.index, sbt = sbm.index + sbm[0].length
+        if (!inCur(sbf, sbt)) {
+          inlines.push({ from: sbf, to: sbt, deco: Decoration.replace({ widget: new SubWidget(sbm[1]) }) })
+        }
+      }
+    } catch { /**/ }
+
+    // ── Hide =:.N precision specifier in accepted equations ────────────────
+    try {
+      const fullEq = doc.toString()
+      const precRe = /=:\.(\d+)\s/g
+      let pm
+      while ((pm = precRe.exec(fullEq)) !== null) {
+        const hideFrom = pm.index + 1 // after the '='
+        const hideTo = pm.index + pm[0].length - 1 // before the trailing space
+        if (!inCur(pm.index, hideTo + 1)) {
+          inlines.push({ from: hideFrom, to: hideTo, deco: Decoration.mark({ class: 'cm-lv-hidden' }) })
+        }
+      }
+    } catch { /**/ }
+
+    // ── Definition lists (dt / dd lines) ─────────────────────────────────────
+    try {
+      for (let n = 1; n <= doc.lines; n++) {
+        const ln = doc.line(n)
+        const t  = ln.text
+        if (/^:\s+/.test(t)) {
+          // Definition ": text" — indent + muted border-left style
+          lineDecs.push({ pos: ln.from, cls: 'cm-lv-dd' })
+          const colonEnd = ln.from + t.match(/^:\s+/)[0].length
+          if (!inCur(ln.from, ln.to)) {
+            inlines.push({ from: ln.from, to: colonEnd, deco: Decoration.mark({ class: 'cm-lv-hidden' }) })
+          }
+        } else if (
+          t.trim() && !/^[#\-*+>|`~\d]/.test(t) && !/^\//.test(t) &&
+          n < doc.lines && /^:\s+/.test(doc.line(n + 1).text)
+        ) {
+          // Term — line before a definition
+          lineDecs.push({ pos: ln.from, cls: 'cm-lv-dt' })
+        }
+      }
+    } catch { /**/ }
+
+    // ── Footnote refs [^id] inline ────────────────────────────────────────────
+    try {
+      const full = doc.toString()
+      const fnRe = /\[\^([^\]\n]+)\]/g
+      let fm
+      while ((fm = fnRe.exec(full)) !== null) {
+        const ff = fm.index, ft = fm.index + fm[0].length
+        // Skip if it's a definition line [^id]: (starts the line)
+        const lineAtPos = doc.lineAt(ff)
+        if (/^\[\^/.test(lineAtPos.text) && lineAtPos.text.includes(']: ')) continue
+        const already = inlines.some(d => d.from <= ff && d.to >= ft)
+        if (!already && !inCur(ff, ft)) {
+          inlines.push({ from: ff, to: ft, deco: Decoration.replace({ widget: new FnRefWidget(fm[1]) }) })
+        }
+      }
+      // Style footnote definition lines
+      for (let n = 1; n <= doc.lines; n++) {
+        const ln = doc.line(n)
+        if (/^\[\^[^\]]+\]:/.test(ln.text)) {
+          lineDecs.push({ pos: ln.from, cls: 'cm-lv-fn-def' })
+        }
+      }
+    } catch { /**/ }
+
+    // ── Table regex fallback (catches tables the Lezer tree may have missed) ──
+    try {
+      const full = doc.toString()
+      // Match: header row | sep row | optional body rows
+      const tableRe = /^(\|.+\|)\n(\|[\s:|-]+\|)((?:\n\|.+\|)*)/gm
+      let tm
+      while ((tm = tableRe.exec(full)) !== null) {
+        const tFrom = tm.index
+        const tTo = tm.index + tm[0].length
+        // Skip if already decorated by the tree walk
+        const already = inlines.some(d => d.from <= tFrom && d.to >= tTo && d.deco.spec?.widget instanceof TableWidget)
+        if (already) continue
+        if (inCur(tFrom, tTo)) continue
+        _renderTableDeco(doc, tFrom, tTo, inCur, inlines)
+      }
+    } catch { /**/ }
+
+    // ── /todo blocks (single-block replacement) ───────────────────────────
+    try {
+      const full = doc.toString()
+      const lines = full.split('\n')
+      const lineStarts = []
+      let pos = 0
+      for (const l of lines) { lineStarts.push(pos); pos += l.length + 1 }
+
+      for (let li = 0; li < lines.length; li++) {
+        if (!lines[li].match(/^\/todo(?::.*)?$/)) continue
+        const block = parseTodoBlock(full, li)
+        if (!block) continue
+
+        const blockFrom = lineStarts[block.startLine]
+        const blockTo   = lineStarts[block.endLine] + lines[block.endLine].length
+
+        // Never collapse — user edits via widget UI
+        const items = block.items.map(it => {
+          const cbIdx = lines[it.lineIdx].search(/\[[ xX]\]/)
+          return { text: it.text, checked: it.checked, dateStr: it.dateStr, timeStr: it.timeStr, cbPos: lineStarts[it.lineIdx] + (cbIdx >= 0 ? cbIdx : 0) }
+        })
+        const rawMd = full.slice(blockFrom, blockTo)
+        inlines.push({ from: blockFrom, to: blockTo, deco: Decoration.replace({ widget: new TodoBlockWidget(block.listName, items, rawMd) }) })
+
+        li = block.endLine
+      }
+    } catch { /**/ }
+
+    // ── /task blocks (single-block replacement) ───────────────────────────
+    try {
+      const full = doc.toString()
+      const lines = full.split('\n')
+      const lineStarts2 = []
+      let pos2 = 0
+      for (const l of lines) { lineStarts2.push(pos2); pos2 += l.length + 1 }
+
+      for (let li = 0; li < lines.length; li++) {
+        if (!lines[li].match(/^\/task(?::.*)?$/)) continue
+        const block = parseTaskBlock(full, li)
+        if (!block) continue
+
+        const blockFrom = lineStarts2[block.startLine]
+        const blockTo   = lineStarts2[block.endLine] + lines[block.endLine].length
+
+        // Never collapse — user edits via widget UI
+        const columns = block.columns.map(col => ({
+          title: col.title,
+          tasks: col.tasks.map(task => {
+            const cbIdx = lines[task.lineIdx].search(/\[[ xX]\]/)
+            return { text: task.text, done: task.done, cbPos: lineStarts2[task.lineIdx] + (cbIdx >= 0 ? cbIdx : 0) }
+          }),
+        }))
+        const rawMd2 = full.slice(blockFrom, blockTo)
+        inlines.push({ from: blockFrom, to: blockTo, deco: Decoration.replace({ widget: new TaskBlockWidget(block.boardTitle, columns, rawMd2) }) })
+
+        li = block.endLine
+      }
+    } catch { /**/ }
+
+    // ── /timer block widget ─────────────────────────────────────────────
+    try {
+      const fullT = doc.toString()
+      const timerRe = /^\/timer(?:\s+(.+))?$/gm
+      let tm
+      while ((tm = timerRe.exec(fullT)) !== null) {
+        const tFrom = doc.lineAt(tm.index).from
+        const tTo = doc.lineAt(tm.index + tm[0].length).to
+        // Never collapse timer — user edits via widget UI
+        if (!tm[1]) {
+          inlines.push({ from: tFrom, to: tTo, deco: Decoration.replace({ widget: new TimerWidget(0, '', tm[0]) }) })
+        } else {
+          const raw = tm[1].trim()
+          const parts = raw.match(/^(\S+)(?:\s+(.+))?$/)
+          if (parts) {
+            const timeStr = parts[1], label = parts[2] || ''
+            let totalSec = 0
+            const hms = timeStr.match(/^(\d+):(\d{2}):(\d{2})$/)
+            const ms = timeStr.match(/^(\d+):(\d{2})$/)
+            const m = timeStr.match(/^(\d+)$/)
+            if (hms) totalSec = parseInt(hms[1]) * 3600 + parseInt(hms[2]) * 60 + parseInt(hms[3])
+            else if (ms) totalSec = parseInt(ms[1]) * 60 + parseInt(ms[2])
+            else if (m) totalSec = parseInt(m[1]) * 60
+            if (totalSec > 0) {
+              inlines.push({ from: tFrom, to: tTo, deco: Decoration.replace({ widget: new TimerWidget(totalSec, label, tm[0]) }) })
+            }
+          }
+        }
+      }
+    } catch { /**/ }
+
+    // ── /calendar block widget ──────────────────────────────────────────
+    try {
+      const fullC = doc.toString()
+      const calRe = /^\/calendar(?::([^\n]*))?$/gm
+      let cm2
+      while ((cm2 = calRe.exec(fullC)) !== null) {
+        const cFrom = doc.lineAt(cm2.index).from
+        const cTo = doc.lineAt(cm2.index + cm2[0].length).to
+        // Never collapse calendar — user edits via widget UI, not raw markdown
+        const rawData = cm2[1] || ''
+        inlines.push({ from: cFrom, to: cTo, deco: Decoration.replace({ widget: new CalendarWidget(rawData, cm2[0]) }) })
+      }
+    } catch { /**/ }
+
     // ── Predictive formatting from opening syntax ─────────────────────────
     // When the cursor is on a line with unclosed formatting tokens,
     // apply the formatting class from the opening token to the cursor position
@@ -1550,6 +3339,73 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
             }
           }
           break // only match the first (longest) unclosed token
+        }
+      }
+    } catch { /**/ }
+
+    // ── Due-date tokens ::YYYY-MM-DD or ::+2d etc. ───────────────────────
+    try {
+      const full = doc.toString()
+      const duRe = /::(\d{4}-\d{2}-\d{2}(?:,\d{1,2}:\d{2})?|\d{2}-\d{2}-(?:\d{4}|\d{2})(?:,\d{1,2}:\d{2})?|\d{1,2}:\d{2}|\+\d+[dh])/g
+      let dm
+      while ((dm = duRe.exec(full)) !== null) {
+        const from = dm.index, to = dm.index + dm[0].length
+        if (inCur(from, to)) {
+          inlines.push({ from, to: from + 2, deco: Decoration.mark({ class: 'cm-lv-p' }) })
+        } else {
+          inlines.push({ from, to, deco: Decoration.replace({ widget: new DueDateWidget(dm[1]) }) })
+        }
+      }
+    } catch { /**/ }
+
+    // ── Tag tokens ::tagname (letter-start, not a due-date) ──────────────
+    try {
+      const full = doc.toString()
+      const tagRe = /::([a-zA-Z][a-zA-Z0-9_-]*)/g
+      let tm
+      while ((tm = tagRe.exec(full)) !== null) {
+        const from = tm.index, to = tm.index + tm[0].length
+        if (inCur(from, to)) {
+          inlines.push({ from, to: from + 2, deco: Decoration.mark({ class: 'cm-lv-p' }) })
+        } else {
+          inlines.push({ from, to, deco: Decoration.replace({ widget: new TagWidget(tm[1]) }) })
+        }
+      }
+    } catch { /**/ }
+
+    // ── @time references (@HH:MM, @hh:mmam/pm, @HH, @Hham/pm) ─────────
+    try {
+      const full = doc.toString()
+      // Match @14:30, @2:30pm, @14, @2pm, @2am, etc.
+      const timeRefRe = /(?<!\w)@(\d{1,2})(?::(\d{2}))?\s*(am|pm|AM|PM)?(?!\w)/g
+      let trm
+      while ((trm = timeRefRe.exec(full)) !== null) {
+        const from = trm.index, to = trm.index + trm[0].length
+        let h = parseInt(trm[1])
+        const m = trm[2] ? parseInt(trm[2]) : null
+        const ampm = trm[3]?.toLowerCase()
+        // Skip bare numbers that aren't valid times (e.g. @999)
+        if (!ampm && h > 23) continue
+        if (ampm && (h < 1 || h > 12)) continue
+        if (m !== null && m > 59) continue
+        let display
+        if (ampm) {
+          // 12h format — display as-is
+          display = m !== null
+            ? `${h}:${String(m).padStart(2,'0')} ${ampm.toUpperCase()}`
+            : `${h} ${ampm.toUpperCase()}`
+        } else {
+          // 24h format — convert to 12h display
+          const suffix = h >= 12 ? 'PM' : 'AM'
+          const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h
+          display = m !== null
+            ? `${h12}:${String(m).padStart(2,'0')} ${suffix}`
+            : `${h12} ${suffix}`
+        }
+        if (inCur(from, to)) {
+          inlines.push({ from, to: from + 1, deco: Decoration.mark({ class: 'cm-lv-p' }) })
+        } else {
+          inlines.push({ from, to, deco: Decoration.replace({ widget: new TimeRefWidget(trm[0], display) }) })
         }
       }
     } catch { /**/ }
@@ -1628,6 +3484,46 @@ function makeCheckboxHandler(cm) {
   })
 }
 
+// ─── Hyperlink click handler (live mode) — opens URLs in default browser ─────
+function makeLinkHandler(cm) {
+  return cm.view.EditorView.domEventHandlers({
+    click(e, view) {
+      // Handle clicks on .cm-lv-lnk inline decorations (when cursor is on the link)
+      const el = e.target.closest('.cm-lv-lnk')
+      if (!el) return false
+      // Try to find URL from the line's markdown source — look for [text](url)
+      const pos = view.posAtDOM(el)
+      if (pos == null) return false
+      const line = view.state.doc.lineAt(pos)
+      const lineText = line.text
+      // Match markdown link pattern [text](url)
+      const linkRe = /\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g
+      let m, href = null
+      while ((m = linkRe.exec(lineText)) !== null) {
+        const linkStart = line.from + m.index
+        const linkEnd   = linkStart + m[0].length
+        if (pos >= linkStart && pos <= linkEnd) { href = m[2]; break }
+      }
+      // Also try bare URLs
+      if (!href) {
+        const bareRe = /(https?:\/\/[^\s)>\]]+)/g
+        while ((m = bareRe.exec(lineText)) !== null) {
+          const urlStart = line.from + m.index
+          const urlEnd   = urlStart + m[0].length
+          if (pos >= urlStart && pos <= urlEnd) { href = m[1]; break }
+        }
+      }
+      if (!href) return false
+      e.preventDefault()
+      e.stopPropagation()
+      import('@tauri-apps/api/core').then(({ invoke }) => {
+        invoke('plugin:shell|open', { path: href }).catch(() => window.open(href, '_blank'))
+      }).catch(() => window.open(href, '_blank'))
+      return true
+    },
+  })
+}
+
 // ─── Wikilink click handler (live mode) ──────────────────────────────────────
 function makeWikiHandler(cm, onNavRef) {
   return cm.view.EditorView.domEventHandlers({
@@ -1645,6 +3541,82 @@ function makeWikiHandler(cm, onNavRef) {
       e.preventDefault()
       const fn = typeof onNavRef === 'function' ? onNavRef : onNavRef?.current
       if (fn) fn(el.dataset.wlTitle, el.dataset.wlType, el.dataset.wlId)
+      return true
+    },
+  })
+}
+
+// ─── /todo checkbox click handler ────────────────────────────────────────────
+function makeTodoHandler(cm) {
+  return cm.view.EditorView.domEventHandlers({
+    mousedown(e, view) {
+      if (!e.target.closest('.cm-todo-block-w')) return false
+      e.preventDefault()
+      const cb = e.target.closest('.cm-cb[data-pos]')
+      if (!cb) return true
+      const pos = parseInt(cb.dataset.pos || '0', 10)
+      if (isNaN(pos)) return true
+      try {
+        const line = view.state.doc.lineAt(pos)
+        const txt  = line.text
+        const newTxt = /\[[xX]\]/.test(txt)
+          ? txt.replace(/\[[xX]\]/, '[ ]')
+          : txt.replace(/\[ \]/, '[x]')
+        view.dispatch({ changes: { from: line.from, to: line.to, insert: newTxt } })
+      } catch { /**/ }
+      return true
+    },
+  })
+}
+
+// ─── /task board interaction handler ─────────────────────────────────────────
+function makeTaskHandler(cm) {
+  return cm.view.EditorView.domEventHandlers({
+    mousedown(e, view) {
+      if (!e.target.closest('.cm-task-board-w')) return false
+      e.preventDefault()
+      const cb = e.target.closest('.cm-cb[data-pos]')
+      if (cb) {
+        const pos = parseInt(cb.dataset.pos || '0', 10)
+        if (!isNaN(pos)) {
+          try {
+            const line = view.state.doc.lineAt(pos)
+            const txt  = line.text
+            const newTxt = /\[[xX]\]/.test(txt)
+              ? txt.replace(/\[[xX]\]/, '[ ]')
+              : txt.replace(/\[ \]/, '[x]')
+            view.dispatch({ changes: { from: line.from, to: line.to, insert: newTxt } })
+          } catch { /**/ }
+        }
+      }
+      return true
+    },
+    keydown(e, view) {
+      const inp = e.target
+      if (inp.tagName !== 'INPUT' || !inp.classList.contains('cm-task-add-input')) return false
+      if (e.key !== 'Enter') return false
+      const text = inp.value.trim()
+      if (!text) return false
+      const board = inp.closest('.cm-task-board')
+      if (!board) return false
+      const colIdx   = parseInt(inp.dataset.colIdx || '0', 10)
+      const blockFrom = parseInt(board.dataset.blockFrom || '0', 10)
+      const blockTo   = parseInt(board.dataset.blockTo   || '0', 10)
+
+      const docStr = view.state.doc.toString()
+      const block = parseTaskBlock(docStr, view.state.doc.lineAt(blockFrom).number - 1)
+      if (!block) return false
+
+      const cols = block.columns.map(c => ({ ...c, tasks: [...c.tasks] }))
+      if (colIdx >= 0 && colIdx < cols.length) {
+        cols[colIdx].tasks.push({ text, done: false })
+      }
+      const newText = serializeTaskBlock(block.boardTitle, cols)
+      const lineFrom = view.state.doc.lineAt(blockFrom).from
+      const lineTo   = view.state.doc.lineAt(Math.min(blockTo, view.state.doc.length - 1)).to
+      view.dispatch({ changes: { from: lineFrom, to: lineTo, insert: newText } })
+      inp.value = ''
+      e.preventDefault()
       return true
     },
   })
@@ -1810,7 +3782,7 @@ function ViewModeBtn({ viewMode, setViewMode }) {
         onMouseDown={() => { didLong.current=false; holdTimer.current=setTimeout(()=>{ didLong.current=true; setDropOpen(d=>!d) },300) }}
         onMouseUp={() => clearTimeout(holdTimer.current)}
         onMouseLeave={() => clearTimeout(holdTimer.current)}
-        onClick={() => { if(didLong.current)return; setViewMode(VIEW_MODE_CYCLE[(VIEW_MODE_CYCLE.indexOf(viewMode)+1)%3]); setDropOpen(false) }}
+        onClick={() => { if(didLong.current)return; setViewMode(viewMode === 'source' ? 'live' : 'source'); setDropOpen(false) }}
       >
         <span style={{ display:'flex', alignItems:'center', justifyContent:'center', transition:'opacity .18s,transform .18s', ...(phase==='exiting'?{opacity:0,transform:'scale(.6) rotate(-15deg)',position:'absolute'}:phase==='entering'?{opacity:0,transform:'scale(.6) rotate(15deg)'}:{opacity:1,transform:'none'}) }}>
           {MODE_META[shown].icon}
@@ -1837,7 +3809,14 @@ function ViewModeBtn({ viewMode, setViewMode }) {
 // ─────────────────────────────────────────────────────────────────────────────
 export default function NotebookView() {
   const themeKey        = useAppStore(s => s.themeKey ?? 'dark')
-  const notebook       = useAppStore(s => s.activeNotebook)
+  const paneTabId      = useContext(PaneContext)
+  const notebook       = useAppStore(useCallback(
+    s => {
+      const tab = paneTabId ? s.tabs.find(t => t.id === paneTabId) : null
+      return tab?.activeNotebook ?? s.activeNotebook
+    },
+    [paneTabId]
+  ))
   const notebooks      = useAppStore(s => s.notebooks)
   const updateNotebook = useAppStore(s => s.updateNotebook)
   const setView        = useAppStore(s => s.setView)
@@ -1874,6 +3853,7 @@ export default function NotebookView() {
   const hitIdxRef  = useRef(0)
   const loadedFor  = useRef(null)
   const wikiNavRef = useRef(null)
+  const notebookDirRef = useRef(null)
   const [wikiDrop, setWikiDrop] = useState(null) // { options, selectedIdx, coords }
 
   contentRef.current = content
@@ -1900,8 +3880,13 @@ export default function NotebookView() {
     if (!notebookId) return
     let gone = false
     setLoaded(false)
-    loadNotebookContent(notebookId).then(raw => {
+    const nb = notebook
+    Promise.all([
+      loadNotebookContent(notebookId),
+      nb ? getNotebookFolderPath(nb).catch(() => null) : Promise.resolve(null),
+    ]).then(([raw, folderPath]) => {
       if (gone) return
+      notebookDirRef.current = folderPath
       let text  = typeof raw === 'string' ? raw : ''
       let title = notebookTitle
       const hm  = text.match(/^# (.+)\n/)
@@ -1912,33 +3897,33 @@ export default function NotebookView() {
       loadedFor.current = notebookId
     })
     return () => { gone = true }
-  }, [notebookId, notebookTitle])
+  }, [notebookId, notebookTitle]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Wikilink navigation ───────────────────────────────────────────────────
   const handleWikiNav = useCallback((title, type, id) => {
     // Always read fresh state from the store to avoid stale closures
     const s = useAppStore.getState()
-    const tabId = s.activeTabId
+    const tabId = paneTabId || s.activeTabId
     const nbs = s.notebooks || []
     const lib = s.library || []
     const sbs = s.sketchbooks || []
     const fds = s.flashcardDecks || []
     if (type === 'notebook') {
       const nb = nbs.find(n => n.id === id)
-      if (nb) { s.setActiveNotebook(nb); s.updateTab(tabId, { view: 'notebook' }); s.setView('notebook') }
+      if (nb) { s.setActiveNotebook(nb); s.updateTab(tabId, { view: 'notebook', activeNotebook: nb }); s.setView('notebook') }
       else createAndOpenItem(title, 'notebook')
     } else if (type === 'book') {
       const bk = lib.find(b => b.id === id)
       if (bk) {
         const v = bk.format === 'audiofolder' || bk.format === 'audio' ? 'audio-player' : (bk.format === 'pdf' ? 'pdf' : 'reader')
-        s.setActiveBook(bk); s.updateTab(tabId, { view: v }); s.setView(v)
+        s.setActiveBook(bk); s.updateTab(tabId, { view: v, activeBook: bk }); s.setView(v)
       }
     } else if (type === 'sketchbook') {
       const sb = sbs.find(n => n.id === id)
-      if (sb) { s.setActiveSketchbook(sb); s.updateTab(tabId, { view: 'sketchbook' }); s.setView('sketchbook') }
+      if (sb) { s.setActiveSketchbook(sb); s.updateTab(tabId, { view: 'sketchbook', activeSketchbook: sb }); s.setView('sketchbook') }
     } else if (type === 'flashcard') {
       const deck = fds.find(d => d.id === id)
-      if (deck) { s.setActiveFlashcardDeck(deck); s.updateTab(tabId, { view: 'flashcard' }); s.setView('flashcard') }
+      if (deck) { s.setActiveFlashcardDeck(deck); s.updateTab(tabId, { view: 'flashcard', activeFlashcardDeck: deck }); s.setView('flashcard') }
     } else if (type === 'new-sketch') {
       createAndOpenItem(title, 'sketchbook')
     } else if (type === 'new-flash') {
@@ -1946,33 +3931,33 @@ export default function NotebookView() {
     } else {
       createAndOpenItem(title, 'notebook')
     }
-  }, [setView]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [setView, paneTabId]) // eslint-disable-line react-hooks/exhaustive-deps
   wikiNavRef.current = handleWikiNav
 
   function createAndOpenItem(title, kind) {
     const s = useAppStore.getState()
-    const tabId = s.activeTabId
+    const tabId = paneTabId || s.activeTabId
     const now = new Date().toISOString()
     if (kind === 'sketchbook') {
       const newSb = { id: makeId('sb'), title, createdAt: now, updatedAt: now, _isSketchbook: true }
       s.addSketchbook?.(newSb)
       s.persistSketchbooks?.()
       s.setActiveSketchbook(newSb)
-      s.updateTab(tabId, { view: 'sketchbook' })
+      s.updateTab(tabId, { view: 'sketchbook', activeSketchbook: newSb })
       s.setView('sketchbook')
     } else if (kind === 'flashcard') {
       const newFd = { id: makeId('fd'), title, createdAt: now, updatedAt: now, cards: [] }
       s.addDeck?.(newFd)
       s.persistFlashcardDecks?.()
       s.setActiveFlashcardDeck(newFd)
-      s.updateTab(tabId, { view: 'flashcard' })
+      s.updateTab(tabId, { view: 'flashcard', activeFlashcardDeck: newFd })
       s.setView('flashcard')
     } else {
       const newNb = { id: makeId('nb'), title, createdAt: now, updatedAt: now, wordCount: 0 }
       s.addNotebook?.(newNb) || addNotebook(newNb)
       s.persistNotebooks?.()
       s.setActiveNotebook(newNb)
-      s.updateTab(tabId, { view: 'notebook' })
+      s.updateTab(tabId, { view: 'notebook', activeNotebook: newNb })
       s.setView('notebook')
     }
   }
@@ -1986,7 +3971,7 @@ export default function NotebookView() {
       if (dead || !editorRef.current) return
       cmMods.current = cm
       const {
-        state: { EditorState, RangeSetBuilder },
+        state: { EditorState, RangeSetBuilder, Prec },
         view: { EditorView, drawSelection, dropCursor, keymap, placeholder },
         commands: { defaultKeymap, indentWithTab, history, historyKeymap },
         language: { indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap },
@@ -2018,11 +4003,26 @@ export default function NotebookView() {
         // Math.js inline calculator — shows result after `expr=`
         ...makeMathCalcPlugin(cm),
         ...(isLive ? [
-          makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks, flashcardDecks),
+          makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks, flashcardDecks, notebookDirRef.current),
           makeCheckboxHandler(cm),
           makeWikiHandler(cm, wikiNavRef),
           makeMathClickHandler(cm),
+          makeTodoHandler(cm),
+          makeTaskHandler(cm),
+          makeLinkHandler(cm),
         ] : []),
+        // Let macOS window management shortcuts pass through to the OS.
+        // ctrl+arrow = switch spaces; fn+ctrl+arrow = window tiling (Ctrl-Home/End/PageUp/PageDown)
+        Prec.highest(keymap.of([
+          { key: 'Ctrl-ArrowLeft',  run: () => true, preventDefault: false },
+          { key: 'Ctrl-ArrowRight', run: () => true, preventDefault: false },
+          { key: 'Ctrl-ArrowUp',    run: () => true, preventDefault: false },
+          { key: 'Ctrl-ArrowDown',  run: () => true, preventDefault: false },
+          { key: 'Ctrl-Home',       run: () => true, preventDefault: false },
+          { key: 'Ctrl-End',        run: () => true, preventDefault: false },
+          { key: 'Ctrl-PageUp',     run: () => true, preventDefault: false },
+          { key: 'Ctrl-PageDown',   run: () => true, preventDefault: false },
+        ])),
         keymap.of([
           ...defaultKeymap,
           ...searchKeymap,
@@ -2042,21 +4042,59 @@ export default function NotebookView() {
         // Image drag-and-drop + paste handler
         EditorView.domEventHandlers({
           drop(e, view) {
+            // Capture ALL data transfer payloads synchronously — dataTransfer clears after event
+            const dt = e.dataTransfer
+            const uriList  = dt?.getData('text/uri-list') || ''
+            const htmlData = dt?.getData('text/html') || ''
+            const plainData = dt?.getData('text/plain') || ''
+            const safariUrl = dt?.getData('URL') || ''          // WKWebView / Safari single-URL type
+
+            // Extract a URL from any available source (in priority order)
+            const fromUri  = uriList.trim().split('\n').map(s => s.trim()).filter(s => s && !s.startsWith('#') && /^https?:\/\//i.test(s))[0] || null
+            const fromSafari = /^https?:\/\//i.test(safariUrl) ? safariUrl : null
+            const htmlSrcMatch = htmlData.match(/<img[^>]+src="(https?:\/\/[^"]+)"/i) || htmlData.match(/<img[^>]+src='(https?:\/\/[^']+)'/i)
+            const fromHtml = htmlSrcMatch ? htmlSrcMatch[1] : null
+            const fromPlain = /^https?:\/\//i.test(plainData.trim()) ? plainData.trim() : null
+            const webUrl = fromUri || fromSafari || fromHtml || fromPlain || null
+
             const files = e.dataTransfer?.files
-            if (!files?.length) return false
-            const imgFile = Array.from(files).find(f => f.type.startsWith('image/'))
-            if (!imgFile || !notebook?.id) return false
+            const imgFile = files?.length ? Array.from(files).find(f => f.type.startsWith('image/')) : null
+
+            // Nothing useful to handle
+            if (!imgFile && !webUrl) return false
             e.preventDefault()
+
             const dropPos = view.posAtCoords({ x: e.clientX, y: e.clientY }) ?? view.state.selection.main.head
-            ;(async () => {
-              const buf = new Uint8Array(await imgFile.arrayBuffer())
-              const fname = `${Date.now()}_${imgFile.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-              const relPath = await saveNotebookImage(notebook.id, fname, buf)
-              if (relPath) {
-                const md = `![${imgFile.name}](${relPath})`
-                view.dispatch({ changes: { from: dropPos, insert: md } })
+
+            if (imgFile) {
+              const name = imgFile.name || 'image'
+              // Tauri exposes .path on File objects from Finder drag-drop —
+              // let the Tauri drag-drop event handle those to avoid duplicate insertion
+              const filePath = imgFile.path
+              if (filePath || (_invoke && !webUrl)) {
+                return true // Tauri handler will insert the markdown with the correct asset URL
+              } else if (webUrl) {
+                // Web image file with no local path — use the URL
+                view.dispatch({ changes: { from: dropPos, insert: `![${name}](${webUrl})` } })
+              } else if (notebook?.id) {
+                ;(async () => {
+                  try {
+                    const buf = new Uint8Array(await imgFile.arrayBuffer())
+                    const fname = `${Date.now()}_${imgFile.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+                    const relPath = await saveNotebookImage(notebook.id, fname, buf)
+                    view.dispatch({ changes: { from: dropPos, insert: `![${name}](${relPath || name})` } })
+                  } catch {
+                    view.dispatch({ changes: { from: dropPos, insert: `![${name}](${name})` } })
+                  }
+                })()
+              } else {
+                view.dispatch({ changes: { from: dropPos, insert: `![${name}](${name})` } })
               }
-            })()
+            } else if (webUrl) {
+              // Pure URL drop (no file object) — image dragged from browser
+              const name = webUrl.split('/').pop().split('?')[0] || 'image'
+              view.dispatch({ changes: { from: dropPos, insert: `![${name}](${webUrl})` } })
+            }
             return true
           },
           paste(e, view) {
@@ -2119,13 +4157,35 @@ export default function NotebookView() {
     setSaving(true)
     await saveNotebookContent(notebook, title ? `# ${title}\n${text}` : text)
     const wc = (text.match(/\b\w+\b/g) || []).length
-    updateNotebook(notebook.id, { updatedAt: new Date().toISOString(), wordCount: wc, title: title || notebook.title })
+    // Extract earliest due date from content
+    const duRe = /::(\d{4}-\d{2}-\d{2}(?:,\d{1,2}:\d{2})?|\d{2}-\d{2}-(?:\d{4}|\d{2})(?:,\d{1,2}:\d{2})?|\d{1,2}:\d{2}|\+\d+[dh])/g
+    let dueDate = null, dm
+    while ((dm = duRe.exec(text)) !== null) {
+      const d = parseDueDate(dm[1])
+      if (d && (!dueDate || d < dueDate)) dueDate = d
+    }
+    // Extract tags ::tagname (letter-start tokens that aren't due dates)
+    const tagRe = /::([a-zA-Z][a-zA-Z0-9_-]*)/g
+    const tagSet = new Set()
+    let tm
+    while ((tm = tagRe.exec(text)) !== null) tagSet.add(tm[1].toLowerCase())
+    const tags = tagSet.size ? [...tagSet] : null
+    const newTitle = title || notebook.title
+    const patch = { updatedAt: new Date().toISOString(), wordCount: wc, dueDate: dueDate?.toISOString() || null, tags }
+    if (newTitle !== notebook.title) patch.title = newTitle
+    updateNotebook(notebook.id, patch)
     useAppStore.getState().persistNotebooks?.()
     setSaving(false); animateSave()
   }, [notebook, updateNotebook, animateSave])
 
   const scheduleSave = useCallback(text => {
     clearTimeout(saveTimer.current)
+    // Show save icon immediately so the user gets instant feedback
+    const el = document.getElementById('nb-save-icon')
+    if (el && !el.classList.contains('vis')) {
+      el.classList.remove('anim', 'closing'); void el.offsetWidth
+      el.classList.add('vis')
+    }
     saveTimer.current = setTimeout(() => doSave(text, titleRef.current), 800)
   }, [doSave])
 
@@ -2149,48 +4209,47 @@ export default function NotebookView() {
   useEffect(() => {
     if (!notebook?.id) return
     const unlisteners = []
+    let lastDropTime = 0
 
     const handleDrop = async (event) => {
+      const now = Date.now()
+      if (now - lastDropTime < 300) return
+      lastDropTime = now
       const payload = event.payload
       // Tauri 2 drag-drop payload: { paths: string[], position: {x,y} }
       const paths = payload?.paths || (Array.isArray(payload) ? payload : null)
+      const dropPos2d = payload?.position ?? null
       if (!paths?.length || !cmRef.current) return
       const IMG_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i
       for (const p of paths) {
         if (!IMG_EXT.test(p)) continue
         try {
-          let buf
-          try {
-            // Use Rust command to read file bytes — bypasses FS scope restrictions
-            const { invoke } = await import('@tauri-apps/api/core')
-            const bytes = await invoke('copy_file_bytes', { source: p })
-            buf = new Uint8Array(bytes)
-          } catch {
-            try {
-              const data = await readFile(p)
-              buf = data instanceof Uint8Array ? data : new Uint8Array(data)
-            } catch {
-              const { convertFileSrc } = await import('@tauri-apps/api/core')
-              const url = convertFileSrc(p)
-              const resp = await fetch(url)
-              buf = new Uint8Array(await resp.arrayBuffer())
-            }
-          }
           const name = p.split('/').pop().split('\\').pop()
-          const fname = `${Date.now()}_${name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-          const relPath = await saveNotebookImage(notebook.id, fname, buf)
-          if (relPath) {
-            const pos = cmRef.current.state.selection.main.head
-            const md = `![${name}](${relPath})\n`
-            cmRef.current.dispatch({ changes: { from: pos, insert: md } })
+          // Use drop coordinates if available (Finder drag-drop), else cursor position
+          let pos = cmRef.current.state.selection.main.head
+          if (dropPos2d) {
+            const fromCoords = cmRef.current.posAtCoords({ x: dropPos2d.x, y: dropPos2d.y })
+            if (fromCoords != null) pos = fromCoords
           }
+          // Copy the file into the notebook's images folder for portable storage
+          let mdPath = null
+          if (_invoke && notebook?.id) {
+            try {
+              const bytes = await _invoke('copy_file_bytes', { source: p })
+              const fname = `${Date.now()}_${name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+              mdPath = await saveNotebookImage(notebook.id, fname, new Uint8Array(bytes))
+            } catch (copyErr) { console.warn('[Gnos] copy_file_bytes failed:', copyErr) }
+          }
+          const ref = mdPath || (_convertFileSrc ? _convertFileSrc(p) : p)
+          const md = `![${name}](${ref})\n`
+          cmRef.current.dispatch({ changes: { from: pos, insert: md } })
         } catch (err) { console.warn('[Gnos] File drop error:', p, err) }
       }
     }
 
-    // Tauri 2 drag-drop events
-    listen('tauri://drag-drop', handleDrop).then(u => unlisteners.push(u))
-    listen('tauri://file-drop', handleDrop).then(u => unlisteners.push(u)).catch(() => {})
+    // Tauri 2 drag-drop event (tauri://drag-drop is the correct v2 name)
+    listen('tauri://drag-drop', handleDrop).then(u => unlisteners.push(u)).catch(() => {})
+    listen('tauri://drag', () => {}).then(u => unlisteners.push(u)).catch(() => {})
 
     return () => { unlisteners.forEach(u => u?.()) }
   }, [notebook?.id])
@@ -2324,7 +4383,7 @@ export default function NotebookView() {
     .nb-root {
       --nb-fs:   15px;
       --nb-lh:   1.8;
-      --nb-ff:   Georgia, serif;
+      --nb-ff:   'Erode', Georgia, serif;
       --nb-max:  780px;
       --nb-px:   48px;
       --nb-py:   28px;
@@ -2369,6 +4428,8 @@ export default function NotebookView() {
     /* Blank lines between paragraphs get the right rhythm */
     .nb-cm .cm-line:empty { min-height: 0.5em; }
     .nb-cm .cm-placeholder { color:var(--textDim); opacity:.45; }
+    /* Hide widget buffer gaps that show caret artifacts */
+    .cm-widgetBuffer { display: none; }
 
     /* ── Hidden syntax markers (Obsidian style — font-size:0 not replace) ── */
     .nb-live .cm-lv-hidden {
@@ -2386,22 +4447,25 @@ export default function NotebookView() {
 
     /* Headings — weight, size, rhythm identical to preview */
     .nb-live .cm-lv-h1 {
-      font-size: var(--nb-h1); font-weight: 700; line-height: 1.25;
-      font-family: var(--nb-ff); color: var(--nb-h1-color);
+      font-size: var(--nb-h1); font-weight: 600; line-height: 1.25;
+      font-family: 'Erode', Georgia, serif; color: var(--nb-h1-color);
       margin-top: 0; padding-top: 0.4em; padding-bottom: 0.1em;
+      letter-spacing: -0.3px;
     }
     .nb-live .cm-lv-h2 {
-      font-size: var(--nb-h2); font-weight: 700; line-height: 1.3;
-      font-family: var(--nb-ff); color: var(--nb-h2-color);
+      font-size: var(--nb-h2); font-weight: 600; line-height: 1.3;
+      font-family: 'Erode', Georgia, serif; color: var(--nb-h2-color);
       padding-top: 0.35em; padding-bottom: 0.1em;
+      letter-spacing: -0.2px;
     }
     .nb-live .cm-lv-h3 {
       font-size: var(--nb-h3); font-weight: 600; line-height: 1.4; color: var(--nb-h3-color);
+      font-family: 'Satoshi', 'Author', sans-serif;
       padding-top: 0.3em;
     }
-    .nb-live .cm-lv-h4 { font-size: var(--nb-h4); font-weight: 600; color: var(--nb-h4-color); }
-    .nb-live .cm-lv-h5 { font-size: var(--nb-h5); font-weight: 600; color: var(--nb-h5-color); }
-    .nb-live .cm-lv-h6 { font-size: var(--nb-h6); font-weight: 600; opacity:.65; color: var(--nb-h6-color); }
+    .nb-live .cm-lv-h4 { font-size: var(--nb-h4); font-weight: 600; color: var(--nb-h4-color); font-family: 'Satoshi', 'Author', sans-serif; }
+    .nb-live .cm-lv-h5 { font-size: var(--nb-h5); font-weight: 600; color: var(--nb-h5-color); font-family: 'Satoshi', 'Author', sans-serif; }
+    .nb-live .cm-lv-h6 { font-size: var(--nb-h6); font-weight: 600; opacity:.65; color: var(--nb-h6-color); font-family: 'Satoshi', 'Author', sans-serif; }
 
     /* Inline formats — exact match to preview */
     .nb-live .cm-lv-b  { font-weight:700; color: var(--nb-bold-color); }
@@ -2414,6 +4478,41 @@ export default function NotebookView() {
     }
     .nb-live .cm-lv-lnk { color: var(--nb-link-color); text-decoration:underline; text-underline-offset:2px; }
     .nb-live .cm-lv-hl  { background: var(--nb-hl-bg); border-radius:2px; padding:0 2px; }
+
+    /* Due-date badge */
+    .cm-due-badge {
+      display: inline-flex; align-items: center;
+      font-size: 0.7em; font-weight: 700; letter-spacing: .04em;
+      padding: 1px 7px 2px; border-radius: 6px; line-height: 1.7;
+      background: rgba(80,100,255,0.18); color: var(--accent);
+      border: 1.5px solid rgba(80,100,255,0.40); vertical-align: middle;
+      cursor: default; user-select: none; font-family: inherit;
+    }
+    .cm-due-badge.cm-due-today {
+      background: rgba(190,100,0,0.18); color: #b87000;
+      border-color: rgba(190,100,0,0.42);
+    }
+    .cm-due-badge.cm-due-overdue {
+      background: rgba(200,30,30,0.18); color: #c02020;
+      border-color: rgba(200,30,30,0.42);
+    }
+    .cm-tag-badge {
+      display: inline-flex; align-items: center;
+      font-size: 0.7em; font-weight: 600; letter-spacing: .02em;
+      padding: 1px 6px 2px; border-radius: 5px; line-height: 1.7;
+      background: var(--surfaceAlt); color: var(--textDim);
+      border: 1px solid var(--border); vertical-align: middle;
+      cursor: default; user-select: none; font-family: inherit;
+    }
+
+    .cm-time-badge {
+      display: inline-flex; align-items: center;
+      font-size: 0.7em; font-weight: 700; letter-spacing: .02em;
+      padding: 1px 6px 2px; border-radius: 5px; line-height: 1.7;
+      background: rgba(56,139,253,0.1); color: var(--accent);
+      border: 1px solid rgba(56,139,253,0.25); vertical-align: middle;
+      cursor: default; user-select: none; font-family: inherit;
+    }
 
     /* Blockquote — left border + italic + dim, matching preview */
     .nb-live .cm-lv-bq {
@@ -2507,17 +4606,488 @@ export default function NotebookView() {
     .cm-math-block:hover { background: rgba(56,139,253,.06); border-radius:4px; }
 
     /* ── Table widget in live view ── */
-    .cm-table-wrap { margin: 0.5em 0; overflow-x: auto; }
-    .cm-table-wrap table.nb-table { border-collapse:collapse; width:100%; font-size:.93em; }
-    .cm-table-wrap table.nb-table th,.cm-table-wrap table.nb-table td { border:1px solid var(--border); padding:6px 10px; }
-    .cm-table-wrap table.nb-table th { background:var(--surfaceAlt); font-weight:600; }
+    .cm-table-wrap {
+      margin: 0.6em 0; overflow-x: auto; border-radius: 8px;
+      border: 1px solid var(--border); overflow: hidden;
+    }
+    .cm-table-wrap table.nb-table {
+      border-collapse: collapse; width: 100%; font-size: .93em;
+    }
+    .cm-table-wrap table.nb-table th,
+    .cm-table-wrap table.nb-table td {
+      border: none; border-bottom: 1px solid var(--borderSubtle);
+      padding: 8px 12px; text-align: left;
+    }
+    .cm-table-wrap table.nb-table th {
+      background: var(--surfaceAlt); font-weight: 700; font-size: .88em;
+      text-transform: uppercase; letter-spacing: .03em; color: var(--textDim);
+      border-bottom: 2px solid var(--border);
+    }
+    .cm-table-wrap table.nb-table tr:last-child td { border-bottom: none; }
+    .cm-table-wrap table.nb-table tbody tr:hover td { background: var(--surfaceAlt); }
+
+    /* ── /todo block widget ── */
+    .cm-todo-block-w {
+      margin: 0.6em 0; border-radius: 10px; overflow: hidden;
+      border: 1px solid var(--border); background: var(--surface);
+    }
+    .cm-todo-hdr-w {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px 6px;
+    }
+    .cm-todo-title {
+      font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer;
+      padding: 1px 3px; border-radius: 3px; transition: background .1s;
+      font-family: 'Satoshi', 'Author', sans-serif;
+    }
+    .cm-todo-title:hover { background: rgba(128,128,128,.08); }
+    .cm-todo-title-inp {
+      background: none; border: none; outline: none; font-size: 13px;
+      font-weight: 600; color: var(--text); font-family: inherit; width: 100%;
+    }
+    .cm-todo-hdr-right { display: flex; align-items: center; gap: 6px; }
+    .cm-todo-count {
+      font-size: 10px; font-weight: 600; color: var(--textDim);
+      opacity: .7;
+    }
+    .cm-todo-progress {
+      height: 2px; background: var(--borderSubtle); overflow: hidden;
+    }
+    .cm-todo-progress-fill {
+      height: 100%; background: var(--accent); border-radius: 0 1px 1px 0;
+      transition: width .3s ease;
+    }
+    .cm-todo-progress-done { background: #3fb950; }
+    .cm-todo-row {
+      display: flex; align-items: flex-start; gap: 8px; padding: 5px 12px;
+      transition: background .08s; position: relative;
+    }
+    .cm-todo-row:hover { background: rgba(128,128,128,.04); }
+    .cm-todo-cb {
+      width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; margin-top: 2px;
+      border: 1.5px solid var(--border); cursor: pointer; display: flex;
+      align-items: center; justify-content: center;
+      transition: background .15s, border-color .15s;
+    }
+    .cm-todo-cb:hover { border-color: var(--accent); }
+    .cm-todo-cb-on {
+      background: var(--accent); border-color: var(--accent);
+    }
+    .cm-todo-text-wrap { flex: 1; min-width: 0; }
+    .cm-todo-row-text {
+      font-size: 13px; color: var(--text); line-height: 1.5; cursor: default;
+    }
+    .cm-todo-row-done .cm-todo-row-text { text-decoration: line-through; opacity: .35; color: var(--textDim); }
+    .cm-todo-edit-inp {
+      background: none; border: none; outline: none; font-size: 13px;
+      color: var(--text); font-family: inherit; width: 100%;
+    }
+    .cm-todo-meta { display: flex; gap: 4px; align-items: center; margin-top: 2px; }
+    .cm-todo-date, .cm-todo-time {
+      font-size: 9.5px; color: var(--textDim); opacity: .7;
+    }
+    .cm-todo-actions {
+      display: flex; gap: 2px; flex-shrink: 0; opacity: 0;
+      transition: opacity .12s;
+    }
+    .cm-todo-row:hover .cm-todo-actions { opacity: 1; }
+    .cm-todo-del-btn {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      font-size: 15px; line-height: 1; padding: 0 2px; border-radius: 3px;
+      transition: color .1s;
+    }
+    .cm-todo-del-btn:hover { color: #f85149; }
+    .cm-todo-add-row {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 12px 7px;
+    }
+    .cm-todo-add-btn {
+      width: 22px; height: 22px; border-radius: 5px; flex-shrink: 0;
+      background: none; border: 1.5px solid var(--border); color: var(--textDim); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: border-color .12s, color .12s;
+    }
+    .cm-todo-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .cm-todo-add-input {
+      flex: 1; background: none; border: none; outline: none;
+      font-size: 12px; color: var(--text); padding: 2px 0;
+      font-family: inherit;
+    }
+    .cm-todo-add-input::placeholder { color: var(--textDim); opacity: .4; }
+    .cm-todo-empty {
+      padding: 10px 12px; text-align: center; font-size: 11px;
+      color: var(--textDim); opacity: .5;
+    }
+
+    /* ── /task board widget (kanban) ── */
+    .cm-task-board-w {
+      margin: 0.6em 0; border-radius: 8px; overflow: hidden;
+      background: var(--surface);
+      border: 1px solid var(--borderSubtle);
+      box-shadow: 0 1px 3px rgba(0,0,0,.08);
+    }
+    .cm-task-titlebar {
+      display: flex; align-items: center; padding: 10px 14px 6px;
+    }
+    .cm-task-title-w {
+      font-size: 13px; font-weight: 600; color: var(--text);
+      font-family: 'Erode', Georgia, serif; letter-spacing: -0.1px;
+    }
+    .cm-task-cols-w {
+      display: flex; gap: 6px; padding: 0 8px 10px;
+      align-items: flex-start; overflow: hidden;
+    }
+    .cm-task-col-w {
+      flex: 1; min-width: 0; display: flex; flex-direction: column;
+      border-radius: 6px; transition: background .15s;
+      overflow: hidden; border: 1px solid var(--borderSubtle);
+    }
+    .cm-task-col-drop { outline: 2px dashed var(--accent); outline-offset: -2px; }
+    .cm-task-col-hdr-w {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 8px 5px; position: relative;
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--text);
+      font-family: 'Author', system-ui, sans-serif;
+      border-bottom: 1px solid var(--borderSubtle);
+    }
+    .cm-task-col-title { cursor: pointer; }
+    .cm-task-col-title:hover { opacity: .7; }
+    .cm-task-col-title-inp {
+      background: none; border: none; outline: none; font-size: 10px;
+      font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
+      color: var(--text); font-family: inherit; width: 100%;
+    }
+    .cm-task-col-hdr-right {
+      display: flex; align-items: center; gap: 4px;
+    }
+    .cm-task-col-w-badge {
+      font-size: 9px; background: rgba(128,128,128,.12); color: var(--textDim);
+      border-radius: 8px; padding: 1px 6px; font-weight: 500;
+    }
+    .cm-task-col-color-btn {
+      width: 12px; height: 12px; border-radius: 3px; border: 1.5px solid rgba(255,255,255,.25);
+      cursor: pointer; transition: transform .1s; flex-shrink: 0;
+    }
+    .cm-task-col-color-btn:hover { transform: scale(1.15); }
+    .cm-task-col-del {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      font-size: 14px; line-height: 1; padding: 0 2px; opacity: 0;
+      transition: opacity .1s;
+    }
+    .cm-task-col-hdr-w:hover .cm-task-col-del { opacity: .6; }
+    .cm-task-col-del:hover { color: #f85149 !important; opacity: 1 !important; }
+    .cm-task-color-picker {
+      position: absolute; top: 100%; right: 0; z-index: 20;
+      display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 6px 8px; box-shadow: 0 4px 16px rgba(0,0,0,.2);
+    }
+    .cm-task-color-swatch {
+      width: 18px; height: 18px; border-radius: 4px; cursor: pointer;
+      border: 2px solid transparent; transition: transform .1s;
+    }
+    .cm-task-color-swatch:hover { transform: scale(1.15); }
+    .cm-task-color-active { border-color: var(--text); }
+    .cm-task-cards-area { flex: 1; min-height: 24px; padding: 4px 5px 2px; }
+    .cm-task-card-w {
+      background: var(--bg); border-radius: 5px; margin-bottom: 4px;
+      border: 1px solid var(--borderSubtle);
+      font-size: 12px; color: var(--text); transition: background .12s, opacity .15s, border-color .12s;
+      cursor: grab; position: relative; overflow: hidden;
+      font-family: 'Author', system-ui, sans-serif;
+    }
+    .cm-task-card-w:hover { border-color: var(--border); }
+    .cm-task-card-dragging { opacity: .3; }
+    .cm-task-card-label {
+      height: 3px; width: 100%; border-radius: 0;
+    }
+    .cm-task-card-body {
+      display: flex; align-items: flex-start; gap: 6px; padding: 5px 8px 3px;
+    }
+    .cm-task-card-text { flex: 1; min-width: 0; line-height: 1.4; font-size: 11.5px; }
+    .cm-task-card-edit {
+      background: none; border: none; outline: none; font-size: 12px;
+      color: var(--text); font-family: inherit; width: 100%;
+    }
+    .cm-task-card-w-done .cm-task-card-text { text-decoration: line-through; opacity: .4; }
+    .cm-task-card-actions {
+      display: flex; gap: 2px; padding: 2px 8px 5px; opacity: 0;
+      transition: opacity .12s;
+    }
+    .cm-task-card-w:hover .cm-task-card-actions { opacity: 1; }
+    .cm-task-card-lbl-btn, .cm-task-card-del-btn {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      font-size: 11px; padding: 2px 4px; border-radius: 4px; display: flex;
+      align-items: center; justify-content: center;
+    }
+    .cm-task-card-lbl-btn:hover, .cm-task-card-del-btn:hover {
+      background: var(--surfaceAlt); color: var(--text);
+    }
+    .cm-task-card-del-btn { font-size: 14px; }
+    .cm-task-label-picker {
+      position: absolute; bottom: 100%; left: 8px; z-index: 20;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 4px 0; box-shadow: 0 4px 16px rgba(0,0,0,.15);
+      min-width: 110px;
+    }
+    .cm-task-label-opt {
+      padding: 4px 10px; font-size: 11px; cursor: pointer; color: var(--text);
+      transition: background .08s;
+    }
+    .cm-task-label-opt:hover { background: var(--surfaceAlt); }
+    .cm-task-label-active { font-weight: 700; }
+    .cm-task-add-row { padding: 3px 5px 6px; }
+    .cm-task-add-input {
+      width: 100%; background: transparent; border: 1px dashed var(--borderSubtle);
+      border-radius: 5px; outline: none; font-size: 11px; color: var(--text);
+      padding: 5px 8px; font-family: 'Author', system-ui, sans-serif; box-sizing: border-box;
+      transition: border-color .15s, background .15s;
+    }
+    .cm-task-add-input:focus { border-color: var(--accent); border-style: solid; background: var(--bg); }
+    .cm-task-add-input::placeholder { color: var(--textDim); opacity: .4; }
+    .cm-task-add-col {
+      min-width: 36px; max-width: 36px; display: flex; align-items: flex-start;
+      justify-content: center; padding-top: 6px; flex-shrink: 0;
+      position: relative;
+    }
+    .cm-task-add-col-btn {
+      background: transparent; border: 1px dashed var(--borderSubtle); border-radius: 6px;
+      color: var(--textDim); font-size: 16px; cursor: pointer; padding: 6px 0;
+      transition: color .1s, background .1s, border-color .1s; width: 100%;
+    }
+    .cm-task-add-col-btn:hover { color: var(--text); background: var(--surfaceAlt); border-color: var(--border); }
+    .cm-task-add-col-input {
+      width: 140px; background: var(--surface); border: 1px solid var(--accent);
+      border-radius: 8px; outline: none; font-size: 12px; color: var(--text);
+      padding: 8px 10px; font-family: inherit; box-sizing: border-box;
+      position: absolute; right: 0; top: 8px; z-index: 10;
+    }
+
+    /* ── Timer widget ── */
+    .cm-timer-widget {
+      margin: 0.6em 0; padding: 10px 14px; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--surface);
+      display: flex; flex-direction: column; gap: 4px; max-width: 320px;
+    }
+    .cm-timer-label { font-size: 11px; font-weight: 600; color: var(--textDim); letter-spacing: .03em; }
+    .cm-timer-row { display: flex; align-items: center; gap: 8px; }
+    .cm-timer-time {
+      font-size: 22px; font-weight: 700; color: var(--text);
+      font-variant-numeric: tabular-nums; cursor: pointer; flex: 1;
+    }
+    .cm-timer-time.cm-timer-done { color: var(--accent); }
+    .cm-timer-btn {
+      background: none; border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); cursor: pointer; width: 30px; height: 30px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; transition: background .1s;
+    }
+    .cm-timer-btn:hover { background: var(--surfaceAlt); }
+    .cm-timer-start { width: auto; padding: 0 14px; font-size: 12px; font-weight: 600; }
+    .cm-timer-bar {
+      height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; margin-top: 2px;
+    }
+    .cm-timer-fill {
+      height: 100%; border-radius: 2px; background: var(--accent);
+      transition: width 1s linear;
+    }
+    .cm-timer-setup { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .cm-timer-input {
+      background: none; border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-size: 13px; padding: 6px 10px; outline: none;
+      font-family: inherit; width: 90px;
+    }
+    .cm-timer-label-inp { width: 140px; }
+    .cm-timer-input:focus { border-color: var(--accent); }
+    .cm-timer-edit-input {
+      background: none; border: none; outline: none;
+      font-size: 22px; font-weight: 700; color: var(--text);
+      font-variant-numeric: tabular-nums; width: 120px; font-family: inherit;
+    }
+
+    /* ── Calendar widget ── */
+    .cm-calendar-widget {
+      margin: 0.6em 0; border-radius: 10px; border: 1px solid var(--border);
+      background: var(--surface); padding: 12px; width: 100%; box-sizing: border-box;
+    }
+
+    /* ── Calendar topbar & mode toggle ── */
+    .cm-cal-topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 6px;
+    }
+    .cm-cal-main-title {
+      font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer;
+      padding: 2px 4px; border-radius: 3px; transition: background .1s;
+      font-family: 'Satoshi', 'Author', sans-serif;
+    }
+    .cm-cal-main-title:hover { background: rgba(128,128,128,.08); }
+    .cm-cal-title-input {
+      background: none; border: none; outline: none;
+      font-size: 13px; font-weight: 600; color: var(--text);
+      font-family: inherit; width: 100%;
+    }
+    .cm-cal-mode-bar {
+      display: flex; gap: 1px; background: var(--borderSubtle); border-radius: 5px; padding: 1px;
+    }
+    .cm-cal-mode-btn {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px;
+      transition: background .1s, color .1s;
+    }
+    .cm-cal-mode-btn:hover { color: var(--text); }
+    .cm-cal-mode-active { background: var(--surface); color: var(--text); }
+
+    /* ── Calendar nav ── */
+    .cm-cal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .cm-cal-nav {
+      background: none; border: none; border-radius: 4px;
+      color: var(--textDim); cursor: pointer; width: 24px; height: 24px;
+      display: flex; align-items: center; justify-content: center; font-size: 16px;
+      transition: background .1s, color .1s;
+    }
+    .cm-cal-nav:hover { background: var(--surfaceAlt); color: var(--text); }
+    .cm-cal-month {
+      font-size: 12px; font-weight: 600; color: var(--text);
+      font-family: 'Satoshi', 'Author', sans-serif;
+    }
+
+    /* ── Calendar month grid ── */
+    .cm-cal-grid {
+      display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px;
+      background: var(--borderSubtle); border-radius: 6px; overflow: hidden;
+      border: 1px solid var(--borderSubtle);
+    }
+    .cm-cal-day-hdr {
+      font-size: 9px; font-weight: 700; color: var(--textDim); text-align: center;
+      padding: 5px 0; text-transform: uppercase; letter-spacing: .08em;
+      background: var(--surface);
+    }
+    .cm-cal-blank { min-height: 72px; background: var(--surface); }
+    .cm-cal-day {
+      text-align: left; padding: 4px 5px; font-size: 11px;
+      color: var(--text); cursor: pointer; transition: background .1s;
+      position: relative; min-height: 72px; background: var(--surface);
+    }
+    .cm-cal-day:hover { background: var(--surfaceAlt); }
+    .cm-cal-today { color: var(--accent); }
+    .cm-cal-today > span:first-child {
+      background: var(--accent); color: #fff; border-radius: 50%; width: 20px; height: 20px;
+      display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700;
+    }
+    .cm-cal-selected { background: rgba(56,139,253,0.06) !important; }
+    .cm-cal-has-event::after {
+      content: ''; position: absolute; top: 5px; right: 5px;
+      width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
+    }
+
+    /* ── Month view day event labels ── */
+    .cm-cal-day-evt {
+      font-size: 9px; color: var(--text); white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis; margin-top: 2px; line-height: 1.2;
+      background: rgba(56,139,253,.08); border-radius: 2px; padding: 1px 3px;
+      border-left: 2px solid var(--accent);
+    }
+
+    /* ── Calendar event panel (month view selected day) ── */
+    .cm-cal-event-panel {
+      margin-top: 8px; padding: 8px 10px; background: var(--surfaceAlt);
+      border-radius: 6px; max-height: 400px; overflow-y: auto;
+    }
+    .cm-cal-event-panel-hdr {
+      font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 4px;
+      font-family: 'Satoshi', 'Author', sans-serif;
+    }
+
+    /* ── Calendar event rows (shared across views) ── */
+    .cm-cal-evt-row {
+      display: flex; align-items: center; gap: 5px; padding: 2px 4px;
+      border-radius: 3px; transition: background .1s;
+    }
+    .cm-cal-evt-row:hover { background: rgba(128,128,128,.06); }
+    .cm-cal-evt-row:hover .cm-todo-del { opacity: 1; }
+    .cm-cal-evt-dot {
+      width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex-shrink: 0;
+    }
+    .cm-cal-evt-text { font-size: 11px; color: var(--text); flex: 1; min-width: 0; }
+    .cm-cal-evt-add {
+      width: 100%; background: none; border: none; border-bottom: 1px solid var(--borderSubtle);
+      padding: 4px 2px; font-size: 11px; color: var(--text); font-family: inherit;
+      outline: none; margin-top: 3px; transition: border-color .15s;
+    }
+    .cm-cal-evt-add:focus { border-color: var(--accent); }
+    .cm-cal-evt-add::placeholder { color: var(--textDim); opacity: .4; }
+
+    /* ── 24-hour time grid (shared by day/week/expanded month) ── */
+    .cm-cal-time-grid {
+      max-height: 360px; overflow-y: auto;
+    }
+    .cm-cal-time-row {
+      display: flex; min-height: 28px; border-bottom: 1px solid var(--borderSubtle);
+    }
+    .cm-cal-time-label {
+      width: 48px; flex-shrink: 0; font-size: 9px; color: var(--textDim);
+      text-align: right; padding: 2px 6px 0 0; font-weight: 500;
+      font-family: 'Author', system-ui, sans-serif;
+    }
+    .cm-cal-time-slot {
+      flex: 1; min-height: 28px; cursor: pointer; padding: 1px 4px;
+      transition: background .1s; position: relative;
+    }
+    .cm-cal-time-slot:hover { background: rgba(56,139,253,.04); }
+    .cm-cal-time-evt {
+      font-size: 10px; color: var(--text); background: rgba(56,139,253,.1);
+      border-left: 2px solid var(--accent); border-radius: 2px;
+      padding: 1px 6px; margin: 1px 0; display: flex; align-items: center; gap: 4px;
+    }
+    .cm-cal-time-evt .cm-todo-del { margin-left: auto; }
+    .cm-cal-time-add {
+      width: 100%; background: none; border: none; border-bottom: 1px solid var(--accent);
+      padding: 2px 2px; font-size: 10px; color: var(--text); font-family: inherit;
+      outline: none;
+    }
+    .cm-cal-time-add::placeholder { color: var(--textDim); opacity: .4; }
+
+    /* ── Week view (time-grid version) ── */
+    .cm-cal-week-hdr-row {
+      display: flex; border-bottom: 1px solid var(--border);
+    }
+    .cm-cal-week-time-gutter {
+      width: 48px; flex-shrink: 0;
+    }
+    .cm-cal-week-col-hdr {
+      flex: 1; text-align: center; font-size: 9px; font-weight: 600;
+      color: var(--textDim); text-transform: uppercase; letter-spacing: .05em;
+      padding: 4px 0; font-family: 'Author', system-ui, sans-serif;
+    }
+    .cm-cal-week-col-hdr.cm-cal-week-today { color: var(--accent); }
+    .cm-cal-week-body {
+      max-height: 360px; overflow-y: auto;
+    }
+    .cm-cal-week-time-row {
+      display: flex; min-height: 28px; border-bottom: 1px solid var(--borderSubtle);
+    }
+    .cm-cal-week-cell {
+      flex: 1; min-height: 28px; cursor: pointer; padding: 1px 2px;
+      border-left: 1px solid var(--borderSubtle);
+      transition: background .1s; position: relative;
+    }
+    .cm-cal-week-cell:hover { background: rgba(56,139,253,.04); }
+
+    /* ── Day view ── */
+    .cm-cal-day-panel {
+      background: var(--surfaceAlt); border-radius: 6px; padding: 4px 0;
+    }
 
     /* ── Wiki dropdown rendered by React (positioned fixed) ── */
 
     /* ── Live list items ── */
     .nb-live .cm-lv-li { position: relative; }
     .cm-list-marker {
-      display: inline; color: var(--textDim); margin-right: 0.2em;
+      display: inline-block; color: var(--textDim); min-width: 0.7em; margin-right: 0;
     }
     .cm-list-marker-ord { font-weight: 600; color: var(--text); opacity: 0.6; }
 
@@ -2535,12 +5105,12 @@ export default function NotebookView() {
       box-sizing: border-box;
     }
     /* Headings — match live exactly */
-    .nb-prev h1 { font-size:var(--nb-h1); font-weight:700; margin:1.15em 0 .45em; font-family:var(--nb-ff); color:var(--nb-h1-color); line-height:1.25; }
-    .nb-prev h2 { font-size:var(--nb-h2); font-weight:700; margin:1.1em 0 .4em;  font-family:var(--nb-ff); color:var(--nb-h2-color); line-height:1.3; }
-    .nb-prev h3 { font-size:var(--nb-h3); font-weight:600; margin:1em 0 .35em;   color:var(--nb-h3-color); line-height:1.4; }
-    .nb-prev h4 { font-size:var(--nb-h4); font-weight:600; margin:.9em 0 .3em;   color:var(--nb-h4-color); }
-    .nb-prev h5 { font-size:var(--nb-h5); font-weight:600; margin:.85em 0 .25em; color:var(--nb-h5-color); }
-    .nb-prev h6 { font-size:var(--nb-h6); font-weight:600; margin:.8em 0 .25em;  color:var(--nb-h6-color); opacity:.65; }
+    .nb-prev h1 { font-size:var(--nb-h1); font-weight:600; margin:1.15em 0 .45em; font-family:'Erode',Georgia,serif; color:var(--nb-h1-color); line-height:1.25; letter-spacing:-0.3px; }
+    .nb-prev h2 { font-size:var(--nb-h2); font-weight:600; margin:1.1em 0 .4em;  font-family:'Erode',Georgia,serif; color:var(--nb-h2-color); line-height:1.3; letter-spacing:-0.2px; }
+    .nb-prev h3 { font-size:var(--nb-h3); font-weight:600; margin:1em 0 .35em;   font-family:'Satoshi','Author',sans-serif; color:var(--nb-h3-color); line-height:1.4; }
+    .nb-prev h4 { font-size:var(--nb-h4); font-weight:600; margin:.9em 0 .3em;   font-family:'Satoshi','Author',sans-serif; color:var(--nb-h4-color); }
+    .nb-prev h5 { font-size:var(--nb-h5); font-weight:600; margin:.85em 0 .25em; font-family:'Satoshi','Author',sans-serif; color:var(--nb-h5-color); }
+    .nb-prev h6 { font-size:var(--nb-h6); font-weight:600; margin:.8em 0 .25em;  font-family:'Satoshi','Author',sans-serif; color:var(--nb-h6-color); opacity:.65; }
     .nb-prev p  { margin: 0 0 var(--nb-para-gap); }
     .nb-prev blockquote {
       border-left: 3px solid var(--nb-quote-border); margin: .8em 0; padding: 8px 14px;
@@ -2553,7 +5123,7 @@ export default function NotebookView() {
     .nb-prev table.nb-table { border-collapse:collapse; width:100%; margin:.8em 0; font-size:.93em; }
     .nb-prev table.nb-table th,.nb-prev table.nb-table td { border:1px solid var(--border); padding:6px 10px; }
     .nb-prev table.nb-table th { background:var(--surfaceAlt); font-weight:600; }
-    .nb-prev ul,.nb-prev ol { margin:0 0 .75em; padding-left:1.8em; }
+    .nb-prev ul,.nb-prev ol { margin:0 0 .75em; padding-left:1.6em; list-style-position: outside; }
     .nb-prev li { margin-bottom:.25em; }
     .nb-prev ul ul,.nb-prev ol ol,.nb-prev ul ol,.nb-prev ol ul { margin:.2em 0; padding-left:1.4em; }
     .nb-prev ul.nb-tl { list-style:none; padding-left:.4em; }
@@ -2586,11 +5156,37 @@ export default function NotebookView() {
     .nb-math { display:inline-block; }
     .nb-math-block { display:block; text-align:center; margin:1em 0; overflow-x:auto; }
     .nb-math-mq .mq-root-block { color: var(--text) !important; }
+    /* Preview-mode calendar block */
+    .cm-cal-prev-block { border: 1px solid var(--borderSubtle); border-radius: 8px; overflow: hidden; margin: .6em 0; }
+    .cm-cal-prev-title { font-size: 11px; font-weight: 600; padding: 6px 10px; background: var(--surface); color: var(--text); border-bottom: 1px solid var(--borderSubtle); font-family: 'Erode',Georgia,serif; }
+    .cm-cal-prev-day { display: flex; align-items: baseline; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--borderSubtle); flex-wrap: wrap; }
+    .cm-cal-prev-day:last-child { border-bottom: none; }
+    .cm-cal-prev-date { font-size: 10px; font-weight: 600; color: var(--textDim); min-width: 80px; font-family: 'Author',system-ui,sans-serif; }
+    .cm-cal-prev-evt { font-size: 11px; color: var(--text); background: rgba(56,139,253,.08); border-left: 2px solid var(--accent); border-radius: 2px; padding: 1px 6px; }
+    /* Preview-mode timer block */
+    .cm-timer-prev { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid var(--borderSubtle); border-radius: 8px; margin: .4em 0; background: var(--surfaceAlt); }
+    .cm-timer-prev-time { font-size: 18px; font-weight: 600; color: var(--text); font-family: 'Satoshi','Author',sans-serif; font-variant-numeric: tabular-nums; }
+    .cm-timer-prev-label { font-size: 11px; color: var(--textDim); }
     .nb-fn-ref sup { font-size:.75em; }
     .nb-fn-ref a { color:var(--accent); text-decoration:none; }
     .nb-fn-def { font-size:12px; color:var(--textDim); padding:4px 0; border-top:1px solid var(--borderSubtle); margin-top:8px; }
     .nb-fn-back { color:var(--accent); text-decoration:none; margin-left:4px; }
     .nb-fns { margin-top:2em; }
+    /* Definition lists */
+    .nb-dl { margin: 0 0 .75em; padding: 0; }
+    .nb-dt { font-weight: 600; color: var(--text); margin-top: .6em; font-family: 'Satoshi','Author',sans-serif; letter-spacing: .01em; }
+    .nb-dd { margin-left: 1.6em; color: var(--textDim); margin-bottom: .25em; padding-left: .4em; border-left: 2px solid var(--borderSubtle); }
+    /* Live view definition list line classes */
+    .nb-live .cm-lv-dt { font-weight: 600; color: var(--text); font-family: 'Satoshi','Author',sans-serif; margin-top: .5em; }
+    .nb-live .cm-lv-dd { padding-left: 1.6em; color: var(--textDim); border-left: 2px solid var(--borderSubtle); }
+    .nb-live .cm-lv-fn-def { font-size: .88em; color: var(--textDim); border-top: 1px solid var(--borderSubtle); padding-top: 2px; }
+    /* Footnote ref widget in live mode */
+    .cm-fn-ref-widget {
+      font-size: .72em; vertical-align: super; color: var(--accent);
+      background: rgba(56,139,253,.08); border-radius: 3px;
+      padding: 0 3px; cursor: default; font-weight: 600;
+      font-family: 'Author', system-ui, sans-serif;
+    }
     mark.nb-fhl { background:rgba(210,153,34,.4); border-radius:2px; padding:0 1px; }
     /* ── Ghost hint ─────────────────────────────────────── */
     .cm-ghost-hint {
@@ -2609,8 +5205,8 @@ export default function NotebookView() {
     .nb2-fc:hover { opacity:1; }
 
     /* ── Save indicator animation ──────────────────────── */
-    .nb-save-indicator { display:flex; align-items:center; opacity:1; transition:opacity .3s; }
-    .nb-save-icon { width:18px; height:18px; color:var(--accent); }
+    .nb-save-indicator { display:flex; align-items:center; }
+    .nb-save-icon { width:18px; height:18px; color:var(--accent); opacity:0; transition:opacity 0.2s; }
     .nb-save-icon.vis { opacity:1; }
     .nb-save-ring { stroke-dasharray:47; stroke-dashoffset:47; transition:stroke-dashoffset 0s; }
     .nb-save-icon.anim .nb-save-ring { stroke-dashoffset:0; transition:stroke-dashoffset 0.3s ease; }
@@ -2618,6 +5214,7 @@ export default function NotebookView() {
     .nb-save-icon.anim .nb-save-check { stroke-dashoffset:0; transition:stroke-dashoffset 0.15s ease 0.25s; }
     .nb-save-icon.closing .nb-save-check { stroke-dashoffset:12; transition:stroke-dashoffset 0.15s ease; }
     .nb-save-icon.closing .nb-save-ring { stroke-dashoffset:47; transition:stroke-dashoffset 0.3s ease 0.1s; }
+    .nb-save-icon.closing { opacity:0; transition:opacity 0.35s 0.25s; }
   `
 
 
@@ -2756,7 +5353,7 @@ export default function NotebookView() {
         {/* Far right: view mode + settings */}
         <div style={{ display:'flex', alignItems:'center', gap:6, flex:'0 0 auto' }}>
           <ViewModeBtn viewMode={viewMode} setViewMode={switchMode} />
-          <button onClick={() => setEditModal(true)} title="Syntax reference"
+          <button onClick={() => setEditModal(true)} title="Notebook settings"
             style={{ background:'none', border:'1px solid var(--border)', borderRadius:6, color:'var(--textDim)', cursor:'pointer', width:30, height:30, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
               <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.4"/>
@@ -2782,7 +5379,7 @@ export default function NotebookView() {
             dangerouslySetInnerHTML={{ __html: previewHtml }} />
         </div>
       ) : (
-        <div style={{ flex:1, overflow:'auto', display:'flex', flexDirection:'column', position:'relative', background:'var(--readerBg,var(--bg))' }}>
+        <div style={{ flex:1, overflow:'hidden', display:'flex', flexDirection:'column', position:'relative', background:'var(--readerBg,var(--bg))' }}>
           {/* Title input — same padding as CM content area */}
           <div style={{ maxWidth:780, margin:'0 auto', width:'100%', padding:'24px 48px 0', boxSizing:'border-box' }}>
             <input value={noteTitle}
@@ -2867,13 +5464,105 @@ export default function NotebookView() {
         </div>
       )}
 
-      {editModal && <SyntaxPanel onClose={() => setEditModal(false)} />}
+      {editModal && <NotebookSettingsPanel notebook={notebook} notebooks={notebooks} onClose={() => setEditModal(false)} />}
     </div>
   )
 }
 
-// ─── Syntax reference panel ───────────────────────────────────────────────────
-function SyntaxPanel({ onClose }) {
+// ─── Notebook settings panel (Syntax + Backlinks tabs) ───────────────────────
+function NotebookSettingsPanel({ notebook, notebooks, onClose }) {
+  const [tab, setTab] = useState('syntax')
+  const [blView, setBlView] = useState('list') // 'list' | 'graph'
+  const [backlinks, setBacklinks] = useState(null) // null = loading, [] = none
+  const [forwardsLinks, setForwardsLinks] = useState(null) // null = loading, [] = none
+  const [tagSearch, setTagSearch] = useState('')
+  const [tagResults, setTagResults] = useState(null) // null = idle, [] = no matches
+  const title = notebook?.title || ''
+
+  useEffect(() => {
+    if (tab !== 'backlinks' || backlinks !== null) return
+    let gone = false
+    ;(async () => {
+      const { loadNotebookContent } = await import('@/lib/storage')
+      const refs = []
+      for (const nb of (notebooks || [])) {
+        if (nb.id === notebook?.id) continue
+        try {
+          const content = await loadNotebookContent(nb.id)
+          const pattern = new RegExp(`\\[\\[${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\|[^\\]]*)?\\]\\]`, 'i')
+          if (pattern.test(content || '')) refs.push(nb)
+        } catch { /* skip */ }
+      }
+      if (!gone) setBacklinks(refs)
+    })()
+    return () => { gone = true }
+  }, [tab, backlinks, notebooks, notebook, title])
+
+  // Scan current notebook's content for outgoing [[wikilinks]]
+  useEffect(() => {
+    if (tab !== 'backlinks' || forwardsLinks !== null || !notebook?.id) return
+    let gone = false
+    ;(async () => {
+      const { loadNotebookContent } = await import('@/lib/storage')
+      try {
+        const content = await loadNotebookContent(notebook.id)
+        const wikiRe = /\[\[([^\]|]+)(?:\|[^\]]*)?\]\]/g
+        const seen = new Set()
+        const fwd = []
+        let m
+        while ((m = wikiRe.exec(content || '')) !== null) {
+          const linkedTitle = m[1].trim()
+          if (seen.has(linkedTitle)) continue
+          seen.add(linkedTitle)
+          const found = (notebooks || []).find(n => n.title?.toLowerCase() === linkedTitle.toLowerCase() && n.id !== notebook.id)
+          if (found) fwd.push(found)
+        }
+        if (!gone) setForwardsLinks(fwd)
+      } catch { if (!gone) setForwardsLinks([]) }
+    })()
+    return () => { gone = true }
+  }, [tab, forwardsLinks, notebook, notebooks])
+
+  useEffect(() => {
+    const raw = tagSearch.replace(/^::/, '').trim().toLowerCase()
+    if (!raw) { setTagResults(null); return }
+    const now = new Date()
+    const todayStr = now.toDateString()
+    if (raw === 'today') {
+      const matches = (notebooks || [])
+        .filter(nb => nb.id !== notebook?.id && nb.dueDate && new Date(nb.dueDate).toDateString() === todayStr)
+        .map(nb => ({ nb, dueLabel: new Date(nb.dueDate).toLocaleDateString('en-US', { month:'short', day:'numeric' }), dueState: 'today' }))
+      setTagResults(matches); return
+    }
+    if (raw === 'overdue') {
+      const matches = (notebooks || [])
+        .filter(nb => nb.id !== notebook?.id && nb.dueDate && new Date(nb.dueDate) < now)
+        .map(nb => ({ nb, dueLabel: new Date(nb.dueDate).toLocaleDateString('en-US', { month:'short', day:'numeric' }), dueState: 'overdue' }))
+      setTagResults(matches); return
+    }
+    let gone = false
+    setTagResults(null)
+    ;(async () => {
+      const { loadNotebookContent } = await import('@/lib/storage')
+      const tagRe = /::([a-zA-Z][a-zA-Z0-9_-]*)/g
+      const matches = []
+      for (const nb of (notebooks || [])) {
+        if (nb.id === notebook?.id) continue
+        try {
+          const content = await loadNotebookContent(nb.id)
+          tagRe.lastIndex = 0
+          const tags = new Set()
+          let m
+          while ((m = tagRe.exec(content || '')) !== null) tags.add(m[1].toLowerCase())
+          const hit = [...tags].filter(t => t.includes(raw))
+          if (hit.length) matches.push({ nb, tags: hit })
+        } catch { /* skip */ }
+      }
+      if (!gone) setTagResults(matches)
+    })()
+    return () => { gone = true }
+  }, [tagSearch, notebooks, notebook])
+
   const SECS = [
     { title:'Inline Formatting', rows:[
       {k:'**bold**',d:'Bold'},{k:'*italic*',d:'Italic'},
@@ -2892,6 +5581,10 @@ function SyntaxPanel({ onClose }) {
       {k:'  - nested',d:'Nested list (2 spaces)'},{k:'- [ ] task',d:'Task item'},
       {k:'- [x] done',d:'Checked task (clickable)'},{k:'```lang',d:'Code block'},
       {k:'---',d:'Horizontal rule'},{k:'| a | b |',d:'Table'},
+      {k:'/todo or /todo:Name',d:'Interactive todo list'},
+      {k:'/task or /task:Title',d:'Kanban board'},
+      {k:'/timer mm:ss or hh:mm:ss',d:'Countdown timer with progress bar'},
+      {k:'/calendar',d:'Interactive inline calendar'},
       {k:'[^1]: note',d:'Footnote definition'},
       {k:'$math$',d:'Inline math (MathQuill — click to edit)'},
       {k:'$$\nmath\n$$',d:'Math block (MathQuill — click to edit)'},
@@ -2901,6 +5594,17 @@ function SyntaxPanel({ onClose }) {
       {k:'Type [[',d:'Dropdown — up to 4 suggestions'},
       {k:'Click link',d:'Opens; creates missing notes'},
     ]},
+    { title:'Tags & Dates', rows:[
+      {k:'::meeting',d:'Tag — renders as a #meeting badge; searchable in library'},
+      {k:'::important',d:'Another tag example — use any word after ::'},
+      {k:'::2026-03-18',d:'Due date (year-month-day)'},
+      {k:'::18-03-2026',d:'Due date (day-month-year)'},
+      {k:'::18-03-26',d:'Due date (day-month-2-digit year)'},
+      {k:'::18-03-2026,14:30',d:'Due date + time (2:30 PM = 14:30)'},
+      {k:'::14:30',d:'Due today at 14:30'},
+      {k:'::+2d',d:'Due in 2 days from now'},
+      {k:'::+3h',d:'Due in 3 hours from now'},
+    ]},
     { title:'Auto-wrap Pairs', rows:[
       {k:'Select text → type **',d:'Wraps selection with **…**'},
       {k:'Select text → type *',d:'Wraps selection with *…*'},
@@ -2909,6 +5613,13 @@ function SyntaxPanel({ onClose }) {
       {k:'Select text → type ==',d:'Wraps selection with ==…=='},
       {k:'Select text → type $',d:'Wraps selection with $…$'},
     ]},
+    { title:'Inline Math', rows:[
+      {k:'2+2 =',d:'Shows answer as ghost hint — press Tab to accept'},
+      {k:'2*32.12321 =:.2',d:'Round result to 2 decimals → 64.25'},
+      {k:'5 km to miles =',d:'Unit conversion via math.js'},
+      {k:'@14:30',d:'Time reference (24h format)'},
+      {k:'@2:30pm',d:'Time reference (12h format)'},
+    ]},
     { title:'Shortcuts', rows:[
       {k:'Ctrl+B',d:'Bold'},{k:'Ctrl+I',d:'Italic'},{k:'Ctrl+K',d:'Link'},
       {k:'Ctrl+E',d:'Code'},{k:'Ctrl+Shift+H',d:'Highlight'},
@@ -2916,26 +5627,242 @@ function SyntaxPanel({ onClose }) {
       {k:'Tab',d:'Indent list'},{k:'Enter',d:'Smart list continue'},
     ]},
   ]
+
+  // Tree graph: backlinks feed INTO the current note (arrows pointing right → current)
+  // forwards links branch OUT from the current note (arrows pointing right → linked)
+  function ConnectionsTree({ backlinks: bls, forwardsLinks: fwds }) {
+    const loading = bls === null || fwds === null
+    if (loading) return (
+      <div style={{ display:'flex', alignItems:'center', gap:8, color:'var(--textDim)', fontSize:12, padding:'8px 0' }}>
+        <div className="spinner" /><span>Scanning…</span>
+      </div>
+    )
+    const hasBls = bls?.length > 0
+    const hasFwds = fwds?.length > 0
+    if (!hasBls && !hasFwds) return (
+      <div style={{ color:'var(--textDim)', fontSize:13, padding:'12px 0', textAlign:'center' }}>No connections found.</div>
+    )
+
+    const NODE_W = 110, NODE_H = 28, GAP_Y = 10, COL_GAP = 70
+    const CENTER_X = 160, CENTER_Y_BASE = 20
+
+    // Layout backlink nodes on the left, forwards on the right
+    const blNodes = (bls || []).map((nb, i) => ({ nb, x: CENTER_X - COL_GAP - NODE_W, y: CENTER_Y_BASE + i * (NODE_H + GAP_Y) }))
+    const fwNodes = (fwds || []).map((nb, i) => ({ nb, x: CENTER_X + COL_GAP, y: CENTER_Y_BASE + i * (NODE_H + GAP_Y) }))
+
+    const allRows = Math.max(blNodes.length, fwNodes.length, 1)
+    const centerY = CENTER_Y_BASE + ((allRows - 1) * (NODE_H + GAP_Y)) / 2
+    const svgH = CENTER_Y_BASE * 2 + allRows * (NODE_H + GAP_Y)
+    const svgW = CENTER_X * 2 + COL_GAP + NODE_W
+
+    function nodeLabel(nb) {
+      const t = nb.title || 'Untitled'
+      return t.length > 13 ? t.slice(0, 12) + '…' : t
+    }
+
+    function ArrowLine({ x1, y1, x2, y2 }) {
+      const dx = x2 - x1, dy = y2 - y1
+      const len = Math.sqrt(dx * dx + dy * dy)
+      const ux = dx / len, uy = dy / len
+      const AH = 7
+      const ax = x2 - ux * AH, ay = y2 - uy * AH
+      const perp = { x: -uy * 3, y: ux * 3 }
+      return (
+        <g>
+          <line x1={x1} y1={y1} x2={ax} y2={ay} stroke="var(--border)" strokeWidth="1.4" />
+          <polygon points={`${x2},${y2} ${ax + perp.x},${ay + perp.y} ${ax - perp.x},${ay - perp.y}`} fill="var(--border)" />
+        </g>
+      )
+    }
+
+    function NoteBox({ x, y, nb, accent }) {
+      return (
+        <g>
+          <rect x={x} y={y} width={NODE_W} height={NODE_H} rx={6} fill={accent ? 'var(--accent)' : 'var(--surfaceAlt)'} stroke={accent ? 'var(--accent)' : 'var(--border)'} strokeWidth="1.2" />
+          <text x={x + NODE_W / 2} y={y + NODE_H / 2 + 1} textAnchor="middle" dominantBaseline="middle" fontSize={9} fill={accent ? '#fff' : 'var(--text)'} fontWeight={accent ? 700 : 500}>
+            {nodeLabel(nb)}
+          </text>
+        </g>
+      )
+    }
+
+    return (
+      <svg width="100%" viewBox={`0 0 ${svgW} ${svgH}`} style={{ maxHeight: Math.min(svgH, 320), overflow: 'visible' }}>
+        {/* Backlink arrows: from right-edge of bl node → left-edge of center */}
+        {blNodes.map(({ nb, x, y }) => (
+          <ArrowLine key={nb.id}
+            x1={x + NODE_W} y1={y + NODE_H / 2}
+            x2={CENTER_X} y2={centerY + NODE_H / 2}
+          />
+        ))}
+        {/* Forwards arrows: from right-edge of center → left-edge of fwd node */}
+        {fwNodes.map(({ nb, x, y }) => (
+          <ArrowLine key={nb.id}
+            x1={CENTER_X + NODE_W} y1={centerY + NODE_H / 2}
+            x2={x} y2={y + NODE_H / 2}
+          />
+        ))}
+        {/* Backlink nodes */}
+        {blNodes.map(({ nb, x, y }) => <NoteBox key={nb.id} x={x} y={y} nb={nb} />)}
+        {/* Center node */}
+        <NoteBox x={CENTER_X} y={centerY} nb={{ title }} accent />
+        {/* Forwards link nodes */}
+        {fwNodes.map(({ nb, x, y }) => <NoteBox key={nb.id} x={x} y={y} nb={nb} />)}
+        {/* Legend */}
+        {hasBls && <text x={blNodes[0].x + NODE_W / 2} y={CENTER_Y_BASE - 8} textAnchor="middle" fontSize={8} fill="var(--textDim)" opacity={0.7}>links here</text>}
+        {hasFwds && <text x={fwNodes[0].x + NODE_W / 2} y={CENTER_Y_BASE - 8} textAnchor="middle" fontSize={8} fill="var(--textDim)" opacity={0.7}>linked from here</text>}
+      </svg>
+    )
+  }
+
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.55)', zIndex:10000, display:'flex', alignItems:'center', justifyContent:'center' }} onClick={onClose}>
-      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:14, width:620, maxWidth:'94vw', maxHeight:'70vh', display:'flex', flexDirection:'column', boxShadow:'0 20px 60px rgba(0,0,0,.55)' }} onClick={e=>e.stopPropagation()}>
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'16px 20px 12px', borderBottom:'1px solid var(--borderSubtle)', flexShrink:0 }}>
-          <span style={{ fontSize:14, fontWeight:700, color:'var(--text)' }}>Syntax Reference</span>
-          <button onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg></button>
+      <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:14, width:620, maxWidth:'94vw', maxHeight:'80vh', display:'flex', flexDirection:'column', boxShadow:'0 20px 60px rgba(0,0,0,.55)' }} onClick={e=>e.stopPropagation()}>
+        {/* Header */}
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'14px 20px 0', flexShrink:0 }}>
+          <div style={{ display:'flex', gap:4 }}>
+            {['syntax','backlinks'].map(t => (
+              <button key={t} onClick={() => setTab(t)} style={{
+                padding:'6px 14px', fontSize:12, fontWeight:600, fontFamily:'inherit',
+                borderRadius:'8px 8px 0 0', border:'1px solid var(--border)',
+                borderBottom: t === tab ? '1px solid var(--surface)' : '1px solid var(--border)',
+                background: t === tab ? 'var(--surface)' : 'var(--surfaceAlt)',
+                color: t === tab ? 'var(--text)' : 'var(--textDim)', cursor:'pointer',
+                textTransform:'capitalize', marginBottom: t === tab ? -1 : 0,
+              }}>{t}</button>
+            ))}
+          </div>
+          <button onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s',marginBottom:0}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg></button>
         </div>
-        <div style={{ overflow:'auto', padding:'14px 20px 20px' }}>
-          {SECS.map(sec => (
-            <div key={sec.title} style={{ marginBottom:18 }}>
-              <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:'var(--textDim)', opacity:.6, marginBottom:8 }}>{sec.title}</div>
-              {sec.rows.map(({k,d}) => (
-                <div key={k} style={{ display:'flex', alignItems:'baseline', gap:12, padding:'4px 0', borderBottom:'1px solid var(--borderSubtle)' }}>
-                  <code style={{ fontFamily:'SF Mono,Menlo,Consolas,monospace', fontSize:11, background:'var(--surfaceAlt)', border:'1px solid var(--border)', borderRadius:5, padding:'2px 8px', color:'var(--accent)', flexShrink:0, minWidth:130, display:'inline-block' }}>{k}</code>
-                  <span style={{ fontSize:12, color:'var(--textDim)' }}>{d}</span>
-                </div>
-              ))}
+        <div style={{ borderTop:'1px solid var(--border)', marginTop:0 }} />
+
+        {tab === 'syntax' && (
+          <div style={{ overflow:'auto', padding:'14px 20px 20px' }}>
+            {SECS.map(sec => (
+              <div key={sec.title} style={{ marginBottom:18 }}>
+                <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:'var(--textDim)', opacity:.6, marginBottom:8 }}>{sec.title}</div>
+                {sec.rows.map(({k,d}) => (
+                  <div key={k} style={{ display:'flex', alignItems:'baseline', gap:12, padding:'4px 0', borderBottom:'1px solid var(--borderSubtle)' }}>
+                    <code style={{ fontFamily:'SF Mono,Menlo,Consolas,monospace', fontSize:11, background:'var(--surfaceAlt)', border:'1px solid var(--border)', borderRadius:5, padding:'2px 8px', color:'var(--accent)', flexShrink:0, minWidth:130, display:'inline-block' }}>{k}</code>
+                    <span style={{ fontSize:12, color:'var(--textDim)' }}>{d}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === 'backlinks' && (
+          <div style={{ overflow:'auto', padding:'14px 20px 20px', flex:1, display:'flex', flexDirection:'column', gap:16 }}>
+
+            {/* ── Tag search ─────────────────────────────────────────── */}
+            <div>
+              <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:'var(--textDim)', opacity:.6, marginBottom:8 }}>Search by Tag</div>
+              <div style={{ display:'flex', alignItems:'center', gap:6, background:'var(--surfaceAlt)', border:'1px solid var(--border)', borderRadius:7, padding:'5px 10px', marginBottom:8 }}>
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ opacity:.5, flexShrink:0 }}><circle cx="6" cy="6" r="4" stroke="currentColor" strokeWidth="1.5"/><path d="M10 10l3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                <input
+                  value={tagSearch}
+                  onChange={e => setTagSearch(e.target.value)}
+                  placeholder="::tagname or ::today"
+                  style={{ flex:1, background:'none', border:'none', outline:'none', fontSize:12, color:'var(--text)', fontFamily:'inherit' }}
+                />
+                {tagSearch && <button onClick={() => setTagSearch('')} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--textDim)', padding:0, lineHeight:1 }}>✕</button>}
+              </div>
+              {(() => {
+                const raw = tagSearch.replace(/^::/, '').trim().toLowerCase()
+                if (!raw) return null
+                if (tagResults === null) return (
+                  <div style={{ display:'flex', alignItems:'center', gap:8, color:'var(--textDim)', fontSize:12, padding:'4px 2px' }}>
+                    <div className="spinner" /><span>Scanning…</span>
+                  </div>
+                )
+                const emptyMsg = raw === 'today' ? 'Nothing due today'
+                  : raw === 'overdue' ? 'No overdue notes'
+                  : <span>No notes tagged <strong>{raw}</strong></span>
+                return tagResults.length === 0
+                  ? <div style={{ fontSize:12, color:'var(--textDim)', padding:'4px 2px' }}>{emptyMsg}</div>
+                  : <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
+                      {tagResults.map(({ nb, tags, dueLabel, dueState }) => (
+                        <div key={nb.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 11px', borderRadius:7, border:'1px solid var(--border)', background:'var(--surfaceAlt)' }}>
+                          <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="12" height="14" rx="2" stroke="currentColor" strokeWidth="1.3"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/></svg>
+                          <span style={{ fontSize:12, color:'var(--text)', fontWeight:500, flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{nb.title}</span>
+                          <div style={{ display:'flex', gap:4, flexShrink:0 }}>
+                            {dueLabel
+                              ? <span style={{ fontSize:10, padding:'1px 5px', borderRadius:4, background:'var(--surface)', border:'1px solid var(--border)', color: dueState === 'overdue' ? '#c02020' : '#b87000' }}>{dueLabel}</span>
+                              : tags?.map(t => (
+                                  <span key={t} style={{ fontSize:10, padding:'1px 5px', borderRadius:4, background:'var(--surface)', border:'1px solid var(--border)', color:'var(--textDim)' }}>{t}</span>
+                                ))
+                            }
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+              })()}
             </div>
-          ))}
-        </div>
+
+            {/* ── Connections ─────────────────────────────────────────── */}
+            <div>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+                <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:'var(--textDim)', opacity:.6 }}>Connections</div>
+                <div style={{ display:'flex', gap:4 }}>
+                  {[['list','List'],['graph','Graph']].map(([v,lbl]) => (
+                    <button key={v} onClick={() => setBlView(v)} style={{
+                      padding:'3px 9px', fontSize:11, fontWeight:600, borderRadius:6,
+                      border:'1px solid var(--border)',
+                      background: v === blView ? 'var(--accent)' : 'none',
+                      color: v === blView ? '#fff' : 'var(--textDim)',
+                      cursor:'pointer', fontFamily:'inherit',
+                    }}>{lbl}</button>
+                  ))}
+                </div>
+              </div>
+
+              {blView === 'graph' ? (
+                <ConnectionsTree backlinks={backlinks} forwardsLinks={forwardsLinks} />
+              ) : (
+                <>
+                  {/* Backlinks */}
+                  <div style={{ fontSize:11, fontWeight:600, color:'var(--textDim)', marginBottom:5, marginTop:2 }}>← Links to this note</div>
+                  {backlinks === null ? (
+                    <div style={{ display:'flex', alignItems:'center', gap:8, color:'var(--textDim)', fontSize:12, padding:'6px 0 10px' }}>
+                      <div className="spinner" /><span>Scanning…</span>
+                    </div>
+                  ) : backlinks.length === 0 ? (
+                    <div style={{ color:'var(--textDim)', fontSize:12, padding:'4px 0 10px' }}>No notes link to this one yet.</div>
+                  ) : (
+                    <div style={{ display:'flex', flexDirection:'column', gap:4, marginBottom:12 }}>
+                      {backlinks.map(nb => (
+                        <div key={nb.id} onClick={() => { const s = useAppStore.getState(); s.setActiveNotebook(nb); s.updateTab(paneTabId || activeTabId, { view: 'notebook', activeNotebook: nb }); s.setView('notebook') }} style={{ display:'flex', alignItems:'center', gap:10, padding:'7px 12px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surfaceAlt)', cursor:'pointer' }}>
+                          <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="12" height="14" rx="2" stroke="currentColor" strokeWidth="1.3"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/><line x1="5" y1="11" x2="8" y2="11" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/></svg>
+                          <span style={{ fontSize:12, color:'var(--text)', fontWeight:500 }}>{nb.title}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Forwards links */}
+                  <div style={{ fontSize:11, fontWeight:600, color:'var(--textDim)', marginBottom:5 }}>→ Links from this note</div>
+                  {forwardsLinks === null ? (
+                    <div style={{ display:'flex', alignItems:'center', gap:8, color:'var(--textDim)', fontSize:12, padding:'6px 0' }}>
+                      <div className="spinner" /><span>Scanning…</span>
+                    </div>
+                  ) : forwardsLinks.length === 0 ? (
+                    <div style={{ color:'var(--textDim)', fontSize:12, padding:'4px 0' }}>No outgoing links in this note.</div>
+                  ) : (
+                    <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                      {forwardsLinks.map(nb => (
+                        <div key={nb.id} onClick={() => { const s = useAppStore.getState(); s.setActiveNotebook(nb); s.updateTab(paneTabId || activeTabId, { view: 'notebook', activeNotebook: nb }); s.setView('notebook') }} style={{ display:'flex', alignItems:'center', gap:10, padding:'7px 12px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surfaceAlt)', cursor:'pointer' }}>
+                          <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="12" height="14" rx="2" stroke="currentColor" strokeWidth="1.3"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/><line x1="5" y1="11" x2="8" y2="11" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/></svg>
+                          <span style={{ fontSize:12, color:'var(--text)', fontWeight:500 }}>{nb.title}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

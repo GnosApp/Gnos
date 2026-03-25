@@ -469,17 +469,33 @@ export default function AudioPlayerView() {
         {/* ── Floating chapters button + popout panel ── */}
         <button
           onClick={() => setChapOpen(o => !o)}
+          title={chapOpen ? 'Close chapters' : 'Open chapters'}
           style={{
-            position: 'fixed', left: chapOpen ? 280 : 16, top: TITLEBAR_H + 56,
-            zIndex: 1200, padding: '10px 14px', borderRadius: 10,
-            border: '1px solid var(--border)', background: 'var(--surface)',
-            color: 'var(--text)', cursor: 'pointer', fontFamily: 'inherit',
-            fontSize: 12, fontWeight: 700, letterSpacing: '0.03em',
-            boxShadow: '0 4px 20px rgba(0,0,0,0.35)', transition: 'left 0.25s ease',
-            display: 'flex', alignItems: 'center', gap: 6,
+            position: 'fixed', left: chapOpen ? 278 : 12, top: TITLEBAR_H + 58,
+            zIndex: 1200, padding: '7px 12px 7px 10px', borderRadius: 9,
+            border: '1px solid var(--border)',
+            background: chapOpen ? 'var(--surfaceAlt)' : 'var(--surface)',
+            color: chapOpen ? 'var(--text)' : 'var(--textDim)',
+            cursor: 'pointer', fontFamily: 'inherit',
+            fontSize: 12, fontWeight: 600,
+            boxShadow: '0 2px 12px rgba(0,0,0,0.3)',
+            transition: 'left 0.25s cubic-bezier(0.4,0,0.2,1), background 0.15s, color 0.15s',
+            display: 'flex', alignItems: 'center', gap: 7,
           }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--hover)'; e.currentTarget.style.color = 'var(--text)' }}
+          onMouseLeave={e => { e.currentTarget.style.background = chapOpen ? 'var(--surfaceAlt)' : 'var(--surface)'; e.currentTarget.style.color = chapOpen ? 'var(--text)' : 'var(--textDim)' }}
         >
-          Chapters {chapOpen ? '\u2039' : '\u203A'}
+          {/* Chapters icon (stacked lines) */}
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <line x1="3" y1="4" x2="13" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+            <line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+            <line x1="3" y1="12" x2="10" y2="12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+          </svg>
+          <span style={{ letterSpacing: '0.01em' }}>Chapters</span>
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none"
+            style={{ transition: 'transform 0.18s', transform: chapOpen ? 'rotate(180deg)' : 'rotate(0deg)', opacity: 0.6 }}>
+            <path d="M2 3.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
         </button>
         {chapOpen && (
           <aside style={{

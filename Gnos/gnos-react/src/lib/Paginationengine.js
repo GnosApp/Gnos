@@ -28,6 +28,9 @@ export function blocksToHTML(blocks) {
   }).join('')
 }
 
+let _wrapWords = false
+export function setWordWrapEnabled(enabled) { _wrapWords = enabled }
+
 export function blocksToDisplayHTML(blocks) {
   return blocks.map(b => {
     if (!b?.text?.trim() && b?.type !== 'cover') return ''
@@ -35,11 +38,14 @@ export function blocksToDisplayHTML(blocks) {
     if (b.type === 'pdfPage')    return `<img src="${b.src}" alt="" class="pdf-page-img">`
     if (b.type === 'heading')    return `<h2>${b.text}</h2>`
     if (b.type === 'subheading') return `<h3>${b.text}</h3>`
-    const wrapped = b.text.replace(/(\S+)/g, (w) => {
-      const clean = w.replace(/[^a-zA-Z'\u2019-]/g, '')
-      return `<span class="col-word" data-word="${clean}">${w}</span>`
-    })
-    return `<p>${wrapped}</p>`
+    if (_wrapWords) {
+      const wrapped = b.text.replace(/(\S+)/g, (w) => {
+        const clean = w.replace(/[^a-zA-Z'\u2019-]/g, '')
+        return `<span class="col-word" data-word="${clean}">${w}</span>`
+      })
+      return `<p>${wrapped}</p>`
+    }
+    return `<p>${b.text}</p>`
   }).join('')
 }
 

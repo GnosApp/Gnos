@@ -1,0 +1,37 @@
+<svg width="320" height="320" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="sepia-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fdf6ec"/>
+      <stop offset="100%" stop-color="#f0e6d2"/>
+    </linearGradient>
+    <linearGradient id="sepia-quill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8b5e3c"/>
+      <stop offset="50%" stop-color="#a0522d"/>
+      <stop offset="100%" stop-color="#6b3a1f"/>
+    </linearGradient>
+    <radialGradient id="sepia-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#c49a5a" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#c49a5a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="64" height="64" rx="14" fill="url(#sepia-bg)"/>
+  <ellipse cx="30" cy="30" rx="22" ry="26" fill="url(#sepia-glow)"/>
+
+  <!-- Quill -->
+  <g transform="translate(32, 29) scale(1.7, 1.45) translate(-16, -15.5)">
+    <path d="M26 3C22 5 14 10 10 18C8 22 7 25 6.5 28"
+          stroke="url(#sepia-quill)" stroke-width="1.1" stroke-linecap="round"/>
+    <path d="M26 3C24 8 18 15 10 18"
+          stroke="#a0522d" stroke-width="0.75" stroke-linecap="round" opacity="0.65"/>
+    <path d="M26 3C25 6 22 10 16 14"
+          stroke="#8b5e3c" stroke-width="0.48" stroke-linecap="round" opacity="0.35"/>
+    <path d="M6.5 28L9 23"
+          stroke="url(#sepia-quill)" stroke-width="1.1" stroke-linecap="round"/>
+  </g>
+
+  <!-- Writing line -->
+  <line x1="12" y1="53" x2="52" y2="53"
+        stroke="#8b5e3c" stroke-width="1" stroke-linecap="round" opacity="0.5"/>
+
+</svg>

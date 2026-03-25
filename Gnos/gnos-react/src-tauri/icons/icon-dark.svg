@@ -1,0 +1,37 @@
+<svg width="320" height="320" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="sunset-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a0a1e"/>
+      <stop offset="100%" stop-color="#0f0a04"/>
+    </linearGradient>
+    <linearGradient id="sunset-quill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f7c35a"/>
+      <stop offset="50%" stop-color="#e8692a"/>
+      <stop offset="100%" stop-color="#c0345a"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#e8692a" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#e8692a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="64" height="64" rx="14" fill="url(#sunset-bg)"/>
+  <ellipse cx="30" cy="30" rx="22" ry="26" fill="url(#glow)"/>
+
+  <!-- Quill -->
+  <g transform="translate(32, 29) scale(1.7, 1.45) translate(-16, -15.5)">
+    <path d="M26 3C22 5 14 10 10 18C8 22 7 25 6.5 28"
+          stroke="url(#sunset-quill)" stroke-width="1.1" stroke-linecap="round"/>
+    <path d="M26 3C24 8 18 15 10 18"
+          stroke="#e8692a" stroke-width="0.75" stroke-linecap="round" opacity="0.65"/>
+    <path d="M26 3C25 6 22 10 16 14"
+          stroke="#f7c35a" stroke-width="0.48" stroke-linecap="round" opacity="0.35"/>
+    <path d="M6.5 28L9 23"
+          stroke="url(#sunset-quill)" stroke-width="1.1" stroke-linecap="round"/>
+  </g>
+
+  <!-- Writing line -->
+  <line x1="12" y1="53" x2="52" y2="53"
+        stroke="#f7c35a" stroke-width="1" stroke-linecap="round" opacity="0.5"/>
+
+</svg>

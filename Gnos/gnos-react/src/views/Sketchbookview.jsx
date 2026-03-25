@@ -355,12 +355,14 @@ export default function SketchbookView() {
       },
       files: allFiles,
     }
-    await saveSketchbookContent(sketchbook.id, { excalidraw: saveState })
-    updateSketchbook(sketchbook.id, {
-      updatedAt: new Date().toISOString(),
-      elementCount: elements?.length ?? 0,
-    })
-    useAppStore.getState().persistSketchbooks?.()
+    const patch = { updatedAt: new Date().toISOString(), elementCount: elements?.length ?? 0 }
+    updateSketchbook(sketchbook.id, patch)
+    // Get the latest sketchbook object (with updated fields) and pass it directly so
+    // saveSketchbookContent can use getSketchDir without a folder scan
+    const latestSb = useAppStore.getState().sketchbooks.find(s => s.id === sketchbook.id) ?? { ...sketchbook, ...patch }
+    const saved = await saveSketchbookContent(latestSb, { excalidraw: saveState })
+    if (!saved) console.error('[SketchbookView] saveSketchbookContent returned false for sketchbook', sketchbook.id)
+    await useAppStore.getState().persistSketchbooks?.()
     setSaving(false)
     const el = document.getElementById('sk-save-icon')
     if (el) {
@@ -469,17 +471,21 @@ export default function SketchbookView() {
     scheduleSave(updated, appState, api.getFiles())
   }, [scheduleSave])
 
+  // Keep a ref to the latest doSave so the unmount effect doesn't cascade
+  const doSaveRef = useRef(doSave)
+  useEffect(() => { doSaveRef.current = doSave }, [doSave])
+
   // ── Flush save on unmount ─────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
       clearTimeout(saveTimerRef.current)
       const api = excalidrawApiRef.current
       if (api) {
-        try { doSave(api.getSceneElements(), api.getAppState(), api.getFiles()) }
+        try { doSaveRef.current(api.getSceneElements(), api.getAppState(), api.getFiles()) }
         catch (e) { console.warn('[SketchbookView] flush-save on unmount failed:', e) }
       }
     }
-  }, [doSave])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
 
   // ── Empty state ──────────────────────────────────────────────────────────────

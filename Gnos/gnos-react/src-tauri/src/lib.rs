@@ -4,6 +4,19 @@ use tauri::menu::{MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::Emitter;
 use tauri::Manager;
 
+fn set_app_icon(window: &tauri::WebviewWindow, theme: tauri::Theme) {
+    let icon_bytes: &[u8] = match theme {
+        tauri::Theme::Light => include_bytes!("../icons/icon-light.png"),
+        _ => include_bytes!("../icons/icon-dark.png"),
+    };
+    if let Ok(img) = image::load_from_memory(icon_bytes) {
+        let (w, h) = (img.width(), img.height());
+        let rgba = img.into_rgba8().into_raw();
+        let icon = tauri::image::Image::new_owned(rgba, w, h);
+        let _ = window.set_icon(icon);
+    }
+}
+
 /// Get the piper models directory
 fn piper_dir(app: &tauri::AppHandle) -> PathBuf {
     app.path().app_data_dir().unwrap().join("piper")
@@ -89,6 +102,24 @@ async fn piper_speak(
     Ok(output_path.to_string_lossy().to_string())
 }
 
+/// Open a folder in the system file manager (Finder on macOS, Explorer on Windows, etc.)
+#[tauri::command]
+async fn open_in_finder(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(&path).spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer").arg(&path).spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open").arg(&path).spawn().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Copy a file's bytes — used for drag-drop from Finder where FS scope may not cover the path
 #[tauri::command]
 async fn copy_file_bytes(source: String) -> Result<Vec<u8>, String> {
@@ -113,6 +144,7 @@ pub fn run() {
     .plugin(tauri_plugin_fs::init())
     .plugin(tauri_plugin_deep_link::init())
     .plugin(tauri_plugin_dialog::init())
+    .plugin(tauri_plugin_shell::init())
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -157,8 +189,14 @@ pub fn run() {
         .item(&tauri::menu::MenuItem::with_id(handle, "tab_collections", "Collections", true, Some("CmdOrCtrl+5"))?)
         .build()?;
 
+      let window_menu = SubmenuBuilder::new(handle, "Window")
+        .item(&PredefinedMenuItem::minimize(handle, Some("Minimize"))?)
+        .item(&PredefinedMenuItem::maximize(handle, Some("Zoom"))?)
+        .item(&tauri::menu::MenuItem::with_id(handle, "fullscreen", "Enter Full Screen", true, Some("Ctrl+Command+F"))?)
+        .build()?;
+
       let menu = MenuBuilder::new(handle)
-        .items(&[&gnos, &edit, &books, &actions, &view])
+        .items(&[&gnos, &edit, &books, &actions, &view, &window_menu])
         .build()?;
 
       app.set_menu(menu)?;
@@ -176,6 +214,16 @@ pub fn run() {
         window.set_decorations(true)?;
       }
 
+      // Set icon based on current system theme, and update on theme change
+      let initial_theme = window.theme().unwrap_or(tauri::Theme::Dark);
+      set_app_icon(&window, initial_theme);
+      let window_for_theme = window.clone();
+      window.on_window_event(move |event| {
+        if let tauri::WindowEvent::ThemeChanged(theme) = event {
+          set_app_icon(&window_for_theme, *theme);
+        }
+      });
+
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
@@ -183,9 +231,18 @@ pub fn run() {
       piper_speak,
       piper_check,
       copy_file_bytes,
+      open_in_finder,
     ])
     .on_menu_event(|app, event| {
-      app.emit("menu", event.id().as_ref()).unwrap();
+      let id = event.id().as_ref();
+      if id == "fullscreen" {
+        if let Some(win) = app.get_webview_window("main") {
+          let is_fs = win.is_fullscreen().unwrap_or(false);
+          let _ = win.set_fullscreen(!is_fs);
+        }
+        return;
+      }
+      app.emit("menu", id).unwrap();
     })
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

@@ -1,4 +1,4 @@
-import { readTextFile, writeTextFile, writeFile, remove, readDir, exists, mkdir } from '@tauri-apps/plugin-fs'
+import { readTextFile, writeTextFile, writeFile, readFile, remove, readDir, exists, mkdir, rename } from '@tauri-apps/plugin-fs'
 import { appDataDir, join } from '@tauri-apps/api/path'
 
 // ── Base directory ────────────────────────────────────────────────────────────
@@ -200,11 +200,83 @@ export async function setJSON(key, value) {
 // ── Library ───────────────────────────────────────────────────────────────────
 
 export async function loadLibrary() {
-  return getJSON('library', [])
+  const library = await getJSON('library', [])
+  if (!library?.length) return library ?? []
+  // Attach cover images from book folders for any entry that doesn't already have one
+  try {
+    const booksDir = await getBooksDir()
+    const entries = await readDir(booksDir)
+    // Build id → folder name map from meta.json files
+    const folderById = {}
+    for (const entry of entries) {
+      if (!entry.name) continue
+      const metaPath = await join(booksDir, entry.name, 'meta.json')
+      if (await exists(metaPath)) {
+        try {
+          const meta = JSON.parse(await readTextFile(metaPath))
+          if (meta.id) folderById[meta.id] = entry.name
+        } catch { /* skip corrupt */ }
+      }
+    }
+    // Also scan audio folder for audiobook covers
+    let audioFolderById = {}
+    try {
+      const audioDir = await getAudioDir()
+      const audioEntries = await readDir(audioDir)
+      for (const entry of audioEntries) {
+        if (!entry.name) continue
+        const metaPath = await join(audioDir, entry.name, 'meta.json')
+        if (await exists(metaPath)) {
+          try {
+            const meta = JSON.parse(await readTextFile(metaPath))
+            if (meta.id) audioFolderById[meta.id] = { folder: entry.name, dir: audioDir }
+          } catch { /* skip */ }
+        }
+      }
+    } catch { /* audio dir may not exist */ }
+
+    async function loadCoverFromFolder(baseDir, folder) {
+      for (const ext of ['jpg', 'jpeg', 'png', 'webp']) {
+        const coverPath = await join(baseDir, folder, `cover.${ext}`)
+        if (await exists(coverPath)) {
+          try {
+            const data = await readFile(coverPath)
+            let binary = ''
+            const chunkSize = 8192
+            for (let i = 0; i < data.length; i += chunkSize) {
+              binary += String.fromCharCode(...data.subarray(i, Math.min(i + chunkSize, data.length)))
+            }
+            const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
+            return `data:${mime};base64,${btoa(binary)}`
+          } catch { /* skip */ }
+          break
+        }
+      }
+      return null
+    }
+
+    return await Promise.all(library.map(async (book) => {
+      if (book.coverDataUrl) return book
+      const bookFolder = folderById[book.id]
+      if (bookFolder) {
+        const cover = await loadCoverFromFolder(booksDir, bookFolder)
+        if (cover) return { ...book, coverDataUrl: cover }
+      }
+      const audioEntry = audioFolderById[book.id]
+      if (audioEntry) {
+        const cover = await loadCoverFromFolder(audioEntry.dir, audioEntry.folder)
+        if (cover) return { ...book, coverDataUrl: cover }
+      }
+      return book
+    }))
+  } catch { return library }
 }
 
 export async function saveLibrary(library) {
-  return setJSON('library', library)
+  // Strip coverDataUrl — covers are persisted as cover.jpg files in each book folder
+  // eslint-disable-next-line no-unused-vars
+  const lean = library.map(({ coverDataUrl, ...b }) => b)
+  return setJSON('library', lean)
 }
 
 // ── Notebooks (named-folder format) ──────────────────────────────────────────
@@ -232,6 +304,26 @@ async function getNotebookDir(notebook) {
   return dir
 }
 
+/** Returns the absolute folder path for a notebook (for resolving relative asset paths). */
+export async function getNotebookFolderPath(notebook) {
+  try {
+    const notebooksDir = await getNotebooksDir()
+    const entries = await readDir(notebooksDir)
+    for (const entry of entries) {
+      if (!entry.name) continue
+      const metaPath = await join(notebooksDir, entry.name, 'meta.json')
+      if (await exists(metaPath)) {
+        try {
+          const meta = JSON.parse(await readTextFile(metaPath))
+          if (meta.id === notebook.id) return await join(notebooksDir, entry.name)
+        } catch { /* skip */ }
+      }
+    }
+    const folderName = sanitizeFolderName(notebook.title || notebook.id)
+    return await join(notebooksDir, folderName)
+  } catch { return null }
+}
+
 export async function loadNotebooksMeta() {
   // First try to reconstruct from on-disk named folders
   try {
@@ -256,11 +348,41 @@ export async function loadNotebooksMeta() {
 }
 
 export async function saveNotebooksMeta(notebooks) {
-  // Persist meta.json inside each notebook's folder
+  const notebooksDir = await getNotebooksDir()
+  const existingEntries = await readDir(notebooksDir).catch(() => [])
+
+  // Persist meta.json inside each notebook's folder, renaming folder if title changed
   for (const nb of notebooks) {
     try {
-      const dir = await getNotebookDir(nb)
-      await writeTextFile(await join(dir, 'meta.json'), JSON.stringify(nb, null, 2))
+      const expectedName = sanitizeFolderName(nb.title || nb.id)
+      // Find the existing folder for this notebook by id
+      let existingFolderName = null
+      for (const entry of existingEntries) {
+        if (!entry.name) continue
+        const metaPath = await join(notebooksDir, entry.name, 'meta.json')
+        if (await exists(metaPath)) {
+          try {
+            const meta = JSON.parse(await readTextFile(metaPath))
+            if (meta.id === nb.id) { existingFolderName = entry.name; break }
+          } catch { /* skip */ }
+        }
+      }
+      if (existingFolderName && existingFolderName !== expectedName) {
+        // Rename folder and the .md file inside it
+        const oldDir = await join(notebooksDir, existingFolderName)
+        const newDir = await join(notebooksDir, expectedName)
+        if (!(await exists(newDir))) {
+          await rename(oldDir, newDir)
+          // Rename the .md file if it has the old folder name
+          const oldMd = await join(newDir, `${existingFolderName}.md`)
+          const newMd = await join(newDir, `${expectedName}.md`)
+          if (await exists(oldMd)) await rename(oldMd, newMd)
+        }
+        await writeTextFile(await join(newDir, 'meta.json'), JSON.stringify(nb, null, 2))
+      } else {
+        const dir = await getNotebookDir(nb)
+        await writeTextFile(await join(dir, 'meta.json'), JSON.stringify(nb, null, 2))
+      }
     } catch (err) {
       console.warn('[Gnos] saveNotebooksMeta folder write failed for', nb.id, err)
     }
@@ -462,6 +584,20 @@ export async function saveBookContent(book, chapters) {
   // eslint-disable-next-line no-unused-vars
   const { coverDataUrl, pdfDataUrl, rawDataUrl, ...meta } = book
   await writeTextFile(await join(bookDir, 'meta.json'), JSON.stringify(meta, null, 2))
+
+  // Write cover image as a binary file so it persists independently of library.json
+  if (coverDataUrl) {
+    try {
+      const match = coverDataUrl.match(/^data:([^;]+);base64,(.+)$/)
+      if (match) {
+        const ext = match[1].includes('png') ? 'png' : match[1].includes('webp') ? 'webp' : 'jpg'
+        const binaryStr = atob(match[2])
+        const bytes = new Uint8Array(binaryStr.length)
+        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
+        await writeFile(await join(bookDir, `cover.${ext}`), bytes)
+      }
+    } catch { /* non-fatal */ }
+  }
 }
 
 const CHUNK_SIZE = 20
@@ -711,8 +847,19 @@ export async function saveAudiobookMeta(book) {
     const dir = await getAudioBookDir(book)
     // Strip binary payload — only persist descriptive metadata
     // eslint-disable-next-line no-unused-vars
-    const { coverDataUrl, ...meta } = book
+    const { coverDataUrl, audioDataUrl, ...meta } = book
     await writeTextFile(await join(dir, 'meta.json'), JSON.stringify(meta, null, 2))
+    // Save cover image as a binary file alongside meta.json
+    if (coverDataUrl) {
+      const match = coverDataUrl.match(/^data:([^;]+);base64,(.+)$/)
+      if (match) {
+        const ext = match[1].includes('png') ? 'png' : match[1].includes('webp') ? 'webp' : 'jpg'
+        const binaryStr = atob(match[2])
+        const bytes = new Uint8Array(binaryStr.length)
+        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
+        await writeFile(await join(dir, `cover.${ext}`), bytes)
+      }
+    }
   } catch (err) {
     console.warn('[Gnos] saveAudiobookMeta failed for', book?.id, err)
   }
@@ -810,7 +957,21 @@ async function getSketchesDir() {
 
 async function getSketchDir(sketchbook) {
   const sketchesDir = await getSketchesDir()
-  const folderName = sanitizeFolderName(sketchbook.title || sketchbook.id)
+  // Include a short ID suffix to guarantee uniqueness when multiple sketchbooks share the same title
+  const safeName = sanitizeFolderName(sketchbook.title || 'sketch')
+  const shortId = (sketchbook.id || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(-12)
+  const folderName = shortId ? `${safeName}_${shortId}` : safeName
+  // Check if the legacy name (title only) already exists — if so, use it to preserve existing data
+  const legacyDir = await join(sketchesDir, safeName)
+  if (await exists(legacyDir)) {
+    try {
+      const metaPath = await join(legacyDir, 'meta.json')
+      if (await exists(metaPath)) {
+        const meta = JSON.parse(await readTextFile(metaPath))
+        if (meta.id === sketchbook.id) return legacyDir
+      }
+    } catch { /* fall through to new folder */ }
+  }
   const dir = await join(sketchesDir, folderName)
   if (!(await exists(dir))) await mkdir(dir, { recursive: true })
   return dir
@@ -856,40 +1017,68 @@ export async function loadSketchbookContent(id) {
     const entries = await readDir(sketchesDir)
     for (const entry of entries) {
       if (!entry.name) continue
-      const metaPath = await join(sketchesDir, entry.name, 'meta.json')
-      if (await exists(metaPath)) {
-        const meta = JSON.parse(await readTextFile(metaPath))
-        if (meta.id === id) {
-          const sketchPath = await join(sketchesDir, entry.name, 'sketch.json')
-          if (await exists(sketchPath)) {
-            return JSON.parse(await readTextFile(sketchPath))
+      try {
+        const metaPath = await join(sketchesDir, entry.name, 'meta.json')
+        if (await exists(metaPath)) {
+          const meta = JSON.parse(await readTextFile(metaPath))
+          if (meta.id === id) {
+            const sketchPath = await join(sketchesDir, entry.name, 'sketch.json')
+            if (await exists(sketchPath)) {
+              return JSON.parse(await readTextFile(sketchPath))
+            }
+            // sketch.json missing — fall through to JSON fallback below
+            break
           }
-          return null
         }
-      }
+      } catch { /* skip malformed entry */ }
     }
   } catch (err) { console.debug('[Gnos] loadSketchbookContent named folder failed', err) }
   return getJSON(`sketchbook_${id}`, null)
 }
 
-export async function saveSketchbookContent(id, data) {
+// sketchbookOrId can be a full sketchbook object (preferred) or just an id string (legacy)
+export async function saveSketchbookContent(sketchbookOrId, data) {
+  const id = typeof sketchbookOrId === 'string' ? sketchbookOrId : sketchbookOrId?.id
+  // If we have the full object, use getSketchDir directly — no directory scan needed
+  if (sketchbookOrId && typeof sketchbookOrId === 'object') {
+    try {
+      const dir = await getSketchDir(sketchbookOrId)
+      await writeTextFile(await join(dir, 'meta.json'), JSON.stringify(sketchbookOrId, null, 2))
+      await writeTextFile(await join(dir, 'sketch.json'), JSON.stringify(data))
+      return true
+    } catch (err) { console.error('[Gnos] saveSketchbookContent failed', err) }
+    return setJSON(`sketchbook_${id}`, data)
+  }
+  // Legacy path: only id was passed — scan folders for matching meta.id
   try {
     const sketchesDir = await getSketchesDir()
     const entries = await readDir(sketchesDir)
     for (const entry of entries) {
       if (!entry.name) continue
-      const metaPath = await join(sketchesDir, entry.name, 'meta.json')
-      if (await exists(metaPath)) {
-        const meta = JSON.parse(await readTextFile(metaPath))
-        if (meta.id === id) {
-          const sketchPath = await join(sketchesDir, entry.name, 'sketch.json')
-          // No pretty-printing — sketch files can be large (embedded images)
-          await writeTextFile(sketchPath, JSON.stringify(data))
-          return true
+      try {
+        const metaPath = await join(sketchesDir, entry.name, 'meta.json')
+        if (await exists(metaPath)) {
+          const meta = JSON.parse(await readTextFile(metaPath))
+          if (meta.id === id) {
+            const sketchPath = await join(sketchesDir, entry.name, 'sketch.json')
+            await writeTextFile(sketchPath, JSON.stringify(data))
+            return true
+          }
         }
-      }
+      } catch { /* skip malformed entry */ }
     }
-  } catch (err) { console.debug('[Gnos] saveSketchbookContent named folder failed', err) }
+    // No folder found — create one using sketchbook metadata from store
+    try {
+      const store = window.__appStore
+      const sb = store?.getState?.()?.sketchbooks?.find(s => s.id === id)
+      if (sb) {
+        const dir = await getSketchDir(sb)
+        await writeTextFile(await join(dir, 'meta.json'), JSON.stringify(sb, null, 2))
+        await writeTextFile(await join(dir, 'sketch.json'), JSON.stringify(data))
+        return true
+      }
+    } catch { /* fall through */ }
+  } catch (err) { console.error('[Gnos] saveSketchbookContent failed', err) }
   return setJSON(`sketchbook_${id}`, data)
 }
 
@@ -915,6 +1104,26 @@ export async function deleteSketchbookContent(id) {
     }
   } catch (err) { console.debug('[Gnos] deleteSketchbookContent error', err) }
   return storage.delete(`sketchbook_${id}`)
+}
+
+// ── Calendar events ───────────────────────────────────────────────────────────
+
+export async function loadCalendarEvents() {
+  return getJSON('calendar_events', [])
+}
+
+export async function saveCalendarEvents(events) {
+  return setJSON('calendar_events', events)
+}
+
+// ── Kanban boards ─────────────────────────────────────────────────────────────
+
+export async function loadKanbanBoards() {
+  return getJSON('kanban_boards', null)
+}
+
+export async function saveKanbanBoards(boards) {
+  return setJSON('kanban_boards', boards)
 }
 
 // Migration: create named folders for sketchbooks that only exist as flat JSON files

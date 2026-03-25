@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback, useContext } from 'react'
 import useAppStore, { useAppStoreShallow } from '@/store/useAppStore'
+import { PaneContext } from '@/lib/PaneContext'
 import { loadBookContent, addReadingMinutes } from '@/lib/storage'
 import { GnosNavButton } from '@/components/SideNav'
 import { generateCoverColor } from '@/lib/utils'
 import {
   ensurePageStyle, renderPage, precomputeAllChapters,
   invalidateCache, getPageBreaks, getTotalPages,
-  getGlobalPage
+  getGlobalPage, setWordWrapEnabled
 } from '@/lib/paginationEngine'
 
 // ── SettingsPanel ─────────────────────────────────────────────────────────────
@@ -184,7 +185,14 @@ const BUILT_IN_THEMES = {
 }
 
 export default function ReaderView() {
-  const activeBook         = useAppStore(s => s.activeBook)
+  const paneTabId          = useContext(PaneContext)
+  const activeBook         = useAppStore(useCallback(
+    s => {
+      const tab = paneTabId ? s.tabs.find(t => t.id === paneTabId) : null
+      return tab?.activeBook ?? s.activeBook
+    },
+    [paneTabId]
+  ))
   const setPref            = useAppStore(s => s.setPref)
   const persistPreferences = useAppStore(s => s.persistPreferences)
   const sideNavOpen        = useAppStore(s => s.sideNavOpen)
@@ -295,6 +303,7 @@ export default function ReaderView() {
 
       const p = prefsRef.current
       console.log('[Reader] card dims:', cardRef.current.clientWidth, 'x', cardRef.current.offsetHeight)
+      setWordWrapEnabled(p.highlightWords || p.underlineLine)
       ensurePageStyle(p)
       cardRef.current.classList.toggle('two-page', p.twoPage)
       cardRef.current.classList.toggle('highlight-words', p.highlightWords)
@@ -327,7 +336,7 @@ export default function ReaderView() {
       const page = target.closest('.page-content')
       if (!page) return
       const targetTop = target.getBoundingClientRect().top
-      page.querySelectorAll('.col-word.same-line').forEach(s => s.classList.remove('same-line'))
+      card.querySelectorAll('.col-word.same-line').forEach(s => s.classList.remove('same-line'))
       page.querySelectorAll('.col-word').forEach(s => {
         if (Math.abs(s.getBoundingClientRect().top - targetTop) < 4) s.classList.add('same-line')
       })
@@ -350,6 +359,7 @@ export default function ReaderView() {
   useEffect(() => {
     if (loading || !cardRef.current || chapters.length === 0) return
     renderPage(cardRef.current, chapters, curChapter, curPage, prefs.twoPage, true)
+    requestAnimationFrame(() => applyHighlightsToCard(cardRef.current, bookIdRef.current, curChapter))
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [curChapter, curPage])
 
@@ -448,6 +458,7 @@ export default function ReaderView() {
     const firstWordEl = cardEl.querySelector('.col-word')
     const savedWord = firstWordEl?.dataset?.word || null
 
+    setWordWrapEnabled(p.highlightWords || p.underlineLine)
     ensurePageStyle(p)
     cardEl.classList.toggle('two-page', p.twoPage)
     cardEl.classList.toggle('highlight-words', p.highlightWords)
@@ -515,6 +526,43 @@ export default function ReaderView() {
   const ttsSentencesRef = useRef([])
   const ttsSentIdxRef   = useRef(0)
   const ttsActiveWordRef = useRef(null) // currently highlighted .col-word el
+
+  // ── Highlight state ────────────────────────────────────────────────────────
+  const highlightsRef = useRef({}) // { [bookId]: [{ id, chapterIdx, text }] }
+  const bookIdRef = useRef(null)
+
+  // Load/save highlights from localStorage
+  useEffect(() => {
+    if (!activeBook?.id) return
+    bookIdRef.current = activeBook.id
+    try {
+      const stored = JSON.parse(localStorage.getItem('gnos_highlights') || '{}')
+      highlightsRef.current = stored
+    } catch { highlightsRef.current = {} }
+  }, [activeBook?.id])
+
+  function saveHighlights() {
+    try { localStorage.setItem('gnos_highlights', JSON.stringify(highlightsRef.current)) } catch { /* */ }
+  }
+
+  function applyHighlightsToCard(cardEl, bookId, chapterIdx) {
+    if (!cardEl || !bookId) return
+    const hls = (highlightsRef.current[bookId] || []).filter(h => h.chapterIdx === chapterIdx)
+    if (!hls.length) return
+    const wordSpans = Array.from(cardEl.querySelectorAll('.col-word'))
+    for (const hl of hls) {
+      const words = hl.text.trim().split(/\s+/)
+      const cleanWords = words.map(w => w.toLowerCase().replace(/[^a-z0-9'\u2019]/g, ''))
+      for (let i = 0; i <= wordSpans.length - words.length; i++) {
+        const slice = wordSpans.slice(i, i + words.length)
+        const sliceClean = slice.map(s => (s.dataset.word || s.textContent).toLowerCase().replace(/[^a-z0-9'\u2019]/g, ''))
+        if (sliceClean.join(' ') === cleanWords.join(' ')) {
+          slice.forEach(s => { s.classList.add('reader-hl'); s.dataset.hlId = hl.id })
+          break
+        }
+      }
+    }
+  }
 
   // ── Word context menu state ────────────────────────────────────────────────
   const [wordMenu,       setWordMenu]       = useState(null) // { word, sentence, x, y }
@@ -725,8 +773,52 @@ export default function ReaderView() {
     const sentences = extractSentences(pageText)
     const sentence = sentences.find(s => s.toLowerCase().includes(word.toLowerCase())) || ''
 
-    setWordMenu({ word, sentence, x: e.clientX, y: e.clientY })
+    setWordMenu({ word, sentence, x: e.clientX, y: e.clientY,
+      hlText: word, hlId: wordEl.dataset.hlId || null, hlChapterIdx: curChapterRef.current })
   }
+
+  // ── Highlight: detect text selection on card mouseup ─────────────────────
+  useEffect(() => {
+    const card = cardRef.current
+    if (!card) return
+    const handleMouseUp = () => {
+      // Tiny delay so the selection is fully committed before we read it
+      setTimeout(() => {
+        const sel = window.getSelection()
+        if (!sel || sel.isCollapsed || !sel.toString().trim()) return
+        const text = sel.toString().trim()
+        if (!card.contains(sel.anchorNode)) return
+        const rect = sel.getRangeAt(0).getBoundingClientRect()
+        const x = rect.left + rect.width / 2
+        const y = rect.top
+        // Don't clear the selection — let the user see what they selected
+        setWordMenu({ word: text, sentence: text, x, y,
+          hlText: text, hlChapterIdx: curChapterRef.current })
+      }, 10)
+    }
+    card.addEventListener('mouseup', handleMouseUp)
+    return () => card.removeEventListener('mouseup', handleMouseUp)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Click on highlighted word → show word menu with remove option
+  useEffect(() => {
+    const card = cardRef.current
+    if (!card) return
+    const handleHlClick = (e) => {
+      const span = e.target.closest('.reader-hl')
+      if (!span?.dataset.hlId) return
+      e.stopPropagation()
+      const word = span.dataset.word || span.textContent || ''
+      const page = span.closest('.page-content')
+      const pageText = page ? page.textContent : ''
+      const sentences = extractSentences(pageText)
+      const sentence = sentences.find(s => s.toLowerCase().includes(word.toLowerCase())) || ''
+      setWordMenu({ word, sentence, x: e.clientX, y: e.clientY,
+        hlId: span.dataset.hlId, hlChapterIdx: curChapterRef.current })
+    }
+    card.addEventListener('click', handleHlClick)
+    return () => card.removeEventListener('click', handleHlClick)
+  }, [])
 
   // Close word menu on outside click
   useEffect(() => {
@@ -903,6 +995,20 @@ export default function ReaderView() {
           color: #f85149; border-color: rgba(248,81,73,0.4);
         }
 
+        /* ── Reader text highlights ──────────────────────────────────────── */
+        .col-word.reader-hl {
+          background: rgba(255, 210, 0, 0.65);
+          /* Extend right to fill the inter-word space gap, close left gap */
+          box-shadow: 5px 0 0 rgba(255, 210, 0, 0.65), -1px 0 0 rgba(255, 210, 0, 0.65);
+          border-radius: 1px;
+          cursor: pointer;
+          color: #1a1200;
+        }
+        .col-word.reader-hl:hover {
+          background: rgba(255, 210, 0, 0.85);
+          box-shadow: 5px 0 0 rgba(255, 210, 0, 0.85), -1px 0 0 rgba(255, 210, 0, 0.85);
+        }
+
         /* ── TTS word highlight ───────────────────────────────────────────── */
         .col-word.tts-word-active {
           background: rgba(56,139,253,0.28);
@@ -1007,6 +1113,7 @@ export default function ReaderView() {
           </div>
         )}
       </main>
+
 
       {/* Footer */}
       <footer className="reader-footer">
@@ -1143,6 +1250,38 @@ export default function ReaderView() {
             </svg>
             Play
           </button>
+          <div className="word-menu-sep" />
+          {wordMenu.hlId ? (
+            <button className="word-menu-item" style={{ color: '#f85149' }} onClick={() => {
+              const bookId = bookIdRef.current
+              if (bookId && wordMenu.hlId) {
+                highlightsRef.current[bookId] = (highlightsRef.current[bookId] || []).filter(h => h.id !== wordMenu.hlId)
+                saveHighlights()
+                cardRef.current?.querySelectorAll(`[data-hl-id="${wordMenu.hlId}"]`).forEach(el => { el.classList.remove('reader-hl'); delete el.dataset.hlId })
+              }
+              setWordMenu(null)
+            }}>
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M1 1l14 14M15 1L1 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+              Remove highlight
+            </button>
+          ) : (
+            <button className="word-menu-item" onClick={() => {
+              const bookId = bookIdRef.current
+              if (!bookId || !wordMenu.hlText) { setWordMenu(null); return }
+              const hl = { id: `hl_${Date.now()}`, chapterIdx: wordMenu.hlChapterIdx ?? curChapterRef.current, text: wordMenu.hlText }
+              if (!highlightsRef.current[bookId]) highlightsRef.current[bookId] = []
+              highlightsRef.current[bookId].push(hl)
+              saveHighlights()
+              requestAnimationFrame(() => applyHighlightsToCard(cardRef.current, bookId, hl.chapterIdx))
+              setWordMenu(null)
+            }}>
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                <rect x="2" y="5" width="12" height="7" rx="1" fill="rgba(255,210,0,0.5)" stroke="currentColor" strokeWidth="1.3"/>
+                <path d="M5 5V3.5a3 3 0 0 1 6 0V5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+              </svg>
+              Highlight
+            </button>
+          )}
         </div>
       )}
 

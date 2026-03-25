@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
-import { mkdir, exists } from '@tauri-apps/plugin-fs'
+import { mkdir, exists, readDir, readTextFile } from '@tauri-apps/plugin-fs'
 import { join } from '@tauri-apps/api/path'
 import useAppStore from '@/store/useAppStore'
 import { applyTheme } from '@/lib/themes'
-import { resetBaseDir } from '@/lib/storage'
+import { resetBaseDir, loadLibrary, loadNotebooksMeta, loadSketchbooksMeta, getJSON, saveLibrary } from '@/lib/storage'
 
 const STEPS = ['welcome', 'username', 'archive', 'theme', 'done']
 const TOTAL_CIRCLES = STEPS.length - 1 // 4 — "done" has no circle of its own
@@ -165,12 +165,16 @@ function CornerBracket({ accent, style }) {
 export default function OnboardingView({ onComplete, devMode = false }) {
   const [step, setStep]             = useState(0)
   const [username, setUsernameVal]  = useState('')
+  const [archiveMode, setArchiveMode] = useState('create') // 'create' | 'connect'
   const [archiveLocation, setArchiveLocation] = useState('')
   const [archiveName, setArchiveName] = useState('My Archive')
+  const [existingArchivePath, setExistingArchivePath] = useState('')
   const [selectedTheme, setSelectedTheme] = useState('sepia')
   const [error, setError]           = useState('')
   const [creating, setCreating]     = useState(false)
   const [stepKey, setStepKey]       = useState(0)
+  // { step, total, label, books, notebooks, sketchbooks } — shown during archive sync
+  const [syncProgress, setSyncProgress] = useState(null)
 
   const palette = THEME_OPTIONS.find(t => t.key === selectedTheme) || THEME_OPTIONS[0]
   const { accent, text: txtCol, dim: dimCol, border: bdrCol, bg: bgCol } = palette
@@ -300,10 +304,15 @@ export default function OnboardingView({ onComplete, devMode = false }) {
   }, [accent, bdrCol, step])
 
   const setUsername           = useAppStore(s => s.setUsername)
-  const setArchivePath          = useAppStore(s => s.setArchivePath)
+  const setArchivePath        = useAppStore(s => s.setArchivePath)
   const setOnboardingComplete = useAppStore(s => s.setOnboardingComplete)
   const setTheme              = useAppStore(s => s.setTheme)
   const persistPreferences    = useAppStore(s => s.persistPreferences)
+  const setLibraryStore       = useAppStore(s => s.setLibrary)
+  const setNotebooksStore     = useAppStore(s => s.setNotebooks)
+  const setSketchbooksStore   = useAppStore(s => s.setSketchbooks)
+  const setFlashcardDecksStore = useAppStore(s => s.setFlashcardDecks)
+  const setCollectionsStore   = useAppStore(s => s.setCollections)
 
   const currentStep = STEPS[step]
   const contentRef  = useRef(null)
@@ -366,6 +375,14 @@ export default function OnboardingView({ onComplete, devMode = false }) {
     } catch { setError('Could not open folder picker.') }
   }
 
+  async function pickExistingArchive() {
+    if (devMode) return
+    try {
+      const sel = await open({ directory: true, multiple: false, title: 'Select Existing Archive Folder' })
+      if (sel) setExistingArchivePath(sel)
+    } catch { setError('Could not open folder picker.') }
+  }
+
   async function createArchive() {
     if (devMode) { goNext(); return }  // skip all filesystem work in dev preview
     if (!archiveLocation) { setError('Please choose a location for your Archive.'); return }
@@ -381,6 +398,80 @@ export default function OnboardingView({ onComplete, devMode = false }) {
       goNext()
     } catch (e) {
       setError('Failed to create Archive: ' + e.message)
+    } finally { setCreating(false) }
+  }
+
+  async function connectArchive() {
+    if (devMode) { goNext(); return }
+    if (!existingArchivePath) { setError('Please select your existing Archive folder.'); return }
+    setCreating(true); setError('')
+    setSyncProgress({ step: 0, total: 6, label: 'Connecting to archive…', books: 0, notebooks: 0, sketchbooks: 0 })
+
+    try {
+      // Point storage at the new path immediately so all storage calls use it
+      setArchivePath(existingArchivePath)
+      resetBaseDir()
+
+      // Step 1: Ensure expected subdirs exist
+      setSyncProgress(p => ({ ...p, step: 1, label: 'Checking folder structure…' }))
+      for (const sub of ['books', 'notebooks', 'sketches', 'audio']) {
+        const subPath = await join(existingArchivePath, sub)
+        if (!(await exists(subPath))) await mkdir(subPath, { recursive: true })
+      }
+
+      // Step 2: Load library index, then scan books/ for any unindexed entries
+      setSyncProgress(p => ({ ...p, step: 2, label: 'Scanning books…' }))
+      let library = await loadLibrary()
+      const indexedIds = new Set(library.map(b => b.id))
+      const booksDir = await join(existingArchivePath, 'books')
+      if (await exists(booksDir)) {
+        const entries = await readDir(booksDir)
+        for (const entry of entries) {
+          if (!entry.name) continue
+          try {
+            const metaPath = await join(booksDir, entry.name, 'meta.json')
+            if (await exists(metaPath)) {
+              const meta = JSON.parse(await readTextFile(metaPath))
+              if (meta.id && !indexedIds.has(meta.id)) {
+                library = [...library, meta]
+                indexedIds.add(meta.id)
+              }
+            }
+          } catch { /* skip corrupt entries */ }
+        }
+      }
+      setSyncProgress(p => ({ ...p, books: library.length }))
+
+      // Step 3: Load notebooks
+      setSyncProgress(p => ({ ...p, step: 3, label: 'Loading notebooks…' }))
+      const notebooks = await loadNotebooksMeta()
+      setSyncProgress(p => ({ ...p, notebooks: notebooks.length }))
+
+      // Step 4: Load sketchbooks
+      setSyncProgress(p => ({ ...p, step: 4, label: 'Loading sketchbooks…' }))
+      const sketchbooks = await loadSketchbooksMeta()
+      setSyncProgress(p => ({ ...p, sketchbooks: sketchbooks.length }))
+
+      // Step 5: Load flashcard decks + collections
+      setSyncProgress(p => ({ ...p, step: 5, label: 'Loading collections…' }))
+      const flashcardDecks = await getJSON('flashcard_decks', [])
+      const collections = await getJSON('collections_meta', [])
+
+      // Step 6: Populate store + persist updated library index
+      setSyncProgress(p => ({ ...p, step: 6, label: 'Sync complete!' }))
+      setLibraryStore(library)
+      setNotebooksStore(notebooks)
+      setSketchbooksStore(sketchbooks)
+      setFlashcardDecksStore(flashcardDecks)
+      setCollectionsStore(collections)
+      if (library.length > 0) await saveLibrary(library)
+
+      await new Promise(r => setTimeout(r, 800))
+      setSyncProgress(null)
+      goNext()
+    } catch (e) {
+      setError('Failed to connect Archive: ' + e.message)
+      setSyncProgress(null)
     } finally { setCreating(false) }
   }
 
@@ -656,73 +747,180 @@ export default function OnboardingView({ onComplete, devMode = false }) {
           <div key={`archive-${stepKey}`}>
             <FadeUp delay={0}>
               <StepLabel n={2} />
-              <Heading>Create your Archive</Heading>
-              <Sub>A folder on your Mac where books, notes, and sketches live.</Sub>
+              <Heading>{archiveMode === 'create' ? 'Create your Archive' : 'Connect your Archive'}</Heading>
+              <Sub>{archiveMode === 'create' ? 'A folder on your Mac where books, notes, and sketches live.' : 'Point Gnos to an existing Archive folder.'}</Sub>
             </FadeUp>
-            <FadeUp delay={90} style={{ marginTop: 28 }}>
-              <AcademicInput
-                label="Archive name" value={archiveName}
-                onChange={e => setArchiveName(e.target.value)}
-                placeholder="My Archive" palette={palette}
-              />
-              {devMode ? (
-                <div style={{
-                  padding: '12px 14px', borderRadius: 8, marginBottom: 20,
-                  background: `${accent}0a`, border: `1px dashed ${bdrCol}`,
-                  display: 'flex', alignItems: 'center', gap: 10,
-                }}>
-                  <span style={{ fontSize: 16 }}>🧪</span>
-                  <div>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: txtCol }}>Dev preview — no folder needed</div>
-                    <div style={{ fontSize: 11, color: dimCol, marginTop: 2 }}>Click Continue to proceed without creating any files.</div>
+            <FadeUp delay={70} style={{ marginTop: 20 }}>
+              {/* Mode toggle */}
+              <div style={{
+                display: 'flex', gap: 6, marginBottom: 22,
+                background: `${accent}08`, borderRadius: 8, padding: 4,
+                border: `1px solid ${bdrCol}`,
+              }}>
+                {[['create', 'New Archive'], ['connect', 'Existing Archive']].map(([mode, label]) => (
+                  <button key={mode} onClick={() => { setArchiveMode(mode); setError('') }} style={{
+                    flex: 1, padding: '7px 10px', fontSize: 12, fontWeight: 600,
+                    fontFamily: 'Georgia, serif', letterSpacing: '0.02em',
+                    background: archiveMode === mode ? accent : 'transparent',
+                    border: 'none', borderRadius: 5,
+                    color: archiveMode === mode ? '#fff' : dimCol,
+                    cursor: 'pointer', transition: 'all 0.18s ease',
+                  }}>{label}</button>
+                ))}
+              </div>
+
+              {archiveMode === 'create' ? (<>
+                <AcademicInput
+                  label="Archive name" value={archiveName}
+                  onChange={e => setArchiveName(e.target.value)}
+                  placeholder="My Archive" palette={palette}
+                />
+                {devMode ? (
+                  <div style={{
+                    padding: '12px 14px', borderRadius: 8, marginBottom: 20,
+                    background: `${accent}0a`, border: `1px dashed ${bdrCol}`,
+                    display: 'flex', alignItems: 'center', gap: 10,
+                  }}>
+                    <span style={{ fontSize: 16 }}>🧪</span>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: txtCol }}>Dev preview — no folder needed</div>
+                      <div style={{ fontSize: 11, color: dimCol, marginTop: 2 }}>Click Continue to proceed without creating any files.</div>
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <div style={{ textAlign: 'left', marginBottom: 20 }}>
-                  <label style={{
-                    display: 'block', marginBottom: 7, fontSize: 10, fontWeight: 700,
-                    letterSpacing: '0.12em', textTransform: 'uppercase', color: dimCol,
-                    transition: 'color 0.3s',
-                  }}>Location</label>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <div style={{
-                      flex: 1, padding: '9px 12px', fontSize: 13, fontFamily: 'monospace',
-                      background: `${accent}09`, border: `1px solid ${bdrCol}`, borderRadius: 6,
-                      color: archiveLocation ? txtCol : dimCol,
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      transition: 'all 0.3s',
-                    }}>{archiveLocation || 'No location chosen'}</div>
-                    <button onClick={pickFolder} style={{
-                      padding: '9px 14px', fontSize: 13, background: 'transparent',
-                      border: `1px solid ${bdrCol}`, borderRadius: 6, color: txtCol,
-                      cursor: 'pointer', fontFamily: 'Georgia, serif', whiteSpace: 'nowrap',
-                      transition: 'border-color 0.15s, background 0.15s',
-                    }}
-                      onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.background = `${accent}12` }}
-                      onMouseLeave={e => { e.currentTarget.style.borderColor = bdrCol; e.currentTarget.style.background = 'transparent' }}
-                    >Choose…</button>
+                ) : (
+                  <div style={{ textAlign: 'left', marginBottom: 20 }}>
+                    <label style={{
+                      display: 'block', marginBottom: 7, fontSize: 10, fontWeight: 700,
+                      letterSpacing: '0.12em', textTransform: 'uppercase', color: dimCol,
+                      transition: 'color 0.3s',
+                    }}>Location</label>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <div style={{
+                        flex: 1, padding: '9px 12px', fontSize: 13, fontFamily: 'monospace',
+                        background: `${accent}09`, border: `1px solid ${bdrCol}`, borderRadius: 6,
+                        color: archiveLocation ? txtCol : dimCol,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        transition: 'all 0.3s',
+                      }}>{archiveLocation || 'No location chosen'}</div>
+                      <button onClick={pickFolder} style={{
+                        padding: '9px 14px', fontSize: 13, background: 'transparent',
+                        border: `1px solid ${bdrCol}`, borderRadius: 6, color: txtCol,
+                        cursor: 'pointer', fontFamily: 'Georgia, serif', whiteSpace: 'nowrap',
+                        transition: 'border-color 0.15s, background 0.15s',
+                      }}
+                        onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.background = `${accent}12` }}
+                        onMouseLeave={e => { e.currentTarget.style.borderColor = bdrCol; e.currentTarget.style.background = 'transparent' }}
+                      >Choose…</button>
+                    </div>
+                    {archiveLocation && (
+                      <div style={{
+                        marginTop: 8, padding: '7px 10px',
+                        background: `${accent}08`, border: `1px solid ${accent}20`,
+                        borderRadius: 5, fontSize: 11.5, color: dimCol, fontFamily: 'monospace',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>{archiveLocation}/{archiveName}</div>
+                    )}
                   </div>
-                  {archiveLocation && (
+                )}
+              </>) : (<>
+                {/* ── Sync progress overlay ───────────────────────────── */}
+                {syncProgress ? (
+                  <div style={{
+                    padding: '20px 16px', borderRadius: 10, marginBottom: 20,
+                    background: `${accent}08`, border: `1px solid ${accent}25`,
+                  }}>
                     <div style={{
-                      marginTop: 8, padding: '7px 10px',
-                      background: `${accent}08`, border: `1px solid ${accent}20`,
-                      borderRadius: 5, fontSize: 11.5, color: dimCol, fontFamily: 'monospace',
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }}>{archiveLocation}/{archiveName}</div>
-                  )}
-                </div>
-              )}
+                      height: 5, borderRadius: 3, background: `${accent}18`,
+                      overflow: 'hidden', marginBottom: 14,
+                    }}>
+                      <div style={{
+                        height: '100%', borderRadius: 3, background: accent,
+                        width: `${Math.round((syncProgress.step / syncProgress.total) * 100)}%`,
+                        transition: 'width 0.4s cubic-bezier(0.4,0,0.2,1)',
+                        boxShadow: `0 0 8px ${accent}60`,
+                      }} />
+                    </div>
+                    <div style={{
+                      fontSize: 12, fontWeight: 600, color: txtCol, marginBottom: 6,
+                      fontFamily: 'Georgia, serif', transition: 'color 0.3s',
+                    }}>{syncProgress.label}</div>
+                    {(syncProgress.books > 0 || syncProgress.notebooks > 0 || syncProgress.sketchbooks > 0) && (
+                      <div style={{
+                        display: 'flex', gap: 12, flexWrap: 'wrap',
+                        fontSize: 11, color: dimCol, fontFamily: 'Georgia, serif',
+                        fontStyle: 'italic', transition: 'color 0.3s',
+                      }}>
+                        {syncProgress.books > 0 && <span>{syncProgress.books} book{syncProgress.books !== 1 ? 's' : ''}</span>}
+                        {syncProgress.notebooks > 0 && <span>{syncProgress.notebooks} notebook{syncProgress.notebooks !== 1 ? 's' : ''}</span>}
+                        {syncProgress.sketchbooks > 0 && <span>{syncProgress.sketchbooks} sketchbook{syncProgress.sketchbooks !== 1 ? 's' : ''}</span>}
+                      </div>
+                    )}
+                  </div>
+                ) : devMode ? (
+                  <div style={{
+                    padding: '12px 14px', borderRadius: 8, marginBottom: 20,
+                    background: `${accent}0a`, border: `1px dashed ${bdrCol}`,
+                    display: 'flex', alignItems: 'center', gap: 10,
+                  }}>
+                    <span style={{ fontSize: 16 }}>🧪</span>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: txtCol }}>Dev preview — no folder needed</div>
+                      <div style={{ fontSize: 11, color: dimCol, marginTop: 2 }}>Click Continue to proceed without creating any files.</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ textAlign: 'left', marginBottom: 20 }}>
+                    <label style={{
+                      display: 'block', marginBottom: 7, fontSize: 10, fontWeight: 700,
+                      letterSpacing: '0.12em', textTransform: 'uppercase', color: dimCol,
+                      transition: 'color 0.3s',
+                    }}>Archive folder</label>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <div style={{
+                        flex: 1, padding: '9px 12px', fontSize: 13, fontFamily: 'monospace',
+                        background: `${accent}09`, border: `1px solid ${bdrCol}`, borderRadius: 6,
+                        color: existingArchivePath ? txtCol : dimCol,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        transition: 'all 0.3s',
+                      }}>{existingArchivePath || 'No folder selected'}</div>
+                      <button onClick={pickExistingArchive} style={{
+                        padding: '9px 14px', fontSize: 13, background: 'transparent',
+                        border: `1px solid ${bdrCol}`, borderRadius: 6, color: txtCol,
+                        cursor: 'pointer', fontFamily: 'Georgia, serif', whiteSpace: 'nowrap',
+                        transition: 'border-color 0.15s, background 0.15s',
+                      }}
+                        onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.background = `${accent}12` }}
+                        onMouseLeave={e => { e.currentTarget.style.borderColor = bdrCol; e.currentTarget.style.background = 'transparent' }}
+                      >Browse…</button>
+                    </div>
+                    {existingArchivePath && (
+                      <div style={{
+                        marginTop: 8, padding: '7px 10px',
+                        background: `${accent}08`, border: `1px solid ${accent}20`,
+                        borderRadius: 5, fontSize: 11, color: dimCol, fontStyle: 'italic',
+                        fontFamily: 'Georgia, serif',
+                      }}>Any missing subfolders will be created automatically.</div>
+                    )}
+                  </div>
+                )}
+              </>)}
+
               <ErrorLine />
               <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-                <button style={btnSecondary}
+                <button style={{ ...btnSecondary, opacity: syncProgress ? 0.4 : 1, pointerEvents: syncProgress ? 'none' : 'auto' }}
                   onMouseEnter={e => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.color = txtCol }}
                   onMouseLeave={e => { e.currentTarget.style.borderColor = bdrCol; e.currentTarget.style.color = dimCol }}
                   onClick={goBack}>Back</button>
                 <button style={{ ...btnPrimary, flex: 1, opacity: creating ? 0.65 : 1 }}
                   onMouseEnter={e => { if (!creating) e.currentTarget.style.filter = 'brightness(0.87)' }}
                   onMouseLeave={e => e.currentTarget.style.filter = 'brightness(1)'}
-                  onClick={createArchive} disabled={creating}>
-                  {creating ? 'Creating…' : 'Create Archive'}
+                  onClick={archiveMode === 'create' ? createArchive : connectArchive}
+                  disabled={creating}>
+                  {syncProgress
+                    ? 'Syncing…'
+                    : creating
+                      ? (archiveMode === 'create' ? 'Creating…' : 'Connecting…')
+                      : (archiveMode === 'create' ? 'Create Archive' : 'Connect Archive')}
                 </button>
               </div>
             </FadeUp>

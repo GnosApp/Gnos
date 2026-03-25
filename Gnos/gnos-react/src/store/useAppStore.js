@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { loadLibrary, saveLibrary, loadNotebooksMeta, saveNotebooksMeta, loadPreferences, savePreferences, loadSketchbooksMeta, saveSketchbooksMeta, migrateBooksToNamedFolders, migrateNotebooksToFolders, migrateSketchbooksToFolders, migrateAudiobooksToFolders, saveArchivePointer, loadArchivePointer, cleanupTrash, getJSON, setJSON } from '@/lib/storage'
+import { loadLibrary, saveLibrary, loadNotebooksMeta, saveNotebooksMeta, loadPreferences, savePreferences, loadSketchbooksMeta, saveSketchbooksMeta, migrateBooksToNamedFolders, migrateNotebooksToFolders, migrateSketchbooksToFolders, migrateAudiobooksToFolders, saveArchivePointer, loadArchivePointer, cleanupTrash, getJSON, setJSON, loadCalendarEvents, saveCalendarEvents } from '@/lib/storage'
 import { applyTheme, BUILT_IN_THEMES } from '@/lib/themes'
 import { makeId } from '@/lib/utils'
 
@@ -17,12 +17,18 @@ const useAppStore = create((set, get) => ({
 
   // ── Side nav ────────────────────────────────────────────────────────────────
   sideNavOpen: false,
-  openSideNav:  () => set({ sideNavOpen: true }),
-  closeSideNav: () => set({ sideNavOpen: false }),
+  openSideNav:  () => set(s => ({ sideNavOpen: true, tabs: s.tabs.map(t => t.id === s.activeTabId ? { ...t, sideNavOpen: true } : t) })),
+  closeSideNav: () => set(s => ({ sideNavOpen: false, tabs: s.tabs.map(t => t.id === s.activeTabId ? { ...t, sideNavOpen: false } : t) })),
+  toggleSideNav: () => set(s => { const next = !s.sideNavOpen; return { sideNavOpen: next, tabs: s.tabs.map(t => t.id === s.activeTabId ? { ...t, sideNavOpen: next } : t) } }),
+  /** Open/close sidebar for a specific tab by id */
+  setTabSideNavOpen: (tabId, open) => set(s => ({
+    sideNavOpen: tabId === s.activeTabId ? open : s.sideNavOpen,
+    tabs: s.tabs.map(t => t.id === tabId ? { ...t, sideNavOpen: open } : t),
+  })),
 
   // ── Tabs (max 2) ─────────────────────────────────────────────────────────────
   // Each tab: { id, view, activeLibTab, activeBook, activeNotebook, activeAudioBook, activeSketchbook }
-  tabs: [{ id: 'tab_main', view: 'library', activeLibTab: 'library', activeBook: null, activeNotebook: null, activeAudioBook: null, activeSketchbook: null, activeFlashcardDeck: null }],
+  tabs: [{ id: 'tab_main', view: 'library', activeLibTab: 'library', activeBook: null, activeNotebook: null, activeAudioBook: null, activeSketchbook: null, activeFlashcardDeck: null, sideNavOpen: false }],
   activeTabId: 'tab_main',
 
   /** Snapshot current view state into the active tab, then switch to target tab */
@@ -30,7 +36,7 @@ const useAppStore = create((set, get) => ({
     const s = get()
     const updatedTabs = s.tabs.map(t =>
       t.id === s.activeTabId
-        ? { ...t, view: s.view, activeLibTab: s.activeLibTab, activeBook: s.activeBook, activeNotebook: s.activeNotebook, activeAudioBook: s.activeAudioBook, activeSketchbook: s.activeSketchbook, activeFlashcardDeck: s.activeFlashcardDeck }
+        ? { ...t, view: s.view, activeLibTab: s.activeLibTab, activeBook: s.activeBook, activeNotebook: s.activeNotebook, activeAudioBook: s.activeAudioBook, activeSketchbook: s.activeSketchbook, activeFlashcardDeck: s.activeFlashcardDeck, sideNavOpen: s.sideNavOpen }
         : t
     )
     const target = updatedTabs.find(t => t.id === targetId)
@@ -45,6 +51,7 @@ const useAppStore = create((set, get) => ({
       activeAudioBook: target.activeAudioBook,
       activeSketchbook: target.activeSketchbook,
       activeFlashcardDeck: target.activeFlashcardDeck,
+      sideNavOpen: target.sideNavOpen ?? false,
     })
   },
 
@@ -66,6 +73,7 @@ const useAppStore = create((set, get) => ({
       activeAudioBook: snapshot.activeAudioBook || null,
       activeSketchbook: snapshot.activeSketchbook || null,
       activeFlashcardDeck: snapshot.activeFlashcardDeck || null,
+      sideNavOpen: false,
     }
     // Always append — no tab limit
     const finalTabs = [...updatedTabs, newTab]
@@ -88,6 +96,84 @@ const useAppStore = create((set, get) => ({
     set(s => ({
       tabs: s.tabs.map(t => t.id === tabId ? { ...t, ...patch } : t),
     }))
+  },
+
+  /** Reorder tabs by swapping indices */
+  reorderTabs: (fromIdx, toIdx) => set(s => {
+    const tabs = [...s.tabs]
+    const [moved] = tabs.splice(fromIdx, 1)
+    tabs.splice(toIdx, 0, moved)
+    return { tabs }
+  }),
+
+  // ── Per-tab navigation history ────────────────────────────────────────────
+  tabHistories: {},
+
+  /** Navigate to a new view state, pushing the current state onto the back stack.
+   *  Also updates the active tab's snapshot so TabPane renders the correct view. */
+  navigate: (patch) => {
+    const s = get()
+    const curState = {
+      view: s.view, activeLibTab: s.activeLibTab, activeBook: s.activeBook,
+      activeNotebook: s.activeNotebook, activeAudioBook: s.activeAudioBook,
+      activeSketchbook: s.activeSketchbook, activeFlashcardDeck: s.activeFlashcardDeck,
+    }
+    const tabId = s.activeTabId
+    const hist = s.tabHistories[tabId] || { back: [], forward: [] }
+    set({
+      ...patch,
+      tabs: s.tabs.map(t => t.id === tabId ? { ...t, ...patch } : t),
+      tabHistories: {
+        ...s.tabHistories,
+        [tabId]: { back: [...hist.back, curState], forward: [] },
+      },
+    })
+  },
+
+  goBack: () => {
+    const s = get()
+    const tabId = s.activeTabId
+    const hist = s.tabHistories[tabId]
+    if (!hist || !hist.back.length) return
+    const curState = {
+      view: s.view, activeLibTab: s.activeLibTab, activeBook: s.activeBook,
+      activeNotebook: s.activeNotebook, activeAudioBook: s.activeAudioBook,
+      activeSketchbook: s.activeSketchbook, activeFlashcardDeck: s.activeFlashcardDeck,
+    }
+    const snapshot = hist.back[hist.back.length - 1]
+    set({
+      view: snapshot.view, activeLibTab: snapshot.activeLibTab, activeBook: snapshot.activeBook,
+      activeNotebook: snapshot.activeNotebook, activeAudioBook: snapshot.activeAudioBook,
+      activeSketchbook: snapshot.activeSketchbook, activeFlashcardDeck: snapshot.activeFlashcardDeck,
+      tabs: s.tabs.map(t => t.id === tabId ? { ...t, view: snapshot.view, activeLibTab: snapshot.activeLibTab, activeBook: snapshot.activeBook, activeNotebook: snapshot.activeNotebook, activeAudioBook: snapshot.activeAudioBook, activeSketchbook: snapshot.activeSketchbook, activeFlashcardDeck: snapshot.activeFlashcardDeck } : t),
+      tabHistories: {
+        ...s.tabHistories,
+        [tabId]: { back: hist.back.slice(0, -1), forward: [curState, ...hist.forward] },
+      },
+    })
+  },
+
+  goForward: () => {
+    const s = get()
+    const tabId = s.activeTabId
+    const hist = s.tabHistories[tabId]
+    if (!hist || !hist.forward.length) return
+    const curState = {
+      view: s.view, activeLibTab: s.activeLibTab, activeBook: s.activeBook,
+      activeNotebook: s.activeNotebook, activeAudioBook: s.activeAudioBook,
+      activeSketchbook: s.activeSketchbook, activeFlashcardDeck: s.activeFlashcardDeck,
+    }
+    const snapshot = hist.forward[0]
+    set({
+      view: snapshot.view, activeLibTab: snapshot.activeLibTab, activeBook: snapshot.activeBook,
+      activeNotebook: snapshot.activeNotebook, activeAudioBook: snapshot.activeAudioBook,
+      activeSketchbook: snapshot.activeSketchbook, activeFlashcardDeck: snapshot.activeFlashcardDeck,
+      tabs: s.tabs.map(t => t.id === tabId ? { ...t, view: snapshot.view, activeLibTab: snapshot.activeLibTab, activeBook: snapshot.activeBook, activeNotebook: snapshot.activeNotebook, activeAudioBook: snapshot.activeAudioBook, activeSketchbook: snapshot.activeSketchbook, activeFlashcardDeck: snapshot.activeFlashcardDeck } : t),
+      tabHistories: {
+        ...s.tabHistories,
+        [tabId]: { back: [...hist.back, curState], forward: hist.forward.slice(1) },
+      },
+    })
   },
 
   /** Close a tab, switch to the remaining one */
@@ -132,6 +218,12 @@ const useAppStore = create((set, get) => ({
     notebooks: s.notebooks.map(n => n.id === id ? { ...n, ...patch } : n),
   })),
   removeNotebook: (id) => set(s => ({ notebooks: s.notebooks.filter(n => n.id !== id) })),
+  reorderNotebooks: (fromIdx, toIdx) => set(s => {
+    const nbs = [...s.notebooks]
+    const [moved] = nbs.splice(fromIdx, 1)
+    nbs.splice(toIdx, 0, moved)
+    return { notebooks: nbs }
+  }),
 
   // ── Active reader ────────────────────────────────────────────────────────────
   activeBook: null,
@@ -157,6 +249,12 @@ const useAppStore = create((set, get) => ({
     sketchbooks: s.sketchbooks.map(sb => sb.id === id ? { ...sb, ...patch } : sb),
   })),
   removeSketchbook: (id) => set(s => ({ sketchbooks: s.sketchbooks.filter(sb => sb.id !== id) })),
+  reorderSketchbooks: (fromIdx, toIdx) => set(s => {
+    const sbs = [...s.sketchbooks]
+    const [moved] = sbs.splice(fromIdx, 1)
+    sbs.splice(toIdx, 0, moved)
+    return { sketchbooks: sbs }
+  }),
 
   // ── Flashcard Decks ────────────────────────────────────────────────────────
   flashcardDecks: [],
@@ -168,6 +266,12 @@ const useAppStore = create((set, get) => ({
     flashcardDecks: s.flashcardDecks.map(d => d.id === id ? { ...d, ...patch } : d),
   })),
   removeDeck: (id) => set(s => ({ flashcardDecks: s.flashcardDecks.filter(d => d.id !== id) })),
+  reorderFlashcardDecks: (fromIdx, toIdx) => set(s => {
+    const fds = [...s.flashcardDecks]
+    const [moved] = fds.splice(fromIdx, 1)
+    fds.splice(toIdx, 0, moved)
+    return { flashcardDecks: fds }
+  }),
 
   // ── Collections ─────────────────────────────────────────────────────────────
   collections: [],
@@ -191,6 +295,11 @@ const useAppStore = create((set, get) => ({
         : c
     ),
   })),
+
+  // ── Calendar events ──────────────────────────────────────────────────────────
+  calendarEvents: [],
+  setCalendarEventsStore: (events) => set({ calendarEvents: events }),
+  async persistCalendarEvents() { await saveCalendarEvents(get().calendarEvents) },
 
   // ── Active audio book ────────────────────────────────────────────────────────
   activeAudioBook: null,
@@ -261,13 +370,14 @@ const useAppStore = create((set, get) => ({
     }
 
     // ── Step 2: load everything from the correct location ─────────────────────
-    const [library, notebooks, sketchbooks, prefs, collections, flashcardDecks] = await Promise.all([
+    const [library, notebooks, sketchbooks, prefs, collections, flashcardDecks, calendarEvents] = await Promise.all([
       loadLibrary(),
       loadNotebooksMeta(),
       loadSketchbooksMeta(),
       loadPreferences(),
       getJSON('collections_meta', []),
       getJSON('flashcard_decks', []),
+      loadCalendarEvents(),
     ])
 
     if (prefs) {
@@ -296,7 +406,7 @@ const useAppStore = create((set, get) => ({
     } else {
       applyTheme('dark')
     }
-    set({ library: library ?? [], notebooks: notebooks ?? [], sketchbooks: sketchbooks ?? [], collections: collections ?? [], flashcardDecks: flashcardDecks ?? [] })
+    set({ library: library ?? [], notebooks: notebooks ?? [], sketchbooks: sketchbooks ?? [], collections: collections ?? [], flashcardDecks: flashcardDecks ?? [], calendarEvents: calendarEvents ?? [] })
     migrateBooksToNamedFolders(library ?? []).catch(err => console.warn('[Gnos] Migration error:', err))
     migrateNotebooksToFolders(notebooks ?? []).catch(err => console.warn('[Gnos] Notebook migration error:', err))
     migrateSketchbooksToFolders(sketchbooks ?? []).catch(err => console.warn('[Gnos] Sketchbook migration error:', err))
