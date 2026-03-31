@@ -276,7 +276,8 @@ export default function ReaderView() {
 
       const rawChapters = await loadBookContent(activeBook.id)
       console.log('[Reader] rawChapters=', rawChapters ? `${rawChapters.length} chapters` : 'NULL')
-      if (!rawChapters || cancelled) return
+      if (cancelled) return
+      if (!rawChapters) { setLoading(false); return }
 
       const coverChapter = {
         title: '_cover_',

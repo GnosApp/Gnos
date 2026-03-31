@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<!-- Open this file in any browser to generate and download the extension icons.
+     Save the downloaded PNGs into the icons/ folder. -->
+<html>
+<head><style>body{font-family:system-ui;background:#111;color:#eee;padding:24px;}canvas{border:1px solid #333;margin:8px;}</style></head>
+<body>
+<h2 style="font-weight:600;margin-bottom:4px">Gnos Clipper — Icon Generator</h2>
+<p style="color:#888;font-size:13px;margin-bottom:16px">Click the button to generate and download all icon sizes.</p>
+<button onclick="generate()" style="padding:10px 22px;background:#7c6af7;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;">Generate + Download Icons</button>
+<div id="preview" style="margin-top:20px;display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;"></div>
+
+<script>
+function drawGnosIcon(canvas, size) {
+  const ctx = canvas.getContext('2d')
+  canvas.width  = size
+  canvas.height = size
+
+  // Work in a 64×64 coordinate space, then scale up
+  const S = size / 64
+  ctx.scale(S, S)
+
+  // ── Background: dark warm gradient ──────────────────────────────────────
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, 64)
+  bgGrad.addColorStop(0, '#1a0a1e')
+  bgGrad.addColorStop(1, '#0f0a04')
+  const r = 14
+  ctx.beginPath()
+  if (ctx.roundRect) {
+    ctx.roundRect(0, 0, 64, 64, r)
+  } else {
+    // Fallback for browsers without roundRect
+    ctx.moveTo(r, 0); ctx.lineTo(64-r, 0)
+    ctx.quadraticCurveTo(64, 0, 64, r)
+    ctx.lineTo(64, 64-r); ctx.quadraticCurveTo(64, 64, 64-r, 64)
+    ctx.lineTo(r, 64); ctx.quadraticCurveTo(0, 64, 0, 64-r)
+    ctx.lineTo(0, r); ctx.quadraticCurveTo(0, 0, r, 0)
+  }
+  ctx.fillStyle = bgGrad
+  ctx.fill()
+
+  // ── Radial warm glow ─────────────────────────────────────────────────────
+  const glowGrad = ctx.createRadialGradient(30, 30, 0, 30, 30, 24)
+  glowGrad.addColorStop(0, 'rgba(232, 105, 42, 0.22)')
+  glowGrad.addColorStop(1, 'rgba(232, 105, 42, 0)')
+  ctx.beginPath()
+  ctx.ellipse(30, 30, 22, 26, 0, 0, Math.PI * 2)
+  ctx.fillStyle = glowGrad
+  ctx.fill()
+
+  // ── Quill ────────────────────────────────────────────────────────────────
+  // All paths drawn in quill-local coordinates (matching the SVG),
+  // then transformed the same way the SVG does:
+  //   transform="translate(32,29) scale(1.7,1.45) translate(-16,-15.5)"
+  ctx.save()
+  ctx.translate(32, 29)
+  ctx.scale(1.7, 1.45)
+  ctx.translate(-16, -15.5)
+
+  ctx.lineCap = 'round'
+
+  // Main quill spine — gradient from gold to orange to deep rose
+  const spineGrad = ctx.createLinearGradient(26, 3, 6.5, 28)
+  spineGrad.addColorStop(0,   '#f7c35a')
+  spineGrad.addColorStop(0.5, '#e8692a')
+  spineGrad.addColorStop(1,   '#c0345a')
+
+  ctx.beginPath()
+  ctx.moveTo(26, 3)
+  ctx.bezierCurveTo(22, 5, 14, 10, 10, 18)
+  ctx.bezierCurveTo(8, 22, 7, 25, 6.5, 28)
+  ctx.strokeStyle = spineGrad
+  ctx.lineWidth = 1.1
+  ctx.stroke()
+
+  // Nib
+  ctx.beginPath()
+  ctx.moveTo(6.5, 28)
+  ctx.lineTo(9, 23)
+  ctx.strokeStyle = spineGrad
+  ctx.lineWidth = 1.1
+  ctx.stroke()
+
+  // Inner barb — warm orange, semi-transparent
+  if (size >= 32) {
+    ctx.beginPath()
+    ctx.moveTo(26, 3)
+    ctx.bezierCurveTo(24, 8, 18, 15, 10, 18)
+    ctx.strokeStyle = 'rgba(232, 105, 42, 0.65)'
+    ctx.lineWidth = 0.75
+    ctx.stroke()
+  }
+
+  // Outer barb — gold highlight, very subtle
+  if (size >= 48) {
+    ctx.beginPath()
+    ctx.moveTo(26, 3)
+    ctx.bezierCurveTo(25, 6, 22, 10, 16, 14)
+    ctx.strokeStyle = 'rgba(247, 195, 90, 0.38)'
+    ctx.lineWidth = 0.5
+    ctx.stroke()
+  }
+
+  ctx.restore()
+
+  // ── Writing line at bottom ────────────────────────────────────────────────
+  ctx.beginPath()
+  ctx.moveTo(12, 53)
+  ctx.lineTo(52, 53)
+  ctx.strokeStyle = 'rgba(247, 195, 90, 0.45)'
+  ctx.lineWidth = size >= 48 ? 1 : 0.8
+  ctx.lineCap = 'round'
+  ctx.stroke()
+}
+
+function generate() {
+  const preview = document.getElementById('preview')
+  preview.innerHTML = ''
+  const sizes = [16, 32, 48, 128]
+
+  sizes.forEach((size, i) => {
+    const canvas = document.createElement('canvas')
+    drawGnosIcon(canvas, size)
+
+    // Preview label
+    const wrap = document.createElement('div')
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;'
+    const lbl = document.createElement('div')
+    lbl.style.cssText = 'font-size:11px;color:#888;'
+    lbl.textContent = size + 'px'
+
+    // Show at 2× for tiny sizes so they're visible
+    const displaySize = size < 48 ? size * 3 : size
+    canvas.style.cssText = `width:${displaySize}px;height:${displaySize}px;image-rendering:pixelated;border-radius:${Math.round(displaySize*0.218)}px;`
+
+    wrap.appendChild(canvas)
+    wrap.appendChild(lbl)
+    preview.appendChild(wrap)
+
+    // Stagger downloads so the browser doesn't block them
+    const dataUrl = canvas.toDataURL('image/png')
+    setTimeout(() => {
+      const a = document.createElement('a')
+      a.href = dataUrl
+      a.download = `icon${size}.png`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+    }, i * 300)
+  })
+}
+
+// Auto-preview on load (no download)
+window.onload = () => {
+  const preview = document.getElementById('preview')
+  const sizes = [16, 32, 48, 128]
+  sizes.forEach(size => {
+    const canvas = document.createElement('canvas')
+    drawGnosIcon(canvas, size)
+    const wrap = document.createElement('div')
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;'
+    const lbl = document.createElement('div')
+    lbl.style.cssText = 'font-size:11px;color:#888;'
+    lbl.textContent = size + 'px'
+    const displaySize = size < 48 ? size * 3 : size
+    canvas.style.cssText = `width:${displaySize}px;height:${displaySize}px;image-rendering:pixelated;border-radius:${Math.round(displaySize*0.218)}px;`
+    wrap.appendChild(canvas); wrap.appendChild(lbl); preview.appendChild(wrap)
+  })
+}
+</script>
+</body>
+</html>

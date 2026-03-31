@@ -5,9 +5,10 @@
  * - Edit: list all cards, add/delete/edit inline
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useContext } from 'react'
 import useAppStore from '@/store/useAppStore'
 import { GnosNavButton } from '@/components/SideNav'
+import { PaneContext } from '@/lib/PaneContext'
 import { saveNotebookImage } from '@/lib/storage'
 import JSZip from 'jszip'
 import initSqlJs from 'sql.js/dist/sql-asm.js'
@@ -220,6 +221,61 @@ const FLASHCARD_CSS = `
     font-size: 11px; opacity: 0.5; padding: 2px 4px;
   }
   .fc-audio-remove:hover { opacity: 1; color: #ef5350; }
+
+  /* List mode */
+  .fc-list {
+    flex: 1; overflow-y: auto; padding: 20px 22px;
+  }
+  .fc-list-row {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 14px 16px; border-radius: 12px;
+    border: 1px solid var(--borderSubtle);
+    margin-bottom: 8px; background: var(--surface);
+    transition: border-color 0.12s, box-shadow 0.12s;
+  }
+  .fc-list-row:hover { border-color: var(--border); box-shadow: 0 2px 10px rgba(0,0,0,0.18); }
+  .fc-list-status {
+    flex-shrink: 0; padding-top: 3px;
+    display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 62px;
+  }
+  .fc-list-badge {
+    font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 5px;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .fc-list-badge.new { background: rgba(33,150,243,0.15); color: #2196f3; }
+  .fc-list-badge.due { background: rgba(255,152,0,0.18); color: #ff9800; }
+  .fc-list-badge.learned { background: rgba(76,175,80,0.15); color: #4caf50; }
+  .fc-list-due-date {
+    font-size: 10px; color: var(--textDim); text-align: center; line-height: 1.3;
+  }
+  .fc-list-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .fc-list-field {
+    width: 100%; padding: 7px 10px; border-radius: 7px;
+    border: 1px solid transparent; background: transparent;
+    color: var(--text); font-size: 14px; font-family: inherit;
+    outline: none; resize: none; line-height: 1.5;
+    transition: background 0.1s, border-color 0.1s;
+  }
+  .fc-list-field:focus { background: var(--bg); border-color: var(--accent); }
+  .fc-list-field::placeholder { color: var(--textDim); opacity: 0.5; }
+  .fc-list-field-label {
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--textDim); padding: 0 10px 1px;
+  }
+  .fc-list-img { max-height: 64px; border-radius: 7px; object-fit: contain; margin: 4px 10px 6px; }
+  .fc-list-del {
+    background: none; border: none; color: var(--textDim); cursor: pointer;
+    padding: 5px 6px; border-radius: 5px; opacity: 0; transition: opacity 0.12s;
+    flex-shrink: 0; font-size: 16px; line-height: 1;
+  }
+  .fc-list-row:hover .fc-list-del { opacity: 0.4; }
+  .fc-list-del:hover { opacity: 1 !important; color: #ef5350; }
+  .fc-list-section {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--textDim);
+    padding: 16px 4px 8px; display: flex; align-items: center; gap: 8px;
+  }
+  .fc-list-section::after { content: ''; flex: 1; height: 1px; background: var(--borderSubtle); }
 `
 
 const CARD_COLORS = ['transparent', '#ef5350', '#ff9800', '#4caf50', '#2196f3', '#9c27b0', '#00bcd4', '#795548']
@@ -314,8 +370,8 @@ async function parseApkg(arrayBuffer) {
       const isAudio = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'wma'].includes(ext)
       const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)
       const mime = isAudio ? `audio/${ext === 'mp3' ? 'mpeg' : ext}` : isImage ? `image/${ext === 'jpg' ? 'jpeg' : ext}` : `application/octet-stream`
-      const blob = new Blob([data], { type: mime })
-      mediaData[filename] = { url: URL.createObjectURL(blob), isAudio, isImage }
+      const b64 = btoa(Array.from(data, b => String.fromCharCode(b)).join(''))
+      mediaData[filename] = { url: `data:${mime};base64,${b64}`, isAudio, isImage }
     }
   }
 
@@ -338,19 +394,47 @@ async function parseApkg(arrayBuffer) {
           nextReview: 0, interval: 1, ease: 2.5, repetitions: 0,
         }
 
-        // Attach first image found
-        const allSounds = [...front.sounds, ...back.sounds]
-        for (const s of allSounds) {
+        // Attach media from [sound:xxx] references
+        for (const s of front.sounds) {
           const m = mediaData[s]
           if (m?.isImage && !card.imageUrl) card.imageUrl = m.url
           if (m?.isAudio && !card.audioUrl) card.audioUrl = m.url
         }
+        for (const s of back.sounds) {
+          const m = mediaData[s]
+          if (m?.isImage && !card.backImageUrl) card.backImageUrl = m.url
+          if (m?.isAudio && !card.backAudioUrl) card.backAudioUrl = m.url
+        }
 
-        // Check for inline images in HTML
-        const imgMatch = (frontHtml + backHtml).match(/<img[^>]+src="([^"]+)"/)
-        if (imgMatch && !card.imageUrl) {
-          const imgName = imgMatch[1]
-          if (mediaData[imgName]?.isImage) card.imageUrl = mediaData[imgName].url
+        // Helper: look up a media entry by src value, stripping any path prefix
+        const lookupMedia = (src) => {
+          if (mediaData[src]) return mediaData[src]
+          // Strip path prefix (e.g. "collection.media/img.jpg" → "img.jpg")
+          const bare = src.replace(/^.*[/\\]/, '')
+          return mediaData[bare] ?? null
+        }
+
+        // Check for inline images in HTML — front and back separately
+        const frontImgMatch = frontHtml.match(/<img[^>]+src=["']([^"']+)["']/g)
+        if (frontImgMatch) {
+          for (const tag of frontImgMatch) {
+            const srcM = tag.match(/src=["']([^"']+)["']/)
+            const m = srcM ? lookupMedia(srcM[1]) : null
+            if (m?.isImage && !card.imageUrl) card.imageUrl = m.url
+          }
+        }
+        const backImgMatch = backHtml.match(/<img[^>]+src=["']([^"']+)["']/g)
+        if (backImgMatch) {
+          for (const tag of backImgMatch) {
+            const srcM = tag.match(/src=["']([^"']+)["']/)
+            const m = srcM ? lookupMedia(srcM[1]) : null
+            if (m?.isImage && !card.backImageUrl) card.backImageUrl = m.url
+          }
+        }
+        // Fallback: if no front image but back has one, or vice versa — keep both separated
+        // If there's only one image total in the card, put it on the front
+        if (!card.imageUrl && card.backImageUrl) {
+          card.imageUrl = card.backImageUrl
         }
 
         cards.push(card)
@@ -364,13 +448,16 @@ async function parseApkg(arrayBuffer) {
 }
 
 export default function FlashcardView() {
+  const paneTabId = useContext(PaneContext)
   const deck = useAppStore(s => s.activeFlashcardDeck)
   const flashcardDecks = useAppStore(s => s.flashcardDecks)
   const updateDeck = useAppStore(s => s.updateDeck)
   const persistFlashcardDecks = useAppStore(s => s.persistFlashcardDecks)
   const setView = useAppStore(s => s.setView)
+  const activeTabId = useAppStore(s => s.activeTabId)
+  const isActivePane = !paneTabId || paneTabId === activeTabId
 
-  const [mode, setMode] = useState('study') // 'study' | 'edit'
+  const [mode, setMode] = useState('study') // 'study' | 'edit' | 'list'
   const [flipped, setFlipped] = useState(false)
   const [currentIdx, setCurrentIdx] = useState(0)
   const [title, setTitle] = useState(deck?.title || 'Untitled Deck')
@@ -393,7 +480,7 @@ export default function FlashcardView() {
 
   // Keyboard: space/click to flip, 1-4 to rate
   useEffect(() => {
-    if (mode !== 'study') return
+    if (mode !== 'study' || !isActivePane) return
     const handler = (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
       if (e.code === 'Space') {
@@ -410,7 +497,7 @@ export default function FlashcardView() {
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, flipped, studyCard, currentIdx])
+  }, [mode, flipped, studyCard, currentIdx, isActivePane])
 
   function rateCard(quality) {
     if (!studyCard || !liveDeck) return
@@ -556,6 +643,7 @@ export default function FlashcardView() {
         </div>
         <button className="fc-mode-btn" onClick={handleImport} title="Import CSV/TSV">Import</button>
         <button className={`fc-mode-btn${mode === 'study' ? ' active' : ''}`} onClick={() => { setMode('study'); setFlipped(false); setCurrentIdx(0) }}>Study</button>
+        <button className={`fc-mode-btn${mode === 'list' ? ' active' : ''}`} onClick={() => setMode('list')}>List</button>
         <button className={`fc-mode-btn${mode === 'edit' ? ' active' : ''}`} onClick={() => setMode('edit')}>Edit</button>
       </div>
 
@@ -576,6 +664,7 @@ export default function FlashcardView() {
                   <div className="fc-card-face fc-card-back" style={{ flexDirection: 'column', gap: 8 }}>
                     <div className="fc-card-label">Back</div>
                     {studyCard.back || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>No answer</span>}
+                    {studyCard.backImageUrl && <img src={studyCard.backImageUrl} alt="" style={{ maxWidth: '70%', maxHeight: 100, borderRadius: 8, objectFit: 'contain' }} />}
                     {studyCard.backAudioUrl && <AudioPlayBtn src={studyCard.backAudioUrl} />}
                   </div>
                 </div>
@@ -613,6 +702,80 @@ export default function FlashcardView() {
           )}
         </div>
       )}
+
+      {/* List Mode */}
+      {mode === 'list' && (() => {
+        const now2 = Date.now()
+        const newCards = cards.filter(c => !c.nextReview || c.nextReview === 0)
+        const dueNow = cards.filter(c => c.nextReview > 0 && c.nextReview <= now2)
+        const learned = cards.filter(c => c.nextReview > now2)
+        const sections = [
+          { label: 'Due Now', items: dueNow, badgeClass: 'due' },
+          { label: 'New', items: newCards, badgeClass: 'new' },
+          { label: 'Learned', items: learned, badgeClass: 'learned' },
+        ].filter(s => s.items.length > 0)
+
+        const formatDue = (ts) => {
+          if (!ts || ts === 0) return 'New'
+          const diff = ts - now2
+          if (diff <= 0) return 'Due now'
+          const days = Math.ceil(diff / 86400000)
+          if (days === 1) return 'Tomorrow'
+          if (days < 30) return `${days}d`
+          return `${Math.round(days / 30)}mo`
+        }
+
+        return (
+          <div className="fc-list">
+            {cards.length === 0 && (
+              <div style={{ textAlign: 'center', color: 'var(--textDim)', paddingTop: 40, fontSize: 14 }}>
+                No cards yet. <button className="fc-mode-btn" style={{ marginLeft: 8 }} onClick={() => setMode('edit')}>Add cards</button>
+              </div>
+            )}
+            {sections.map(({ label, items, badgeClass }) => (
+              <div key={label}>
+                <div className="fc-list-section">{label} ({items.length})</div>
+                {items.map(card => (
+                  <div key={card.id} className="fc-list-row" style={card.color && card.color !== 'transparent' ? { borderLeft: `3px solid ${card.color}` } : {}}>
+                    <div className="fc-list-status">
+                      <span className={`fc-list-badge ${badgeClass}`}>{label === 'Due Now' ? 'Due' : label}</span>
+                      {card.nextReview > 0 && <span className="fc-list-due-date">{formatDue(card.nextReview)}</span>}
+                      {card.interval > 1 && <span className="fc-list-due-date" style={{ opacity: 0.5 }}>~{card.interval}d</span>}
+                    </div>
+                    <div className="fc-list-fields">
+                      <div className="fc-list-field-label">Front</div>
+                      <textarea
+                        className="fc-list-field"
+                        rows={1}
+                        value={card.front}
+                        placeholder="Front…"
+                        onChange={e => updateCard(card.id, { front: e.target.value })}
+                        onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }}
+                      />
+                      {card.imageUrl && <img className="fc-list-img" src={card.imageUrl} alt="" />}
+                      <div className="fc-list-field-label" style={{ marginTop: 2 }}>Back</div>
+                      <textarea
+                        className="fc-list-field"
+                        rows={1}
+                        value={card.back}
+                        placeholder="Back…"
+                        onChange={e => updateCard(card.id, { back: e.target.value })}
+                        onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }}
+                      />
+                      {card.backImageUrl && <img className="fc-list-img" src={card.backImageUrl} alt="" />}
+                    </div>
+                    <button className="fc-list-del" title="Delete card"
+                      onClick={() => { deleteCard(card.id) }}>×</button>
+                  </div>
+                ))}
+              </div>
+            ))}
+            {cards.length > 0 && (
+              <button className="fc-add-btn" style={{ marginTop: 8 }} onClick={addCard}>+ Add Card</button>
+            )}
+          </div>
+        )
+      })()}
 
       {/* Edit Mode — card viewport */}
       {mode === 'edit' && (

@@ -295,6 +295,11 @@ const useAppStore = create((set, get) => ({
         : c
     ),
   })),
+  moveCollection: (collectionId, newParentId) => set(s => ({
+    collections: s.collections.map(c =>
+      c.id === collectionId ? { ...c, parentId: newParentId || null } : c
+    ),
+  })),
 
   // ── Calendar events ──────────────────────────────────────────────────────────
   calendarEvents: [],
@@ -335,6 +340,10 @@ const useAppStore = create((set, get) => ({
   // Audio prefs
   rememberPosition: true,
   defaultPlaybackSpeed: 1,
+  // Calendar prefs
+  calendarStartHour: 7,
+  calendarEndHour: 21,
+  calendarWeekStart: 0,
   // Filter persistence
   libSubFilter: 'all',
   setLibSubFilter: (f) => { set({ libSubFilter: f }); get().persistPreferences() },
@@ -347,6 +356,14 @@ const useAppStore = create((set, get) => ({
   // ── Ollama (optional AI) ─────────────────────────────────────────────────────
   ollamaUrl: '',
   ollamaModel: 'llama3',
+
+  // ── Mini audio player ────────────────────────────────────────────────────────
+  miniAudioBook: null,
+  miniAudioPlaying: false,
+  miniAudioTitle: '',
+  setMiniAudioBook: (book) => set({ miniAudioBook: book }),
+  setMiniAudioPlaying: (v) => set({ miniAudioPlaying: v }),
+  setMiniAudioTitle: (t) => set({ miniAudioTitle: t }),
 
   // ── User profile & archive ──────────────────────────────────────────────────────
   username: '',
@@ -392,6 +409,7 @@ const useAppStore = create((set, get) => ({
         ollamaUrl = '', ollamaModel = 'llama3',
         username = '', archivePath = '', onboardingComplete = false,
         libSubFilter = 'all',
+        calendarStartHour = 7, calendarEndHour = 21, calendarWeekStart = 0,
       } = prefs
       // archivePath from prefs wins over the pointer (they should match, but prefs is authoritative)
       set({ themeKey, customThemes, fontSize, lineSpacing, fontFamily,
@@ -400,6 +418,7 @@ const useAppStore = create((set, get) => ({
             rememberPosition, defaultPlaybackSpeed,
             ttsEnabled, ttsVoice, ttsSpeed,
             ollamaUrl, ollamaModel, username, libSubFilter,
+            calendarStartHour, calendarEndHour, calendarWeekStart,
             archivePath: archivePath || savedArchivePath,
             onboardingComplete })
       applyTheme(themeKey, customThemes)
@@ -443,6 +462,7 @@ const useAppStore = create((set, get) => ({
       ollamaUrl: s.ollamaUrl, ollamaModel: s.ollamaModel,
       username: s.username, archivePath: s.archivePath, onboardingComplete: s.onboardingComplete,
       libSubFilter: s.libSubFilter,
+      calendarStartHour: s.calendarStartHour, calendarEndHour: s.calendarEndHour, calendarWeekStart: s.calendarWeekStart,
     })
     // Always keep the pointer file up to date so init() can find the archive on next launch
     if (s.archivePath) {

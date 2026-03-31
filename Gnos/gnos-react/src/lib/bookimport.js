@@ -4,6 +4,7 @@
 // No DOM manipulation, no global state — returns data that the store consumes.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import JSZip from 'jszip'
 import storage, { saveBookContent, saveAudiobookMeta } from '@/lib/storage'
 import { readFileAsDataURL } from '@/lib/utils'
 
@@ -58,14 +59,7 @@ function zipFind(zip, path) {
 }
 
 async function loadJSZip() {
-  if (window.JSZip) return window.JSZip
-  return new Promise((resolve, reject) => {
-    const s = document.createElement('script')
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js'
-    s.onload = () => resolve(window.JSZip)
-    s.onerror = reject
-    document.head.appendChild(s)
-  })
+  return JSZip
 }
 
 // ── Block parsers ─────────────────────────────────────────────────────────────
@@ -169,9 +163,11 @@ export async function parseEpub(file) {
   if (!containerXml) throw new Error('Invalid EPUB')
 
   const opfMatch = containerXml.match(/full-path\s*=\s*["']([^"']+)["']/i)
+  if (!opfMatch) throw new Error('Cannot locate OPF manifest in EPUB container')
   const opfPath  = opfMatch[1].replace(/^\//, '')
   const opfDir   = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : ''
   const opfXml   = await zipFind(zip, opfPath)?.async('string')
+  if (!opfXml) throw new Error(`Cannot read OPF file: ${opfPath}`)
 
   const titleM   = opfXml.match(/<dc:title[^>]*>([\s\S]*?)<\/dc:title>/i)
   const authorM  = opfXml.match(/<dc:creator[^>]*>([\s\S]*?)<\/dc:creator>/i)
@@ -187,37 +183,7 @@ export async function parseEpub(file) {
     if (id && href) manifest[id] = { href, type: getAttr(m[1], 'media-type') || '', props: getAttr(m[1], 'properties') || '' }
   }
 
-  // Extract cover image
-  let coverDataUrl = null
-  try {
-    const coverId = Object.keys(manifest).find(k =>
-      manifest[k].props.toLowerCase().includes('cover-image') ||
-      k.toLowerCase() === 'cover' ||
-      manifest[k].href.toLowerCase().includes('cover')
-    )
-    if (coverId) {
-      const coverHref  = resolveHref(opfDir, manifest[coverId].href)
-      const coverEntry = coverHref ? zipFind(zip, coverHref) : null
-      if (coverEntry) {
-        const coverData = await coverEntry.async('base64')
-        coverDataUrl = `data:${manifest[coverId].type || 'image/jpeg'};base64,${coverData}`
-      }
-    }
-    if (!coverDataUrl) {
-      const metaCoverM = opfXml.match(/<meta\s[^>]*name\s*=\s*["']cover["'][^>]*content\s*=\s*["']([^"']+)["']/i)
-                      || opfXml.match(/<meta\s[^>]*content\s*=\s*["']([^"']+)["'][^>]*name\s*=\s*["']cover["']/i)
-      if (metaCoverM && manifest[metaCoverM[1]]) {
-        const coverHref  = resolveHref(opfDir, manifest[metaCoverM[1]].href)
-        const coverEntry = coverHref ? zipFind(zip, coverHref) : null
-        if (coverEntry) {
-          const coverData = await coverEntry.async('base64')
-          coverDataUrl = `data:${manifest[metaCoverM[1]].type || 'image/jpeg'};base64,${coverData}`
-        }
-      }
-    }
-  } catch { /* skip */ }
-
-  // Build spine
+  // Build spine early (needed for cover extraction fallback)
   const spineHrefs = []
   const itemrefRe  = /<itemref\s([^>]+?)\/?>/gi
   while ((m = itemrefRe.exec(opfXml)) !== null) {
@@ -229,6 +195,121 @@ export async function parseEpub(file) {
       if (r && !spineHrefs.includes(r)) spineHrefs.push(r)
     }
   }
+
+  // Extract cover image
+  let coverDataUrl = null
+  try {
+    const isImageType = (id) => {
+      const t = (manifest[id]?.type || '').toLowerCase()
+      const h = (manifest[id]?.href || '').toLowerCase()
+      return t.startsWith('image/') || /\.(jpe?g|png|gif|webp|svg)$/i.test(h)
+    }
+    const isHtmlType = (id) => {
+      const t = (manifest[id]?.type || '').toLowerCase()
+      const h = (manifest[id]?.href || '').toLowerCase()
+      return t.includes('html') || t.includes('xhtml') || /\.(html?|xhtml)$/i.test(h)
+    }
+
+    // Helper: load an image manifest entry as a data URL
+    const loadImageAsDataUrl = async (manifestId) => {
+      const entry = manifest[manifestId]
+      if (!entry) return null
+      const href = resolveHref(opfDir, entry.href)
+      const zipEntry = href ? zipFind(zip, href) : null
+      if (!zipEntry) return null
+      const data = await zipEntry.async('base64')
+      return `data:${entry.type || 'image/jpeg'};base64,${data}`
+    }
+
+    // Helper: extract first <img> src from an HTML cover page and load that image
+    const extractImageFromHtml = async (manifestId) => {
+      const entry = manifest[manifestId]
+      if (!entry) return null
+      const href = resolveHref(opfDir, entry.href)
+      const htmlEntry = href ? zipFind(zip, href) : null
+      if (!htmlEntry) return null
+      const html = await htmlEntry.async('string')
+      const imgMatch = html.match(/<img[^>]+src\s*=\s*["']([^"']+)["']/i)
+      if (!imgMatch) return null
+      const imgSrc = imgMatch[1]
+      const htmlDir = href.includes('/') ? href.slice(0, href.lastIndexOf('/') + 1) : ''
+      const imgPath = resolveHref(htmlDir, imgSrc)
+      const imgZipEntry = imgPath ? zipFind(zip, imgPath) : null
+      if (!imgZipEntry) return null
+      const imgData = await imgZipEntry.async('base64')
+      const ext = imgSrc.split('.').pop()?.toLowerCase() || 'jpeg'
+      const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'svg' ? 'image/svg+xml' : 'image/jpeg'
+      return `data:${mime};base64,${imgData}`
+    }
+
+    // Strategy 1: explicit cover-image property
+    const coverImagePropId = Object.keys(manifest).find(k => manifest[k].props.toLowerCase().includes('cover-image'))
+    if (coverImagePropId) {
+      if (isImageType(coverImagePropId)) {
+        coverDataUrl = await loadImageAsDataUrl(coverImagePropId)
+      } else if (isHtmlType(coverImagePropId)) {
+        coverDataUrl = await extractImageFromHtml(coverImagePropId)
+      }
+    }
+
+    // Strategy 2: manifest id named "cover" or "cover-image"
+    if (!coverDataUrl) {
+      const coverNameId = Object.keys(manifest).find(k => /^cover(-image)?$/i.test(k))
+      if (coverNameId) {
+        if (isImageType(coverNameId)) {
+          coverDataUrl = await loadImageAsDataUrl(coverNameId)
+        } else if (isHtmlType(coverNameId)) {
+          coverDataUrl = await extractImageFromHtml(coverNameId)
+        }
+      }
+    }
+
+    // Strategy 3: <meta name="cover" content="..."> tag
+    if (!coverDataUrl) {
+      const metaCoverM = opfXml.match(/<meta\s[^>]*name\s*=\s*["']cover["'][^>]*content\s*=\s*["']([^"']+)["']/i)
+                      || opfXml.match(/<meta\s[^>]*content\s*=\s*["']([^"']+)["'][^>]*name\s*=\s*["']cover["']/i)
+      if (metaCoverM && manifest[metaCoverM[1]]) {
+        if (isImageType(metaCoverM[1])) {
+          coverDataUrl = await loadImageAsDataUrl(metaCoverM[1])
+        } else if (isHtmlType(metaCoverM[1])) {
+          coverDataUrl = await extractImageFromHtml(metaCoverM[1])
+        }
+      }
+    }
+
+    // Strategy 4: any image manifest item with "cover" in href
+    if (!coverDataUrl) {
+      const coverHrefId = Object.keys(manifest).find(k => isImageType(k) && manifest[k].href.toLowerCase().includes('cover'))
+      if (coverHrefId) {
+        coverDataUrl = await loadImageAsDataUrl(coverHrefId)
+      }
+    }
+
+    // Strategy 5: extract image from first spine HTML if it looks like a cover page
+    if (!coverDataUrl && spineHrefs.length > 0) {
+      const firstHref = spineHrefs[0]
+      const firstEntry = zipFind(zip, firstHref)
+      if (firstEntry) {
+        const html = await firstEntry.async('string')
+        // If the first page is short (likely a cover page) and has an image, use it
+        const textOnly = html.replace(/<[^>]+>/g, '').trim()
+        if (textOnly.length < 200) {
+          const imgMatch = html.match(/<img[^>]+src\s*=\s*["']([^"']+)["']/i)
+          if (imgMatch) {
+            const htmlDir = firstHref.includes('/') ? firstHref.slice(0, firstHref.lastIndexOf('/') + 1) : ''
+            const imgPath = resolveHref(htmlDir, imgMatch[1])
+            const imgZipEntry = imgPath ? zipFind(zip, imgPath) : null
+            if (imgZipEntry) {
+              const imgData = await imgZipEntry.async('base64')
+              const ext = imgMatch[1].split('.').pop()?.toLowerCase() || 'jpeg'
+              const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
+              coverDataUrl = `data:${mime};base64,${imgData}`
+            }
+          }
+        }
+      }
+    }
+  } catch (e) { console.warn('[Gnos] Cover extraction failed:', e) }
 
   const rawFiles = await Promise.all(spineHrefs.map(async (href) => {
     const entry = zipFind(zip, href)

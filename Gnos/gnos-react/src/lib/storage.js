@@ -341,6 +341,18 @@ export async function loadNotebooksMeta() {
       }
     }
     if (metas.length > 0) {
+      // Use the saved JSON order as the authoritative sort so manual reordering persists.
+      // Items not in the saved order (newly created) go at the end sorted by updatedAt.
+      const savedOrder = await getJSON('notebooks_meta', [])
+      if (savedOrder.length > 0) {
+        const idxMap = new Map(savedOrder.map((n, i) => [n.id, i]))
+        return metas.sort((a, b) => {
+          const ai = idxMap.has(a.id) ? idxMap.get(a.id) : Infinity
+          const bi = idxMap.has(b.id) ? idxMap.get(b.id) : Infinity
+          if (ai !== bi) return ai - bi
+          return new Date(b.updatedAt) - new Date(a.updatedAt)
+        })
+      }
       return metas.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
     }
   } catch { /* fall through to flat file */ }
@@ -626,19 +638,23 @@ export async function loadBookContent(bookOrId) {
     const entries = await readDir(booksDir)
     for (const entry of entries) {
       if (!entry.name) continue
-      const entryPath = await join(booksDir, entry.name)
-      const metaPath = await join(entryPath, 'meta.json')
-      if (await exists(metaPath)) {
-        const meta = JSON.parse(await readTextFile(metaPath))
-        if (meta.id === id) {
-          const contentPath = await join(entryPath, 'content.json')
-          if (await exists(contentPath)) {
-            return JSON.parse(await readTextFile(contentPath))
+      try {
+        const entryPath = await join(booksDir, entry.name)
+        const metaPath = await join(entryPath, 'meta.json')
+        if (await exists(metaPath)) {
+          const meta = JSON.parse(await readTextFile(metaPath))
+          if (meta.id === id) {
+            const contentPath = await join(entryPath, 'content.json')
+            if (await exists(contentPath)) {
+              return JSON.parse(await readTextFile(contentPath))
+            }
+            // meta matched but no content.json — fall through to legacy
+            break
           }
         }
-      }
+      } catch (entryErr) { console.debug('[Gnos] skipping folder entry', entry.name, entryErr) }
     }
-  } catch (err) { console.debug('[Gnos] named folder lookup failed, trying legacy', err) }
+  } catch (err) { console.warn('[Gnos] named folder scan failed, trying legacy', err) }
 
   // 2. Legacy flat-file format
   const meta = await storage.get(`book_${id}_chunks`)
@@ -961,17 +977,20 @@ async function getSketchDir(sketchbook) {
   const safeName = sanitizeFolderName(sketchbook.title || 'sketch')
   const shortId = (sketchbook.id || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(-12)
   const folderName = shortId ? `${safeName}_${shortId}` : safeName
-  // Check if the legacy name (title only) already exists — if so, use it to preserve existing data
-  const legacyDir = await join(sketchesDir, safeName)
-  if (await exists(legacyDir)) {
-    try {
-      const metaPath = await join(legacyDir, 'meta.json')
-      if (await exists(metaPath)) {
-        const meta = JSON.parse(await readTextFile(metaPath))
-        if (meta.id === sketchbook.id) return legacyDir
-      }
-    } catch { /* fall through to new folder */ }
-  }
+  // Scan all existing sketch folders for one whose meta.id matches — handles renames
+  try {
+    const entries = await readDir(sketchesDir)
+    for (const entry of entries) {
+      if (!entry.name) continue
+      try {
+        const metaPath = await join(sketchesDir, entry.name, 'meta.json')
+        if (await exists(metaPath)) {
+          const meta = JSON.parse(await readTextFile(metaPath))
+          if (meta.id === sketchbook.id) return await join(sketchesDir, entry.name)
+        }
+      } catch { /* skip unreadable */ }
+    }
+  } catch { /* fall through to new folder */ }
   const dir = await join(sketchesDir, folderName)
   if (!(await exists(dir))) await mkdir(dir, { recursive: true })
   return dir
@@ -993,7 +1012,30 @@ export async function loadSketchbooksMeta() {
       }
     }
     if (metas.length > 0) {
-      return metas.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+      // Deduplicate by ID — keep the entry with the most recent updatedAt (rename can create duplicates)
+      const seen = new Map()
+      for (const m of metas) {
+        if (!m.id) continue
+        const existing = seen.get(m.id)
+        if (!existing || new Date(m.updatedAt) > new Date(existing.updatedAt)) {
+          seen.set(m.id, m)
+        }
+      }
+      const uniqueMetas = [...seen.values()]
+
+      // Use the saved JSON order as the authoritative sort so manual reordering persists.
+      // Items not in the saved order (newly created) go at the end sorted by updatedAt.
+      const savedOrder = await getJSON('sketchbooks_meta', [])
+      if (savedOrder.length > 0) {
+        const idxMap = new Map(savedOrder.map((s, i) => [s.id, i]))
+        return uniqueMetas.sort((a, b) => {
+          const ai = idxMap.has(a.id) ? idxMap.get(a.id) : Infinity
+          const bi = idxMap.has(b.id) ? idxMap.get(b.id) : Infinity
+          if (ai !== bi) return ai - bi
+          return new Date(b.updatedAt) - new Date(a.updatedAt)
+        })
+      }
+      return uniqueMetas.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
     }
   } catch { /* fall through */ }
   return getJSON('sketchbooks_meta', [])

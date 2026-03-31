@@ -22,9 +22,9 @@ import { GnosNavButton } from '@/components/SideNav'
 // Per-theme Excalidraw configuration
 // ─────────────────────────────────────────────────────────────────────────────
 const THEME_CONFIG = {
-  sepia:  { mode: 'light', canvasBg: '#f4efe6', strokeColor: '#3b2f20' },
+  sepia:  { mode: 'light', canvasBg: '#faf8f5', strokeColor: '#3b2f20' },
   light:  { mode: 'light', canvasBg: '#f6f8fa', strokeColor: '#1f2328' },
-  moss:   { mode: 'light', canvasBg: '#f2f5ee', strokeColor: '#2a3320' },
+  moss:   { mode: 'light', canvasBg: '#eef3e8', strokeColor: '#1e2c14' },
   dark:   { mode: 'dark',  canvasBg: '#0d1117', strokeColor: '#e6edf3' },
   cherry: { mode: 'dark',  canvasBg: '#0e0608', strokeColor: '#f2dde1' },
   sunset: { mode: 'dark',  canvasBg: '#0f0a04', strokeColor: '#f5e6c8' },
@@ -307,6 +307,14 @@ export default function SketchbookView() {
   }, [])
   const [loadedForId, setLoadedForId] = useState(null)
 
+  // Reset state when sketchbook changes so stale data isn't shown
+  useEffect(() => {
+    if (!sketchbook?.id) return
+    if (loadedForId !== sketchbook.id) {
+      setSketchState({ loaded: false, initialData: null })
+    }
+  }, [sketchbook?.id, loadedForId])
+
   useEffect(() => {
     if (!sketchbook?.id) return
     let cancelled = false
@@ -383,7 +391,7 @@ export default function SketchbookView() {
     const filesCopy = files ? JSON.parse(JSON.stringify(files)) : null
     // Also merge into savedFilesRef right away (don't wait for the debounce)
     if (filesCopy) Object.assign(savedFilesRef.current, filesCopy)
-    saveTimerRef.current = setTimeout(() => doSave(elements, appState, filesCopy), 1200)
+    saveTimerRef.current = setTimeout(() => doSave(elements, appState, filesCopy), 300)
   }, [doSave])
 
   // ── PDF import ────────────────────────────────────────────────────────────────
@@ -471,11 +479,48 @@ export default function SketchbookView() {
     scheduleSave(updated, appState, api.getFiles())
   }, [scheduleSave])
 
-  // Keep a ref to the latest doSave so the unmount effect doesn't cascade
+  // Keep a ref to the latest doSave so the unmount effect can call the current version
   const doSaveRef = useRef(doSave)
   useEffect(() => { doSaveRef.current = doSave }, [doSave])
 
-  // ── Flush save on unmount ─────────────────────────────────────────────────────
+  // ── Flush save on sketchbook switch — saves to the PREVIOUS sketchbook ──────
+  // We capture the full previous sketchbook object (not just id) inside this single
+  // effect so it always uses the OLD value before updating the ref.
+  const prevSketchbookRef = useRef(sketchbook)
+  useEffect(() => {
+    const prevSb = prevSketchbookRef.current
+    prevSketchbookRef.current = sketchbook           // update for next run
+    if (!prevSb || prevSb.id === sketchbook?.id) return
+    clearTimeout(saveTimerRef.current)
+    const api = excalidrawApiRef.current
+    if (!api) return
+    try {
+      const elements  = api.getSceneElements()
+      const appState  = api.getAppState()
+      const newFiles  = api.getFiles()
+      if (newFiles) Object.assign(savedFilesRef.current, newFiles)
+      const allFiles  = { ...savedFilesRef.current }
+      const saveState = {
+        elements: elements ?? [],
+        appState: {
+          gridSize:               appState?.gridSize ?? null,
+          viewBackgroundColor:    appState?.viewBackgroundColor,
+          currentItemFontFamily:  appState?.currentItemFontFamily,
+          currentItemFontSize:    appState?.currentItemFontSize,
+          currentItemTextAlign:   appState?.currentItemTextAlign,
+          currentItemStrokeColor: appState?.currentItemStrokeColor,
+          currentItemFillStyle:   appState?.currentItemFillStyle,
+          currentItemStrokeWidth: appState?.currentItemStrokeWidth,
+          currentItemRoughness:   appState?.currentItemRoughness,
+          currentItemOpacity:     appState?.currentItemOpacity,
+        },
+        files: allFiles,
+      }
+      saveSketchbookContent(prevSb, { excalidraw: saveState })
+        .catch(e => console.warn('[SketchbookView] flush-save on switch failed:', e))
+    } catch (e) { console.warn('[SketchbookView] flush-save on switch failed:', e) }
+  }, [sketchbook]) // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     return () => {
       clearTimeout(saveTimerRef.current)

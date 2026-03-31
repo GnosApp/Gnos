@@ -10,9 +10,9 @@ const STEPS = ['welcome', 'username', 'archive', 'theme', 'done']
 const TOTAL_CIRCLES = STEPS.length - 1 // 4 — "done" has no circle of its own
 
 const THEME_OPTIONS = [
-  { key: 'sepia',  name: 'Sepia',  bg: '#f4efe6', surface: '#faf6ef', accent: '#8b5e3c', text: '#3b2f20', dim: '#7a6652', border: '#c8b89a', preview: ['#f4efe6','#faf6ef','#8b5e3c'] },
+  { key: 'sepia',  name: 'Coffee', bg: '#faf8f5', surface: '#ffffff', accent: '#8b5e3c', text: '#3b2f20', dim: '#7a6652', border: '#d4c4b0', preview: ['#faf8f5','#ffffff','#8b5e3c'] },
   { key: 'light',  name: 'Light',  bg: '#f6f8fa', surface: '#ffffff', accent: '#0969da', text: '#1f2328', dim: '#636c76', border: '#d0d7de', preview: ['#f6f8fa','#ffffff','#0969da'] },
-  { key: 'moss',   name: 'Moss',   bg: '#f2f5ee', surface: '#f8faf5', accent: '#4a7c3f', text: '#2a3320', dim: '#5a7048', border: '#b8c9a8', preview: ['#f2f5ee','#f8faf5','#4a7c3f'] },
+  { key: 'moss',   name: 'Moss',   bg: '#eef3e8', surface: '#f5f9f0', accent: '#3d6e32', text: '#1e2c14', dim: '#4e6840', border: '#a8c090', preview: ['#eef3e8','#f5f9f0','#3d6e32'] },
   { key: 'dark',   name: 'Dark',   bg: '#0d1117', surface: '#161b22', accent: '#388bfd', text: '#e6edf3', dim: '#8b949e', border: '#30363d', preview: ['#0d1117','#161b22','#388bfd'] },
   { key: 'cherry', name: 'Cherry', bg: '#0e0608', surface: '#170b0d', accent: '#e05c7a', text: '#f2dde1', dim: '#9e6d76', border: '#3d1a20', preview: ['#0e0608','#170b0d','#e05c7a'] },
   { key: 'sunset', name: 'Sunset', bg: '#0f0a04', surface: '#1a1008', accent: '#e8922a', text: '#f5e6c8', dim: '#a07840', border: '#4a3010', preview: ['#0f0a04','#1a1008','#e8922a'] },

@@ -24,7 +24,8 @@
  *   use the autocomplete tooltip.
  */
 
-import { useState, useEffect, useRef, useCallback, useMemo, useContext } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, useContext, createElement } from 'react'
+import { createRoot } from 'react-dom/client'
 import useAppStore from '@/store/useAppStore'
 import { PaneContext } from '@/lib/PaneContext'
 import { loadNotebookContent, saveNotebookContent, saveNotebookImage, getNotebookFolderPath } from '@/lib/storage'
@@ -46,6 +47,27 @@ let _invoke = null
 // ─── Tiny id helper ───────────────────────────────────────────────────────────
 function makeId(prefix = 'id') {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
+}
+
+// ─── PDF Export helper ────────────────────────────────────────────────────────
+const _PDF_CSS = `@page{margin:1in .8in}body{font-family:Georgia,'Times New Roman',serif;font-size:14px;line-height:1.7;color:#222;max-width:700px;margin:0 auto;padding:20px 0}h1{font-size:1.8em;font-weight:600;margin:1.2em 0 .5em}h2{font-size:1.5em;font-weight:600;margin:1.1em 0 .4em}h3{font-size:1.25em;font-weight:600;margin:1em 0 .35em}h4,h5,h6{font-weight:600;margin:.9em 0 .3em}p{margin:0 0 .75em}blockquote{border-left:3px solid #ccc;margin:.8em 0;padding:8px 14px;color:#555;font-style:italic}pre{background:#f5f5f5;border:1px solid #ddd;border-radius:6px;padding:12px 14px;overflow-x:auto;margin:.8em 0;font-size:.87em}code{font-family:SF Mono,Menlo,Consolas,monospace;font-size:.87em}table{border-collapse:collapse;width:100%;margin:.8em 0;font-size:.93em}th,td{border:1px solid #ccc;padding:6px 10px}th{background:#f5f5f5;font-weight:600}ul,ol{margin:0 0 .75em;padding-left:1.6em}li{margin-bottom:.25em}img{max-width:100%;height:auto}hr{border:none;border-top:1px solid #ccc;margin:1.5em 0}.nb-callout{border-left:3px solid #4a90d9;background:#f0f6ff;padding:10px 14px;border-radius:0 6px 6px 0;margin:.8em 0}.nb-task-item{list-style:none;margin-left:-1.2em}.nb-task-item input[type=checkbox]{margin-right:6px}mark{background:#fff3b0;padding:1px 3px;border-radius:2px}`
+
+function exportNotebookPdf(html, title = 'Notebook', onStatus) {
+  const esc = s => String(s).replace(/</g,'&lt;')
+  if (onStatus) onStatus('preparing')
+  const win = window.open('', '_blank')
+  if (!win) { if (onStatus) onStatus(null); return }
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>${_PDF_CSS}</style></head><body>`)
+  if (title) win.document.write(`<h1 style="margin-top:0">${esc(title)}</h1>`)
+  win.document.write(html)
+  win.document.write('</body></html>')
+  win.document.close()
+  if (onStatus) onStatus('printing')
+  setTimeout(() => {
+    win.print()
+    win.close()
+    setTimeout(() => { if (onStatus) onStatus(null) }, 300)
+  }, 500)
 }
 
 // ─── CodeMirror lazy bundle ───────────────────────────────────────────────────
@@ -365,13 +387,12 @@ function blockToHtml(raw, notebooks, library, footnotesBuf, sketchbooks = [], fl
     const block = parseTaskBlock(raw, 0)
     if (block) {
       const colsHtml = block.columns.map(col => {
-        const tasksHtml = col.tasks.map(t => `
-          <div class="cm-task-card-w${t.done ? ' cm-task-card-w-done' : ''}">
+        const tasksHtml = col.tasks.map(t => {
+          return `<div class="cm-task-card-w">
             <div class="cm-task-card-body">
-              <span class="cm-cb${t.done ? ' cm-cb-on' : ''}">${t.done ? '✓' : ''}</span>
               <span class="cm-task-card-text">${esc(t.text)}</span>
             </div>
-          </div>`).join('')
+          </div>`}).join('')
         return `<div class="cm-task-col-w">
           <div class="cm-task-col-hdr-w">
             <span class="cm-task-col-title">${esc(col.title)}</span>
@@ -405,6 +426,11 @@ function blockToHtml(raw, notebooks, library, footnotesBuf, sketchbooks = [], fl
       return `<div class="cm-cal-prev-day"><span class="cm-cal-prev-date">${esc(label)}</span>${evts.map(e => `<span class="cm-cal-prev-evt">${esc(e)}</span>`).join('')}</div>`
     }).join('') : '<div style="font-size:11px;color:var(--textDim);padding:6px 0">No upcoming events</div>'
     return `<div class="cm-cal-prev-block"><div class="cm-cal-prev-title">${esc(titleText)}</div>${evtHtml}</div>`
+  }
+
+  // /pomo block — render as pomodoro status in preview
+  if (/^\/pomo$/.test(first)) {
+    return `<div class="cm-pomo-prev"><span class="cm-pomo-prev-icon">\u{1F345}</span><span class="cm-pomo-prev-text">Pomodoro Timer</span><span class="cm-pomo-prev-sub">25 min focus · 5 min break</span></div>`
   }
 
   // /timer block — render as a simple timer display in preview
@@ -1506,25 +1532,98 @@ class LinkWidget {
 
 // ─── /todo single-block widget ───────────────────────────────────────────────
 // ─── Widget helpers ───────────────────────────────────────────────────────────
-function _getEditorView(el) {
-  const content = el.closest('.cm-editor')?.querySelector('.cm-content')
-  return content?.cmView?.view ?? null
+
+// Custom date/time picker popup
+const _MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
+function showDateTimePicker(anchorEl, currentDate, currentTime, onChange) {
+  document.querySelectorAll('.gnos-dtp').forEach(e => e.remove())
+  const todayD = new Date()
+  const todayStr = `${todayD.getFullYear()}-${String(todayD.getMonth()+1).padStart(2,'0')}-${String(todayD.getDate()).padStart(2,'0')}`
+  let selDate = currentDate || '', selTime = currentTime || ''
+  let viewYear = todayD.getFullYear(), viewMonth = todayD.getMonth()
+  if (selDate) { try { const d = new Date(selDate + 'T00:00'); viewYear = d.getFullYear(); viewMonth = d.getMonth() } catch {} }
+
+  const popup = document.createElement('div')
+  popup.className = 'gnos-dtp'
+
+  const render = () => {
+    popup.innerHTML = ''
+    // Nav row
+    const nav = document.createElement('div'); nav.className = 'gnos-dtp-nav'
+    const prev = document.createElement('button'); prev.className = 'gnos-dtp-nav-btn'; prev.textContent = '‹'
+    prev.onclick = e => { e.stopPropagation(); if (--viewMonth < 0) { viewMonth = 11; viewYear-- }; render() }
+    const lbl = document.createElement('span'); lbl.className = 'gnos-dtp-month-label'
+    lbl.textContent = `${_MONTHS[viewMonth]} ${viewYear}`
+    const next = document.createElement('button'); next.className = 'gnos-dtp-nav-btn'; next.textContent = '›'
+    next.onclick = e => { e.stopPropagation(); if (++viewMonth > 11) { viewMonth = 0; viewYear++ }; render() }
+    nav.appendChild(prev); nav.appendChild(lbl); nav.appendChild(next); popup.appendChild(nav)
+    // Grid
+    const grid = document.createElement('div'); grid.className = 'gnos-dtp-grid'
+    for (const d of ['Su','Mo','Tu','We','Th','Fr','Sa']) {
+      const h = document.createElement('div'); h.className = 'gnos-dtp-wday'; h.textContent = d; grid.appendChild(h)
+    }
+    const firstDay = new Date(viewYear, viewMonth, 1).getDay()
+    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
+    for (let i = 0; i < firstDay; i++) grid.appendChild(Object.assign(document.createElement('div'), { className: 'gnos-dtp-day gnos-dtp-empty' }))
+    for (let d = 1; d <= daysInMonth; d++) {
+      const ds = `${viewYear}-${String(viewMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      const el = document.createElement('div'); el.className = 'gnos-dtp-day'; el.textContent = String(d)
+      if (ds === selDate) el.classList.add('gnos-dtp-selected')
+      if (ds === todayStr) el.classList.add('gnos-dtp-today')
+      el.onclick = ev => { ev.stopPropagation(); selDate = selDate === ds ? '' : ds; render() }
+      grid.appendChild(el)
+    }
+    popup.appendChild(grid)
+    // Time row
+    const tr = document.createElement('div'); tr.className = 'gnos-dtp-time-row'
+    const tl = document.createElement('span'); tl.className = 'gnos-dtp-time-label'; tl.textContent = 'Time'
+    const ti = document.createElement('input'); ti.className = 'gnos-dtp-time-inp'; ti.type = 'time'; ti.value = selTime
+    ti.onchange = e => { selTime = e.target.value || '' }
+    tr.appendChild(tl); tr.appendChild(ti); popup.appendChild(tr)
+    // Actions
+    const acts = document.createElement('div'); acts.className = 'gnos-dtp-actions'
+    const clr = document.createElement('button'); clr.className = 'gnos-dtp-clear'; clr.textContent = 'Clear'
+    clr.onclick = e => { e.stopPropagation(); onChange('', ''); popup.remove() }
+    const done = document.createElement('button'); done.className = 'gnos-dtp-done'; done.textContent = 'Done'
+    done.onclick = e => { e.stopPropagation(); onChange(selDate, selTime); popup.remove() }
+    acts.appendChild(clr); acts.appendChild(done); popup.appendChild(acts)
+  }
+  render()
+  // Position
+  const rect = anchorEl.getBoundingClientRect()
+  let left = rect.left, top = rect.bottom + 6
+  if (left + 222 > window.innerWidth) left = window.innerWidth - 228
+  if (top + 300 > window.innerHeight) top = rect.top - 306
+  popup.style.cssText = `position:fixed;left:${left}px;top:${Math.max(4, top)}px;z-index:10000;`
+  document.body.appendChild(popup)
+  const outside = e => { if (!popup.contains(e.target) && e.target !== anchorEl) { popup.remove(); document.removeEventListener('mousedown', outside) } }
+  setTimeout(() => document.addEventListener('mousedown', outside), 0)
 }
-function _replaceInDoc(el, oldText, newText) {
-  const view = _getEditorView(el)
+function _replaceInDoc(view, oldText, newText, hintFrom = -1) {
   if (!view) return false
   const doc = view.state.doc.toString()
-  const idx = doc.indexOf(oldText)
+  // Try near the known position first (most reliable), then fall back to full scan
+  let idx = -1
+  if (hintFrom >= 0) {
+    const window = 200
+    const start = Math.max(0, hintFrom - window)
+    const end = Math.min(doc.length, hintFrom + oldText.length + window)
+    const slice = doc.slice(start, end)
+    const local = slice.indexOf(oldText)
+    if (local !== -1) idx = start + local
+  }
+  if (idx === -1) idx = doc.indexOf(oldText)
   if (idx === -1) return false
   view.dispatch({ changes: { from: idx, to: idx + oldText.length, insert: newText } })
   return true
 }
 
 class TodoBlockWidget {
-  constructor(listName, items, rawMd) {
+  constructor(listName, items, rawMd, blockFrom = -1) {
     this.listName = listName
     this.items = items // [{text, checked, dateStr, timeStr, cbPos}]
     this.rawMd = rawMd
+    this.blockFrom = blockFrom
   }
   _serialize(title, items) {
     const hdr = `/todo${title && title !== "Todo's" ? ':' + title : ''}`
@@ -1536,12 +1635,15 @@ class TodoBlockWidget {
     }
     return lines.join('\n')
   }
-  toDOM() {
+  toDOM(cmView) {
     const wrap = document.createElement('div')
     wrap.className = 'cm-todo-block-w'
     let titleText = this.listName || "Todo's"
     const items = this.items.map(it => ({ ...it }))
-    const save = () => _replaceInDoc(wrap, this.rawMd, this._serialize(titleText, items))
+    const save = () => {
+      const newMd = this._serialize(titleText, items)
+      if (_replaceInDoc(cmView, this.rawMd, newMd, this.blockFrom)) { this.rawMd = newMd; this.blockFrom = -1 }
+    }
 
     const render = () => {
       wrap.innerHTML = ''
@@ -1632,6 +1734,27 @@ class TodoBlockWidget {
 
         const actions = document.createElement('div')
         actions.className = 'cm-todo-actions'
+
+        // Date/time button — opens custom picker
+        const dateBtn = document.createElement('button')
+        const dateLabel = it.dateStr ? (it.timeStr ? `${it.dateStr} ${it.timeStr}` : it.dateStr) : ''
+        dateBtn.className = 'cm-todo-date-btn' + (it.dateStr ? ' cm-todo-date-btn-set' : '')
+        dateBtn.title = it.dateStr ? `Due: ${dateLabel} — click to edit` : 'Set due date/time'
+        dateBtn.innerHTML = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="12" rx="2" stroke="currentColor" stroke-width="1.4"/><line x1="5" y1="1" x2="5" y2="4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="11" y1="1" x2="11" y2="4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="1.5" y1="6.5" x2="14.5" y2="6.5" stroke="currentColor" stroke-width="1.2"/></svg>'
+        if (it.dateStr) {
+          const lbl = document.createElement('span')
+          lbl.style.cssText = 'font-size:10px;margin-left:2px;'
+          lbl.textContent = it.timeStr ? `${it.dateStr} ${it.timeStr}` : it.dateStr
+          dateBtn.appendChild(lbl)
+        }
+        dateBtn.onclick = e => {
+          e.stopPropagation()
+          showDateTimePicker(dateBtn, it.dateStr || '', it.timeStr || '', (d, t) => {
+            it.dateStr = d; it.timeStr = t; save(); render()
+          })
+        }
+        actions.appendChild(dateBtn)
+
         const del = document.createElement('button')
         del.className = 'cm-todo-del-btn'
         del.textContent = '\u00d7'
@@ -1662,10 +1785,13 @@ class TodoBlockWidget {
       const doAdd = () => {
         const val = addInput.value.trim()
         if (!val) return
+        addInput.value = ''
         items.push({ text: val, checked: false, dateStr: '', timeStr: '', cbPos: 0 })
         save(); render()
+        const ni = wrap.querySelector('.cm-todo-add-input')
+        if (ni) ni.focus()
       }
-      addInput.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); doAdd() } }
+      addInput.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); doAdd() } }
       addBtn.onclick = doAdd
       addRow.appendChild(addBtn)
       addRow.appendChild(addInput)
@@ -1684,7 +1810,7 @@ class TodoBlockWidget {
   }
   eq(o) {
     if (!(o instanceof TodoBlockWidget) || o.listName !== this.listName || o.items.length !== this.items.length) return false
-    return this.items.every((it, i) => o.items[i].checked === it.checked && o.items[i].text === it.text && o.items[i].cbPos === it.cbPos)
+    return this.items.every((it, i) => o.items[i].checked === it.checked && o.items[i].text === it.text && o.items[i].cbPos === it.cbPos && o.items[i].dateStr === it.dateStr && o.items[i].timeStr === it.timeStr)
   }
   compare(o) { return this.eq(o) }
   destroy() {}
@@ -1694,28 +1820,11 @@ class TodoBlockWidget {
 }
 
 // ─── /task single-block widget (interactive kanban) ───────────────────────────
-// Column color palette for kanban
-const KANBAN_COLORS = [
-  { name:'Blue',   bg:'rgba(56,139,253,.12)', accent:'#388bfd', hdr:'rgba(56,139,253,.18)' },
-  { name:'Green',  bg:'rgba(63,185,80,.12)',  accent:'#3fb950', hdr:'rgba(63,185,80,.18)' },
-  { name:'Purple', bg:'rgba(163,113,247,.12)',accent:'#a371f7', hdr:'rgba(163,113,247,.18)' },
-  { name:'Orange', bg:'rgba(210,153,34,.12)', accent:'#d29922', hdr:'rgba(210,153,34,.18)' },
-  { name:'Red',    bg:'rgba(248,81,73,.12)',  accent:'#f85149', hdr:'rgba(248,81,73,.18)' },
-  { name:'Teal',   bg:'rgba(57,211,183,.12)', accent:'#39d3b7', hdr:'rgba(57,211,183,.18)' },
-  { name:'Pink',   bg:'rgba(219,127,186,.12)',accent:'#db7fba', hdr:'rgba(219,127,186,.18)' },
-  { name:'Gray',   bg:'var(--surfaceAlt)',     accent:'var(--textDim)',hdr:'var(--surfaceAlt)' },
-]
-const CARD_LABELS = [
-  { name:'Red',    color:'#f85149' },
-  { name:'Orange', color:'#d29922' },
-  { name:'Green',  color:'#3fb950' },
-  { name:'Blue',   color:'#388bfd' },
-  { name:'Purple', color:'#a371f7' },
-  { name:'Pink',   color:'#db7fba' },
-]
+// Module-level pointer drag state for kanban boards
+let _kbDrag = null
 
 class TaskBlockWidget {
-  constructor(boardTitle, columns, rawMd) {
+  constructor(boardTitle, columns, rawMd, blockFrom = -1) {
     this.boardTitle = boardTitle
     // Default kanban columns when empty
     this.columns = columns.length ? columns : [
@@ -1724,29 +1833,31 @@ class TaskBlockWidget {
       { title: 'Done', tasks: [] },
     ]
     this.rawMd = rawMd
+    this.blockFrom = blockFrom
     this._needsDefault = !columns.length
   }
   _serialize(title, cols) {
     const lines = [`/task${title ? ':' + title : ''}`]
     for (const col of cols) {
-      const colorTag = col.color != null ? `{color:${col.color}}` : ''
-      lines.push(`== ${col.title} ==${colorTag}`)
+      lines.push(`== ${col.title} ==`)
       for (const t of col.tasks) {
-        const labelTag = t.label != null ? `{label:${t.label}}` : ''
-        lines.push(`- ${t.done ? '[x]' : '[ ]'} ${t.text}${labelTag}`)
+        lines.push(`- [ ] ${t.text}`)
       }
     }
     return lines.join('\n')
   }
-  toDOM() {
+  toDOM(cmView) {
     const wrap = document.createElement('div')
     wrap.className = 'cm-task-board-w'
     const cols = this.columns.map(c => ({
-      title: c.title, color: c.color ?? null,
-      tasks: c.tasks.map(t => ({ ...t, label: t.label ?? null })),
+      title: c.title,
+      tasks: c.tasks.map(t => ({ text: t.text })),
     }))
     const bt = this.boardTitle
-    const save = () => _replaceInDoc(wrap, this.rawMd, this._serialize(bt, cols))
+    const save = () => {
+      const newMd = this._serialize(bt, cols)
+      if (_replaceInDoc(cmView, this.rawMd, newMd, this.blockFrom)) { this.rawMd = newMd; this.blockFrom = -1 }
+    }
 
     if (this._needsDefault) {
       this._needsDefault = false
@@ -1757,48 +1868,29 @@ class TaskBlockWidget {
       wrap.innerHTML = ''
 
       // Board title bar
-      const titleBar = document.createElement('div')
-      titleBar.className = 'cm-task-titlebar'
       if (bt) {
+        const titleBar = document.createElement('div')
+        titleBar.className = 'cm-task-titlebar'
         const titleEl = document.createElement('span')
         titleEl.className = 'cm-task-title-w'
         titleEl.textContent = bt
         titleBar.appendChild(titleEl)
+        wrap.appendChild(titleBar)
       }
-      wrap.appendChild(titleBar)
 
       const colsRow = document.createElement('div')
       colsRow.className = 'cm-task-cols-w'
 
       cols.forEach((col, ci) => {
-        const pal = KANBAN_COLORS[col.color ?? 7] || KANBAN_COLORS[7]
         const colDiv = document.createElement('div')
         colDiv.className = 'cm-task-col-w'
-        colDiv.style.background = pal.bg
-
-        // Drop target
-        colDiv.ondragover = (e) => { e.preventDefault(); colDiv.classList.add('cm-task-col-drop') }
-        colDiv.ondragleave = () => colDiv.classList.remove('cm-task-col-drop')
-        colDiv.ondrop = (e) => {
-          e.preventDefault(); colDiv.classList.remove('cm-task-col-drop')
-          try {
-            const d = JSON.parse(e.dataTransfer.getData('text/plain'))
-            if (d._taskDrag) {
-              const task = cols[d.srcCol].tasks.splice(d.srcTask, 1)[0]
-              cols[ci].tasks.push(task)
-              save(); render()
-            }
-          } catch { /**/ }
-        }
 
         // Column header
         const colHdr = document.createElement('div')
         colHdr.className = 'cm-task-col-hdr-w'
-        colHdr.style.background = pal.hdr
         const colTitleEl = document.createElement('span')
         colTitleEl.className = 'cm-task-col-title'
         colTitleEl.textContent = col.title
-        // Click column title to rename
         colTitleEl.onclick = () => {
           const inp = document.createElement('input')
           inp.className = 'cm-task-col-title-inp'
@@ -1806,7 +1898,7 @@ class TaskBlockWidget {
           colTitleEl.textContent = ''; colTitleEl.appendChild(inp)
           inp.focus(); inp.select()
           const commit = () => { col.title = inp.value.trim() || col.title; save(); render() }
-          inp.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); commit() } if (ev.key === 'Escape') render() }
+          inp.onkeydown = ev => { ev.stopPropagation(); if (ev.key === 'Enter') { ev.preventDefault(); commit() } if (ev.key === 'Escape') render() }
           inp.onblur = commit
         }
 
@@ -1816,38 +1908,13 @@ class TaskBlockWidget {
         badge.className = 'cm-task-col-w-badge'
         badge.textContent = String(col.tasks.length)
 
-        // Color picker button
-        const colorBtn = document.createElement('button')
-        colorBtn.className = 'cm-task-col-color-btn'
-        colorBtn.style.background = pal.accent
-        colorBtn.title = 'Column color'
-        colorBtn.onclick = (e) => {
-          e.stopPropagation()
-          // Toggle color picker dropdown
-          const existing = colDiv.querySelector('.cm-task-color-picker')
-          if (existing) { existing.remove(); return }
-          const picker = document.createElement('div')
-          picker.className = 'cm-task-color-picker'
-          KANBAN_COLORS.forEach((c, idx) => {
-            const swatch = document.createElement('div')
-            swatch.className = 'cm-task-color-swatch' + (col.color === idx ? ' cm-task-color-active' : '')
-            swatch.style.background = c.accent
-            swatch.title = c.name
-            swatch.onclick = (ev) => { ev.stopPropagation(); col.color = idx; save(); render() }
-            picker.appendChild(swatch)
-          })
-          colHdr.appendChild(picker)
-        }
-
-        // Delete column button
         const delCol = document.createElement('button')
         delCol.className = 'cm-task-col-del'
         delCol.textContent = '\u00d7'
         delCol.title = 'Delete column'
-        delCol.onclick = (e) => { e.stopPropagation(); cols.splice(ci, 1); save(); render() }
+        delCol.onclick = e => { e.stopPropagation(); cols.splice(ci, 1); save(); render() }
 
         hdrRight.appendChild(badge)
-        hdrRight.appendChild(colorBtn)
         hdrRight.appendChild(delCol)
         colHdr.appendChild(colTitleEl)
         colHdr.appendChild(hdrRight)
@@ -1858,36 +1925,60 @@ class TaskBlockWidget {
         cardsArea.className = 'cm-task-cards-area'
         col.tasks.forEach((task, ti) => {
           const card = document.createElement('div')
-          card.className = 'cm-task-card-w' + (task.done ? ' cm-task-card-w-done' : '')
-          card.draggable = true
-          card.ondragstart = (e) => {
-            e.dataTransfer.setData('text/plain', JSON.stringify({ _taskDrag: true, srcCol: ci, srcTask: ti }))
-            e.dataTransfer.effectAllowed = 'move'
-            card.classList.add('cm-task-card-dragging')
-          }
-          card.ondragend = () => card.classList.remove('cm-task-card-dragging')
+          card.className = 'cm-task-card-w'
+          card.style.touchAction = 'none'
 
-          // Label bar at top of card
-          if (task.label != null) {
-            const labelBar = document.createElement('div')
-            labelBar.className = 'cm-task-card-label'
-            labelBar.style.background = (CARD_LABELS[task.label] || CARD_LABELS[0]).color
-            card.appendChild(labelBar)
+          // Pointer-based drag
+          card.onpointerdown = e => {
+            if (e.button !== 0) return
+            e.preventDefault(); e.stopPropagation()
+            const rect = card.getBoundingClientRect()
+            const ghost = card.cloneNode(true)
+            ghost.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;pointer-events:none;z-index:9999;opacity:0.85;transform:rotate(1.5deg);box-shadow:0 8px 24px rgba(0,0,0,.3);border-radius:6px;`
+            document.body.appendChild(ghost)
+            card.classList.add('cm-task-card-dragging')
+            _kbDrag = { wrap, ci, ti, ghost, offX: e.clientX - rect.left, offY: e.clientY - rect.top }
+            card.setPointerCapture(e.pointerId)
           }
+          card.onpointermove = e => {
+            if (!_kbDrag || _kbDrag.wrap !== wrap) return
+            _kbDrag.ghost.style.left = `${e.clientX - _kbDrag.offX}px`
+            _kbDrag.ghost.style.top = `${e.clientY - _kbDrag.offY}px`
+            const el = document.elementFromPoint(e.clientX, e.clientY)
+            const targetCol = el?.closest('.cm-task-col-w')
+            wrap.querySelectorAll('.cm-task-col-w').forEach(c => c.classList.remove('cm-task-col-drop'))
+            if (targetCol && wrap.contains(targetCol)) targetCol.classList.add('cm-task-col-drop')
+          }
+          const endDrag = e => {
+            if (!_kbDrag || _kbDrag.wrap !== wrap) return
+            _kbDrag.ghost.remove()
+            wrap.querySelectorAll('.cm-task-col-w').forEach(c => c.classList.remove('cm-task-col-drop'))
+            card.classList.remove('cm-task-card-dragging')
+            if (e.type === 'pointerup') {
+              const el = document.elementFromPoint(e.clientX, e.clientY)
+              const targetColEl = el?.closest('.cm-task-col-w')
+              if (targetColEl && wrap.contains(targetColEl)) {
+                const colEls = [...wrap.querySelectorAll('.cm-task-col-w')]
+                const targetCi = colEls.indexOf(targetColEl)
+                if (targetCi !== -1 && targetCi !== _kbDrag.ci) {
+                  const [moved] = cols[_kbDrag.ci].tasks.splice(_kbDrag.ti, 1)
+                  cols[targetCi].tasks.push(moved)
+                  _kbDrag = null; save(); render(); return
+                }
+              }
+            }
+            _kbDrag = null
+          }
+          card.onpointerup = endDrag
+          card.onpointercancel = endDrag
 
           const cardBody = document.createElement('div')
           cardBody.className = 'cm-task-card-body'
 
-          const cb = document.createElement('span')
-          cb.className = 'cm-cb' + (task.done ? ' cm-cb-on' : '')
-          cb.textContent = task.done ? '\u2713' : ''
-          cb.onclick = (e) => { e.stopPropagation(); task.done = !task.done; save(); render() }
-
           const txt = document.createElement('span')
           txt.className = 'cm-task-card-text'
           txt.textContent = task.text
-          // Double-click to edit card text
-          txt.ondblclick = (e) => {
+          txt.ondblclick = e => {
             e.stopPropagation()
             const inp = document.createElement('input')
             inp.className = 'cm-task-card-edit'
@@ -1895,54 +1986,19 @@ class TaskBlockWidget {
             txt.textContent = ''; txt.appendChild(inp)
             inp.focus(); inp.select()
             const commit = () => { const v = inp.value.trim(); if (v) { task.text = v; save() } render() }
-            inp.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); commit() } if (ev.key === 'Escape') render() }
+            inp.onkeydown = ev => { ev.stopPropagation(); if (ev.key === 'Enter') { ev.preventDefault(); commit() } if (ev.key === 'Escape') render() }
             inp.onblur = commit
-          }
-
-          const cardActions = document.createElement('div')
-          cardActions.className = 'cm-task-card-actions'
-
-          // Label button
-          const lblBtn = document.createElement('button')
-          lblBtn.className = 'cm-task-card-lbl-btn'
-          lblBtn.title = 'Set label'
-          lblBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2a1 1 0 011-1h4.586a1 1 0 01.707.293l7 7a1 1 0 010 1.414l-4.586 4.586a1 1 0 01-1.414 0l-7-7A1 1 0 012 6.586V2zm3.5 3a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/></svg>'
-          lblBtn.onclick = (e) => {
-            e.stopPropagation()
-            const existing = card.querySelector('.cm-task-label-picker')
-            if (existing) { existing.remove(); return }
-            const picker = document.createElement('div')
-            picker.className = 'cm-task-label-picker'
-            // None option
-            const none = document.createElement('div')
-            none.className = 'cm-task-label-opt'
-            none.textContent = 'None'
-            none.style.color = 'var(--textDim)'
-            none.onclick = (ev) => { ev.stopPropagation(); task.label = null; save(); render() }
-            picker.appendChild(none)
-            CARD_LABELS.forEach((lb, idx) => {
-              const opt = document.createElement('div')
-              opt.className = 'cm-task-label-opt' + (task.label === idx ? ' cm-task-label-active' : '')
-              opt.style.borderLeft = `4px solid ${lb.color}`
-              opt.textContent = lb.name
-              opt.onclick = (ev) => { ev.stopPropagation(); task.label = idx; save(); render() }
-              picker.appendChild(opt)
-            })
-            card.appendChild(picker)
           }
 
           const del = document.createElement('button')
           del.className = 'cm-task-card-del-btn'
           del.title = 'Delete'
           del.textContent = '\u00d7'
-          del.onclick = (e) => { e.stopPropagation(); cols[ci].tasks.splice(ti, 1); save(); render() }
+          del.onclick = e => { e.stopPropagation(); cols[ci].tasks.splice(ti, 1); save(); render() }
 
-          cardActions.appendChild(lblBtn)
-          cardActions.appendChild(del)
-          cardBody.appendChild(cb)
           cardBody.appendChild(txt)
+          cardBody.appendChild(del)
           card.appendChild(cardBody)
-          card.appendChild(cardActions)
           cardsArea.appendChild(card)
         })
         colDiv.appendChild(cardsArea)
@@ -1955,12 +2011,16 @@ class TaskBlockWidget {
         addInput.type = 'text'
         addInput.placeholder = '+ Add a card...'
         addInput.onkeydown = (e) => {
+          e.stopPropagation()
           if (e.key === 'Enter') {
             e.preventDefault()
             const val = addInput.value.trim()
             if (!val) return
+            addInput.value = ''
             cols[ci].tasks.push({ text: val, done: false, label: null })
             save(); render()
+            const col = wrap.querySelectorAll('.cm-task-add-input')[ci]
+            if (col) col.focus()
           }
         }
         addRow.appendChild(addInput)
@@ -1981,6 +2041,7 @@ class TaskBlockWidget {
         inp.type = 'text'
         inp.placeholder = 'List name...'
         inp.onkeydown = (e) => {
+          e.stopPropagation()
           if (e.key === 'Enter') {
             e.preventDefault()
             const val = inp.value.trim() || 'New List'
@@ -2005,7 +2066,7 @@ class TaskBlockWidget {
     return this.columns.every((col, ci) => {
       const oc = o.columns[ci]
       if (oc.title !== col.title || oc.tasks.length !== col.tasks.length) return false
-      return col.tasks.every((t, ti) => oc.tasks[ti].text === t.text && oc.tasks[ti].done === t.done)
+      return col.tasks.every((t, ti) => oc.tasks[ti].text === t.text)
     })
   }
   compare(o) { return this.eq(o) }
@@ -2030,11 +2091,11 @@ function parseTodoBlock(docStr, startLineIdx) {
     if (!/^\s*[-*+]\s\[[ xX]\]/.test(l)) break
     const checked = /\[[xX]\]/.test(l)
     const raw = l.replace(/^\s*[-*+]\s\[[ xX]\]\s*/, '')
-    // Parse "task name: date: time" format
-    const parts = raw.split(':').map(s => s.trim())
-    const text = parts[0] || raw
-    const dateStr = parts[1] || ''
-    const timeStr = parts[2] || ''
+    // Parse "task name:YYYY-MM-DD:HH:MM" format — match date and time explicitly
+    const dtM = raw.match(/^(.*?)(?::(\d{4}-\d{2}-\d{2})(?::(\d{1,2}:\d{2}))?)?$/)
+    const text = dtM ? (dtM[1] || raw) : raw
+    const dateStr = dtM ? (dtM[2] || '') : ''
+    const timeStr = dtM ? (dtM[3] || '') : ''
     items.push({ text, checked, dateStr, timeStr, lineIdx: endLine })
     endLine++
   }
@@ -2165,7 +2226,7 @@ class TimerWidget {
     this.totalSec = totalSec; this.label = label; this.rawLine = rawLine
     this._ref = { interval: null }
   }
-  toDOM() {
+  toDOM(cmView) {
     const wrap = document.createElement('div')
     wrap.className = 'cm-timer-widget'
     const ref = this._ref
@@ -2175,34 +2236,52 @@ class TimerWidget {
       return `${m}:${String(sec).padStart(2,'0')}`
     }
 
-    // ── Empty state: no time set ─────────────────────────
+    // ── Empty state: show editable 00:00 timer ────────────
     if (this.totalSec === 0) {
-      const setup = document.createElement('div')
-      setup.className = 'cm-timer-setup'
-      const timeInp = document.createElement('input')
-      timeInp.className = 'cm-timer-input'
-      timeInp.placeholder = 'mm:ss or minutes'
-      timeInp.type = 'text'
-      const labelInp = document.createElement('input')
-      labelInp.className = 'cm-timer-input cm-timer-label-inp'
-      labelInp.placeholder = 'Label (optional)'
-      labelInp.type = 'text'
-      const startBtn = document.createElement('button')
-      startBtn.className = 'cm-timer-btn cm-timer-start'
-      startBtn.textContent = 'Start'
-      const doStart = () => {
-        const tv = timeInp.value.trim()
-        if (!tv) return
-        const lv = labelInp.value.trim()
-        _replaceInDoc(wrap, this.rawLine, lv ? `/timer ${tv} ${lv}` : `/timer ${tv}`)
+      let editing = true
+      let localSec = 0
+      let localPaused = true
+
+      const row = document.createElement('div')
+      row.className = 'cm-timer-row'
+
+      const timeText = document.createElement('div')
+      timeText.className = 'cm-timer-time cm-timer-time-editable'
+      timeText.textContent = '0:00'
+
+      // Clicking time opens an inline input to set the time
+      const showEdit = () => {
+        const inp = document.createElement('input')
+        inp.className = 'cm-timer-edit-input'
+        inp.value = ''
+        inp.type = 'text'
+        inp.placeholder = 'mm:ss'
+        timeText.textContent = ''
+        timeText.appendChild(inp)
+        inp.focus()
+        const commit = () => {
+          const v = inp.value.trim()
+          if (!v) { timeText.textContent = fmt(localSec); return }
+          let ns = 0
+          const hms = v.match(/^(\d+):(\d{2}):(\d{2})$/)
+          const ms = v.match(/^(\d+):(\d{2})$/)
+          const mn = v.match(/^(\d+)$/)
+          if (hms) ns = +hms[1]*3600 + +hms[2]*60 + +hms[3]
+          else if (ms) ns = +ms[1]*60 + +ms[2]
+          else if (mn) ns = +mn[1]*60
+          if (ns > 0) {
+            _replaceInDoc(cmView, this.rawLine, `/timer ${v}`)
+          } else {
+            timeText.textContent = fmt(localSec)
+          }
+        }
+        inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); commit() } if (e.key === 'Escape') { timeText.textContent = fmt(localSec) } }
+        inp.onblur = commit
       }
-      startBtn.onclick = doStart
-      timeInp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); doStart() } }
-      labelInp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); doStart() } }
-      setup.appendChild(timeInp)
-      setup.appendChild(labelInp)
-      setup.appendChild(startBtn)
-      wrap.appendChild(setup)
+      timeText.onclick = showEdit
+
+      row.appendChild(timeText)
+      wrap.appendChild(row)
       return wrap
     }
 
@@ -2245,7 +2324,7 @@ class TimerWidget {
         else if (mn) ns = +mn[1]*60
         if (ns > 0) {
           const newLine = this.label ? `/timer ${v} ${this.label}` : `/timer ${v}`
-          _replaceInDoc(wrap, this.rawLine, newLine)
+          _replaceInDoc(cmView, this.rawLine, newLine)
         } else {
           timeText.textContent = fmt(remaining)
         }
@@ -2274,6 +2353,22 @@ class TimerWidget {
     bar.appendChild(fill)
     wrap.appendChild(bar)
 
+    const playTimerSound = () => {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)()
+        const playTone = (freq, start, dur) => {
+          const osc = ctx.createOscillator()
+          const gain = ctx.createGain()
+          osc.connect(gain); gain.connect(ctx.destination)
+          osc.frequency.value = freq; osc.type = 'sine'
+          gain.gain.setValueAtTime(0.3, ctx.currentTime + start)
+          gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + start + dur)
+          osc.start(ctx.currentTime + start); osc.stop(ctx.currentTime + start + dur)
+        }
+        playTone(880, 0, 0.15); playTone(880, 0.2, 0.15); playTone(1100, 0.45, 0.3)
+      } catch { /* no audio context available */ }
+    }
+
     const tick = () => {
       remaining--
       if (remaining <= 0) {
@@ -2282,6 +2377,7 @@ class TimerWidget {
         timeText.classList.add('cm-timer-done')
         fill.style.width = '0%'
         pauseBtn.textContent = '\u23f8'
+        playTimerSound()
         return
       }
       timeText.textContent = fmt(remaining)
@@ -2319,336 +2415,210 @@ class TimerWidget {
   coordsAt() { return null }
 }
 
-// ─── /calendar widget (full-width, day/week/month, inline events) ─────────────
-class CalendarWidget {
-  constructor(rawData, rawLine) { this.rawData = rawData || ''; this.rawLine = rawLine }
+// ─── /pomo widget (pomodoro timer) ───────────────────────────────────────────
+class PomoWidget {
+  constructor(rawLine) {
+    this.rawLine = rawLine
+    this._ref = { interval: null }
+  }
   toDOM() {
-    let data = {}
-    if (this.rawData) { try { data = JSON.parse(this.rawData) } catch { data = { title: this.rawData } } }
-    const events = data.events || {} // { "2026-03-23": ["Meeting","Lunch"], ... }
-    // Migrate old string events to arrays
-    for (const k of Object.keys(events)) { if (typeof events[k] === 'string') events[k] = [events[k]] }
-    let titleText = data.title || 'Calendar'
-    let viewYear = data.year || new Date().getFullYear()
-    let viewMonth = data.month != null ? data.month : new Date().getMonth()
-    let viewMode = data.viewMode || 'month' // 'day','week','month'
-    let selectedDay = null
-    const today = new Date()
-    let viewDate = new Date(viewYear, viewMonth, today.getDate()) // used for day/week
-
     const wrap = document.createElement('div')
-    wrap.className = 'cm-calendar-widget'
+    wrap.className = 'cm-pomo-widget'
+    const ref = this._ref
 
-    const dk = (y,m,d) => `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`
-    const save = () => {
-      const nd = JSON.stringify({ title: titleText, year: viewYear, month: viewMonth, viewMode, events })
-      _replaceInDoc(wrap, this.rawLine, `/calendar:${nd}`)
+    const WORK = 25 * 60, SHORT = 5 * 60, LONG = 15 * 60
+    let phase = 'work' // 'work' | 'short' | 'long'
+    let remaining = WORK
+    let paused = true
+    let sessions = 0
+
+    const fmt = (s) => {
+      const m = Math.floor(s / 60), sec = s % 60
+      return `${m}:${String(sec).padStart(2, '0')}`
     }
 
-    const renderEventList = (container, dateKey) => {
-      const evts = events[dateKey] || []
-      evts.forEach((ev, ei) => {
-        const row = document.createElement('div')
-        row.className = 'cm-cal-evt-row'
-        const dot = document.createElement('span')
-        dot.className = 'cm-cal-evt-dot'
-        const txt = document.createElement('span')
-        txt.className = 'cm-cal-evt-text'
-        txt.textContent = ev
-        const del = document.createElement('span')
-        del.className = 'cm-todo-del'
-        del.textContent = '\u00d7'
-        del.onclick = (e) => {
-          e.stopPropagation()
-          events[dateKey].splice(ei, 1)
-          if (!events[dateKey].length) delete events[dateKey]
-          save(); render()
+    const playSound = () => {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)()
+        const playTone = (freq, start, dur) => {
+          const osc = ctx.createOscillator()
+          const gain = ctx.createGain()
+          osc.connect(gain); gain.connect(ctx.destination)
+          osc.frequency.value = freq; osc.type = 'sine'
+          gain.gain.setValueAtTime(0.3, ctx.currentTime + start)
+          gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + start + dur)
+          osc.start(ctx.currentTime + start); osc.stop(ctx.currentTime + start + dur)
         }
-        row.appendChild(dot); row.appendChild(txt); row.appendChild(del)
-        container.appendChild(row)
+        playTone(660, 0, 0.12); playTone(880, 0.15, 0.12); playTone(1100, 0.3, 0.25)
+      } catch { /* */ }
+    }
+
+    // Header
+    const hdr = document.createElement('div')
+    hdr.className = 'cm-pomo-hdr'
+    const title = document.createElement('span')
+    title.className = 'cm-pomo-title'
+    title.textContent = 'Pomodoro'
+    const sessionBadge = document.createElement('span')
+    sessionBadge.className = 'cm-pomo-sessions'
+    sessionBadge.textContent = '0 sessions'
+    hdr.appendChild(title)
+    hdr.appendChild(sessionBadge)
+    wrap.appendChild(hdr)
+
+    // Phase indicator
+    const phaseRow = document.createElement('div')
+    phaseRow.className = 'cm-pomo-phase-row'
+    const phases = ['work', 'short', 'long']
+    const phaseLabels = { work: 'Focus', short: 'Short Break', long: 'Long Break' }
+    const phaseBtns = {}
+    phases.forEach(p => {
+      const btn = document.createElement('button')
+      btn.className = `cm-pomo-phase-btn${p === phase ? ' active' : ''}`
+      btn.textContent = phaseLabels[p]
+      btn.onclick = () => {
+        phase = p
+        remaining = p === 'work' ? WORK : p === 'short' ? SHORT : LONG
+        paused = true
+        if (ref.interval) { clearInterval(ref.interval); ref.interval = null }
+        update()
+      }
+      phaseBtns[p] = btn
+      phaseRow.appendChild(btn)
+    })
+    wrap.appendChild(phaseRow)
+
+    // Time display
+    const timeText = document.createElement('div')
+    timeText.className = 'cm-pomo-time'
+    timeText.textContent = fmt(remaining)
+    wrap.appendChild(timeText)
+
+    // Progress bar
+    const bar = document.createElement('div')
+    bar.className = 'cm-pomo-bar'
+    const fill = document.createElement('div')
+    fill.className = 'cm-pomo-fill'
+    fill.style.width = '100%'
+    bar.appendChild(fill)
+    wrap.appendChild(bar)
+
+    // Controls
+    const controls = document.createElement('div')
+    controls.className = 'cm-pomo-controls'
+    const playBtn = document.createElement('button')
+    playBtn.className = 'cm-pomo-btn cm-pomo-play'
+    playBtn.textContent = '\u25b6'
+    const resetBtn = document.createElement('button')
+    resetBtn.className = 'cm-pomo-btn'
+    resetBtn.textContent = '\u21ba'
+    const skipBtn = document.createElement('button')
+    skipBtn.className = 'cm-pomo-btn'
+    skipBtn.textContent = '\u23ed'
+    skipBtn.title = 'Skip to next phase'
+    controls.appendChild(playBtn)
+    controls.appendChild(resetBtn)
+    controls.appendChild(skipBtn)
+    wrap.appendChild(controls)
+
+    const getTotal = () => phase === 'work' ? WORK : phase === 'short' ? SHORT : LONG
+
+    const update = () => {
+      timeText.textContent = fmt(remaining)
+      const total = getTotal()
+      fill.style.width = `${(remaining / total) * 100}%`
+      fill.className = `cm-pomo-fill ${phase === 'work' ? 'cm-pomo-fill-work' : 'cm-pomo-fill-break'}`
+      playBtn.textContent = paused ? '\u25b6' : '\u23f8'
+      sessionBadge.textContent = `${sessions} session${sessions !== 1 ? 's' : ''}`
+      phases.forEach(p => {
+        phaseBtns[p].className = `cm-pomo-phase-btn${p === phase ? ' active' : ''}`
       })
     }
 
-    const renderAddInput = (container, dateKey) => {
-      const inp = document.createElement('input')
-      inp.className = 'cm-cal-evt-add'
-      inp.type = 'text'; inp.placeholder = 'Add event...'
-      inp.onkeydown = (e) => {
-        if (e.key === 'Enter') {
-          e.preventDefault()
-          const v = inp.value.trim()
-          if (!v) return
-          if (!events[dateKey]) events[dateKey] = []
-          events[dateKey].push(v)
-          save(); render()
-        }
-      }
-      container.appendChild(inp)
-    }
-
-    const render = () => {
-      wrap.innerHTML = ''
-      // Title row + view mode toggle
-      const topBar = document.createElement('div')
-      topBar.className = 'cm-cal-topbar'
-      const titleEl = document.createElement('span')
-      titleEl.className = 'cm-cal-main-title'
-      titleEl.textContent = titleText
-      titleEl.onclick = () => {
-        const inp = document.createElement('input')
-        inp.className = 'cm-cal-title-input'
-        inp.value = titleText; inp.type = 'text'
-        titleEl.textContent = ''; titleEl.appendChild(inp)
-        inp.focus(); inp.select()
-        const commit = () => { titleText = inp.value.trim() || 'Calendar'; titleEl.textContent = titleText; save() }
-        inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); commit() } }
-        inp.onblur = commit
-      }
-      const modeBar = document.createElement('div')
-      modeBar.className = 'cm-cal-mode-bar'
-      for (const [m, l] of [['day','Day'],['week','Week'],['month','Month']]) {
-        const btn = document.createElement('button')
-        btn.className = 'cm-cal-mode-btn' + (viewMode === m ? ' cm-cal-mode-active' : '')
-        btn.textContent = l
-        btn.onclick = () => { viewMode = m; render() }
-        modeBar.appendChild(btn)
-      }
-      topBar.appendChild(titleEl); topBar.appendChild(modeBar)
-      wrap.appendChild(topBar)
-
-      // Nav header
-      const hdr = document.createElement('div')
-      hdr.className = 'cm-cal-header'
-      const prevBtn = document.createElement('button')
-      prevBtn.className = 'cm-cal-nav'
-      prevBtn.textContent = '\u2039'
-      const nextBtn = document.createElement('button')
-      nextBtn.className = 'cm-cal-nav'
-      nextBtn.textContent = '\u203A'
-      const monthLbl = document.createElement('span')
-      monthLbl.className = 'cm-cal-month'
-
-      if (viewMode === 'month') {
-        monthLbl.textContent = new Date(viewYear, viewMonth).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
-        prevBtn.onclick = () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear-- }; render() }
-        nextBtn.onclick = () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++ }; render() }
-      } else if (viewMode === 'week') {
-        const sun = new Date(viewDate); sun.setDate(sun.getDate() - sun.getDay())
-        const sat = new Date(sun); sat.setDate(sat.getDate() + 6)
-        monthLbl.textContent = `${sun.toLocaleDateString('en-US',{month:'short',day:'numeric'})} – ${sat.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`
-        prevBtn.onclick = () => { viewDate.setDate(viewDate.getDate() - 7); render() }
-        nextBtn.onclick = () => { viewDate.setDate(viewDate.getDate() + 7); render() }
+    const nextPhase = () => {
+      playSound()
+      if (phase === 'work') {
+        sessions++
+        phase = sessions % 4 === 0 ? 'long' : 'short'
       } else {
-        monthLbl.textContent = viewDate.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric', year:'numeric' })
-        prevBtn.onclick = () => { viewDate.setDate(viewDate.getDate() - 1); render() }
-        nextBtn.onclick = () => { viewDate.setDate(viewDate.getDate() + 1); render() }
+        phase = 'work'
       }
-      hdr.appendChild(prevBtn); hdr.appendChild(monthLbl); hdr.appendChild(nextBtn)
-      wrap.appendChild(hdr)
-
-      // Helper: render a 24-hour time grid for a given date
-      const renderTimeGrid = (container, dateKey) => {
-        const gridWrap = document.createElement('div')
-        gridWrap.className = 'cm-cal-time-grid'
-        const evts = events[dateKey] || []
-        for (let h = 0; h < 24; h++) {
-          const row = document.createElement('div')
-          row.className = 'cm-cal-time-row'
-          const label = document.createElement('div')
-          label.className = 'cm-cal-time-label'
-          label.textContent = h === 0 ? '12 AM' : h < 12 ? `${h} AM` : h === 12 ? '12 PM' : `${h-12} PM`
-          const slot = document.createElement('div')
-          slot.className = 'cm-cal-time-slot'
-          // Show events that match this hour (format: "HH:MM text" or just text on hour 0)
-          evts.forEach((ev, ei) => {
-            const hourMatch = ev.match(/^(\d{1,2}):(\d{2})\s+(.*)$/)
-            if (hourMatch && parseInt(hourMatch[1]) === h) {
-              const evEl = document.createElement('div')
-              evEl.className = 'cm-cal-time-evt'
-              evEl.textContent = hourMatch[3]
-              const del = document.createElement('span')
-              del.className = 'cm-todo-del'
-              del.textContent = '\u00d7'
-              del.onclick = (e) => { e.stopPropagation(); events[dateKey].splice(ei, 1); if (!events[dateKey].length) delete events[dateKey]; save(); render() }
-              evEl.appendChild(del)
-              slot.appendChild(evEl)
-            } else if (!hourMatch && h === 0) {
-              // Events without time go at midnight
-              const evEl = document.createElement('div')
-              evEl.className = 'cm-cal-time-evt'
-              evEl.textContent = ev
-              const del = document.createElement('span')
-              del.className = 'cm-todo-del'
-              del.textContent = '\u00d7'
-              del.onclick = (e) => { e.stopPropagation(); events[dateKey].splice(ei, 1); if (!events[dateKey].length) delete events[dateKey]; save(); render() }
-              evEl.appendChild(del)
-              slot.appendChild(evEl)
-            }
-          })
-          // Click on slot to add event at this hour
-          slot.onclick = () => {
-            if (slot.querySelector('.cm-cal-time-add')) return
-            const inp = document.createElement('input')
-            inp.className = 'cm-cal-time-add'
-            inp.type = 'text'
-            inp.placeholder = 'Event...'
-            inp.onkeydown = (e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                const v = inp.value.trim()
-                if (!v) return
-                const hStr = String(h).padStart(2,'0')
-                if (!events[dateKey]) events[dateKey] = []
-                events[dateKey].push(`${hStr}:00 ${v}`)
-                save(); render()
-              }
-              if (e.key === 'Escape') inp.remove()
-            }
-            inp.onblur = () => inp.remove()
-            slot.appendChild(inp)
-            inp.focus()
-          }
-          row.appendChild(label)
-          row.appendChild(slot)
-          gridWrap.appendChild(row)
-        }
-        container.appendChild(gridWrap)
-      }
-
-      // ── Month view ──
-      if (viewMode === 'month') {
-        const grid = document.createElement('div')
-        grid.className = 'cm-cal-grid'
-        ;['Su','Mo','Tu','We','Th','Fr','Sa'].forEach(d => {
-          const dh = document.createElement('div'); dh.className = 'cm-cal-day-hdr'; dh.textContent = d; grid.appendChild(dh)
-        })
-        const first = new Date(viewYear, viewMonth, 1).getDay()
-        const dim = new Date(viewYear, viewMonth + 1, 0).getDate()
-        for (let i = 0; i < first; i++) { const b = document.createElement('div'); b.className = 'cm-cal-blank'; grid.appendChild(b) }
-        for (let d = 1; d <= dim; d++) {
-          const cell = document.createElement('div')
-          cell.className = 'cm-cal-day'
-          const dateKey = dk(viewYear, viewMonth, d)
-          const evts = events[dateKey]
-          if (evts && evts.length) { cell.classList.add('cm-cal-has-event'); cell.title = evts.join(', ') }
-          if (d === today.getDate() && viewMonth === today.getMonth() && viewYear === today.getFullYear()) cell.classList.add('cm-cal-today')
-          if (selectedDay === d) cell.classList.add('cm-cal-selected')
-          const num = document.createElement('span')
-          num.textContent = d
-          cell.appendChild(num)
-          // Show first event text on the cell
-          if (evts && evts.length) {
-            const evLabel = document.createElement('div')
-            evLabel.className = 'cm-cal-day-evt'
-            evLabel.textContent = evts[0] + (evts.length > 1 ? ` +${evts.length-1}` : '')
-            cell.appendChild(evLabel)
-          }
-          const dn = d
-          cell.onclick = () => { selectedDay = selectedDay === dn ? null : dn; render() }
-          grid.appendChild(cell)
-        }
-        wrap.appendChild(grid)
-        // Expanded day view for selected day — shows 24-hour time grid
-        if (selectedDay !== null) {
-          const dateKey = dk(viewYear, viewMonth, selectedDay)
-          const ed = document.createElement('div')
-          ed.className = 'cm-cal-event-panel'
-          const edHdr = document.createElement('div')
-          edHdr.className = 'cm-cal-event-panel-hdr'
-          edHdr.textContent = new Date(viewYear, viewMonth, selectedDay).toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' })
-          const closeBtn = document.createElement('button')
-          closeBtn.className = 'cm-cal-nav'
-          closeBtn.textContent = '\u00d7'
-          closeBtn.style.marginLeft = 'auto'
-          closeBtn.onclick = (e) => { e.stopPropagation(); selectedDay = null; render() }
-          edHdr.style.display = 'flex'; edHdr.style.alignItems = 'center'
-          edHdr.appendChild(closeBtn)
-          ed.appendChild(edHdr)
-          renderTimeGrid(ed, dateKey)
-          wrap.appendChild(ed)
-        }
-      }
-
-      // ── Week view ──
-      if (viewMode === 'week') {
-        const sun = new Date(viewDate); sun.setDate(sun.getDate() - sun.getDay())
-        // Day headers
-        const weekHdrRow = document.createElement('div')
-        weekHdrRow.className = 'cm-cal-week-hdr-row'
-        const timeLabel = document.createElement('div')
-        timeLabel.className = 'cm-cal-week-time-gutter'
-        weekHdrRow.appendChild(timeLabel)
-        for (let i = 0; i < 7; i++) {
-          const d = new Date(sun); d.setDate(d.getDate() + i)
-          const hd = document.createElement('div')
-          hd.className = 'cm-cal-week-col-hdr'
-          if (d.toDateString() === today.toDateString()) hd.classList.add('cm-cal-week-today')
-          hd.textContent = d.toLocaleDateString('en-US', { weekday:'short', day:'numeric' })
-          weekHdrRow.appendChild(hd)
-        }
-        wrap.appendChild(weekHdrRow)
-        // Time grid rows
-        const weekBody = document.createElement('div')
-        weekBody.className = 'cm-cal-week-body'
-        for (let h = 0; h < 24; h++) {
-          const row = document.createElement('div')
-          row.className = 'cm-cal-week-time-row'
-          const label = document.createElement('div')
-          label.className = 'cm-cal-time-label cm-cal-week-time-gutter'
-          label.textContent = h === 0 ? '12 AM' : h < 12 ? `${h} AM` : h === 12 ? '12 PM' : `${h-12} PM`
-          row.appendChild(label)
-          for (let i = 0; i < 7; i++) {
-            const d = new Date(sun); d.setDate(d.getDate() + i)
-            const dateKey = dk(d.getFullYear(), d.getMonth(), d.getDate())
-            const cell = document.createElement('div')
-            cell.className = 'cm-cal-week-cell'
-            const evts = events[dateKey] || []
-            evts.forEach((ev, ei) => {
-              const hourMatch = ev.match(/^(\d{1,2}):(\d{2})\s+(.*)$/)
-              const showHere = (hourMatch && parseInt(hourMatch[1]) === h) || (!hourMatch && h === 0)
-              if (showHere) {
-                const evEl = document.createElement('div')
-                evEl.className = 'cm-cal-time-evt'
-                evEl.textContent = hourMatch ? hourMatch[3] : ev
-                cell.appendChild(evEl)
-              }
-            })
-            cell.onclick = () => {
-              if (cell.querySelector('.cm-cal-time-add')) return
-              const inp = document.createElement('input')
-              inp.className = 'cm-cal-time-add'
-              inp.type = 'text'; inp.placeholder = 'Event...'
-              inp.onkeydown = (e) => {
-                if (e.key === 'Enter') { e.preventDefault(); const v = inp.value.trim(); if (!v) return; const hStr = String(h).padStart(2,'0'); if (!events[dateKey]) events[dateKey] = []; events[dateKey].push(`${hStr}:00 ${v}`); save(); render() }
-                if (e.key === 'Escape') inp.remove()
-              }
-              inp.onblur = () => inp.remove()
-              cell.appendChild(inp); inp.focus()
-            }
-            row.appendChild(cell)
-          }
-          weekBody.appendChild(row)
-        }
-        wrap.appendChild(weekBody)
-      }
-
-      // ── Day view ──
-      if (viewMode === 'day') {
-        const dateKey = dk(viewDate.getFullYear(), viewDate.getMonth(), viewDate.getDate())
-        const dayPanel = document.createElement('div')
-        dayPanel.className = 'cm-cal-day-panel'
-        renderTimeGrid(dayPanel, dateKey)
-        wrap.appendChild(dayPanel)
-      }
+      remaining = getTotal()
+      paused = true
+      if (ref.interval) { clearInterval(ref.interval); ref.interval = null }
+      update()
     }
-    render()
+
+    const tick = () => {
+      remaining--
+      if (remaining <= 0) {
+        remaining = 0
+        if (ref.interval) { clearInterval(ref.interval); ref.interval = null }
+        update()
+        nextPhase()
+        return
+      }
+      update()
+    }
+
+    playBtn.onclick = () => {
+      if (remaining <= 0) return
+      if (paused) {
+        paused = false
+        ref.interval = setInterval(tick, 1000)
+      } else {
+        paused = true
+        if (ref.interval) { clearInterval(ref.interval); ref.interval = null }
+      }
+      update()
+    }
+
+    resetBtn.onclick = () => {
+      remaining = getTotal()
+      paused = true
+      if (ref.interval) { clearInterval(ref.interval); ref.interval = null }
+      update()
+    }
+
+    skipBtn.onclick = nextPhase
+
+    update()
     return wrap
   }
-  eq(o) { return o instanceof CalendarWidget && o.rawData === this.rawData }
+  eq(o) { return o instanceof PomoWidget }
   compare(o) { return this.eq(o) }
-  destroy() {}
+  destroy() { if (this._ref.interval) clearInterval(this._ref.interval) }
   ignoreEvent() { return true }
-  get estimatedHeight() { return 380 }
+  get estimatedHeight() { return 140 }
+  coordsAt() { return null }
+}
+
+// ─── /calendar widget (full-width, day/week/month, inline events) ─────────────
+class CalendarWidget {
+  constructor(rawData, rawLine) { this.rawData = rawData || ''; this.rawLine = rawLine; this._root = null }
+  toDOM() {
+    const wrap = document.createElement('div')
+    wrap.className = 'cm-calendar-widget'
+    wrap.style.minHeight = '400px'
+    // Dynamically import FullCalendar (avoids circular-dep at module load time)
+    import('./LibraryView').then(({ FullCalendar }) => {
+      if (this._root) return // already mounted
+      this._root = createRoot(wrap)
+      this._root.render(createElement(FullCalendar, null))
+    })
+    return wrap
+  }
+  eq(o) { return o instanceof CalendarWidget }
+  compare(o) { return this.eq(o) }
+  destroy() {
+    if (this._root) {
+      const r = this._root; this._root = null
+      // Defer unmount to avoid React warning about unmounting during render
+      setTimeout(() => { try { r.unmount() } catch { /**/ } }, 0)
+    }
+  }
+  ignoreEvent() { return true }
+  get estimatedHeight() { return 400 }
   coordsAt() { return null }
 }
 
@@ -2658,7 +2628,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
   const { syntaxTree } = cm.language
 
   // Patch widget classes to extend WidgetType so CM6 properly handles them
-  for (const Cls of [HRWidget, CheckboxWidget, ImgWidget, ListMarkerWidget, MathWidget, WikiWidget, LinkWidget, TableWidget, TodoBlockWidget, TaskBlockWidget, SupWidget, SubWidget, TimerWidget, CalendarWidget, TimeRefWidget, FnRefWidget]) {
+  for (const Cls of [HRWidget, CheckboxWidget, ImgWidget, ListMarkerWidget, MathWidget, WikiWidget, LinkWidget, TableWidget, TodoBlockWidget, TaskBlockWidget, SupWidget, SubWidget, TimerWidget, CalendarWidget, TimeRefWidget, FnRefWidget, DueDateWidget, TagWidget]) {
     if (!(Cls.prototype instanceof WidgetType)) {
       Object.setPrototypeOf(Cls.prototype, WidgetType.prototype)
     }
@@ -3202,7 +3172,9 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
         if (!block) continue
 
         const blockFrom = lineStarts[block.startLine]
-        const blockTo   = lineStarts[block.endLine] + lines[block.endLine].length
+        const blockTo   = (block.endLine + 1 < lines.length)
+          ? lineStarts[block.endLine + 1]
+          : lineStarts[block.endLine] + lines[block.endLine].length
 
         // Never collapse — user edits via widget UI
         const items = block.items.map(it => {
@@ -3210,7 +3182,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
           return { text: it.text, checked: it.checked, dateStr: it.dateStr, timeStr: it.timeStr, cbPos: lineStarts[it.lineIdx] + (cbIdx >= 0 ? cbIdx : 0) }
         })
         const rawMd = full.slice(blockFrom, blockTo)
-        inlines.push({ from: blockFrom, to: blockTo, deco: Decoration.replace({ widget: new TodoBlockWidget(block.listName, items, rawMd) }) })
+        inlines.push({ from: blockFrom, to: blockTo, deco: Decoration.replace({ widget: new TodoBlockWidget(block.listName, items, rawMd, blockFrom), block: true }) })
 
         li = block.endLine
       }
@@ -3230,7 +3202,9 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
         if (!block) continue
 
         const blockFrom = lineStarts2[block.startLine]
-        const blockTo   = lineStarts2[block.endLine] + lines[block.endLine].length
+        const blockTo   = (block.endLine + 1 < lines.length)
+          ? lineStarts2[block.endLine + 1]
+          : lineStarts2[block.endLine] + lines[block.endLine].length
 
         // Never collapse — user edits via widget UI
         const columns = block.columns.map(col => ({
@@ -3241,7 +3215,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
           }),
         }))
         const rawMd2 = full.slice(blockFrom, blockTo)
-        inlines.push({ from: blockFrom, to: blockTo, deco: Decoration.replace({ widget: new TaskBlockWidget(block.boardTitle, columns, rawMd2) }) })
+        inlines.push({ from: blockFrom, to: blockTo, deco: Decoration.replace({ widget: new TaskBlockWidget(block.boardTitle, columns, rawMd2, blockFrom), block: true }) })
 
         li = block.endLine
       }
@@ -3253,11 +3227,12 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
       const timerRe = /^\/timer(?:\s+(.+))?$/gm
       let tm
       while ((tm = timerRe.exec(fullT)) !== null) {
-        const tFrom = doc.lineAt(tm.index).from
-        const tTo = doc.lineAt(tm.index + tm[0].length).to
-        // Never collapse timer — user edits via widget UI
+        const timerLine = doc.lineAt(tm.index)
+        const tFrom = timerLine.from
+        // Include trailing \n so block:true has a full-line range
+        const tTo = timerLine.number < doc.lines ? doc.line(timerLine.number + 1).from : doc.length
         if (!tm[1]) {
-          inlines.push({ from: tFrom, to: tTo, deco: Decoration.replace({ widget: new TimerWidget(0, '', tm[0]) }) })
+          inlines.push({ from: tFrom, to: tTo, deco: Decoration.replace({ widget: new TimerWidget(0, '', tm[0]), block: true }) })
         } else {
           const raw = tm[1].trim()
           const parts = raw.match(/^(\S+)(?:\s+(.+))?$/)
@@ -3271,10 +3246,26 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
             else if (ms) totalSec = parseInt(ms[1]) * 60 + parseInt(ms[2])
             else if (m) totalSec = parseInt(m[1]) * 60
             if (totalSec > 0) {
-              inlines.push({ from: tFrom, to: tTo, deco: Decoration.replace({ widget: new TimerWidget(totalSec, label, tm[0]) }) })
+              inlines.push({ from: tFrom, to: tTo, deco: Decoration.replace({ widget: new TimerWidget(totalSec, label, tm[0]), block: true }) })
             }
           }
         }
+      }
+    } catch { /**/ }
+
+    // ── /pomo block widget ──────────────────────────────────────────────
+    try {
+      const fullP = doc.toString()
+      const pomoRe = /^\/pomo$/gm
+      let pm
+      while ((pm = pomoRe.exec(fullP)) !== null) {
+        const pomoLine = doc.lineAt(pm.index)
+        const pFrom = pomoLine.from
+        const pLineEnd = pomoLine.to   // end of content (no \n) — used for inCur check
+        // Include trailing \n so block:true has a full-line range
+        const pTo = pomoLine.number < doc.lines ? doc.line(pomoLine.number + 1).from : doc.length
+        if (inCur(pFrom, pLineEnd)) continue
+        inlines.push({ from: pFrom, to: pTo, deco: Decoration.replace({ widget: new PomoWidget(pm[0]), block: true }) })
       }
     } catch { /**/ }
 
@@ -3418,7 +3409,10 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
     for (const { from, to, deco } of inlines) {
       if (from < 0 || to > doc.length || from >= to) continue
       const isReplace = !!deco.spec?.widget
-      if (isReplace && from < lastReplTo) continue
+      // Only skip MARK decorations that fall inside a replace widget's range.
+      // Replace widgets (like /timer, /pomo) should always be attempted — they don't
+      // cause RangeSetBuilder corruption, and the try/catch handles true overlaps.
+      if (!isReplace && from < lastReplTo) continue
       try {
         sb.add(from, to, deco)
         if (isReplace) lastReplTo = to
@@ -3838,7 +3832,9 @@ export default function NotebookView() {
   const [findQ,     setFindQ]    = useState('')
   const [findCount, setFindCount]= useState(0)
   const [findCurD,  setFindCurD] = useState(0)
+  const [selectionWC, setSelectionWC] = useState(0)
   const [editModal, setEditModal]= useState(false)
+  const [pdfStatus, setPdfStatus] = useState(null) // null | 'preparing' | 'printing'
 
   const editorRef  = useRef(null)
   const cmRef      = useRef(null)
@@ -4033,9 +4029,21 @@ export default function NotebookView() {
           { key: 'Mod-f', run: () => { findRef.current?.focus(); findRef.current?.select(); return true } },
         ]),
         EditorView.updateListener.of(upd => {
-          if (dead || !upd.docChanged) return
-          const t = upd.state.doc.toString()
-          contentRef.current = t; setContent(t); scheduleSave(t)
+          if (dead) return
+          if (upd.docChanged) {
+            const t = upd.state.doc.toString()
+            contentRef.current = t; setContent(t); scheduleSave(t)
+          }
+          if (upd.selectionSet || upd.docChanged) {
+            const sel = upd.state.selection.main
+            if (sel && !sel.empty) {
+              const selectedText = upd.state.sliceDoc(sel.from, sel.to)
+              const wc = (selectedText.match(/\b\w+\b/g) || []).length
+              setSelectionWC(wc)
+            } else {
+              setSelectionWC(0)
+            }
+          }
         }),
         EditorView.lineWrapping,
         placeholder('Create something…'),
@@ -4233,12 +4241,13 @@ export default function NotebookView() {
           }
           // Copy the file into the notebook's images folder for portable storage
           let mdPath = null
-          if (_invoke && notebook?.id) {
+          if (notebook?.id) {
             try {
-              const bytes = await _invoke('copy_file_bytes', { source: p })
+              const { readFile } = await import('@tauri-apps/plugin-fs')
+              const bytes = await readFile(p)
               const fname = `${Date.now()}_${name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-              mdPath = await saveNotebookImage(notebook.id, fname, new Uint8Array(bytes))
-            } catch (copyErr) { console.warn('[Gnos] copy_file_bytes failed:', copyErr) }
+              mdPath = await saveNotebookImage(notebook.id, fname, bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))
+            } catch (copyErr) { console.warn('[Gnos] image copy failed:', copyErr) }
           }
           const ref = mdPath || (_convertFileSrc ? _convertFileSrc(p) : p)
           const md = `![${name}](${ref})\n`
@@ -4430,6 +4439,16 @@ export default function NotebookView() {
     .nb-cm .cm-placeholder { color:var(--textDim); opacity:.45; }
     /* Hide widget buffer gaps that show caret artifacts */
     .cm-widgetBuffer { display: none; }
+    /* Hide cursor on lines that contain only block widgets */
+    .nb-cm .cm-line:has(.cm-timer-widget),
+    .nb-cm .cm-line:has(.cm-pomo-widget),
+    .nb-cm .cm-line:has(.cm-todo-block-w),
+    .nb-cm .cm-line:has(.cm-task-board-w),
+    .nb-cm .cm-line:has(.cm-calendar-widget),
+    .nb-cm .cm-line:has(.cm-table-wrap),
+    .nb-cm .cm-line:has(.cm-img-wrap) {
+      caret-color: transparent;
+    }
 
     /* ── Hidden syntax markers (Obsidian style — font-size:0 not replace) ── */
     .nb-live .cm-lv-hidden {
@@ -4659,12 +4678,12 @@ export default function NotebookView() {
     }
     .cm-todo-progress-done { background: #3fb950; }
     .cm-todo-row {
-      display: flex; align-items: flex-start; gap: 8px; padding: 5px 12px;
+      display: flex; align-items: center; gap: 8px; padding: 5px 12px;
       transition: background .08s; position: relative;
     }
     .cm-todo-row:hover { background: rgba(128,128,128,.04); }
     .cm-todo-cb {
-      width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; margin-top: 2px;
+      width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0;
       border: 1.5px solid var(--border); cursor: pointer; display: flex;
       align-items: center; justify-content: center;
       transition: background .15s, border-color .15s;
@@ -4687,10 +4706,18 @@ export default function NotebookView() {
       font-size: 9.5px; color: var(--textDim); opacity: .7;
     }
     .cm-todo-actions {
-      display: flex; gap: 2px; flex-shrink: 0; opacity: 0;
-      transition: opacity .12s;
+      display: flex; gap: 2px; flex-shrink: 0; align-items: center;
+      opacity: 0; transition: opacity .12s;
     }
     .cm-todo-row:hover .cm-todo-actions { opacity: 1; }
+    .cm-todo-row:has(.cm-todo-date-btn-set) .cm-todo-actions { opacity: 1; }
+    .cm-todo-date-btn {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      padding: 0 2px; border-radius: 3px; line-height: 1; display: flex; align-items: center;
+      transition: color .1s; opacity: .5;
+    }
+    .cm-todo-date-btn:hover { color: var(--accent); opacity: 1; }
+    .cm-todo-date-btn.cm-todo-date-btn-set { color: var(--accent); opacity: 0.8; }
     .cm-todo-del-btn {
       background: none; border: none; color: var(--textDim); cursor: pointer;
       font-size: 15px; line-height: 1; padding: 0 2px; border-radius: 3px;
@@ -4765,11 +4792,6 @@ export default function NotebookView() {
       font-size: 9px; background: rgba(128,128,128,.12); color: var(--textDim);
       border-radius: 8px; padding: 1px 6px; font-weight: 500;
     }
-    .cm-task-col-color-btn {
-      width: 12px; height: 12px; border-radius: 3px; border: 1.5px solid rgba(255,255,255,.25);
-      cursor: pointer; transition: transform .1s; flex-shrink: 0;
-    }
-    .cm-task-col-color-btn:hover { transform: scale(1.15); }
     .cm-task-col-del {
       background: none; border: none; color: var(--textDim); cursor: pointer;
       font-size: 14px; line-height: 1; padding: 0 2px; opacity: 0;
@@ -4777,65 +4799,32 @@ export default function NotebookView() {
     }
     .cm-task-col-hdr-w:hover .cm-task-col-del { opacity: .6; }
     .cm-task-col-del:hover { color: #f85149 !important; opacity: 1 !important; }
-    .cm-task-color-picker {
-      position: absolute; top: 100%; right: 0; z-index: 20;
-      display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--border);
-      border-radius: 8px; padding: 6px 8px; box-shadow: 0 4px 16px rgba(0,0,0,.2);
-    }
-    .cm-task-color-swatch {
-      width: 18px; height: 18px; border-radius: 4px; cursor: pointer;
-      border: 2px solid transparent; transition: transform .1s;
-    }
-    .cm-task-color-swatch:hover { transform: scale(1.15); }
-    .cm-task-color-active { border-color: var(--text); }
     .cm-task-cards-area { flex: 1; min-height: 24px; padding: 4px 5px 2px; }
     .cm-task-card-w {
-      background: var(--bg); border-radius: 5px; margin-bottom: 4px;
-      border: 1px solid var(--borderSubtle);
-      font-size: 12px; color: var(--text); transition: background .12s, opacity .15s, border-color .12s;
-      cursor: grab; position: relative; overflow: hidden;
+      background: var(--surface); border-radius: 7px; margin-bottom: 5px;
+      border: 1px solid var(--border);
+      font-size: 12px; color: var(--text); transition: box-shadow .12s, opacity .15s;
+      cursor: grab; user-select: none;
       font-family: 'Author', system-ui, sans-serif;
+      box-shadow: 0 1px 3px rgba(0,0,0,.06);
     }
-    .cm-task-card-w:hover { border-color: var(--border); }
-    .cm-task-card-dragging { opacity: .3; }
-    .cm-task-card-label {
-      height: 3px; width: 100%; border-radius: 0;
-    }
+    .cm-task-card-w:hover { box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+    .cm-task-card-dragging { opacity: .35; cursor: grabbing; }
     .cm-task-card-body {
-      display: flex; align-items: flex-start; gap: 6px; padding: 5px 8px 3px;
+      display: flex; align-items: center; gap: 6px; padding: 8px 10px;
     }
-    .cm-task-card-text { flex: 1; min-width: 0; line-height: 1.4; font-size: 11.5px; }
+    .cm-task-card-text { flex: 1; min-width: 0; line-height: 1.45; font-size: 12px; }
     .cm-task-card-edit {
       background: none; border: none; outline: none; font-size: 12px;
       color: var(--text); font-family: inherit; width: 100%;
     }
-    .cm-task-card-w-done .cm-task-card-text { text-decoration: line-through; opacity: .4; }
-    .cm-task-card-actions {
-      display: flex; gap: 2px; padding: 2px 8px 5px; opacity: 0;
-      transition: opacity .12s;
-    }
-    .cm-task-card-w:hover .cm-task-card-actions { opacity: 1; }
-    .cm-task-card-lbl-btn, .cm-task-card-del-btn {
+    .cm-task-card-del-btn {
       background: none; border: none; color: var(--textDim); cursor: pointer;
-      font-size: 11px; padding: 2px 4px; border-radius: 4px; display: flex;
-      align-items: center; justify-content: center;
+      font-size: 14px; padding: 0 2px; border-radius: 4px; opacity: 0;
+      transition: opacity .1s; line-height: 1; flex-shrink: 0;
     }
-    .cm-task-card-lbl-btn:hover, .cm-task-card-del-btn:hover {
-      background: var(--surfaceAlt); color: var(--text);
-    }
-    .cm-task-card-del-btn { font-size: 14px; }
-    .cm-task-label-picker {
-      position: absolute; bottom: 100%; left: 8px; z-index: 20;
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 8px; padding: 4px 0; box-shadow: 0 4px 16px rgba(0,0,0,.15);
-      min-width: 110px;
-    }
-    .cm-task-label-opt {
-      padding: 4px 10px; font-size: 11px; cursor: pointer; color: var(--text);
-      transition: background .08s;
-    }
-    .cm-task-label-opt:hover { background: var(--surfaceAlt); }
-    .cm-task-label-active { font-weight: 700; }
+    .cm-task-card-w:hover .cm-task-card-del-btn { opacity: 0.5; }
+    .cm-task-card-del-btn:hover { opacity: 1 !important; color: #f85149; }
     .cm-task-add-row { padding: 3px 5px 6px; }
     .cm-task-add-input {
       width: 100%; background: transparent; border: 1px dashed var(--borderSubtle);
@@ -4862,6 +4851,74 @@ export default function NotebookView() {
       padding: 8px 10px; font-family: inherit; box-sizing: border-box;
       position: absolute; right: 0; top: 8px; z-index: 10;
     }
+
+    /* ── Date/time picker popup ── */
+    .gnos-dtp {
+      position: fixed; z-index: 99999;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.22), 0 2px 8px rgba(0,0,0,.12);
+      font-family: 'Author', system-ui, sans-serif; font-size: 13px;
+      color: var(--text); min-width: 240px; user-select: none;
+    }
+    .gnos-dtp-nav {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .gnos-dtp-nav-btn {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      font-size: 18px; padding: 2px 8px; border-radius: 6px;
+      transition: background .1s, color .1s; line-height: 1;
+    }
+    .gnos-dtp-nav-btn:hover { background: var(--surfaceAlt); color: var(--text); }
+    .gnos-dtp-month-label { font-size: 13px; font-weight: 600; color: var(--text); }
+    .gnos-dtp-grid {
+      display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;
+      margin-bottom: 10px;
+    }
+    .gnos-dtp-wday {
+      text-align: center; font-size: 10px; font-weight: 600;
+      color: var(--textDim); padding: 2px 0; letter-spacing: .04em;
+    }
+    .gnos-dtp-day {
+      text-align: center; padding: 5px 2px; border-radius: 6px;
+      cursor: pointer; font-size: 12px; color: var(--text);
+      transition: background .1s, color .1s;
+    }
+    .gnos-dtp-day:not(.gnos-dtp-empty):hover { background: var(--surfaceAlt); }
+    .gnos-dtp-empty { cursor: default; }
+    .gnos-dtp-today { color: var(--accent); font-weight: 700; }
+    .gnos-dtp-selected {
+      background: var(--accent) !important; color: #fff !important;
+      font-weight: 600; border-radius: 6px;
+    }
+    .gnos-dtp-time-row {
+      display: flex; align-items: center; gap: 8px;
+      border-top: 1px solid var(--border); padding-top: 8px; margin-bottom: 8px;
+    }
+    .gnos-dtp-time-label { font-size: 12px; color: var(--textDim); min-width: 32px; }
+    .gnos-dtp-time-inp {
+      flex: 1; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 12px;
+      padding: 5px 8px; outline: none; font-family: inherit;
+    }
+    .gnos-dtp-time-inp:focus { border-color: var(--accent); }
+    .gnos-dtp-actions {
+      display: flex; justify-content: space-between; gap: 6px;
+      border-top: 1px solid var(--border); padding-top: 8px;
+    }
+    .gnos-dtp-clear {
+      background: none; border: 1px solid var(--border); border-radius: 7px;
+      color: var(--textDim); font-size: 12px; cursor: pointer; padding: 5px 14px;
+      font-family: inherit; transition: background .1s, color .1s;
+    }
+    .gnos-dtp-clear:hover { background: var(--surfaceAlt); color: var(--text); }
+    .gnos-dtp-done {
+      background: var(--accent); border: none; border-radius: 7px;
+      color: #fff; font-size: 12px; font-weight: 600; cursor: pointer;
+      padding: 5px 18px; font-family: inherit; transition: opacity .1s;
+    }
+    .gnos-dtp-done:hover { opacity: .85; }
 
     /* ── Timer widget ── */
     .cm-timer-widget {
@@ -4904,6 +4961,69 @@ export default function NotebookView() {
       font-size: 22px; font-weight: 700; color: var(--text);
       font-variant-numeric: tabular-nums; width: 120px; font-family: inherit;
     }
+
+    .cm-timer-time-editable { cursor: text; opacity: 0.5; }
+    .cm-timer-time-editable:hover { opacity: 0.8; }
+
+    /* ── Pomodoro widget ── */
+    .cm-pomo-widget {
+      margin: 0.6em 0; padding: 14px 16px; border-radius: 12px;
+      border: 1px solid var(--border); background: var(--surface);
+      display: flex; flex-direction: column; gap: 8px; max-width: 340px;
+    }
+    .cm-pomo-hdr {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .cm-pomo-title {
+      font-size: 13px; font-weight: 700; color: var(--text);
+      font-family: 'Satoshi', 'Author', sans-serif;
+    }
+    .cm-pomo-sessions {
+      font-size: 10px; font-weight: 600; color: var(--textDim);
+      background: var(--surfaceAlt); border: 1px solid var(--borderSubtle);
+      border-radius: 4px; padding: 2px 6px;
+    }
+    .cm-pomo-phase-row { display: flex; gap: 4px; }
+    .cm-pomo-phase-btn {
+      flex: 1; padding: 4px 0; border-radius: 6px; border: 1px solid var(--borderSubtle);
+      background: none; color: var(--textDim); cursor: pointer;
+      font-size: 11px; font-weight: 600; font-family: inherit;
+      transition: all 0.12s;
+    }
+    .cm-pomo-phase-btn:hover { background: var(--surfaceAlt); color: var(--text); }
+    .cm-pomo-phase-btn.active {
+      background: var(--accent); color: #fff; border-color: var(--accent);
+    }
+    .cm-pomo-time {
+      font-size: 36px; font-weight: 700; color: var(--text);
+      font-variant-numeric: tabular-nums; text-align: center;
+      letter-spacing: 2px; padding: 4px 0;
+    }
+    .cm-pomo-bar {
+      height: 4px; border-radius: 2px; background: var(--borderSubtle); overflow: hidden;
+    }
+    .cm-pomo-fill {
+      height: 100%; border-radius: 2px; transition: width 1s linear;
+    }
+    .cm-pomo-fill-work { background: var(--accent); }
+    .cm-pomo-fill-break { background: #3fb950; }
+    .cm-pomo-controls { display: flex; gap: 6px; justify-content: center; }
+    .cm-pomo-btn {
+      background: none; border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text); cursor: pointer; width: 36px; height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px; transition: background .1s;
+    }
+    .cm-pomo-btn:hover { background: var(--surfaceAlt); }
+    .cm-pomo-play { width: 48px; }
+    .cm-pomo-prev {
+      display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+      border-radius: 10px; border: 1px solid var(--border); background: var(--surface);
+      margin: 0.6em 0; max-width: 320px;
+    }
+    .cm-pomo-prev-icon { font-size: 18px; }
+    .cm-pomo-prev-text { font-size: 13px; font-weight: 600; color: var(--text); }
+    .cm-pomo-prev-sub { font-size: 10px; color: var(--textDim); margin-left: auto; }
 
     /* ── Calendar widget ── */
     .cm-calendar-widget {
@@ -5335,8 +5455,8 @@ export default function NotebookView() {
                   {findCount>0?`${findCurD+1}/${findCount}`:'Not found'}
                 </span>
               ) : (
-                <span style={{ fontSize:11, color:'var(--textDim)', whiteSpace:'nowrap', paddingLeft:8, flexShrink:0 }}>
-                  {wordCount.toLocaleString()} words
+                <span style={{ fontSize:11, color: selectionWC > 0 ? 'var(--accent)' : 'var(--textDim)', whiteSpace:'nowrap', paddingLeft:8, flexShrink:0 }}>
+                  {selectionWC > 0 ? `${selectionWC} of ${wordCount.toLocaleString()} words` : `${wordCount.toLocaleString()} words`}
                 </span>
               )}
               {findQ && (
@@ -5353,6 +5473,14 @@ export default function NotebookView() {
         {/* Far right: view mode + settings */}
         <div style={{ display:'flex', alignItems:'center', gap:6, flex:'0 0 auto' }}>
           <ViewModeBtn viewMode={viewMode} setViewMode={switchMode} />
+          <button onClick={() => exportNotebookPdf(previewHtml, noteTitle || notebook?.title, setPdfStatus)} title="Export as PDF" disabled={!!pdfStatus}
+            style={{ background:'none', border:'1px solid var(--border)', borderRadius:6, color:'var(--textDim)', cursor:'pointer', width:30, height:30, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+              <path d="M4 1h5l4 4v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M9 1v4h4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M8 8v4M6 10l2 2 2-2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
           <button onClick={() => setEditModal(true)} title="Notebook settings"
             style={{ background:'none', border:'1px solid var(--border)', borderRadius:6, color:'var(--textDim)', cursor:'pointer', width:30, height:30, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
@@ -5465,6 +5593,25 @@ export default function NotebookView() {
       )}
 
       {editModal && <NotebookSettingsPanel notebook={notebook} notebooks={notebooks} onClose={() => setEditModal(false)} />}
+
+      {/* PDF export progress overlay */}
+      {pdfStatus && (
+        <div style={{ position:'fixed', bottom:28, left:'50%', transform:'translateX(-50%)', zIndex:99999,
+          background:'var(--surface)', border:'1px solid var(--border)', borderRadius:12,
+          padding:'12px 20px', boxShadow:'0 8px 32px rgba(0,0,0,0.45)',
+          display:'flex', alignItems:'center', gap:12, minWidth:220 }}>
+          <div style={{ width:140, height:4, background:'var(--borderSubtle)', borderRadius:2, overflow:'hidden', flex:'0 0 140px' }}>
+            <div style={{
+              height:'100%', borderRadius:2, background:'var(--accent)',
+              width: pdfStatus === 'preparing' ? '45%' : '90%',
+              transition:'width 0.5s ease',
+            }} />
+          </div>
+          <span style={{ fontSize:12, color:'var(--textDim)', whiteSpace:'nowrap' }}>
+            {pdfStatus === 'preparing' ? 'Preparing PDF…' : 'Opening print dialog…'}
+          </span>
+        </div>
+      )}
     </div>
   )
 }

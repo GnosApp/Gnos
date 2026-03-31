@@ -4,6 +4,7 @@ import { loadAudioChapter, loadSingleAudioData, addReadingMinutes } from '@/lib/
 import { generateCoverColor } from '@/lib/utils'
 import { GnosNavButton } from '@/components/SideNav'
 import { TITLEBAR_H } from '@/App'
+import { getGlobalAudio } from '@/lib/globalAudio'
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
 
@@ -18,7 +19,7 @@ const fmt = (s) => {
 export default function AudioPlayerView() {
   const book    = useAppStore(s => s.activeAudioBook)
 
-  const audioRef    = useRef(null)
+  const audioRef    = useRef(getGlobalAudio())
   const chapCacheRef = useRef({})
 
   const [chapIdx,   setChapIdx]   = useState(0)
@@ -159,6 +160,8 @@ export default function AudioPlayerView() {
     }
 
     useAppStore.getState().updateBookProgress(book.id, idx, 0)
+    useAppStore.getState().setMiniAudioBook(book)
+    useAppStore.getState().setMiniAudioTitle(book.title || '')
   }
 
   // ── Audio event handlers ───────────────────────────────────────────────────
@@ -181,8 +184,8 @@ export default function AudioPlayerView() {
       }
     }
     const onLoaded = () => setTimeDur(fmt(audio.duration))
-    const onPlay   = () => setPlaying(true)
-    const onPause  = () => setPlaying(false)
+    const onPlay   = () => { setPlaying(true);  useAppStore.getState().setMiniAudioPlaying(true) }
+    const onPause  = () => { setPlaying(false); useAppStore.getState().setMiniAudioPlaying(false) }
     const onEnded  = () => {
       setPlaying(false)
       const b = useAppStore.getState().activeAudioBook
@@ -661,7 +664,7 @@ export default function AudioPlayerView() {
           </div>
 
         </main>
-        <audio ref={audioRef} preload="metadata" />
+        {/* Audio element is a global detached node managed by globalAudio.js */}
       </div>
     </div>
   )

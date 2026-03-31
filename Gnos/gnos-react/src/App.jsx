@@ -1,5 +1,5 @@
 import { listen } from '@tauri-apps/api/event'
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import useAppStore from '@/store/useAppStore'
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link'
 import { readFile } from '@tauri-apps/plugin-fs'
@@ -16,11 +16,12 @@ import SideNav         from '@/components/SideNav'
 import FlashcardView   from '@/views/FlashcardView'
 import GraphView       from '@/views/GraphView'
 import CalendarView    from '@/views/CalendarView'
+import KanbanView     from '@/views/KanbanView'
 
 const VIEW_LABELS = {
   library: 'Library', reader: 'Reading', 'audio-player': 'Listening',
   notebook: 'Notebook', pdf: 'PDF', sketchbook: 'Sketchbook',
-  flashcard: 'Flashcards', graph: 'Graph', calendar: 'Calendar',
+  flashcard: 'Flashcards', graph: 'Graph', calendar: 'Calendar', kanban: 'Tasks',
 }
 
 /** Derive a tab label from tab state — show file/content name when available.
@@ -54,6 +55,7 @@ function ViewPanel({ view }) {
   if (view === 'flashcard')    return <FlashcardView />
   if (view === 'graph')        return <GraphView />
   if (view === 'calendar')     return <CalendarView />
+  if (view === 'kanban')       return <KanbanView />
   return null
 }
 
@@ -335,9 +337,9 @@ const TAB_CSS = `
 
 // ── Theme palettes for loading screen ─────────────────────────────────────────
 const LOADING_THEMES = {
-  sepia:  { bg: '#f4efe6', accent: '#8b5e3c', text: '#3b2f20', dim: '#7a6652', border: '#c8b89a' },
+  sepia:  { bg: '#faf8f5', accent: '#8b5e3c', text: '#3b2f20', dim: '#7a6652', border: '#d4c4b0' },
   light:  { bg: '#f6f8fa', accent: '#0969da', text: '#1f2328', dim: '#636c76', border: '#d0d7de' },
-  moss:   { bg: '#f2f5ee', accent: '#4a7c3f', text: '#2a3320', dim: '#5a7048', border: '#b8c9a8' },
+  moss:   { bg: '#eef3e8', accent: '#3d6e32', text: '#1e2c14', dim: '#4e6840', border: '#a8c090' },
   dark:   { bg: '#0d1117', accent: '#388bfd', text: '#e6edf3', dim: '#8b949e', border: '#30363d' },
   cherry: { bg: '#0e0608', accent: '#e05c7a', text: '#f2dde1', dim: '#9e6d76', border: '#3d1a20' },
   sunset: { bg: '#0f0a04', accent: '#e8922a', text: '#f5e6c8', dim: '#a07840', border: '#4a3010' },
@@ -404,6 +406,7 @@ function GnosLoadingScreen({ onDone }) {
   )
 }
 
+
 export default function App() {
   const init        = useAppStore(s => s.init)
   const tabs        = useAppStore(s => s.tabs)
@@ -425,9 +428,13 @@ export default function App() {
   const [splitPanes,      setSplitPanes]      = useState([])
   const [tabSettingsOpen, setTabSettingsOpen] = useState(false)
   const [showLoading, setShowLoading] = useState(true)
+  const handleLoadingDone = useCallback(() => setShowLoading(false), [])
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [prevActiveTabId, setPrevActiveTabId] = useState(null)
   const [zenMode, setZenMode] = useState(false)
+  const [zenPeekTop,  setZenPeekTop]  = useState(false)
+  const [zenPeekLeft, setZenPeekLeft] = useState(false)
+  const zenPeekTimerRef = useRef({})
   const [dragTabId,  setDragTabId]  = useState(null)
   const [dropTabIdx, setDropTabIdx] = useState(null)
   const tabPointerRef = useRef(null) // { tabId, tabIdx, startX, dragging }
@@ -523,6 +530,33 @@ export default function App() {
   useEffect(() => {
     document.body.classList.toggle('zen-active', zenMode)
     return () => document.body.classList.remove('zen-active')
+  }, [zenMode])
+
+  // Zen peek — track mouse near edges to reveal titlebar / sidenav
+  useEffect(() => {
+    if (!zenMode) { setZenPeekTop(false); setZenPeekLeft(false); return }
+    const EDGE = 12
+    const HIDE_DELAY = 600
+    const onMove = (e) => {
+      // Top edge → peek titlebar
+      if (e.clientY <= EDGE) {
+        clearTimeout(zenPeekTimerRef.current.top)
+        setZenPeekTop(true)
+      } else if (e.clientY > TITLEBAR_H + 8) {
+        clearTimeout(zenPeekTimerRef.current.top)
+        zenPeekTimerRef.current.top = setTimeout(() => setZenPeekTop(false), HIDE_DELAY)
+      }
+      // Left edge → peek sidenav
+      if (e.clientX <= EDGE) {
+        clearTimeout(zenPeekTimerRef.current.left)
+        setZenPeekLeft(true)
+      } else if (e.clientX > 260) {
+        clearTimeout(zenPeekTimerRef.current.left)
+        zenPeekTimerRef.current.left = setTimeout(() => setZenPeekLeft(false), HIDE_DELAY)
+      }
+    }
+    window.addEventListener('mousemove', onMove)
+    return () => { window.removeEventListener('mousemove', onMove); clearTimeout(zenPeekTimerRef.current.top); clearTimeout(zenPeekTimerRef.current.left) }
   }, [zenMode])
 
   // Pointer-based tab drag (HTML5 drag API doesn't fire reliably in Tauri/WebKit)
@@ -631,7 +665,7 @@ export default function App() {
   }, [init])
 
   if (showLoading) {
-    return <GnosLoadingScreen onDone={() => setShowLoading(false)} />
+    return <GnosLoadingScreen onDone={handleLoadingDone} />
   }
 
   if (!onboardingComplete) {
@@ -643,7 +677,7 @@ export default function App() {
       <style>{TAB_CSS}</style>
 
       {/* ── Title bar ──────────────────────────────────────────────────────── */}
-      <div className={`gnos-titlebar${isFullscreen ? ' is-fullscreen' : ''}`}>
+      <div className={`gnos-titlebar${isFullscreen ? ' is-fullscreen' : ''}${zenMode && !zenPeekTop ? ' zen-hidden' : ''}${zenMode && zenPeekTop ? ' zen-peek' : ''}`}>
         {/* Left drag area covers the traffic-light / padding gap */}
         <div ref={leftDragRef} style={{ position: 'absolute', left: 0, top: 0, width: 88, height: '100%', cursor: 'default' }} />
 
@@ -739,9 +773,9 @@ export default function App() {
       {/* ── Content ────────────────────────────────────────────────────────── */}
       <div
         ref={contentRef}
-        className={`sidenav-push-wrapper${sideNavOpen ? ' pushed' : ''}`}
+        className={`sidenav-push-wrapper${sideNavOpen ? ' pushed' : ''}${zenMode && zenPeekLeft ? ' zen-force-nav' : ''}`}
         style={{
-          paddingTop: TITLEBAR_H, height: '100vh',
+          paddingTop: zenMode && !zenPeekTop ? 0 : TITLEBAR_H, height: '100vh',
           boxSizing: 'border-box', display: 'flex',
           flexDirection: isSplit && splitDir === 'vertical' ? 'column' : 'row',
           overflow: 'hidden', position: 'relative',

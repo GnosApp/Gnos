@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gnos Clipper</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #1a1a1f;
+      --surface: #222229;
+      --surfaceAlt: #2a2a33;
+      --border: #33333e;
+      --text: #e8e8f0;
+      --textDim: #888899;
+      --accent: #7c6af7;
+      --accentHover: #6a58e8;
+      --success: #4caf82;
+      --error: #f85149;
+      --radius: 10px;
+    }
+
+    body {
+      width: 340px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+      font-size: 13px;
+      padding: 14px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .logo {
+      width: 28px; height: 28px;
+      background: linear-gradient(180deg, #1a0a1e 0%, #0f0a04 100%);
+      border-radius: 7px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    .header-text h1 {
+      font-size: 14px; font-weight: 700; color: var(--text); line-height: 1.2;
+    }
+
+    .header-text p {
+      font-size: 11px; color: var(--textDim); line-height: 1.3;
+    }
+
+    .section { margin-bottom: 10px; }
+
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--textDim);
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+
+    select, input[type="text"] {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      color: var(--text);
+      font-size: 12px;
+      padding: 8px 10px;
+      outline: none;
+      font-family: inherit;
+      transition: border-color .15s;
+    }
+
+    select:focus, input[type="text"]:focus { border-color: var(--accent); }
+
+    select option { background: var(--surface); }
+
+    .mode-row {
+      display: flex;
+      gap: 6px;
+    }
+
+    .mode-btn {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      color: var(--textDim);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 7px 4px;
+      cursor: pointer;
+      text-align: center;
+      transition: all .15s;
+    }
+
+    .mode-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .mode-btn:not(.active):hover {
+      background: var(--surfaceAlt);
+      color: var(--text);
+      border-color: var(--border);
+    }
+
+    .preview-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 8px 10px;
+      font-size: 11px;
+      color: var(--textDim);
+      max-height: 120px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.5;
+      font-family: 'SF Mono', 'Menlo', monospace;
+    }
+
+    .preview-box::-webkit-scrollbar { width: 4px; }
+    .preview-box::-webkit-scrollbar-track { background: transparent; }
+    .preview-box::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .preview-loading { color: var(--textDim); font-style: italic; }
+
+    .actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 14px;
+    }
+
+    .btn-copy {
+      flex: 1;
+      background: var(--accent);
+      border: none;
+      border-radius: 8px;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 10px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: opacity .15s, transform .1s;
+    }
+
+    .btn-copy:hover { opacity: .88; }
+    .btn-copy:active { transform: scale(.98); }
+
+    .btn-copy.success { background: var(--success); }
+    .btn-copy.error { background: var(--error); }
+
+    .btn-secondary {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--textDim);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 10px 12px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background .15s, color .15s;
+    }
+
+    .btn-secondary:hover { background: var(--surfaceAlt); color: var(--text); }
+
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 12px 0;
+    }
+
+    .meta-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--textDim);
+    }
+
+    .meta-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      flex-shrink: 0;
+    }
+
+    .meta-url {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+
+    #status {
+      font-size: 11px;
+      color: var(--textDim);
+      text-align: center;
+      margin-top: 6px;
+      min-height: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">
+      <svg width="28" height="28" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="p-quill" x1="26" y1="3" x2="6.5" y2="28" gradientUnits="userSpaceOnUse">
+            <stop offset="0%"   stop-color="#f7c35a"/>
+            <stop offset="50%"  stop-color="#e8692a"/>
+            <stop offset="100%" stop-color="#c0345a"/>
+          </linearGradient>
+          <radialGradient id="p-glow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%"   stop-color="#e8692a" stop-opacity="0.22"/>
+            <stop offset="100%" stop-color="#e8692a" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        <ellipse cx="30" cy="30" rx="22" ry="26" fill="url(#p-glow)"/>
+        <g transform="translate(32,29) scale(1.7,1.45) translate(-16,-15.5)">
+          <path d="M26 3C22 5 14 10 10 18C8 22 7 25 6.5 28"
+                stroke="url(#p-quill)" stroke-width="1.1" stroke-linecap="round"/>
+          <path d="M6.5 28L9 23"
+                stroke="url(#p-quill)" stroke-width="1.1" stroke-linecap="round"/>
+          <path d="M26 3C24 8 18 15 10 18"
+                stroke="#e8692a" stroke-width="0.75" stroke-linecap="round" opacity="0.65"/>
+          <path d="M26 3C25 6 22 10 16 14"
+                stroke="#f7c35a" stroke-width="0.5" stroke-linecap="round" opacity="0.38"/>
+        </g>
+        <line x1="12" y1="53" x2="52" y2="53"
+              stroke="#f7c35a" stroke-width="1" stroke-linecap="round" opacity="0.45"/>
+      </svg>
+    </div>
+    <div class="header-text">
+      <h1>Gnos Clipper</h1>
+      <p>Save page to your notebook</p>
+    </div>
+  </div>
+
+  <div class="meta-row" style="margin-bottom:12px;">
+    <div class="meta-dot"></div>
+    <div class="meta-url" id="meta-url">Loading...</div>
+  </div>
+
+  <div class="section">
+    <label>Clip Mode</label>
+    <div class="mode-row">
+      <button class="mode-btn active" data-mode="article">Article</button>
+      <button class="mode-btn" data-mode="selection">Selection</button>
+      <button class="mode-btn" data-mode="full">Full Page</button>
+      <button class="mode-btn" data-mode="link">Link Only</button>
+    </div>
+  </div>
+
+  <div class="section" id="title-section">
+    <label>Title</label>
+    <input type="text" id="clip-title" placeholder="Page title" />
+  </div>
+
+  <div class="section" id="tags-section">
+    <label>Tags (comma-separated)</label>
+    <input type="text" id="clip-tags" placeholder="research, web, ideas" />
+  </div>
+
+  <div class="section">
+    <label>Preview</label>
+    <div class="preview-box preview-loading" id="preview">Generating preview…</div>
+  </div>
+
+  <div class="actions">
+    <button class="btn-copy" id="btn-copy">Copy Markdown</button>
+    <button class="btn-secondary" id="btn-refresh" title="Refresh preview">↺</button>
+  </div>
+
+  <div id="status"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

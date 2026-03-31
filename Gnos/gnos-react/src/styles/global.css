@@ -277,8 +277,8 @@ button { font-family: inherit; }
 .cover-spine { position: absolute; left: 0; top: 0; bottom: 0; width: 7px; background: rgba(0,0,0,0.3); border-radius: 7px 0 0 7px; z-index: 1; }
 .cover-crease { position: absolute; left: 7px; top: 0; bottom: 0; width: 1px; background: rgba(255,255,255,0.06); z-index: 1; }
 .cover-edge { position: absolute; right: 0; top: 3px; bottom: 3px; width: 2px; background: rgba(255,255,255,0.08); border-radius: 0 3px 3px 0; z-index: 1; }
-.cover-title { color: rgba(255,255,255,0.93); font-size: 11px; font-weight: 600; text-align: center; line-height: 1.35; font-family: var(--font-serif); text-shadow: 0 2px 6px rgba(0,0,0,0.5); z-index: 1; overflow-wrap: break-word; width: 100%; padding-left: 4px; letter-spacing: 0.2px; }
-.cover-author { color: rgba(255,255,255,0.55); font-size: 9px; margin-top: 8px; text-align: center; font-family: var(--font-serif); z-index: 1; padding-left: 4px; letter-spacing: 0.3px; }
+.cover-title { color: rgba(255,255,255,0.93); font-size: 11px; font-weight: 600; text-align: center; line-height: 1.35; font-family: var(--font-serif, Georgia, serif); text-shadow: 0 2px 6px rgba(0,0,0,0.5); z-index: 1; overflow-wrap: break-word; width: 100%; padding-left: 4px; letter-spacing: 0.2px; }
+.cover-author { color: rgba(255,255,255,0.55); font-size: 9px; margin-top: 8px; text-align: center; font-family: var(--font-serif, Georgia, serif); z-index: 1; padding-left: 4px; letter-spacing: 0.3px; }
 .cover-badge { position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.35); border-radius: 4px; padding: 2px 5px; font-size: 9px; color: rgba(255,255,255,0.6); font-weight: 700; z-index: 2; }
 .cover-audio { position: absolute; bottom: 8px; left: 18px; font-size: 11px; opacity: 0.65; z-index: 2; }
 .cover-prog-bg { position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: rgba(0,0,0,0.35); z-index: 2; }
@@ -1456,6 +1456,36 @@ mark.nb-find-mark-active {
   flex-shrink: 0;
   z-index: 50;
   transition: max-height 0.22s cubic-bezier(0.4,0,0.2,1), opacity 0.18s, min-height 0.22s;
+}
+
+/* ── Zen mode — hide titlebar and sidenav ────────────────────────────────── */
+.gnos-titlebar {
+  transition: transform 0.22s cubic-bezier(0.4,0,0.2,1), opacity 0.18s;
+}
+.gnos-titlebar.zen-hidden {
+  transform: translateY(-100%);
+  opacity: 0;
+  pointer-events: none;
+}
+.gnos-titlebar.zen-peek {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: all;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.18);
+}
+/* In zen mode, sidenav adjusts its top since titlebar is gone */
+body.zen-active .sidenav-panel {
+  top: 0;
+}
+/* Force sidenav visible on zen-force-nav (mouse near left edge) */
+.sidenav-push-wrapper.zen-force-nav .sidenav-panel {
+  transform: translateX(0) !important;
+  box-shadow: 8px 0 32px rgba(0,0,0,0.22) !important;
+}
+/* Hide backdrop in zen peek (don't dim the content) */
+.sidenav-push-wrapper.zen-force-nav .sidenav-backdrop.open {
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 /* ── Zen mode — hide all view headers while active ───────────────────────── */

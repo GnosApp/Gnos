@@ -2,13 +2,13 @@
 
 export const BUILT_IN_THEMES = {
   sepia: {
-    name: 'Sepia',
-    bg: '#f4efe6', surface: '#faf6ef', surfaceAlt: '#ede8df',
-    border: '#c8b89a', borderSubtle: '#ddd4c4',
+    name: 'Coffee',
+    bg: '#faf8f5', surface: '#ffffff', surfaceAlt: '#f2ede6',
+    border: '#d4c4b0', borderSubtle: '#e8e0d5',
     text: '#3b2f20', textDim: '#7a6652',
     accent: '#8b5e3c', accentHover: '#a0714e',
-    readerBg: '#f4efe6', readerCard: '#faf6ef', readerText: '#3b2f20',
-    headerBg: '#faf6ef', hover: 'rgba(0,0,0,0.05)',
+    readerBg: '#faf8f5', readerCard: '#ffffff', readerText: '#3b2f20',
+    headerBg: '#ffffff', hover: 'rgba(0,0,0,0.05)',
   },
   dark: {
     name: 'Dark',
@@ -48,12 +48,12 @@ export const BUILT_IN_THEMES = {
   },
   moss: {
     name: 'Moss',
-    bg: '#f2f5ee', surface: '#f8faf5', surfaceAlt: '#e8ede2',
-    border: '#b8c9a8', borderSubtle: '#d0ddc6',
-    text: '#2a3320', textDim: '#5a7048',
-    accent: '#4a7c3f', accentHover: '#3d6934',
-    readerBg: '#f2f5ee', readerCard: '#f8faf5', readerText: '#2a3320',
-    headerBg: '#f8faf5', hover: 'rgba(74,124,63,0.07)',
+    bg: '#eef3e8', surface: '#f5f9f0', surfaceAlt: '#e0ebd8',
+    border: '#a8c090', borderSubtle: '#c8dabb',
+    text: '#1e2c14', textDim: '#4e6840',
+    accent: '#3d6e32', accentHover: '#326029',
+    readerBg: '#eef3e8', readerCard: '#f5f9f0', readerText: '#1e2c14',
+    headerBg: '#f5f9f0', hover: 'rgba(61,110,50,0.08)',
   },
 }
 

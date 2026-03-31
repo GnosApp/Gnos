@@ -539,15 +539,16 @@ export function UniversalSettingsModal({ onClose }) {
     { id: 'reader',     label: 'Reader' },
     { id: 'notebook',   label: 'Notebook' },
     { id: 'audio',      label: 'Audio' },
+    { id: 'calendar',   label: 'Calendar' },
   ]
 
   const BUILT_IN_THEMES_LOCAL = {
-    sepia:  { name: 'Sepia',  bg: '#f4efe6', surface: '#faf6ef', accent: '#8b5e3c' },
+    sepia:  { name: 'Coffee', bg: '#faf8f5', surface: '#ffffff', accent: '#8b5e3c' },
     dark:   { name: 'Dark',   bg: '#0d1117', surface: '#161b22', accent: '#388bfd' },
     light:  { name: 'Light',  bg: '#f6f8fa', surface: '#ffffff', accent: '#0969da' },
     cherry: { name: 'Cherry', bg: '#0e0608', surface: '#170b0d', accent: '#e05c7a' },
     sunset: { name: 'Sunset', bg: '#0f0a04', surface: '#1a1008', accent: '#e8922a' },
-    moss:   { name: 'Moss',   bg: '#f2f5ee', surface: '#f8faf5', accent: '#4a7c3f' },
+    moss:   { name: 'Moss',   bg: '#eef3e8', surface: '#f5f9f0', accent: '#3d6e32' },
   }
   const allThemes = { ...BUILT_IN_THEMES_LOCAL, ...customThemes }
 
@@ -815,6 +816,36 @@ export function UniversalSettingsModal({ onClose }) {
             </>
           )}
 
+          {tab === 'calendar' && (
+            <>
+              <SettingsSectionLabel>Day View Hours</SettingsSectionLabel>
+              <SettingsRow label="Day starts at" desc="Earliest hour shown in day/week view">
+                <select style={selectStyle} value={useAppStore.getState().calendarStartHour ?? 7}
+                  onChange={e => pref('calendarStartHour', +e.target.value)}>
+                  {Array.from({length: 24}, (_, i) => (
+                    <option key={i} value={i}>{i === 0 ? '12 AM' : i < 12 ? `${i} AM` : i === 12 ? '12 PM' : `${i-12} PM`}</option>
+                  ))}
+                </select>
+              </SettingsRow>
+              <SettingsRow label="Day ends at" desc="Latest hour shown in day/week view">
+                <select style={selectStyle} value={useAppStore.getState().calendarEndHour ?? 21}
+                  onChange={e => pref('calendarEndHour', +e.target.value)}>
+                  {Array.from({length: 24}, (_, i) => (
+                    <option key={i} value={i}>{i === 0 ? '12 AM' : i < 12 ? `${i} AM` : i === 12 ? '12 PM' : `${i-12} PM`}</option>
+                  ))}
+                </select>
+              </SettingsRow>
+              <SettingsSectionLabel>Week</SettingsSectionLabel>
+              <SettingsRow label="Week starts on">
+                <select style={selectStyle} value={useAppStore.getState().calendarWeekStart ?? 0}
+                  onChange={e => pref('calendarWeekStart', +e.target.value)}>
+                  <option value={0}>Sunday</option>
+                  <option value={1}>Monday</option>
+                  <option value={6}>Saturday</option>
+                </select>
+              </SettingsRow>
+            </>
+          )}
 
         </div>
 
@@ -1219,9 +1250,15 @@ export default function SideNav({ isSplitPane = false }) {
     else if (item._isSketchbook)    { store.setActiveSketchbook(item); newView = 'sketchbook';   patch = { view: newView, activeSketchbook: item } }
     else if (item.type === 'audio') { store.setActiveAudioBook(item);  newView = 'audio-player'; patch = { view: newView, activeAudioBook: item } }
     else { store.setActiveBook(item); newView = item.format === 'pdf' ? 'pdf' : 'reader'; patch = { view: newView, activeBook: item } }
-    // Use paneTabId when in split mode so we update the correct pane's tab
-    updateTab(paneTabId || activeTabId, patch)
-    setView(newView); closeSideNav()
+    if (paneTabId) {
+      // In split-pane mode update the specific pane tab; no history entry
+      updateTab(paneTabId, patch)
+      setView(newView)
+    } else {
+      // Normal mode — push to history so back button works
+      navigate(patch)
+    }
+    closeSideNav()
   }
 
   // File import — fire custom events so LibraryView can handle them
@@ -1408,10 +1445,20 @@ export default function SideNav({ isSplitPane = false }) {
         .sidenav-panel:not(.open) .sidenav-close-chevron { transform: rotate(180deg); }
         .sidenav-panel.open      .sidenav-close-chevron { transform: rotate(0deg); }
 
-        /* ── Scroll area — leaves room for footer ─────────────────────────── */
+        /* ── Scroll area ───────────────────────────────────────────────────── */
         .sidenav-scroll {
           flex: 1; overflow-y: auto;
-          padding-bottom: 56px; /* reserved for footer */
+          padding-bottom: 8px;
+        }
+
+        /* ── Docked tabs — fixed above footer, not in scroll flow ────────── */
+        .sidenav-tabs-docked {
+          flex-shrink: 0;
+          border-top: 1px solid var(--borderSubtle);
+          background: var(--surface);
+          overflow-y: auto;
+          max-height: 220px;
+          padding: 4px 0 2px;
         }
 
         /* ── Section headers ──────────────────────────────────────────────── */
@@ -1475,7 +1522,7 @@ export default function SideNav({ isSplitPane = false }) {
 
         /* ── Footer row ──────────────────────────────────────────────────── */
         .sidenav-footer {
-          position: absolute; bottom: 0; left: 0; right: 0; height: 48px;
+          flex-shrink: 0; height: 48px;
           display: flex; align-items: center; justify-content: space-between;
           padding: 0 12px;
           border-top: 1px solid var(--borderSubtle);
@@ -1569,111 +1616,141 @@ export default function SideNav({ isSplitPane = false }) {
                       </button>
                     )}
                   </div>
-                  {isOpen && item.id === 'collections' ? (
-                    /* Collections render as sub-folders, each expandable */
-                    <div style={{ paddingBottom: 2 }}>
-                      {(!collections || !collections.length) && (
-                        <div style={{ padding: '5px 16px 8px 38px', fontSize: 11, color: 'var(--textDim)', fontStyle: 'italic' }}>
-                          No collections yet
-                        </div>
-                      )}
-                      {(collections || []).map(col => {
-                        const colOpen = !!expanded[`col_${col.id}`]
-                        const colItems = resolveCollectionItems(col)
-                        return (
-                          <div key={col.id}>
-                            <div
-                              style={{
-                                display: 'flex', alignItems: 'center', gap: 6,
-                                padding: '4px 6px 4px 24px', cursor: 'pointer',
-                                transition: 'background 0.1s',
-                              }}
-                              onMouseEnter={e => e.currentTarget.style.background='var(--hover)'}
-                              onMouseLeave={e => e.currentTarget.style.background='none'}
-                              onClick={() => setExpanded(p => ({ ...p, [`col_${col.id}`]: !p[`col_${col.id}`] }))}
-                              onContextMenu={e => {
-                                e.preventDefault()
-                                e.stopPropagation()
-                                const COLLECTION_COLORS = ['#388bfd', '#e05c7a', '#4a7c3f', '#e8922a', '#8250df', '#f0883e', '#56d4dd']
-                                const ICON_EDIT = '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
-                                const ICON_COLOR = '<circle cx="8" cy="8" r="5" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2" fill="currentColor"/>'
-                                const ICON_TRASH = '<polyline points="3,6 5,6 13,6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 6V4H5v2M14 6l-.867 9.143A1.5 1.5 0 0 1 11.64 16.5H4.36A1.5 1.5 0 0 1 2.867 15.143L2 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
-                                setSideNavMenu({ x: e.clientX, y: e.clientY, items: [
-                                  { label: 'Edit Name', icon: ICON_EDIT, action: () => {
-                                    setEditSideColId(col.id); setEditSideColName(col.name)
-                                  }},
-                                  { label: 'Change Color', icon: ICON_COLOR,
-                                    submenu: COLLECTION_COLORS.map(c => ({
-                                      label: c,
-                                      action: () => { useAppStore.getState().updateCollection(col.id, { color: c }); useAppStore.getState().persistCollections() },
-                                    })),
-                                  },
-                                  { label: 'Delete', icon: ICON_TRASH, danger: true, action: () => { useAppStore.getState().removeCollection(col.id); useAppStore.getState().persistCollections() } },
-                                ]})
-                              }}
-                            >
-                              <ChevronIcon open={colOpen} />
-                              {col.color
-                                ? <span style={{ width: 13, height: 13, borderRadius: 4, background: col.color, flexShrink: 0 }} />
-                                : <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, opacity: 0.6 }}>
-                                    <rect x="2" y="3" width="12" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
-                                    <path d="M2 6h12" stroke="currentColor" strokeWidth="1" opacity="0.5"/>
-                                    <path d="M2 9h12" stroke="currentColor" strokeWidth="1" opacity="0.3"/>
-                                  </svg>
-                              }
-                              {editSideColId === col.id ? (
-                                <input
-                                  autoFocus
-                                  value={editSideColName}
-                                  onChange={e => setEditSideColName(e.target.value)}
-                                  onBlur={() => {
-                                    if (editSideColName.trim()) { useAppStore.getState().updateCollection(col.id, { name: editSideColName.trim() }); useAppStore.getState().persistCollections() }
-                                    setEditSideColId(null)
-                                  }}
-                                  onKeyDown={e => {
-                                    e.stopPropagation()
-                                    if (e.key === 'Enter') e.target.blur()
-                                    if (e.key === 'Escape') setEditSideColId(null)
-                                  }}
-                                  onClick={e => e.stopPropagation()}
-                                  style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'none', border: '1px solid var(--accent)', borderRadius: 3, padding: '0 4px', outline: 'none', fontFamily: 'inherit', minWidth: 0 }}
-                                />
-                              ) : (
-                                <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                  {col.name}
-                                </span>
-                              )}
-                              <span style={{ fontSize: 10, color: 'var(--textDim)', flexShrink: 0 }}>
-                                {col.items?.length || 0}
-                              </span>
-                            </div>
-                            {colOpen && (
-                              <div style={{ paddingLeft: 12 }}>
-                                <NavDropdown items={colItems} onOpen={openItem} onMenu={(e, ci) => {
+                  {isOpen && item.id === 'collections' ? (() => {
+                    const COLLECTION_COLORS = ['#388bfd', '#e05c7a', '#4a7c3f', '#e8922a', '#8250df', '#f0883e', '#56d4dd']
+                    const ICON_EDIT = '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+                    const ICON_COLOR = '<circle cx="8" cy="8" r="5" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2" fill="currentColor"/>'
+                    const ICON_TRASH = '<polyline points="3,6 5,6 13,6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 6V4H5v2M14 6l-.867 9.143A1.5 1.5 0 0 1 11.64 16.5H4.36A1.5 1.5 0 0 1 2.867 15.143L2 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+                    const ICON_MOVE = '<rect x="2" y="7" width="12" height="8" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M5 4.5h6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>'
+
+                    const renderCollection = (col, depth = 0) => {
+                      const colOpen = !!expanded[`col_${col.id}`]
+                      const colItems = resolveCollectionItems(col)
+                      const childCollections = (collections || []).filter(c => c.parentId === col.id)
+                      const totalCount = (col.items?.length || 0) + childCollections.length
+                      const indent = 24 + depth * 14
+
+                      return (
+                        <div key={col.id}>
+                          <div
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 6,
+                              padding: `3px 6px 3px ${indent}px`, cursor: 'pointer',
+                              transition: 'background 0.1s',
+                            }}
+                            onMouseEnter={e => e.currentTarget.style.background='var(--hover)'}
+                            onMouseLeave={e => e.currentTarget.style.background='none'}
+                            onClick={() => setExpanded(p => ({ ...p, [`col_${col.id}`]: !p[`col_${col.id}`] }))}
+                            onContextMenu={e => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              const otherCols = (collections || []).filter(c => c.id !== col.id && c.id !== col.parentId)
+                              const moveItems = otherCols.length ? [{
+                                label: 'Move Into…', icon: ICON_MOVE,
+                                submenu: [
+                                  ...otherCols.map(c => ({
+                                    label: c.name,
+                                    action: () => { useAppStore.getState().moveCollection(col.id, c.id); useAppStore.getState().persistCollections() },
+                                  })),
+                                  ...(col.parentId ? [{
+                                    label: '— Move to Root —',
+                                    action: () => { useAppStore.getState().moveCollection(col.id, null); useAppStore.getState().persistCollections() },
+                                  }] : []),
+                                ],
+                              }] : []
+                              setSideNavMenu({ x: e.clientX, y: e.clientY, items: [
+                                { label: 'Edit Name', icon: ICON_EDIT, action: () => {
+                                  setEditSideColId(col.id); setEditSideColName(col.name)
+                                }},
+                                { label: 'Change Color', icon: ICON_COLOR,
+                                  submenu: COLLECTION_COLORS.map(c => ({
+                                    label: c,
+                                    action: () => { useAppStore.getState().updateCollection(col.id, { color: c }); useAppStore.getState().persistCollections() },
+                                  })),
+                                },
+                                ...moveItems,
+                                { label: 'Delete', icon: ICON_TRASH, danger: true, action: () => { useAppStore.getState().removeCollection(col.id); useAppStore.getState().persistCollections() } },
+                              ]})
+                            }}
+                          >
+                            {col.color
+                              ? <span style={{ width: 13, height: 13, borderRadius: 4, background: col.color, flexShrink: 0 }} />
+                              : <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, opacity: 0.6 }}>
+                                  <rect x="2" y="3" width="12" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
+                                  <path d="M2 6h12" stroke="currentColor" strokeWidth="1" opacity="0.5"/>
+                                  <path d="M2 9h12" stroke="currentColor" strokeWidth="1" opacity="0.3"/>
+                                </svg>
+                            }
+                            {editSideColId === col.id ? (
+                              <input
+                                autoFocus
+                                value={editSideColName}
+                                onChange={e => setEditSideColName(e.target.value)}
+                                onBlur={() => {
+                                  if (editSideColName.trim()) { useAppStore.getState().updateCollection(col.id, { name: editSideColName.trim() }); useAppStore.getState().persistCollections() }
+                                  setEditSideColId(null)
+                                }}
+                                onKeyDown={e => {
                                   e.stopPropagation()
-                                  const ICON_EDIT_CI = '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
-                                  const ICON_NEWTAB = '<path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1h4v4M14 1l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
-                                  const ICON_REMOVE = '<path d="M4 8h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2"/>'
-                                  const editAction = () => {
-                                    setEditSideItem(ci)
-                                    setSideNavMenu(null)
-                                  }
-                                  setSideNavMenu({ x: e.clientX, y: e.clientY, items: [
-                                    { label: 'Edit', icon: ICON_EDIT_CI, action: editAction },
-                                    { label: 'Open in New Tab', icon: ICON_NEWTAB, action: () => openItemInNewTab(ci) },
-                                    { label: 'Remove from Collection', icon: ICON_REMOVE, danger: true, action: () => {
-                                      useAppStore.getState().removeFromCollection(col.id, ci.id)
-                                      useAppStore.getState().persistCollections()
-                                    }},
-                                  ]})
-                                }} />
-                              </div>
+                                  if (e.key === 'Enter') e.target.blur()
+                                  if (e.key === 'Escape') setEditSideColId(null)
+                                }}
+                                onClick={e => e.stopPropagation()}
+                                style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'none', border: '1px solid var(--accent)', borderRadius: 3, padding: '0 4px', outline: 'none', fontFamily: 'inherit', minWidth: 0 }}
+                              />
+                            ) : (
+                              <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {col.name}
+                              </span>
                             )}
+                            <span style={{ fontSize: 10, color: 'var(--textDim)', flexShrink: 0, marginRight: 2 }}>
+                              {totalCount > 0 ? totalCount : ''}
+                            </span>
+                            <ChevronIcon open={colOpen} />
                           </div>
-                        )
-                      })}
-                    </div>
-                  ) : isOpen && (
+                          {colOpen && (
+                            <div style={{ paddingLeft: 0 }}>
+                              {/* Render child collections first */}
+                              {childCollections.map(child => renderCollection(child, depth + 1))}
+                              {/* Then render items */}
+                              {colItems.length > 0 && (
+                                <div style={{ paddingLeft: depth > 0 ? 14 : 12 }}>
+                                  <NavDropdown items={colItems} onOpen={openItem} onMenu={(e, ci) => {
+                                    e.stopPropagation()
+                                    const ICON_EDIT_CI = '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+                                    const ICON_NEWTAB = '<path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1h4v4M14 1l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+                                    const ICON_REMOVE = '<path d="M4 8h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2"/>'
+                                    setSideNavMenu({ x: e.clientX, y: e.clientY, items: [
+                                      { label: 'Edit', icon: ICON_EDIT_CI, action: () => { setEditSideItem(ci); setSideNavMenu(null) } },
+                                      { label: 'Open in New Tab', icon: ICON_NEWTAB, action: () => openItemInNewTab(ci) },
+                                      { label: 'Remove from Collection', icon: ICON_REMOVE, danger: true, action: () => {
+                                        useAppStore.getState().removeFromCollection(col.id, ci.id)
+                                        useAppStore.getState().persistCollections()
+                                      }},
+                                    ]})
+                                  }} />
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    }
+
+                    // Only render root-level collections (no parentId)
+                    const rootCollections = (collections || []).filter(c => !c.parentId)
+
+                    return (
+                      <div style={{ paddingBottom: 2 }}>
+                        {(!collections || !collections.length) && (
+                          <div style={{ padding: '5px 16px 8px 38px', fontSize: 11, color: 'var(--textDim)', fontStyle: 'italic' }}>
+                            No collections yet
+                          </div>
+                        )}
+                        {rootCollections.map(col => renderCollection(col, 0))}
+                      </div>
+                    )
+                  })() : isOpen && (
                     <NavDropdown items={items} onOpen={openItem}
                       onReorder={(item.id === 'notebooks' || item.id === 'books' || item.id === 'audiobooks' || item.id === 'library') ? (from, to, fromId, toId) => {
                         const store = useAppStore.getState()
@@ -1730,10 +1807,62 @@ export default function SideNav({ isSplitPane = false }) {
                       setEditSideItem(item)
                       setSideNavMenu(null)
                     }
+                    const ICON_PDF = '<path d="M4 1h5l4 4v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 1v4h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 8v4M6 10l2 2 2-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
                     const items2 = isNb
                       ? [ { label:'Edit', icon:ICON_EDIT_ITEM, action: editAction },
                           { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
                           { label:'Open Here', icon:ICON_BOOK, action:()=>openItemInCurrentTab(item) },
+                          { label:'Export as PDF', icon:ICON_PDF, action: async () => {
+                            try {
+                              const { loadNotebookContent } = await import('@/lib/storage')
+                              const content = await loadNotebookContent(item.id)
+                              if (!content) return
+                              // Simple markdown-to-HTML for print
+                              const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                              let html = ''
+                              const lines = (content || '').split('\n')
+                              let inCode = false, codeBuf = ''
+                              for (const line of lines) {
+                                if (line.startsWith('```')) {
+                                  if (inCode) { html += `<pre><code>${esc(codeBuf)}</code></pre>`; codeBuf = ''; inCode = false }
+                                  else { inCode = true }
+                                  continue
+                                }
+                                if (inCode) { codeBuf += (codeBuf ? '\n' : '') + line; continue }
+                                if (line.startsWith('######')) html += `<h6>${line.slice(7)}</h6>`
+                                else if (line.startsWith('#####')) html += `<h5>${line.slice(6)}</h5>`
+                                else if (line.startsWith('####')) html += `<h4>${line.slice(5)}</h4>`
+                                else if (line.startsWith('###')) html += `<h3>${line.slice(4)}</h3>`
+                                else if (line.startsWith('##')) html += `<h2>${line.slice(3)}</h2>`
+                                else if (line.startsWith('#')) html += `<h1>${line.slice(2)}</h1>`
+                                else if (line.startsWith('---')) html += '<hr/>'
+                                else if (line.startsWith('> ')) html += `<blockquote><p>${line.slice(2)}</p></blockquote>`
+                                else if (/^[-*] /.test(line)) html += `<ul><li>${line.slice(2)}</li></ul>`
+                                else if (/^\d+\. /.test(line)) html += `<ol><li>${line.replace(/^\d+\.\s/,'')}</li></ol>`
+                                else if (line.trim() === '') html += ''
+                                else html += `<p>${line}</p>`
+                              }
+                              if (inCode) html += `<pre><code>${esc(codeBuf)}</code></pre>`
+                              // Apply basic inline formatting
+                              html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                              html = html.replace(/\*(.+?)\*/g, '<em>$1</em>')
+                              html = html.replace(/`(.+?)`/g, '<code>$1</code>')
+                              html = html.replace(/~~(.+?)~~/g, '<del>$1</del>')
+                              html = html.replace(/==(.+?)==/g, '<mark>$1</mark>')
+                              // Print
+                              const title = item.title || 'Notebook'
+                              const win = window.open('', '_blank')
+                              if (!win) return
+                              win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
+<style>@page{margin:1in .8in}body{font-family:Georgia,'Times New Roman',serif;font-size:14px;line-height:1.7;color:#222;max-width:700px;margin:0 auto;padding:20px 0}h1{font-size:1.8em;font-weight:600;margin:1.2em 0 .5em}h2{font-size:1.5em;font-weight:600;margin:1.1em 0 .4em}h3{font-size:1.25em;font-weight:600;margin:1em 0 .35em}h4,h5,h6{font-weight:600;margin:.9em 0 .3em}p{margin:0 0 .75em}blockquote{border-left:3px solid #ccc;margin:.8em 0;padding:8px 14px;color:#555;font-style:italic}pre{background:#f5f5f5;border:1px solid #ddd;border-radius:6px;padding:12px 14px;overflow-x:auto;margin:.8em 0;font-size:.87em}code{font-family:SF Mono,Menlo,Consolas,monospace;font-size:.87em}table{border-collapse:collapse;width:100%;margin:.8em 0}th,td{border:1px solid #ccc;padding:6px 10px}th{background:#f5f5f5;font-weight:600}ul,ol{margin:0 0 .75em;padding-left:1.6em}li{margin-bottom:.25em}img{max-width:100%;height:auto}hr{border:none;border-top:1px solid #ccc;margin:1.5em 0}mark{background:#fff3b0;padding:1px 3px;border-radius:2px}</style>
+</head><body>`)
+                              win.document.write(`<h1 style="margin-top:0">${esc(title)}</h1>`)
+                              win.document.write(html)
+                              win.document.write('</body></html>')
+                              win.document.close()
+                              setTimeout(() => { win.print(); win.close() }, 400)
+                            } catch (e) { console.warn('[Gnos] PDF export failed:', e) }
+                          }},
                           ...colSub,
                           { label:'Delete', icon:ICON_TRASH, danger:true, action:()=>{ useAppStore.getState().removeNotebook?.(item.id); useAppStore.getState().persistNotebooks?.() } } ]
                       : isSb
@@ -1762,29 +1891,28 @@ export default function SideNav({ isSplitPane = false }) {
             })}
           </div>
 
-          {/* Open Tabs — at the bottom of the scroll area */}
-          {showTabs && (
-            <div className="sidenav-section">
-              <div className="sidenav-divider" />
-              <div className="sidenav-section-label">Open Tabs</div>
-              {tabs.map(tab => (
-                <button key={tab.id}
-                  className={`sidenav-tab-item${tab.id === activeTabId ? ' active' : ''}`}
-                  onClick={() => handleTabSwitch(tab.id)}
-                >
-                  <div className="sidenav-tab-indicator" />
-                  <span className="sidenav-tab-name">{VIEW_LABELS[tab.view] || tab.view}</span>
-                  <button className="sidenav-tab-close" onClick={e => handleTabClose(e, tab.id)} title="Close tab">
-                    <svg width="8" height="8" viewBox="0 0 10 10" fill="none">
-                      <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                    </svg>
-                  </button>
-                </button>
-              ))}
-            </div>
-          )}
-
         </div>
+
+        {/* Open Tabs — docked above footer, outside scroll */}
+        {showTabs && (
+          <div className="sidenav-tabs-docked">
+            <div className="sidenav-section-label" style={{paddingLeft:16,paddingTop:4}}>Open Tabs</div>
+            {tabs.map(tab => (
+              <button key={tab.id}
+                className={`sidenav-tab-item${tab.id === activeTabId ? ' active' : ''}`}
+                onClick={() => handleTabSwitch(tab.id)}
+              >
+                <div className="sidenav-tab-indicator" />
+                <span className="sidenav-tab-name">{VIEW_LABELS[tab.view] || tab.view}</span>
+                <button className="sidenav-tab-close" onClick={e => handleTabClose(e, tab.id)} title="Close tab">
+                  <svg width="8" height="8" viewBox="0 0 10 10" fill="none">
+                    <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                  </svg>
+                </button>
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Footer — ⚙ settings (left) and + add (right) */}
         <div className="sidenav-footer">

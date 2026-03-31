@@ -86,14 +86,15 @@ function AudiobookCard({ book, onOpen, onMenu }) {
   const pct = book.listenProgress ? Math.round(book.listenProgress * 100) : 0
   return (
     <div className="book-card-container">
-      <div className="audio-album-cover" style={{ '--c1': c1, '--c2': c2 }} onClick={() => onOpen(book)}>
+      <div className="book-cover" style={{ '--c1': c1, '--c2': c2 }} onClick={() => onOpen(book)}>
         {book.coverDataUrl
           ? <img src={book.coverDataUrl} alt={book.title} draggable="false" />
           : <>
-            <div className="audio-album-icon"><MusicIcon /></div>
-            <div className="audio-album-text-overlay">
-              <div className="audio-album-overlay-title">{book.title}</div>
-              {book.author && <div className="audio-album-overlay-artist">{book.author}</div>}
+            <div className="cover-spine" /><div className="cover-crease" /><div className="cover-edge" />
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '0 12px' }}>
+              <div style={{ opacity: 0.55 }}><MusicIcon /></div>
+              <div className="cover-title" style={{ textAlign: 'center' }}>{book.title}</div>
+              {book.author && <div className="cover-author">{book.author}</div>}
             </div>
           </>}
         <div className="cover-badge">AUDIO</div>
@@ -444,7 +445,7 @@ function EditAudiobookModal({ book, onSave, onClose }) {
 
 // ── Graph Modal ────────────────────────────────────────────────────────────────
 
-function SearchDropdown({ query, library, notebooks, onOpenBook, onOpenAudio, onOpenNotebook, onClose, onDevCommand, onOpenGraph, onOpenCalendar, onReset }) {
+function SearchDropdown({ query, library, notebooks, onOpenBook, onOpenAudio, onOpenNotebook, onClose, onDevCommand, onOpenGraph, onOpenCalendar, onOpenKanban, onReset }) {
   const q = query.trim().toLowerCase()
   if (!q) return null
 
@@ -1039,6 +1040,25 @@ function eventsForDateKey(dateKey, events) {
     if (e.recurrence === 'weekly')  return diffDays % 7 === 0
     if (e.recurrence === 'monthly') return target.getDate() === base.getDate()
     if (e.recurrence === 'yearly')  return target.getDate() === base.getDate() && target.getMonth() === base.getMonth()
+    if (e.recurrence === 'custom') {
+      const interval = e.customInterval || 1
+      const unit = e.customUnit || 'week'
+      if (unit === 'day') return diffDays % interval === 0
+      if (unit === 'week') {
+        const weeksDiff = Math.floor(diffDays / 7)
+        if (e.customDays?.length > 0) {
+          return e.customDays.includes(target.getDay()) && weeksDiff % interval === 0
+        }
+        return diffDays % (interval * 7) === 0
+      }
+      if (unit === 'month') {
+        const monthsDiff = (target.getFullYear() * 12 + target.getMonth()) - (base.getFullYear() * 12 + base.getMonth())
+        return target.getDate() === base.getDate() && monthsDiff % interval === 0
+      }
+      if (unit === 'year') {
+        return target.getDate() === base.getDate() && target.getMonth() === base.getMonth() && (target.getFullYear() - base.getFullYear()) % interval === 0
+      }
+    }
     return false
   })
 }
@@ -1053,111 +1073,315 @@ function CloseBtn({ onClick }) {
 }
 
 // ── EventModal ────────────────────────────────────────────────────────────────
+// ── Mini calendar for EventModal date picker ──────────────────────────────────
+const _MINI_MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
+function MiniCalendar({ value, onChange }) {
+  const todayKey = new Date().toISOString().slice(0,10)
+  const [view, setView] = useState(() => {
+    const d = value ? new Date(value+'T00:00:00') : new Date()
+    return { y: d.getFullYear(), m: d.getMonth() }
+  })
+  const { y, m } = view
+  const first = new Date(y, m, 1).getDay()
+  const dim   = new Date(y, m+1, 0).getDate()
+  const CELLS = 35
+  const prevMonth = () => { const d=new Date(y,m-1,1); setView({y:d.getFullYear(),m:d.getMonth()}) }
+  const nextMonth = () => { const d=new Date(y,m+1,1); setView({y:d.getFullYear(),m:d.getMonth()}) }
+  const navBtnStyle = {width:26,height:26,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,lineHeight:1,transition:'background 0.1s,color 0.1s'}
+  return (
+    <div style={{userSelect:'none',background:'var(--surfaceAlt)',borderRadius:10,padding:10,border:'1px solid var(--border)'}}>
+      {/* Month nav */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+        <button onClick={prevMonth} style={navBtnStyle}
+          onMouseEnter={e=>{e.currentTarget.style.background='var(--surface)';e.currentTarget.style.color='var(--text)'}}
+          onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)'}}>‹</button>
+        <span style={{fontSize:12,fontWeight:700,color:'var(--text)',letterSpacing:'-0.01em'}}>{_MINI_MONTHS[m]} {y}</span>
+        <button onClick={nextMonth} style={navBtnStyle}
+          onMouseEnter={e=>{e.currentTarget.style.background='var(--surface)';e.currentTarget.style.color='var(--text)'}}
+          onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)'}}>›</button>
+      </div>
+      {/* Day-of-week headers */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',marginBottom:3}}>
+        {['Su','Mo','Tu','We','Th','Fr','Sa'].map((d,i)=>(
+          <div key={i} style={{fontSize:9,fontWeight:700,textAlign:'center',color:'var(--textDim)',padding:'2px 0',textTransform:'uppercase',letterSpacing:'0.04em'}}>{d}</div>
+        ))}
+      </div>
+      {/* Calendar grid */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:2}}>
+        {Array.from({length:CELLS},(_,i)=>{
+          const dn = i - first + 1
+          const cell = new Date(y, m, dn)
+          const dk = `${cell.getFullYear()}-${String(cell.getMonth()+1).padStart(2,'0')}-${String(cell.getDate()).padStart(2,'0')}`
+          const inMonth = dn>=1 && dn<=dim
+          const isToday = dk===todayKey
+          const isSel   = dk===value
+          return (
+            <div key={i} onClick={()=>inMonth&&onChange(dk)}
+              style={{textAlign:'center',fontSize:11,fontWeight:isSel||isToday?700:400,
+                padding:'5px 2px',borderRadius:6,cursor:inMonth?'pointer':'default',
+                background:isSel?'var(--accent)':isToday?'color-mix(in srgb,var(--accent) 15%,transparent)':'transparent',
+                color:isSel?'#fff':isToday?'var(--accent)':inMonth?'var(--text)':'var(--textDim)',
+                opacity:inMonth?1:0.35,transition:'background 0.1s'}}>
+              {cell.getDate()}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function EventModal({ event, onSave, onDelete, onClose }) {
   const [form, setForm] = useState({
-    title:            event?.title            || '',
-    date:             event?.date             || new Date().toISOString().slice(0,10),
-    startTime:        event?.startTime        || '',
-    endTime:          event?.endTime          || '',
-    allDay:           event?.allDay           ?? true,
-    location:         event?.location         || '',
-    color:            event?.color            || EVENT_COLORS[0],
-    recurrence:       event?.recurrence       || 'none',
-    recurrenceEndDate:event?.recurrenceEndDate|| '',
-    description:      event?.description      || '',
+    title:             event?.title             || '',
+    date:              event?.date              || new Date().toISOString().slice(0,10),
+    startTime:         event?.startTime         || '',
+    endTime:           event?.endTime           || '',
+    allDay:            event?.allDay            ?? true,
+    location:          event?.location          || '',
+    color:             event?.color             || EVENT_COLORS[0],
+    recurrence:        event?.recurrence        || 'none',
+    recurrenceEndDate: event?.recurrenceEndDate || '',
+    customInterval:    event?.customInterval    || 1,
+    customUnit:        event?.customUnit        || 'week',
+    customDays:        event?.customDays        || [],
+    description:       event?.description       || '',
   })
-  const set = (k,v) => setForm(f => ({...f,[k]:v}))
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const isNew = !event?.id
 
+  const openMaps = () => {
+    if (!form.location.trim()) return
+    const q = encodeURIComponent(form.location.trim())
+    // Use the native maps:// scheme so the OS opens Maps.app, not a browser.
+    const nativeUrl = `maps://?daddr=${q}`
+    import('@tauri-apps/api/core').then(({ invoke }) =>
+      invoke('plugin:shell|open', { path: nativeUrl })
+    ).catch(() => {})
+  }
+
+  const inputStyle = {
+    background: 'var(--surfaceAlt)', border: '1px solid var(--border)', borderRadius: 9,
+    color: 'var(--text)', fontSize: 13, padding: '8px 11px',
+    fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box',
+  }
+  const rowStyle = { display: 'flex', alignItems: 'center', gap: 10 }
+  const iconStyle = { flexShrink: 0, color: 'var(--textDim)', opacity: 0.7 }
+
   return (
-    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.72)',zIndex:4000,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={onClose}>
-      <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:14,width:420,maxWidth:'calc(100vw-32px)',maxHeight:'calc(100vh-48px)',overflow:'auto',boxShadow:'0 24px 64px rgba(0,0,0,0.6)'}} onClick={e=>e.stopPropagation()}>
-        <div style={{padding:'16px 18px 12px',borderBottom:'1px solid var(--borderSubtle)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-          <span style={{fontSize:14,fontWeight:700,color:'var(--text)'}}>{isNew?'New Event':'Edit Event'}</span>
-          <CloseBtn onClick={onClose}/>
+    <>
+      <style>{`@keyframes evtSlideIn{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:translateX(0)}}`}</style>
+      {/* Backdrop — absolute so it stays inside the calendar card */}
+      <div style={{position:'absolute',inset:0,background:'rgba(0,0,0,0.35)',zIndex:90,backdropFilter:'blur(2px)',borderRadius:10}} onClick={onClose}/>
+      {/* Right-side panel — absolute inside the calendar card */}
+      <div style={{position:'absolute',top:0,right:0,bottom:0,width:380,maxWidth:'100%',zIndex:91,
+        display:'flex',flexDirection:'column',
+        background:'var(--surface)',borderLeft:'1px solid var(--border)',
+        boxShadow:'-12px 0 36px rgba(0,0,0,0.25)',borderRadius:'0 10px 10px 0',
+        animation:'evtSlideIn 0.2s cubic-bezier(0.16,1,0.3,1)'}}
+        onClick={e=>e.stopPropagation()}>
+        {/* Color accent bar */}
+        <div style={{height:3,background:form.color,flexShrink:0,transition:'background 0.15s'}}/>
+        {/* Header */}
+        <div style={{padding:'16px 18px 13px',borderBottom:'1px solid var(--borderSubtle)',flexShrink:0,display:'flex',alignItems:'center',gap:10}}>
+          <button onClick={onClose} style={{width:28,height:28,borderRadius:8,border:'1px solid var(--border)',background:'none',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,transition:'background 0.1s'}}
+            onMouseEnter={e=>e.currentTarget.style.background='var(--surfaceAlt)'}
+            onMouseLeave={e=>e.currentTarget.style.background='none'}>
+            <svg width="8" height="12" viewBox="0 0 8 12" fill="none"><path d="M7 1L1 6l6 5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+          <input value={form.title} onChange={e=>set('title',e.target.value)} placeholder="Event title" autoFocus
+            style={{flex:1,background:'none',border:'none',color:'var(--text)',fontSize:17,fontWeight:700,padding:0,fontFamily:'inherit',outline:'none',letterSpacing:'-0.01em',minWidth:0}}/>
         </div>
-        <div style={{padding:'14px 18px 18px',display:'flex',flexDirection:'column',gap:11}}>
-          {/* Color dot + title */}
-          <div style={{display:'flex',alignItems:'center',gap:8}}>
-            <div style={{width:12,height:12,borderRadius:3,background:form.color,flexShrink:0}}/>
-            <input value={form.title} onChange={e=>set('title',e.target.value)} placeholder="Event title" autoFocus
-              style={{flex:1,background:'none',border:'none',borderBottom:'1px solid var(--border)',color:'var(--text)',fontSize:15,fontWeight:600,padding:'4px 2px',fontFamily:'inherit',outline:'none'}}/>
-          </div>
-          {/* All-day + date */}
-          <div style={{display:'flex',alignItems:'center',gap:10}}>
-            <label style={{display:'flex',alignItems:'center',gap:5,fontSize:12,color:'var(--textDim)',cursor:'pointer',userSelect:'none',flexShrink:0}}>
-              <input type="checkbox" checked={form.allDay} onChange={e=>set('allDay',e.target.checked)} style={{accentColor:'var(--accent)'}}/>
+        {/* Scrollable body */}
+        <div style={{flex:1,overflowY:'auto',padding:'16px 18px 24px',display:'flex',flexDirection:'column',gap:12}}>
+          {/* Mini calendar */}
+          <MiniCalendar value={form.date} onChange={d=>set('date',d)}/>
+          <div style={{height:1,background:'var(--borderSubtle)',margin:'2px 0'}}/>
+          {/* All-day toggle */}
+          <div style={{...rowStyle,justifyContent:'space-between'}}>
+            <span style={{fontSize:13,color:'var(--textDim)',display:'flex',alignItems:'center',gap:8}}>
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={iconStyle}><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.4"/><path d="M8 4.5v3.5l2.5 1.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
               All day
-            </label>
-            <input type="date" value={form.date} onChange={e=>set('date',e.target.value)}
-              style={{flex:1,background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',fontSize:12,padding:'4px 8px',fontFamily:'inherit'}}/>
+            </span>
+            <button onClick={()=>set('allDay',!form.allDay)}
+              style={{width:40,height:22,borderRadius:11,border:'none',cursor:'pointer',position:'relative',padding:0,
+                background:form.allDay?'var(--accent)':'var(--borderSubtle)',transition:'background 0.18s'}}>
+              <div style={{width:18,height:18,borderRadius:'50%',background:'white',position:'absolute',top:2,
+                left:form.allDay?20:2,transition:'left 0.18s',boxShadow:'0 1px 4px rgba(0,0,0,0.25)'}}/>
+            </button>
           </div>
           {/* Times */}
           {!form.allDay && (
-            <div style={{display:'flex',gap:8,alignItems:'center'}}>
-              <input type="time" value={form.startTime} onChange={e=>set('startTime',e.target.value)}
-                style={{flex:1,background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',fontSize:12,padding:'4px 8px',fontFamily:'inherit'}}/>
-              <span style={{fontSize:11,color:'var(--textDim)'}}>to</span>
-              <input type="time" value={form.endTime} onChange={e=>set('endTime',e.target.value)}
-                style={{flex:1,background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',fontSize:12,padding:'4px 8px',fontFamily:'inherit'}}/>
+            <div style={{...rowStyle}}>
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={iconStyle}><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.4"/><path d="M8 4.5v3.5l2.5 1.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              <input type="time" value={form.startTime} onChange={e=>set('startTime',e.target.value)} style={{...inputStyle,flex:1}}/>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{flexShrink:0,opacity:0.4}}><line x1="0" y1="6" x2="12" y2="6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><polyline points="8,3 11,6 8,9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none"/></svg>
+              <input type="time" value={form.endTime} onChange={e=>set('endTime',e.target.value)} style={{...inputStyle,flex:1}}/>
             </div>
           )}
-          {/* Location */}
-          <input value={form.location} onChange={e=>set('location',e.target.value)} placeholder="📍 Add location"
-            style={{background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',fontSize:12,padding:'6px 10px',fontFamily:'inherit',outline:'none'}}/>
-          {/* Color picker */}
-          <div>
-            <div style={{fontSize:10,fontWeight:700,color:'var(--textDim)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6}}>Color</div>
-            <div style={{display:'flex',flexWrap:'wrap',gap:5}}>
-              {EVENT_COLORS.map(c=>(
-                <button key={c} onClick={()=>set('color',c)} style={{width:20,height:20,borderRadius:4,background:c,cursor:'pointer',padding:0,border:form.color===c?'2px solid var(--text)':'2px solid transparent',boxShadow:form.color===c?'inset 0 0 0 2px rgba(255,255,255,0.4)':'none'}}/>
-              ))}
-            </div>
+          {/* Location + directions */}
+          <div style={rowStyle}>
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={iconStyle}><path d="M8 1.5C5.515 1.5 3.5 3.515 3.5 6c0 3.75 4.5 8.5 4.5 8.5s4.5-4.75 4.5-8.5c0-2.485-2.015-4.5-4.5-4.5z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/><circle cx="8" cy="6" r="1.5" fill="currentColor" opacity="0.5"/></svg>
+            <input value={form.location} onChange={e=>set('location',e.target.value)} placeholder="Add location" style={{...inputStyle,flex:1}}/>
+            {form.location.trim() && (
+              <button onClick={openMaps} title="Get directions"
+                style={{width:32,height:32,borderRadius:8,border:'1px solid var(--border)',background:'var(--surfaceAlt)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,color:'var(--textDim)',transition:'background 0.1s,color 0.1s'}}
+                onMouseEnter={e=>{e.currentTarget.style.background='var(--accent)';e.currentTarget.style.color='#fff'}}
+                onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)'}}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+              </button>
+            )}
           </div>
           {/* Recurrence */}
-          <div style={{display:'flex',gap:8,alignItems:'center'}}>
-            <span style={{fontSize:12,color:'var(--textDim)',flexShrink:0}}>Repeat</span>
-            <select value={form.recurrence} onChange={e=>set('recurrence',e.target.value)}
-              style={{flex:1,background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',fontSize:12,padding:'4px 8px',fontFamily:'inherit'}}>
-              {[['none','Does not repeat'],['daily','Every day'],['weekly','Every week'],['monthly','Every month'],['yearly','Every year']].map(([v,l])=>(
+          <div style={rowStyle}>
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={iconStyle}><path d="M13.5 2.5v4h-4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/><path d="M2.5 13.5v-4h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/><path d="M13.5 6.5A5.5 5.5 0 0 0 4 3.5l-1.5 1.5M2.5 9.5A5.5 5.5 0 0 0 12 12.5l1.5-1.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+            <select value={form.recurrence} onChange={e=>set('recurrence',e.target.value)} style={{...inputStyle,flex:1,cursor:'pointer'}}>
+              {[['none','Does not repeat'],['daily','Daily'],['weekly','Weekly'],['monthly','Monthly'],['yearly','Yearly'],['custom','Custom…']].map(([v,l])=>(
                 <option key={v} value={v}>{l}</option>
               ))}
             </select>
           </div>
-          {form.recurrence!=='none' && (
-            <div style={{display:'flex',gap:8,alignItems:'center'}}>
-              <span style={{fontSize:12,color:'var(--textDim)',flexShrink:0}}>Until</span>
-              <input type="date" value={form.recurrenceEndDate} onChange={e=>set('recurrenceEndDate',e.target.value)}
-                style={{flex:1,background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',fontSize:12,padding:'4px 8px',fontFamily:'inherit'}}/>
+          {form.recurrence==='custom' && (
+            <div style={{background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:10,padding:'10px 12px',display:'flex',flexDirection:'column',gap:10}}>
+              <div style={{display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:12,color:'var(--textDim)',whiteSpace:'nowrap'}}>Every</span>
+                <input type="number" min="1" max="99" value={form.customInterval} onChange={e=>set('customInterval',Math.max(1,parseInt(e.target.value)||1))}
+                  style={{...inputStyle,width:52,height:32,padding:'0 8px',textAlign:'center',flexShrink:0}}/>
+                <select value={form.customUnit} onChange={e=>set('customUnit',e.target.value)} style={{...inputStyle,flex:1,height:32,padding:'0 8px',cursor:'pointer'}}>
+                  <option value="day">day(s)</option>
+                  <option value="week">week(s)</option>
+                  <option value="month">month(s)</option>
+                  <option value="year">year(s)</option>
+                </select>
+              </div>
+              {form.customUnit==='week' && (
+                <div style={{display:'flex',gap:4}}>
+                  {[['S',0],['M',1],['T',2],['W',3],['T',4],['F',5],['S',6]].map(([lbl,d])=>{
+                    const active = form.customDays.includes(d)
+                    return (
+                      <button key={d} onClick={()=>set('customDays',active?form.customDays.filter(x=>x!==d):[...form.customDays,d].sort())}
+                        style={{flex:1,height:32,borderRadius:8,border:`1px solid ${active?'var(--accent)':'var(--border)'}`,
+                          background:active?'var(--accent)':'var(--surface)',color:active?'#fff':'var(--textDim)',
+                          fontSize:11,fontWeight:600,cursor:'pointer',fontFamily:'inherit'}}>
+                        {lbl}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           )}
+          {form.recurrence!=='none' && (
+            <div style={rowStyle}>
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={iconStyle}><rect x="1.5" y="2.5" width="13" height="12" rx="2" stroke="currentColor" strokeWidth="1.4"/><line x1="5" y1="1" x2="5" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="11" y1="1" x2="11" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="1.5" y1="6.5" x2="14.5" y2="6.5" stroke="currentColor" strokeWidth="1.2"/></svg>
+              <input type="date" value={form.recurrenceEndDate} onChange={e=>set('recurrenceEndDate',e.target.value)}
+                style={{...inputStyle,flex:1}} placeholder="Recurrence end date"/>
+            </div>
+          )}
+          {/* Color — full-width grid */}
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={iconStyle}><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.4"/><circle cx="5.5" cy="7" r="1.2" fill="currentColor" opacity="0.5"/><circle cx="10.5" cy="7" r="1.2" fill="currentColor" opacity="0.5"/><circle cx="8" cy="10.5" r="1.2" fill="currentColor" opacity="0.5"/></svg>
+              <span style={{fontSize:12,color:'var(--textDim)',fontWeight:500}}>Color</span>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:`repeat(${EVENT_COLORS.length},1fr)`,gap:5}}>
+              {EVENT_COLORS.map(c=>(
+                <button key={c} onClick={()=>set('color',c)}
+                  style={{aspectRatio:'1',borderRadius:7,background:c,cursor:'pointer',padding:0,border:'none',
+                    boxShadow:form.color===c?`0 0 0 2px var(--surface),0 0 0 4px ${c}`:'0 1px 3px rgba(0,0,0,0.2)',
+                    transform:form.color===c?'scale(1.12)':'scale(1)',transition:'all 0.12s'}}/>
+              ))}
+            </div>
+          </div>
           {/* Description */}
-          <textarea value={form.description} onChange={e=>set('description',e.target.value)} placeholder="Notes…" rows={3}
-            style={{background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',fontSize:12,padding:'8px 10px',fontFamily:'inherit',resize:'vertical',outline:'none'}}/>
-          {/* Actions */}
-          <div style={{display:'flex',gap:8,marginTop:2}}>
-            {!isNew && <button onClick={onDelete} style={{flex:1,padding:'8px',borderRadius:7,border:'1px solid rgba(239,68,68,0.4)',background:'rgba(239,68,68,0.08)',color:'#ef4444',cursor:'pointer',fontSize:12,fontWeight:600}}>Delete</button>}
-            <button onClick={()=>onSave(form)} disabled={!form.title.trim()}
-              style={{flex:2,padding:'8px',borderRadius:7,border:'none',background:'var(--accent)',color:'#fff',cursor:'pointer',fontSize:12,fontWeight:700,opacity:form.title.trim()?1:0.5}}>
-              {isNew?'Create Event':'Save Changes'}
-            </button>
+          <div style={rowStyle}>
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={{...iconStyle,alignSelf:'flex-start',marginTop:9}}><line x1="2.5" y1="4" x2="13.5" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="2.5" y1="7.5" x2="13.5" y2="7.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="2.5" y1="11" x2="9" y2="11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+            <textarea value={form.description} onChange={e=>set('description',e.target.value)} placeholder="Add notes" rows={3}
+              style={{...inputStyle,flex:1,resize:'none',lineHeight:1.55}}/>
           </div>
         </div>
+        {/* Footer */}
+        <div style={{padding:'12px 18px 16px',borderTop:'1px solid var(--borderSubtle)',flexShrink:0,display:'flex',gap:8}}>
+          {!isNew && (
+            <button onClick={onDelete}
+              style={{padding:'9px 16px',borderRadius:10,border:'1px solid rgba(239,68,68,0.3)',background:'rgba(239,68,68,0.06)',color:'#ef4444',cursor:'pointer',fontSize:13,fontWeight:600,fontFamily:'inherit',transition:'background 0.12s',flexShrink:0}}
+              onMouseEnter={e=>e.currentTarget.style.background='rgba(239,68,68,0.14)'}
+              onMouseLeave={e=>e.currentTarget.style.background='rgba(239,68,68,0.06)'}>
+              Delete
+            </button>
+          )}
+          <button onClick={()=>form.title.trim()&&onSave(form)} disabled={!form.title.trim()}
+            style={{flex:1,padding:'10px',borderRadius:10,border:'none',
+              background:form.title.trim()?'var(--accent)':'var(--surfaceAlt)',
+              color:form.title.trim()?'#fff':'var(--textDim)',
+              cursor:form.title.trim()?'pointer':'default',fontSize:13,fontWeight:700,
+              fontFamily:'inherit',transition:'opacity 0.12s',opacity:form.title.trim()?1:0.45}}>
+            {isNew ? 'Create Event' : 'Save Changes'}
+          </button>
+        </div>
+      </div>
+    </>
+  )
+}
+
+// ── MonthYearPicker ───────────────────────────────────────────────────────────
+const _CAL_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+function MonthYearPicker({ viewDate, onSelect, onClose }) {
+  const [pickerYear, setPickerYear] = useState(viewDate.getFullYear())
+  const curMonth = viewDate.getMonth()
+  const curYear  = viewDate.getFullYear()
+  return (
+    <div style={{position:'absolute',top:44,left:0,zIndex:50,background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12,padding:14,
+      boxShadow:'0 8px 32px rgba(0,0,0,0.22)',width:260,userSelect:'none'}}
+      onMouseDown={e=>e.stopPropagation()}>
+      {/* Backdrop click to close */}
+      <div style={{position:'fixed',inset:0,zIndex:-1}} onClick={onClose}/>
+      {/* Year row */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+        <button onClick={()=>setPickerYear(y=>y-1)}
+          style={{width:26,height:26,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',fontSize:15,display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s'}}
+          onMouseEnter={e=>e.currentTarget.style.background='var(--border)'}
+          onMouseLeave={e=>e.currentTarget.style.background='var(--surfaceAlt)'}>‹</button>
+        <span style={{fontSize:15,fontWeight:700,color:'var(--text)'}}>{pickerYear}</span>
+        <button onClick={()=>setPickerYear(y=>y+1)}
+          style={{width:26,height:26,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',fontSize:15,display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s'}}
+          onMouseEnter={e=>e.currentTarget.style.background='var(--border)'}
+          onMouseLeave={e=>e.currentTarget.style.background='var(--surfaceAlt)'}>›</button>
+      </div>
+      {/* Month grid */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:4}}>
+        {_CAL_MONTHS.map((lbl,mi)=>{
+          const isCur = mi===curMonth && pickerYear===curYear
+          return (
+            <button key={mi} onClick={()=>onSelect(pickerYear,mi)}
+              style={{padding:'7px 4px',borderRadius:7,border:'none',cursor:'pointer',fontSize:12,fontWeight:isCur?700:500,
+                background:isCur?'var(--accent)':'var(--surfaceAlt)',
+                color:isCur?'#fff':'var(--text)',transition:'background 0.12s,color 0.12s'}}
+              onMouseEnter={e=>{ if(!isCur){e.currentTarget.style.background='var(--border)'}}}
+              onMouseLeave={e=>{ if(!isCur){e.currentTarget.style.background='var(--surfaceAlt)'}}}>
+              {lbl}
+            </button>
+          )
+        })}
       </div>
     </div>
   )
 }
 
 // ── FullCalendar ──────────────────────────────────────────────────────────────
-export function FullCalendar({ notebookEvents = {} }) {
+export function FullCalendar({ notebookEvents = {}, fullHeight = false }) {
   const today    = new Date()
   const todayKey = today.toISOString().slice(0,10)
   const events              = useAppStore(s => s.calendarEvents)
   const setCalendarEventsStore = useAppStore(s => s.setCalendarEventsStore)
+  const calendarStartHour   = useAppStore(s => s.calendarStartHour ?? 7)
+  const calendarEndHour     = useAppStore(s => s.calendarEndHour ?? 21)
+  const calendarWeekStart   = useAppStore(s => s.calendarWeekStart ?? 0)
   const [viewMode,     setViewMode]     = useState('month')
   const [viewDate,     setViewDate]     = useState(new Date())
-  const [selectedDay,  setSelectedDay]  = useState(null)
+  const [selectedDay,  setSelectedDay]  = useState(null) // kept for potential future use
   const [editingEvent, setEditingEvent] = useState(null) // {event, isNew}
+  const [showMonthPicker, setShowMonthPicker] = useState(false)
 
   const persist = async (evts) => { setCalendarEventsStore(evts); await saveCalendarEvents(evts) }
 
@@ -1193,36 +1417,52 @@ export function FullCalendar({ notebookEvents = {} }) {
     ? (()=>{ const sun=new Date(viewDate); sun.setDate(sun.getDate()-sun.getDay()); const sat=new Date(sun); sat.setDate(sat.getDate()+6); return `${sun.toLocaleDateString('en-US',{month:'short',day:'numeric'})} – ${sat.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}` })()
     : viewDate.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})
 
-  // ── Month grid ──
+  // ── Month grid (always 5 weeks = 35 cells, overflow dates clickable) ──
   const MonthGrid = () => {
     const y=viewDate.getFullYear(), mo=viewDate.getMonth()
     const first=new Date(y,mo,1).getDay(), dim=new Date(y,mo+1,0).getDate()
-    const cells=Math.ceil((first+dim)/7)*7
+    // Always render 35 cells (5 rows × 7)
+    const CELLS = 35
     return (
-      <div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:1,marginBottom:2}}>
+      <div style={fullHeight?{flex:1,display:'flex',flexDirection:'column',minHeight:0}:{}}>
+        {/* Day-of-week header */}
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:0,marginBottom:4,flexShrink:0}}>
           {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>(
-            <div key={d} style={{fontSize:10,fontWeight:700,color:'var(--textDim)',textAlign:'center',padding:'3px 0 5px',textTransform:'uppercase',letterSpacing:'0.05em'}}>{d}</div>
+            <div key={d} style={{fontSize:10,fontWeight:700,color:'var(--textDim)',textAlign:'center',padding:'4px 0 5px',textTransform:'uppercase',letterSpacing:'0.06em'}}>{d}</div>
           ))}
         </div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:1}}>
-          {Array.from({length:cells},(_,i)=>{
-            const dn=i-first+1; const inMonth=dn>=1&&dn<=dim
-            const cell=new Date(y,mo,dn)
+        {/* 5-week grid — gap creates visible grid lines */}
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:1,
+          background:'var(--border)',borderRadius:6,overflow:'hidden',
+          ...(fullHeight?{flex:1,gridTemplateRows:'repeat(5,1fr)',minHeight:0}:{gridTemplateRows:'repeat(5,minmax(72px,auto))'})
+        }}>
+          {Array.from({length:CELLS},(_,i)=>{
+            const dn=i-first+1
+            const cell=new Date(y,mo,dn) // JS handles negative/overflow day nums
             const dk2=dkey(cell.getFullYear(),cell.getMonth(),cell.getDate())
-            const evts=inMonth?allEventsForDate(dk2):[]
+            const inMonth=dn>=1&&dn<=dim
+            const evts=allEventsForDate(dk2)
             const isToday=dk2===todayKey, isSel=selectedDay===dk2
+            const handleClick=()=>{
+              if(inMonth){
+                setViewMode('day')
+                setViewDate(new Date(cell.getFullYear(),cell.getMonth(),cell.getDate()))
+              } else {
+                setViewDate(new Date(cell.getFullYear(),cell.getMonth(),1))
+              }
+            }
             return (
-              <div key={i} onClick={()=>inMonth&&setSelectedDay(s=>s===dk2?null:dk2)}
-                style={{minHeight:68,padding:'4px 4px 3px',borderRadius:7,cursor:inMonth?'pointer':'default',
-                  background:isSel?'color-mix(in srgb,var(--accent) 14%,transparent)':isToday?'color-mix(in srgb,var(--accent) 7%,transparent)':'none',
-                  border:isToday?'1px solid color-mix(in srgb,var(--accent) 40%,transparent)':isSel?'1px solid var(--accent)':'1px solid transparent',
-                  transition:'background 0.1s'}}>
-                <div style={{width:20,height:20,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',marginBottom:2,
+              <div key={i} onClick={handleClick}
+                style={{padding:'5px 5px 4px',cursor:'pointer',overflow:'hidden',
+                  background:isSel?'color-mix(in srgb,var(--accent) 12%,var(--surface))':isToday?'color-mix(in srgb,var(--accent) 6%,var(--surface))':inMonth?'var(--surface)':'var(--surfaceAlt)',
+                  outline:isSel?'2px solid var(--accent)':'none',outlineOffset:-1,
+                  transition:'background 0.1s',opacity:inMonth?1:0.55,
+                  ...(fullHeight?{minHeight:0}:{minHeight:72})}}>
+                <div style={{width:22,height:22,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',marginBottom:3,
                   background:isToday?'var(--accent)':'none',
-                  fontSize:11,fontWeight:isToday?700:400,
-                  color:isToday?'#fff':inMonth?'var(--text)':'var(--textDim)',opacity:inMonth?1:0.3}}>
-                  {inMonth?dn:''}
+                  fontSize:11,fontWeight:isToday?700:inMonth?500:400,
+                  color:isToday?'#fff':inMonth?'var(--text)':'var(--textDim)'}}>
+                  {cell.getDate()}
                 </div>
                 {evts.slice(0,3).map(ev=>(
                   <div key={ev.id} onClick={e=>{e.stopPropagation();ev.source!=='notebook'&&setEditingEvent({event:ev,isNew:false})}}
@@ -1232,79 +1472,69 @@ export function FullCalendar({ notebookEvents = {} }) {
                     {!ev.allDay&&ev.startTime&&<span style={{opacity:0.85}}>{ev.startTime} </span>}{ev.title}
                   </div>
                 ))}
-                {evts.length>3&&<div style={{fontSize:9,color:'var(--textDim)',padding:'0 2px'}}>+{evts.length-3} more</div>}
+                {evts.length>3&&<div style={{fontSize:9,color:'var(--textDim)',padding:'0 2px'}}>+{evts.length-3}</div>}
               </div>
             )
           })}
         </div>
-        {selectedDay && (
-          <div style={{marginTop:10,background:'var(--surfaceAlt)',borderRadius:10,border:'1px solid var(--borderSubtle)',padding:'12px 14px'}}>
-            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
-              <div style={{fontSize:12,fontWeight:700,color:'var(--text)'}}>
-                {new Date(selectedDay+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}
-              </div>
-              <button onClick={()=>setEditingEvent({event:{date:selectedDay},isNew:true})}
-                style={{padding:'3px 10px',borderRadius:6,border:'none',background:'var(--accent)',color:'#fff',fontSize:11,fontWeight:700,cursor:'pointer'}}>
-                + Event
-              </button>
-            </div>
-            {allEventsForDate(selectedDay).length===0
-              ? <div style={{fontSize:12,color:'var(--textDim)'}}>No events</div>
-              : allEventsForDate(selectedDay).map(ev=>(
-                <div key={ev.id} onClick={()=>ev.source!=='notebook'&&setEditingEvent({event:ev,isNew:false})}
-                  style={{display:'flex',alignItems:'flex-start',gap:8,padding:'7px 0',borderTop:'1px solid var(--borderSubtle)',cursor:ev.source!=='notebook'?'pointer':'default'}}>
-                  <div style={{width:3,height:34,borderRadius:2,background:ev.color||'var(--accent)',flexShrink:0,marginTop:2}}/>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:12,fontWeight:600,color:'var(--text)'}}>{ev.title}</div>
-                    <div style={{fontSize:11,color:'var(--textDim)'}}>
-                      {ev.allDay?'All day':`${ev.startTime||''}${ev.endTime?' – '+ev.endTime:''}`}
-                      {ev.location&&` · 📍 ${ev.location}`}
-                      {ev.recurrence&&ev.recurrence!=='none'&&` · ↻ ${ev.recurrence}`}
-                      {ev.source==='notebook'&&' · notebook'}
-                    </div>
-                  </div>
-                </div>
-              ))
-            }
-          </div>
-        )}
       </div>
     )
   }
 
   // ── Time grid (week / day) ──
-  const HOURS = Array.from({length:24},(_,i)=>i)
+  const HOURS = Array.from({length: calendarEndHour - calendarStartHour}, (_,i) => i + calendarStartHour)
 
-  const TimeGrid = ({ days }) => {
+  const TimeGrid = ({ days, fullHeight: fh }) => {
     const gridRef  = useRef()
     const dragRef2 = useRef(null)
     const [localDrag, setLocalDrag] = useState(null)
+    const [slotH, setSlotH]  = useState(52)  // px per hour, dynamic when fullHeight
 
-    const getHour = (clientY) => {
+    const HEADER_H = 28
+    // When fullHeight, resize to fill container; otherwise fixed 52px slots
+    useEffect(() => {
+      if (!fh || !gridRef.current) return
+      const obs = new ResizeObserver(entries => {
+        const h = entries[0].contentRect.height
+        const newH = Math.max(24, Math.floor((h - HEADER_H) / HOURS.length))
+        setSlotH(newH)
+      })
+      obs.observe(gridRef.current)
+      return () => obs.disconnect()
+    }, [fh])
+
+    // 15-minute slots derived from slotH
+    const PX_PER_SLOT = slotH / 4
+    const startSlot = calendarStartHour * 4
+    const endSlot   = calendarEndHour * 4 - 1
+    const getSlot = (clientY) => {
       const el = gridRef.current
-      if (!el) return 0
+      if (!el) return startSlot
       const rect = el.getBoundingClientRect()
-      const relY  = Math.max(0, clientY - rect.top + el.scrollTop - 24) // 24 = header
-      return Math.max(0, Math.min(23, Math.floor(relY / 52)))
+      const relY = Math.max(0, clientY - rect.top + el.scrollTop - HEADER_H)
+      return Math.max(startSlot, Math.min(endSlot, startSlot + Math.floor(relY / PX_PER_SLOT)))
     }
+    const slotToTime = (slot) => `${fmt2(Math.floor(slot/4))}:${fmt2((slot%4)*15)}`
 
     const onPointerDown = (e, dateKey) => {
       if (e.button !== 0) return
       e.preventDefault()
-      const h = getHour(e.clientY)
-      dragRef2.current = { dateKey, startH: h, endH: h }
+      const s = getSlot(e.clientY)
+      dragRef2.current = { dateKey, startH: s, endH: s }
       setLocalDrag({ ...dragRef2.current })
       const onMove = (ev) => {
         if (!dragRef2.current) return
-        const h2 = getHour(ev.clientY)
-        dragRef2.current = { ...dragRef2.current, endH: h2 }
+        const s2 = getSlot(ev.clientY)
+        dragRef2.current = { ...dragRef2.current, endH: s2 }
         setLocalDrag({ ...dragRef2.current })
       }
       const onUp = () => {
         if (dragRef2.current) {
           const { dateKey:dk3, startH, endH } = dragRef2.current
           const s=Math.min(startH,endH), en=Math.max(startH,endH)
-          setEditingEvent({ event:{ date:dk3, allDay:false, startTime:`${fmt2(s)}:00`, endTime:`${fmt2(en+1)}:00` }, isNew:true })
+          // +2 so ghost and saved time are consistent (match the ghost display of dE+1)
+          const endSlotVal = Math.min(endSlot, en + 2)
+          setEditingEvent({ event:{ date:dk3, allDay:false, startTime:slotToTime(s), endTime:slotToTime(endSlotVal) }, isNew:true })
         }
         dragRef2.current = null; setLocalDrag(null)
         document.removeEventListener('pointermove', onMove)
@@ -1315,13 +1545,13 @@ export function FullCalendar({ notebookEvents = {} }) {
     }
 
     return (
-      <div ref={gridRef} style={{overflowY:'auto',maxHeight:440,position:'relative',userSelect:'none'}}>
+      <div ref={gridRef} style={{...(fh?{flex:1,minHeight:0,overflow:'hidden'}:{maxHeight:440,overflowY:'auto'}),position:'relative',userSelect:'none'}}>
         <div style={{display:'grid',gridTemplateColumns:`44px repeat(${days.length},1fr)`}}>
           {/* Time label column */}
           <div>
             <div style={{height:28}}/>
             {HOURS.map(h=>(
-              <div key={h} style={{height:52,display:'flex',alignItems:'flex-start',justifyContent:'flex-end',paddingRight:6,paddingTop:4}}>
+              <div key={h} style={{height:slotH,display:'flex',alignItems:'flex-start',justifyContent:'flex-end',paddingRight:6,paddingTop:4}}>
                 <span style={{fontSize:10,color:'var(--textDim)',fontVariantNumeric:'tabular-nums'}}>
                   {h===0?'12a':h<12?`${h}a`:h===12?'12p':`${h-12}p`}
                 </span>
@@ -1337,13 +1567,15 @@ export function FullCalendar({ notebookEvents = {} }) {
             const dE = isDrag ? Math.max(localDrag.startH, localDrag.endH)+1 : 0
             return (
               <div key={dateKey} style={{borderLeft:'1px solid var(--borderSubtle)',position:'relative'}}>
-                {/* Day header */}
-                <div style={{height:28,display:'flex',alignItems:'center',justifyContent:'center',gap:5,fontSize:11,fontWeight:700,
+                {/* Day header — click to go to day view */}
+                <div onClick={()=>{ setViewMode('day'); setViewDate(new Date(dateKey+'T00:00:00')) }}
+                  style={{height:28,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700,
                   color:isToday?'var(--accent)':'var(--textDim)',borderBottom:'1px solid var(--borderSubtle)',
-                  position:'sticky',top:0,background:'var(--surface)',zIndex:5}}>
+                  position:'sticky',top:0,background:'var(--surface)',zIndex:5,cursor:'pointer',
+                  transition:'background 0.1s'}}
+                  onMouseEnter={e=>e.currentTarget.style.background='var(--surfaceAlt)'}
+                  onMouseLeave={e=>e.currentTarget.style.background='var(--surface)'}>
                   {label}
-                  <button onClick={()=>setEditingEvent({event:{date:dateKey},isNew:true})}
-                    style={{background:'none',border:'none',color:'var(--accent)',cursor:'pointer',fontSize:14,padding:'0 2px',lineHeight:1}}>+</button>
                 </div>
                 {/* All-day strip */}
                 {allDayEvts.length>0&&(
@@ -1357,32 +1589,43 @@ export function FullCalendar({ notebookEvents = {} }) {
                     {allDayEvts.length>2&&<div style={{fontSize:9,color:'var(--textDim)'}}>+{allDayEvts.length-2}</div>}
                   </div>
                 )}
-                {/* Hour slots */}
+                {/* Hour slots — 52px/hr, 15-min grid lines at 13px */}
                 <div style={{position:'relative'}} onPointerDown={e=>onPointerDown(e,dateKey)}>
                   {HOURS.map(h=>(
-                    <div key={h} style={{height:52,borderBottom:'1px solid color-mix(in srgb,var(--border) 40%,transparent)',background:h%2===0?'none':'rgba(0,0,0,0.01)'}}/>
+                    <div key={h} style={{height:slotH,position:'relative',borderBottom:'1px solid color-mix(in srgb,var(--border) 55%,transparent)'}}>
+                      <div style={{position:'absolute',top:'25%',left:0,right:0,height:'1px',background:'color-mix(in srgb,var(--border) 25%,transparent)'}}/>
+                      <div style={{position:'absolute',top:'50%',left:0,right:0,height:'1px',background:'color-mix(in srgb,var(--border) 35%,transparent)'}}/>
+                      <div style={{position:'absolute',top:'75%',left:0,right:0,height:'1px',background:'color-mix(in srgb,var(--border) 25%,transparent)'}}/>
+                    </div>
                   ))}
                   {/* Drag ghost */}
                   {isDrag&&(
-                    <div style={{position:'absolute',top:dS*52,height:(dE-dS)*52,left:2,right:2,borderRadius:5,
+                    <div style={{position:'absolute',top:(dS-startSlot)*PX_PER_SLOT,height:Math.max(PX_PER_SLOT,(dE-dS+1)*PX_PER_SLOT),left:2,right:2,borderRadius:5,
                       background:'color-mix(in srgb,var(--accent) 22%,transparent)',border:'1px solid var(--accent)',pointerEvents:'none',zIndex:3}}>
-                      <div style={{fontSize:10,color:'var(--accent)',padding:'3px 5px',fontWeight:600}}>{fmt2(dS)}:00 – {fmt2(dE)}:00</div>
+                      <div style={{fontSize:10,color:'var(--accent)',padding:'2px 5px',fontWeight:600,lineHeight:1.3}}>{slotToTime(dS)} – {slotToTime(Math.min(endSlot,dE+1))}</div>
                     </div>
                   )}
                   {/* Timed events */}
                   {timedEvts.map(ev=>{
                     const [sh,sm]=(ev.startTime||'0:00').split(':').map(Number)
                     const [eh,em]=(ev.endTime||ev.startTime||'1:00').split(':').map(Number)
-                    const topPx=sh*52+(sm/60)*52
-                    const htPx=Math.max(22,(eh+em/60-sh-sm/60)*52)
+                    const topPx=(sh-calendarStartHour)*slotH+(sm/60)*slotH
+                    const htPx=Math.max(22,(eh+em/60-sh-sm/60)*slotH)
+                    const openMapsEv = (e) => {
+                      e.stopPropagation()
+                      const q = encodeURIComponent(ev.location)
+                      import('@tauri-apps/api/core').then(({invoke})=>invoke('plugin:shell|open',{path:`maps://?daddr=${q}`})).catch(()=>{})
+                    }
                     return (
-                      <div key={ev.id} onClick={()=>ev.source!=='notebook'&&setEditingEvent({event:ev,isNew:false})}
+                      <div key={ev.id}
+                        onPointerDown={e=>e.stopPropagation()}
+                        onClick={e=>{e.stopPropagation();ev.source!=='notebook'&&setEditingEvent({event:ev,isNew:false})}}
                         style={{position:'absolute',top:topPx,left:2,right:2,height:htPx,
                           background:`color-mix(in srgb,${ev.color||'var(--accent)'} 85%,transparent)`,
                           borderRadius:5,padding:'3px 5px',cursor:'pointer',overflow:'hidden',zIndex:2,
                           border:`1px solid ${ev.color||'var(--accent)'}`}}>
                         <div style={{fontSize:10,fontWeight:600,color:'#fff',lineHeight:1.2}}>{ev.title}</div>
-                        {ev.location&&<div style={{fontSize:9,color:'rgba(255,255,255,0.8)'}}>📍{ev.location}</div>}
+                        {ev.location&&<div onClick={openMapsEv} style={{fontSize:9,color:'rgba(255,255,255,0.85)',cursor:'pointer',textDecoration:'underline',textDecorationColor:'rgba(255,255,255,0.4)'}}>📍{ev.location}</div>}
                       </div>
                     )
                   })}
@@ -1396,37 +1639,54 @@ export function FullCalendar({ notebookEvents = {} }) {
   }
 
   const getWeekDays = () => {
-    const sun=new Date(viewDate); sun.setDate(sun.getDate()-sun.getDay())
-    return Array.from({length:7},(_,i)=>{ const d=new Date(sun); d.setDate(d.getDate()+i); return { dateKey:dkey(d.getFullYear(),d.getMonth(),d.getDate()), label:d.toLocaleDateString('en-US',{weekday:'short',day:'numeric'}), isToday:d.toDateString()===today.toDateString() } })
+    const start = new Date(viewDate)
+    const dayOfWeek = start.getDay()
+    const diff = (dayOfWeek - calendarWeekStart + 7) % 7
+    start.setDate(start.getDate() - diff)
+    return Array.from({length:7},(_,i)=>{ const d=new Date(start); d.setDate(d.getDate()+i); return { dateKey:dkey(d.getFullYear(),d.getMonth(),d.getDate()), label:d.toLocaleDateString('en-US',{weekday:'short',day:'numeric'}), isToday:d.toDateString()===today.toDateString() } })
   }
 
   return (
-    <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:10,padding:12,marginBottom:8}}>
+    <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:10,padding:12,marginBottom:fullHeight?0:8,
+      position:'relative',overflow:'hidden',
+      ...(fullHeight?{flex:1,display:'flex',flexDirection:'column',minHeight:0}:{})}}>
       {/* Toolbar */}
-      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10,flexWrap:'wrap',gap:6}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10,flexWrap:'wrap',gap:6,flexShrink:0}}>
         <div style={{display:'flex',alignItems:'center',gap:4}}>
-          <button onClick={prev} style={{width:26,height:26,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--text)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16}}>‹</button>
-          <button onClick={next} style={{width:26,height:26,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--text)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16}}>›</button>
-          <button onClick={()=>setViewDate(new Date())} style={{padding:'3px 9px',borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',fontSize:11,fontWeight:600,cursor:'pointer'}}>Today</button>
-          <span style={{fontSize:13,fontWeight:700,color:'var(--text)',marginLeft:4}}>{headerLabel}</span>
+          <button onClick={prev} style={{width:28,height:28,borderRadius:7,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--text)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,lineHeight:1}}>‹</button>
+          <button onClick={next} style={{width:28,height:28,borderRadius:7,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--text)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,lineHeight:1}}>›</button>
+          <button onClick={()=>setViewDate(new Date())} style={{height:28,padding:'0 10px',borderRadius:7,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',fontSize:11,fontWeight:600,cursor:'pointer'}}>Today</button>
+          <button onClick={()=>setShowMonthPicker(v=>!v)}
+            style={{height:28,padding:'0 10px',borderRadius:7,border:'1px solid var(--border)',background:showMonthPicker?'var(--accent)':'none',color:showMonthPicker?'#fff':'var(--text)',fontSize:13,fontWeight:700,cursor:'pointer',transition:'background 0.12s,color 0.12s',marginLeft:2,display:'flex',alignItems:'center',gap:4}}>
+            {headerLabel}
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{opacity:0.6,transition:'transform 0.15s',transform:showMonthPicker?'rotate(180deg)':'none'}}><path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
           <button onClick={()=>setEditingEvent({event:{date:todayKey},isNew:true})}
-            style={{padding:'4px 11px',borderRadius:7,border:'none',background:'var(--accent)',color:'#fff',fontSize:11,fontWeight:700,cursor:'pointer'}}>
+            style={{height:28,padding:'0 12px',borderRadius:7,border:'none',background:'var(--accent)',color:'#fff',fontSize:11,fontWeight:700,cursor:'pointer'}}>
             + Event
           </button>
-          <div style={{display:'flex',gap:2,background:'var(--surfaceAlt)',borderRadius:7,padding:2}}>
+          <div style={{display:'flex',gap:2,background:'var(--surfaceAlt)',borderRadius:7,padding:2,border:'1px solid var(--border)'}}>
             {[['month','Month'],['week','Week'],['day','Day']].map(([m,l])=>(
-              <button key={m} onClick={()=>setViewMode(m)} style={{padding:'3px 8px',borderRadius:5,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,
+              <button key={m} onClick={()=>setViewMode(m)} style={{height:24,padding:'0 10px',borderRadius:5,border:'none',cursor:'pointer',fontSize:11,fontWeight:600,
                 background:viewMode===m?'var(--surface)':'none',color:viewMode===m?'var(--text)':'var(--textDim)',
-                boxShadow:viewMode===m?'0 1px 3px rgba(0,0,0,0.12)':'none'}}>{l}</button>
+                boxShadow:viewMode===m?'0 1px 3px rgba(0,0,0,0.12)':'none',transition:'all 0.12s'}}>{l}</button>
             ))}
           </div>
         </div>
       </div>
-      {viewMode==='month'&&<MonthGrid/>}
-      {viewMode==='week'&&<TimeGrid days={getWeekDays()}/>}
-      {viewMode==='day'&&<TimeGrid days={[{dateKey:dkey(viewDate.getFullYear(),viewDate.getMonth(),viewDate.getDate()),label:viewDate.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}),isToday:viewDate.toDateString()===today.toDateString()}]}/>}
+      {/* Month/year picker dropdown */}
+      {showMonthPicker&&(
+        <MonthYearPicker
+          viewDate={viewDate}
+          onSelect={(y,m)=>{ setViewDate(new Date(y,m,1)); setShowMonthPicker(false) }}
+          onClose={()=>setShowMonthPicker(false)}
+        />
+      )}
+      {viewMode==='month'&&<div style={fullHeight?{flex:1,display:'flex',flexDirection:'column',minHeight:0}:{}}><MonthGrid/></div>}
+      {viewMode==='week'&&<TimeGrid days={getWeekDays()} fullHeight={fullHeight}/>}
+      {viewMode==='day'&&<TimeGrid days={[{dateKey:dkey(viewDate.getFullYear(),viewDate.getMonth(),viewDate.getDate()),label:viewDate.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}),isToday:viewDate.toDateString()===today.toDateString()}]} fullHeight={fullHeight}/>}
       {editingEvent&&<EventModal event={editingEvent.event} onSave={handleSave} onDelete={handleDelete} onClose={()=>setEditingEvent(null)}/>}
     </div>
   )
@@ -1435,7 +1695,6 @@ export function FullCalendar({ notebookEvents = {} }) {
 // ── KanbanCardModal ───────────────────────────────────────────────────────────
 function KanbanCardModal({ card, onSave, onDelete, onClose }) {
   const [title,       setTitle]       = useState(card?.title       || '')
-  const [color,       setColor]       = useState(card?.color       || CARD_COLORS[0])
   const [dueDate,     setDueDate]     = useState(card?.dueDate     || '')
   const [description, setDescription] = useState(card?.description || '')
   const [comments,    setComments]    = useState(card?.comments    || [])
@@ -1448,62 +1707,74 @@ function KanbanCardModal({ card, onSave, onDelete, onClose }) {
     setNewCmt('')
   }
 
+  const iStyle = {background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:9,color:'var(--text)',fontSize:13,padding:'8px 11px',fontFamily:'inherit',outline:'none',width:'100%',boxSizing:'border-box'}
+  const icoStyle = {flexShrink:0,color:'var(--textDim)',opacity:0.7}
+
   return (
-    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.72)',zIndex:4000,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={onClose}>
-      <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:14,width:480,maxWidth:'calc(100vw-32px)',maxHeight:'calc(100vh-48px)',overflow:'auto',boxShadow:'0 24px 64px rgba(0,0,0,0.6)'}} onClick={e=>e.stopPropagation()}>
-        <div style={{padding:'16px 18px 12px',borderBottom:'1px solid var(--borderSubtle)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-          <div style={{display:'flex',alignItems:'center',gap:8}}>
-            <div style={{width:12,height:12,borderRadius:3,background:color,flexShrink:0}}/>
-            <span style={{fontSize:14,fontWeight:700,color:'var(--text)'}}>{isNew?'New Task':'Edit Task'}</span>
-          </div>
-          <CloseBtn onClick={onClose}/>
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',zIndex:4000,display:'flex',alignItems:'center',justifyContent:'center',backdropFilter:'blur(6px)'}} onClick={onClose}>
+      <div style={{background:'var(--surface)',borderRadius:18,width:500,maxWidth:'calc(100vw - 32px)',maxHeight:'calc(100vh - 48px)',overflow:'auto',boxShadow:'0 40px 100px rgba(0,0,0,0.5)',border:'1px solid var(--border)'}} onClick={e=>e.stopPropagation()}>
+        <div style={{height:4,borderRadius:'18px 18px 0 0',background:'var(--accent)'}}/>
+        <div style={{padding:'18px 20px 14px',borderBottom:'1px solid var(--borderSubtle)',display:'flex',alignItems:'center',gap:10}}>
+          <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Task title" autoFocus
+            style={{flex:1,background:'none',border:'none',color:'var(--text)',fontSize:18,fontWeight:700,padding:0,fontFamily:'inherit',outline:'none',letterSpacing:'-0.01em'}}/>
+          <button onClick={onClose} style={{width:28,height:28,borderRadius:8,border:'1px solid var(--border)',background:'none',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}
+            onMouseEnter={e=>e.currentTarget.style.background='var(--surfaceAlt)'}
+            onMouseLeave={e=>e.currentTarget.style.background='none'}>
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
+          </button>
         </div>
-        <div style={{padding:'14px 18px 18px',display:'flex',flexDirection:'column',gap:12}}>
-          {/* Color swatches + title */}
-          <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
-            <div style={{display:'flex',flexWrap:'wrap',gap:3,width:52,flexShrink:0,paddingTop:6}}>
-              {CARD_COLORS.map(c=>(
-                <button key={c} onClick={()=>setColor(c)} style={{width:14,height:14,borderRadius:3,background:c,cursor:'pointer',padding:0,
-                  border:color===c?'2px solid var(--text)':'1px solid transparent'}}/>
-              ))}
-            </div>
-            <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Task title" autoFocus
-              style={{flex:1,background:'none',border:'none',borderBottom:'1px solid var(--border)',color:'var(--text)',fontSize:15,fontWeight:600,padding:'4px 2px',fontFamily:'inherit',outline:'none'}}/>
-          </div>
+        <div style={{padding:'16px 20px 20px',display:'flex',flexDirection:'column',gap:10}}>
           {/* Due date */}
-          <div style={{display:'flex',alignItems:'center',gap:8}}>
-            <span style={{fontSize:11,color:'var(--textDim)',width:64,flexShrink:0}}>Due date</span>
-            <input type="date" value={dueDate} onChange={e=>setDueDate(e.target.value)}
-              style={{flex:1,background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',fontSize:12,padding:'4px 8px',fontFamily:'inherit'}}/>
+          <div style={{display:'flex',alignItems:'center',gap:10}}>
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={icoStyle}><rect x="1.5" y="2.5" width="13" height="12" rx="2" stroke="currentColor" strokeWidth="1.4"/><line x1="5" y1="1" x2="5" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="11" y1="1" x2="11" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="1.5" y1="6.5" x2="14.5" y2="6.5" stroke="currentColor" strokeWidth="1.2"/></svg>
+            <input type="date" value={dueDate} onChange={e=>setDueDate(e.target.value)} style={{...iStyle,flex:1}}/>
           </div>
           {/* Description */}
-          <textarea value={description} onChange={e=>setDescription(e.target.value)} placeholder="Add a description…" rows={3}
-            style={{background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',fontSize:12,padding:'8px 10px',fontFamily:'inherit',resize:'vertical',outline:'none'}}/>
+          <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={{...icoStyle,marginTop:9}}><line x1="2.5" y1="4" x2="13.5" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="2.5" y1="7.5" x2="13.5" y2="7.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="2.5" y1="11" x2="9" y2="11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+            <textarea value={description} onChange={e=>setDescription(e.target.value)} placeholder="Add description" rows={3}
+              style={{...iStyle,flex:1,resize:'none',lineHeight:1.55}}/>
+          </div>
           {/* Comments */}
-          <div>
-            <div style={{fontSize:10,fontWeight:700,color:'var(--textDim)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:8}}>Comments ({comments.length})</div>
-            {comments.map(c=>(
-              <div key={c.id} style={{display:'flex',gap:8,marginBottom:8,alignItems:'flex-start'}}>
-                <div style={{width:22,height:22,borderRadius:'50%',background:'var(--accent)',color:'#fff',fontSize:10,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>{c.text[0].toUpperCase()}</div>
-                <div style={{flex:1,background:'var(--surfaceAlt)',borderRadius:6,padding:'6px 10px',position:'relative'}}>
-                  <div style={{fontSize:12,color:'var(--text)',lineHeight:1.4}}>{c.text}</div>
-                  <div style={{fontSize:10,color:'var(--textDim)',marginTop:2}}>{new Date(c.createdAt).toLocaleDateString()}</div>
-                  <button onClick={()=>setComments(cs=>cs.filter(x=>x.id!==c.id))} style={{position:'absolute',top:3,right:6,background:'none',border:'none',color:'var(--textDim)',cursor:'pointer',fontSize:14,padding:0}}>×</button>
-                </div>
+          <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={{...icoStyle,marginTop:2}}><path d="M2 2h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 3V3a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/></svg>
+            <div style={{flex:1}}>
+              {comments.length>0&&<div style={{marginBottom:8}}>
+                {comments.map(c=>(
+                  <div key={c.id} style={{display:'flex',gap:8,marginBottom:6,alignItems:'flex-start'}}>
+                    <div style={{width:22,height:22,borderRadius:'50%',background:'var(--accent)',color:'#fff',fontSize:9,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>{c.text[0]?.toUpperCase()||'?'}</div>
+                    <div style={{flex:1,background:'var(--surfaceAlt)',borderRadius:8,padding:'6px 10px',position:'relative'}}>
+                      <div style={{fontSize:12,color:'var(--text)',lineHeight:1.4}}>{c.text}</div>
+                      <div style={{fontSize:10,color:'var(--textDim)',marginTop:2}}>{new Date(c.createdAt).toLocaleDateString()}</div>
+                      <button onClick={()=>setComments(cs=>cs.filter(x=>x.id!==c.id))} style={{position:'absolute',top:4,right:8,background:'none',border:'none',color:'var(--textDim)',cursor:'pointer',fontSize:14,padding:0,lineHeight:1}}>×</button>
+                    </div>
+                  </div>
+                ))}
+              </div>}
+              <div style={{display:'flex',gap:6}}>
+                <input value={newCmt} onChange={e=>setNewCmt(e.target.value)} placeholder="Write a comment…"
+                  onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();addCmt()}}}
+                  style={{...iStyle,flex:1,padding:'7px 11px'}}/>
+                <button onClick={addCmt} disabled={!newCmt.trim()}
+                  style={{padding:'7px 14px',borderRadius:9,border:'none',background:'var(--accent)',color:'#fff',cursor:'pointer',fontSize:12,fontWeight:700,opacity:newCmt.trim()?1:0.45,fontFamily:'inherit'}}>
+                  Send
+                </button>
               </div>
-            ))}
-            <div style={{display:'flex',gap:6}}>
-              <input value={newCmt} onChange={e=>setNewCmt(e.target.value)} placeholder="Add a comment…"
-                onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();addCmt()}}}
-                style={{flex:1,background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text)',fontSize:12,padding:'6px 10px',fontFamily:'inherit',outline:'none'}}/>
-              <button onClick={addCmt} disabled={!newCmt.trim()} style={{padding:'6px 12px',borderRadius:6,border:'none',background:'var(--accent)',color:'#fff',cursor:'pointer',fontSize:12,fontWeight:600,opacity:newCmt.trim()?1:0.5}}>Send</button>
             </div>
           </div>
-          {/* Actions */}
-          <div style={{display:'flex',gap:8,marginTop:2}}>
-            {!isNew&&<button onClick={onDelete} style={{flex:1,padding:'8px',borderRadius:7,border:'1px solid rgba(239,68,68,0.4)',background:'rgba(239,68,68,0.08)',color:'#ef4444',cursor:'pointer',fontSize:12,fontWeight:600}}>Delete</button>}
-            <button onClick={()=>onSave({title:title.trim()||'Untitled',color,dueDate,description,comments})} disabled={!title.trim()}
-              style={{flex:2,padding:'8px',borderRadius:7,border:'none',background:'var(--accent)',color:'#fff',cursor:'pointer',fontSize:12,fontWeight:700,opacity:title.trim()?1:0.5}}>
+          {/* Footer */}
+          <div style={{display:'flex',gap:8,marginTop:6,paddingTop:14,borderTop:'1px solid var(--borderSubtle)'}}>
+            {!isNew&&(
+              <button onClick={onDelete}
+                style={{padding:'9px 16px',borderRadius:10,border:'1px solid rgba(239,68,68,0.3)',background:'rgba(239,68,68,0.06)',color:'#ef4444',cursor:'pointer',fontSize:13,fontWeight:600,fontFamily:'inherit',transition:'background 0.12s',flexShrink:0}}
+                onMouseEnter={e=>e.currentTarget.style.background='rgba(239,68,68,0.14)'}
+                onMouseLeave={e=>e.currentTarget.style.background='rgba(239,68,68,0.06)'}>
+                Delete
+              </button>
+            )}
+            <button onClick={()=>title.trim()&&onSave({title:title.trim()||'Untitled',dueDate,description,comments})}
+              disabled={!title.trim()}
+              style={{flex:1,padding:'10px',borderRadius:10,border:'none',background:title.trim()?'var(--accent)':'var(--surfaceAlt)',color:title.trim()?'#fff':'var(--textDim)',cursor:title.trim()?'pointer':'default',fontSize:13,fontWeight:700,fontFamily:'inherit',opacity:title.trim()?1:0.45}}>
               {isNew?'Create Task':'Save Changes'}
             </button>
           </div>
@@ -1524,20 +1795,31 @@ const DEFAULT_KANBAN = {
   ]
 }
 
-function KanbanBoard() {
+export function KanbanBoard() {
   const [board,        setBoard]        = useState(null)
-  const [editingCard,  setEditingCard]  = useState(null) // {card, colId, isNew}
+  const [editingCard,  setEditingCard]  = useState(null)
   const [editColId,    setEditColId2]   = useState(null)
   const [editColName2, setEditColName2] = useState('')
   const [newColName,   setNewColName]   = useState('')
   const [addingCol,    setAddingCol]    = useState(false)
+  const [inlineColor,  setInlineColor]  = useState(null) // {cardId, colId}
   const dragRef = useRef(null)
   const dropRef = useRef(null)
-  const [dragging, setDragging] = useState(null) // cardId
-  const [ghostPos, setGhostPos] = useState(null)
-  const [dropCol,  setDropCol]  = useState(null)
+  const [dragging,    setDragging]    = useState(null) // cardId
+  const [ghostPos,    setGhostPos]    = useState(null)
+  const [dropTarget,  setDropTarget]  = useState(null) // {colId, idx}
 
   useEffect(() => { loadKanbanBoards().then(d => setBoard(d || DEFAULT_KANBAN)) }, [])
+
+  // Close inline color picker on outside click
+  useEffect(() => {
+    if (!inlineColor) return
+    const handler = e => {
+      if (!e.target.closest('[data-inline-cp]')) setInlineColor(null)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [inlineColor])
 
   const persist = async b => { setBoard(b); await saveKanbanBoards(b) }
 
@@ -1554,9 +1836,29 @@ function KanbanBoard() {
     persist({...board,columns:board.columns.map(c=>c.id===colId?{...c,cards:c.cards.filter(cd=>cd.id!==cardId)}:c)})
     setEditingCard(null)
   }
+  const updateCardColor = (colId, cardId, color) => {
+    persist({...board,columns:board.columns.map(c=>c.id===colId?{...c,cards:c.cards.map(cd=>cd.id===cardId?{...cd,color}:cd)}:c)})
+    setInlineColor(null)
+  }
 
   useEffect(() => {
     if (!board) return
+    const getDropTarget = (clientX, clientY) => {
+      const cols = [...document.querySelectorAll('[data-kb-col]')]
+      for (const colEl of cols) {
+        const cr = colEl.getBoundingClientRect()
+        if (clientX < cr.left || clientX > cr.right || clientY < cr.top || clientY > cr.bottom) continue
+        const colId = colEl.dataset.kbCol
+        const cardEls = [...colEl.querySelectorAll('[data-kb-card]')]
+        let idx = cardEls.length // default: append at end
+        for (let i = 0; i < cardEls.length; i++) {
+          const r = cardEls[i].getBoundingClientRect()
+          if (clientY < r.top + r.height / 2) { idx = i; break }
+        }
+        return { colId, idx }
+      }
+      return null
+    }
     const onMove = e => {
       const d = dragRef.current
       if (!d) return
@@ -1565,23 +1867,36 @@ function KanbanBoard() {
         return
       }
       setGhostPos({x:e.clientX,y:e.clientY})
-      const cols = [...document.querySelectorAll('[data-kb-col]')]
-      let tgt = null
-      for (const col of cols) { const r=col.getBoundingClientRect(); if(e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom){tgt=col.dataset.kbCol;break} }
-      dropRef.current = tgt; setDropCol(tgt)
+      const tgt = getDropTarget(e.clientX, e.clientY)
+      dropRef.current = tgt; setDropTarget(tgt)
     }
     const onUp = () => {
-      const d=dragRef.current, t=dropRef.current
-      dragRef.current=null; dropRef.current=null
-      setDragging(null); setGhostPos(null); setDropCol(null)
-      if (!d?.dragging || !t || t===d.fromCol) return
-      const card = board.columns.find(c=>c.id===d.fromCol)?.cards.find(c=>c.id===d.id)
+      const d = dragRef.current, tgt = dropRef.current
+      dragRef.current = null; dropRef.current = null
+      setDragging(null); setGhostPos(null); setDropTarget(null)
+      if (!d?.dragging || !tgt) return
+      const { colId: toCol, idx: insertIdx } = tgt
+      const fromCol = board.columns.find(c=>c.id===d.fromCol)
+      if (!fromCol) return
+      const card = fromCol.cards.find(c=>c.id===d.id)
       if (!card) return
-      persist({...board,columns:board.columns.map(c=>{
-        if(c.id===d.fromCol) return {...c,cards:c.cards.filter(x=>x.id!==d.id)}
-        if(c.id===t) return {...c,cards:[...c.cards,card]}
+      // Build new columns
+      const newCols = board.columns.map(c => {
+        if (c.id === d.fromCol && c.id !== toCol) return {...c, cards: c.cards.filter(x=>x.id!==d.id)}
+        if (c.id === toCol && c.id !== d.fromCol) {
+          const arr = [...c.cards]
+          arr.splice(insertIdx, 0, card)
+          return {...c, cards: arr}
+        }
+        if (c.id === d.fromCol && c.id === toCol) {
+          const arr = c.cards.filter(x=>x.id!==d.id)
+          const adjustedIdx = Math.min(insertIdx, arr.length)
+          arr.splice(adjustedIdx, 0, card)
+          return {...c, cards: arr}
+        }
         return c
-      })})
+      })
+      persist({...board, columns: newCols})
     }
     document.addEventListener('mousemove',onMove)
     document.addEventListener('mouseup',onUp)
@@ -1590,74 +1905,159 @@ function KanbanBoard() {
 
   if (!board) return <div style={{padding:20,color:'var(--textDim)',fontSize:13}}>Loading…</div>
 
-  const ghostCard = board.columns.flatMap(c=>c.cards).find(c=>c.id===dragging)
+  const ghostCard = (() => { for (const c of board.columns) { const card = c.cards.find(x=>x.id===dragging); if (card) return {...card, colColor: c.color||CARD_COLORS[0]} } return null })()
+  const today = new Date()
+  const isOverdue = (dateStr) => {
+    if (!dateStr) return false
+    const d = new Date(dateStr + 'T00:00:00')
+    return d < new Date(today.getFullYear(), today.getMonth(), today.getDate())
+  }
+  const isToday = (dateStr) => {
+    if (!dateStr) return false
+    const d = new Date(dateStr + 'T00:00:00')
+    return d.getFullYear()===today.getFullYear()&&d.getMonth()===today.getMonth()&&d.getDate()===today.getDate()
+  }
 
   return (
     <div>
-      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
-        <span style={{fontSize:14,fontWeight:700,color:'var(--text)'}}>{board.title}</span>
-        <button onClick={()=>setAddingCol(s=>!s)} style={{padding:'4px 12px',borderRadius:7,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',fontSize:11,fontWeight:600,cursor:'pointer'}}>+ Column</button>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+        <span style={{fontSize:15,fontWeight:700,color:'var(--text)',letterSpacing:'-0.01em'}}>{board.title}</span>
+        <button onClick={()=>setAddingCol(s=>!s)}
+          style={{padding:'5px 14px',borderRadius:8,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',fontSize:12,fontWeight:600,cursor:'pointer',transition:'background 0.1s,color 0.1s'}}
+          onMouseEnter={e=>{e.currentTarget.style.background='var(--surface)';e.currentTarget.style.color='var(--text)'}}
+          onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)'}}>
+          + Column
+        </button>
       </div>
       {addingCol&&(
-        <div style={{display:'flex',gap:6,marginBottom:12}}>
-          <input value={newColName} onChange={e=>setNewColName(e.target.value)} placeholder="Column name" autoFocus
+        <div style={{display:'flex',gap:6,marginBottom:14}}>
+          <input value={newColName} onChange={e=>setNewColName(e.target.value)} placeholder="Column name…" autoFocus
             onKeyDown={e=>{if(e.key==='Enter'&&newColName.trim()){persist({...board,columns:[...board.columns,{id:makeColId(),title:newColName.trim(),cards:[]}]});setNewColName('');setAddingCol(false)}else if(e.key==='Escape')setAddingCol(false)}}
-            style={{flex:1,background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:7,color:'var(--text)',fontSize:12,padding:'6px 10px',fontFamily:'inherit',outline:'none'}}/>
-          <button onClick={()=>{if(newColName.trim()){persist({...board,columns:[...board.columns,{id:makeColId(),title:newColName.trim(),cards:[]}]});setNewColName('');setAddingCol(false)}}} style={{padding:'6px 14px',borderRadius:7,border:'none',background:'var(--accent)',color:'#fff',fontSize:12,fontWeight:700,cursor:'pointer'}}>Add</button>
+            style={{flex:1,background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:8,color:'var(--text)',fontSize:13,padding:'7px 11px',fontFamily:'inherit',outline:'none'}}/>
+          <button onClick={()=>{if(newColName.trim()){persist({...board,columns:[...board.columns,{id:makeColId(),title:newColName.trim(),cards:[]}]});setNewColName('');setAddingCol(false)}}}
+            style={{padding:'7px 16px',borderRadius:8,border:'none',background:'var(--accent)',color:'#fff',fontSize:13,fontWeight:700,cursor:'pointer'}}>Add</button>
         </div>
       )}
-      <div style={{display:'flex',gap:10,overflowX:'auto',paddingBottom:6,alignItems:'flex-start'}}>
+      <div style={{display:'flex',gap:12,overflowX:'auto',paddingBottom:8,alignItems:'flex-start'}}>
         {board.columns.map(col=>{
-          const isTarget = dropCol===col.id
+          const isDropTarget = dropTarget?.colId===col.id
           return (
             <div key={col.id} data-kb-col={col.id}
-              style={{minWidth:190,maxWidth:220,flex:'0 0 200px',background:isTarget?'color-mix(in srgb,var(--accent) 10%,var(--surfaceAlt))':'var(--surfaceAlt)',
-                border:isTarget?'1px solid var(--accent)':'1px solid var(--border)',borderRadius:10,padding:'10px 8px 8px',
-                display:'flex',flexDirection:'column',gap:6,transition:'background 0.1s,border-color 0.1s'}}>
+              style={{minWidth:220,maxWidth:260,flex:'0 0 240px',
+                background:isDropTarget?'color-mix(in srgb,var(--accent) 6%,var(--surfaceAlt))':'var(--surfaceAlt)',
+                border:isDropTarget?'1.5px solid color-mix(in srgb,var(--accent) 50%,var(--border))':'1.5px solid var(--border)',
+                borderRadius:12,padding:'12px 10px 10px',
+                display:'flex',flexDirection:'column',gap:0,transition:'background 0.12s,border-color 0.12s'}}>
               {/* Column header */}
-              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:2}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+                {/* Column color picker */}
+                <div data-inline-cp style={{position:'relative',flexShrink:0,marginRight:6}}>
+                  <div onClick={e=>{e.stopPropagation();setInlineColor(inlineColor?.colId===col.id&&!inlineColor?.cardId?null:{colId:col.id})}}
+                    style={{width:12,height:12,borderRadius:3,background:col.color||CARD_COLORS[0],cursor:'pointer',flexShrink:0,
+                      boxShadow:(inlineColor?.colId===col.id&&!inlineColor?.cardId)?`0 0 0 2px var(--surface),0 0 0 3.5px ${col.color||CARD_COLORS[0]}`:'none',
+                      transition:'box-shadow 0.15s'}} title="Set column color"/>
+                  {inlineColor?.colId===col.id&&!inlineColor?.cardId&&(
+                    <div data-inline-cp style={{position:'absolute',top:18,left:-4,zIndex:200,
+                      background:'var(--surface)',border:'1px solid var(--border)',borderRadius:10,
+                      padding:'8px',boxShadow:'0 8px 24px rgba(0,0,0,0.22)',
+                      display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:5}}>
+                      {CARD_COLORS.map(c=>(
+                        <div key={c} onClick={e=>{e.stopPropagation();persist({...board,columns:board.columns.map(cl=>cl.id===col.id?{...cl,color:c}:cl)});setInlineColor(null)}}
+                          style={{width:16,height:16,borderRadius:3,background:c,cursor:'pointer',
+                            boxShadow:(col.color||CARD_COLORS[0])===c?`0 0 0 2px var(--surface),0 0 0 3.5px ${c}`:'none',
+                            transform:(col.color||CARD_COLORS[0])===c?'scale(1.2)':'scale(1)',
+                            transition:'transform 0.1s,box-shadow 0.1s'}}/>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 {editColId===col.id
                   ?<input value={editColName2} autoFocus onChange={e=>setEditColName2(e.target.value)}
                     onBlur={()=>{persist({...board,columns:board.columns.map(c=>c.id===col.id?{...c,title:editColName2||col.title}:c)});setEditColId2(null)}}
                     onKeyDown={e=>{if(e.key==='Enter'||e.key==='Escape'){persist({...board,columns:board.columns.map(c=>c.id===col.id?{...c,title:editColName2||col.title}:c)});setEditColId2(null)}}}
-                    style={{flex:1,background:'none',border:'none',borderBottom:'1px solid var(--accent)',color:'var(--text)',fontSize:11,fontWeight:700,padding:'2px 0',fontFamily:'inherit',outline:'none'}}/>
-                  :<span onClick={()=>{setEditColId2(col.id);setEditColName2(col.title)}} style={{fontSize:11,fontWeight:700,color:'var(--textDim)',textTransform:'uppercase',letterSpacing:'0.06em',cursor:'pointer',flex:1}} title="Click to rename">{col.title}</span>
+                    style={{flex:1,background:'none',border:'none',borderBottom:'1px solid var(--accent)',color:'var(--text)',fontSize:11,fontWeight:700,padding:'2px 0',fontFamily:'inherit',outline:'none',textTransform:'uppercase',letterSpacing:'0.06em'}}/>
+                  :<span onClick={()=>{setEditColId2(col.id);setEditColName2(col.title)}}
+                    style={{fontSize:11,fontWeight:700,color:'var(--textDim)',textTransform:'uppercase',letterSpacing:'0.07em',cursor:'pointer',flex:1}}
+                    title="Click to rename">{col.title}</span>
                 }
-                <div style={{display:'flex',alignItems:'center',gap:3}}>
-                  <span style={{fontSize:10,color:'var(--textDim)',background:'var(--surface)',borderRadius:10,padding:'1px 6px',fontWeight:700}}>{col.cards.length}</span>
+                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                  <span style={{fontSize:11,color:'var(--textDim)',background:'var(--surface)',borderRadius:20,padding:'1px 7px',fontWeight:700,minWidth:18,textAlign:'center'}}>{col.cards.length}</span>
                   <button onClick={()=>persist({...board,columns:board.columns.filter(c=>c.id!==col.id)})} title="Delete column"
-                    style={{background:'none',border:'none',color:'var(--textDim)',cursor:'pointer',fontSize:13,padding:'0 2px',opacity:0.5,lineHeight:1}}>×</button>
+                    style={{background:'none',border:'none',color:'var(--textDim)',cursor:'pointer',fontSize:14,padding:'0 2px',opacity:0.4,lineHeight:1,transition:'opacity 0.1s'}}
+                    onMouseEnter={e=>e.currentTarget.style.opacity='0.9'}
+                    onMouseLeave={e=>e.currentTarget.style.opacity='0.4'}>×</button>
                 </div>
               </div>
-              {/* Cards */}
-              {col.cards.map(card=>(
-                <div key={card.id}
-                  onMouseDown={e=>{if(e.button!==0)return;e.preventDefault();dragRef.current={id:card.id,fromCol:col.id,sx:e.clientX,sy:e.clientY,dragging:false}}}
-                  style={{background:'var(--surface)',border:'1px solid var(--borderSubtle)',borderLeft:`3px solid ${card.color||CARD_COLORS[0]}`,
-                    borderRadius:7,padding:'8px 10px',cursor:'grab',opacity:dragging===card.id?0.35:1,
-                    boxShadow:'0 1px 4px rgba(0,0,0,0.07)',transition:'opacity 0.15s,box-shadow 0.1s',
-                    userSelect:'none'}}
-                  onMouseEnter={e=>{if(dragging!==card.id)e.currentTarget.style.boxShadow='0 2px 8px rgba(0,0,0,0.14)'}}
-                  onMouseLeave={e=>{e.currentTarget.style.boxShadow='0 1px 4px rgba(0,0,0,0.07)'}}>
-                  <div style={{display:'flex',alignItems:'flex-start',gap:7}}>
-                    <div style={{width:10,height:10,borderRadius:2,background:card.color||CARD_COLORS[0],flexShrink:0,marginTop:3}}/>
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:12,fontWeight:600,color:'var(--text)',lineHeight:1.35,marginBottom:4}}>{card.title}</div>
-                      <div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center'}}>
-                        {card.dueDate&&<span style={{fontSize:10,color:'var(--textDim)',background:'var(--surfaceAlt)',borderRadius:4,padding:'1px 5px',border:'1px solid var(--borderSubtle)'}}>📅 {card.dueDate}</span>}
-                        {card.comments?.length>0&&<span style={{fontSize:10,color:'var(--textDim)'}}>💬 {card.comments.length}</span>}
-                        {card.description&&<span style={{fontSize:10,color:'var(--textDim)',opacity:0.6}}>···</span>}
+              {/* Cards with drop indicators */}
+              <div style={{display:'flex',flexDirection:'column',gap:0}}>
+                {col.cards.map((card, cardIdx)=>{
+                  const showIndicator = isDropTarget && dropTarget.idx===cardIdx && !!dragging
+                  const isInlineColorOpen = inlineColor?.cardId===card.id && inlineColor?.colId===col.id
+                  return (
+                    <div key={card.id} data-kb-card data-kb-card-idx={cardIdx} style={{position:'relative'}}>
+                      {/* Drop indicator before */}
+                      {showIndicator && dragging && (
+                        <div style={{height:3,borderRadius:2,background:'var(--accent)',margin:'2px 0',boxShadow:'0 0 6px color-mix(in srgb,var(--accent) 60%,transparent)',transition:'opacity 0.1s'}}/>
+                      )}
+                      <div
+                        onMouseDown={e=>{if(e.button!==0||e.target.closest('[data-inline-cp]')||e.target.closest('button'))return;e.preventDefault();dragRef.current={id:card.id,fromCol:col.id,sx:e.clientX,sy:e.clientY,dragging:false}}}
+                        style={{background:'var(--surface)',border:'1px solid var(--borderSubtle)',
+                          borderRadius:9,padding:'10px 10px 9px 10px',cursor:dragging?'grabbing':'grab',
+                          opacity:dragging===card.id?0.3:1,marginBottom:6,
+                          boxShadow:'0 1px 3px rgba(0,0,0,0.06)',transition:'opacity 0.15s,box-shadow 0.12s,transform 0.12s',
+                          userSelect:'none'}}
+                        onMouseEnter={e=>{if(dragging!==card.id){e.currentTarget.style.boxShadow='0 3px 10px rgba(0,0,0,0.12)';e.currentTarget.style.transform='translateY(-1px)'}}}
+                        onMouseLeave={e=>{e.currentTarget.style.boxShadow='0 1px 3px rgba(0,0,0,0.06)';e.currentTarget.style.transform='translateY(0)'}}>
+                        <div style={{display:'flex',alignItems:'flex-start',gap:8}}>
+                          {/* Column color indicator (read-only, color set on column) */}
+                          <div style={{width:3,alignSelf:'stretch',borderRadius:2,background:col.color||CARD_COLORS[0],flexShrink:0,marginTop:2,marginBottom:2}}/>
+                          {/* Title + meta */}
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontSize:12.5,fontWeight:600,color:'var(--text)',lineHeight:1.4,marginBottom:card.dueDate||card.comments?.length?5:0}}>
+                              {card.title}
+                            </div>
+                            {(card.dueDate||card.comments?.length>0||card.description)&&(
+                              <div style={{display:'flex',gap:5,flexWrap:'wrap',alignItems:'center'}}>
+                                {card.dueDate&&(
+                                  <span style={{fontSize:10.5,fontWeight:500,
+                                    color:isOverdue(card.dueDate)?'#ef4444':isToday(card.dueDate)?'#f97316':'var(--textDim)',
+                                    background:isOverdue(card.dueDate)?'rgba(239,68,68,0.1)':isToday(card.dueDate)?'rgba(249,115,22,0.1)':'var(--surfaceAlt)',
+                                    borderRadius:5,padding:'1px 6px',border:`1px solid ${isOverdue(card.dueDate)?'rgba(239,68,68,0.25)':isToday(card.dueDate)?'rgba(249,115,22,0.25)':'var(--borderSubtle)'}`,
+                                    display:'inline-flex',alignItems:'center',gap:3}}>
+                                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                                    {card.dueDate}
+                                  </span>
+                                )}
+                                {card.comments?.length>0&&(
+                                  <span style={{fontSize:10.5,color:'var(--textDim)',display:'inline-flex',alignItems:'center',gap:3}}>
+                                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                                    {card.comments.length}
+                                  </span>
+                                )}
+                                {card.description&&(
+                                  <span style={{fontSize:10,color:'var(--textDim)',opacity:0.5,letterSpacing:'0.1em'}}>···</span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          <button onClick={e=>{e.stopPropagation();setEditingCard({card,colId:col.id,isNew:false})}}
+                            style={{background:'none',border:'none',color:'var(--textDim)',cursor:'pointer',fontSize:16,padding:'0 1px',flexShrink:0,lineHeight:1,opacity:0.5,transition:'opacity 0.1s'}}
+                            onMouseEnter={e=>e.currentTarget.style.opacity='1'}
+                            onMouseLeave={e=>e.currentTarget.style.opacity='0.5'}>⋯</button>
+                        </div>
                       </div>
                     </div>
-                    <button onClick={e=>{e.stopPropagation();setEditingCard({card,colId:col.id,isNew:false})}}
-                      style={{background:'none',border:'none',color:'var(--textDim)',cursor:'pointer',fontSize:16,padding:'0 2px',flexShrink:0,lineHeight:1,opacity:0.6}}>⋯</button>
-                  </div>
-                </div>
-              ))}
+                  )
+                })}
+                {/* Drop indicator at end */}
+                {isDropTarget && dropTarget.idx===col.cards.length && dragging && (
+                  <div style={{height:3,borderRadius:2,background:'var(--accent)',margin:'2px 0 6px',boxShadow:'0 0 6px color-mix(in srgb,var(--accent) 60%,transparent)'}}/>
+                )}
+              </div>
               {/* Add task */}
               <button onClick={()=>setEditingCard({card:null,colId:col.id,isNew:true})}
-                style={{background:'none',border:'1px dashed var(--borderSubtle)',borderRadius:7,color:'var(--textDim)',cursor:'pointer',padding:'7px',fontSize:11,fontWeight:600,textAlign:'center',transition:'background 0.1s,border-color 0.1s,color 0.1s'}}
-                onMouseEnter={e=>{e.currentTarget.style.background='var(--surface)';e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--text)'}}
+                style={{background:'none',border:'1.5px dashed var(--borderSubtle)',borderRadius:8,color:'var(--textDim)',cursor:'pointer',padding:'7px',fontSize:12,fontWeight:600,textAlign:'center',transition:'background 0.1s,border-color 0.1s,color 0.1s',marginTop:2}}
+                onMouseEnter={e=>{e.currentTarget.style.background='color-mix(in srgb,var(--accent) 5%,var(--surface))';e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)'}}
                 onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.borderColor='var(--borderSubtle)';e.currentTarget.style.color='var(--textDim)'}}>
                 + Add task
               </button>
@@ -1667,11 +2067,15 @@ function KanbanBoard() {
       </div>
       {/* Drag ghost */}
       {dragging&&ghostPos&&ghostCard&&(
-        <div style={{position:'fixed',left:ghostPos.x+14,top:ghostPos.y+8,zIndex:9999,pointerEvents:'none',
-          background:'var(--surface)',border:`1px solid var(--border)`,borderLeft:`3px solid ${ghostCard.color||CARD_COLORS[0]}`,
-          borderRadius:7,padding:'8px 10px',minWidth:160,boxShadow:'0 8px 24px rgba(0,0,0,0.4)',
-          fontSize:12,fontWeight:600,color:'var(--text)',opacity:0.95,transform:'rotate(2deg)'}}>
-          {ghostCard.title}
+        <div style={{position:'fixed',left:ghostPos.x+12,top:ghostPos.y-10,zIndex:9999,pointerEvents:'none',
+          background:'var(--surface)',border:'1px solid var(--border)',
+          borderRadius:9,padding:'10px 12px',minWidth:180,maxWidth:240,
+          boxShadow:'0 12px 32px rgba(0,0,0,0.35)',
+          opacity:0.95,transform:'rotate(1.5deg)'}}>
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            <div style={{width:3,alignSelf:'stretch',borderRadius:2,background:ghostCard.colColor,flexShrink:0}}/>
+            <span style={{fontSize:12.5,fontWeight:600,color:'var(--text)',lineHeight:1.3}}>{ghostCard.title}</span>
+          </div>
         </div>
       )}
       {editingCard&&(
@@ -1686,10 +2090,11 @@ function KanbanBoard() {
 
 // ── ProfileModal ──────────────────────────────────────────────────────────────
 function ProfileModal({ onClose }) {
-  const library   = useAppStore(s => s.library)
-  const notebooks = useAppStore(s => s.notebooks)
-  const username  = useAppStore(s => s.username)
-  const navigate  = useAppStore(s => s.navigate)
+  const library            = useAppStore(s => s.library)
+  const notebooks          = useAppStore(s => s.notebooks)
+  const username           = useAppStore(s => s.username)
+  const navigate           = useAppStore(s => s.navigate)
+  const storeCalendarEvents = useAppStore(s => s.calendarEvents)
 
   const [log,          setLog]          = useState({})
   const [profileTab,   setProfileTab]   = useState('stats')
@@ -1847,38 +2252,93 @@ function ProfileModal({ onClose }) {
           )}
 
           {/* ── Todo's tab ── */}
-          {profileTab==='todos'&&(
-            <div>
-              {!todosLoaded&&<div style={{color:'var(--textDim)',fontSize:13}}>Loading todos…</div>}
-              {todosLoaded&&todoLists.length===0&&(
-                <div style={{color:'var(--textDim)',fontSize:13}}>No todos found. Use <code style={{background:'var(--surfaceAlt)',padding:'1px 5px',borderRadius:4}}>/todo</code> in any notebook to create a to-do list.</div>
-              )}
-              {todoLists.map((list,li)=>(
-                <div key={li} style={{background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:10,marginBottom:12,overflow:'hidden',boxShadow:'0 1px 4px rgba(0,0,0,.08)'}}>
-                  <div style={{padding:'10px 14px 8px',borderBottom:'1px solid var(--borderSubtle)'}}>
-                    <div style={{fontWeight:700,fontSize:13,color:'var(--text)'}}>{list.listName}</div>
-                    <div style={{fontSize:10,color:'var(--textDim)',marginTop:2}}>{list.notebookTitle} · {list.items.filter(i=>!i.checked).length} remaining</div>
+          {profileTab==='todos'&&(()=>{
+            const todayKey = today
+            // Calendar events for today
+            const todayCalEvents = eventsForDateKey(todayKey, storeCalendarEvents)
+            // All todo items across all lists, with list context
+            const allItems = todoLists.flatMap(list =>
+              list.items.map(item => ({...item, listName:list.listName, notebookTitle:list.notebookTitle}))
+            )
+            const todayTodos  = allItems.filter(i => i.dateStr === todayKey)
+            const notDated    = allItems.filter(i => !i.dateStr && !i.checked)
+            const laterTodos  = allItems.filter(i => i.dateStr && i.dateStr > todayKey)
+            const hasSomething = todayCalEvents.length > 0 || todayTodos.length > 0 || notDated.length > 0 || laterTodos.length > 0
+
+            const SectionHeader = ({label, count}) => (
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,marginTop:4}}>
+                <span style={{fontSize:11,fontWeight:700,color:'var(--textDim)',textTransform:'uppercase',letterSpacing:'0.07em'}}>{label}</span>
+                {count>0&&<span style={{fontSize:10,color:'var(--textDim)',background:'var(--surfaceAlt)',borderRadius:10,padding:'1px 7px',fontWeight:700,border:'1px solid var(--borderSubtle)'}}>{count}</span>}
+              </div>
+            )
+            const TodoItem = ({item, accent=false}) => (
+              <div style={{display:'flex',alignItems:'center',gap:10,padding:'7px 12px',borderRadius:8,background:'var(--surface)',border:'1px solid var(--borderSubtle)',marginBottom:5,opacity:item.checked?0.5:1}}>
+                <div style={{width:14,height:14,borderRadius:4,flexShrink:0,border:`1.5px solid ${item.checked?'var(--accent)':'var(--border)'}`,background:item.checked?'var(--accent)':'none',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,color:'#fff'}}>{item.checked?'✓':''}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:12.5,color:'var(--text)',lineHeight:1.4,textDecoration:item.checked?'line-through':'none',fontWeight:item.checked?400:500}}>{item.text}</div>
+                  <div style={{display:'flex',gap:5,marginTop:item.timeStr?3:0,flexWrap:'wrap'}}>
+                    {item.timeStr&&<span style={{fontSize:10,color:'var(--textDim)',display:'inline-flex',alignItems:'center',gap:3}}><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>{item.timeStr}</span>}
+                    <span style={{fontSize:10,color:'var(--textDim)',opacity:0.6}}>{item.listName} · {item.notebookTitle}</span>
                   </div>
-                  <div style={{padding:'6px 0 8px'}}>
-                    {list.items.map((item,ii)=>(
-                      <div key={ii} style={{display:'flex',alignItems:'flex-start',gap:10,padding:'5px 14px',opacity:item.checked?.55:1}}>
-                        <div style={{width:13,height:13,borderRadius:3,flexShrink:0,marginTop:2,border:'1.5px solid var(--border)',background:item.checked?'var(--accent)':'none',borderColor:item.checked?'var(--accent)':'var(--border)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,color:'#fff'}}>{item.checked?'✓':''}</div>
+                </div>
+              </div>
+            )
+            const CalEventItem = ({evt}) => (
+              <div style={{display:'flex',alignItems:'center',gap:10,padding:'7px 12px',borderRadius:8,background:'var(--surface)',border:'1px solid var(--borderSubtle)',marginBottom:5}}>
+                <div style={{width:10,height:10,borderRadius:'50%',background:evt.color||'var(--accent)',flexShrink:0}}/>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:12.5,color:'var(--text)',fontWeight:500,lineHeight:1.4}}>{evt.title}</div>
+                  {!evt.allDay&&evt.startTime&&<div style={{fontSize:10,color:'var(--textDim)',marginTop:1}}>{evt.startTime}{evt.endTime?` → ${evt.endTime}`:''}</div>}
+                </div>
+                {evt.allDay&&<span style={{fontSize:9,color:'var(--textDim)',background:'var(--surfaceAlt)',borderRadius:4,padding:'1px 5px',border:'1px solid var(--borderSubtle)',flexShrink:0}}>All day</span>}
+              </div>
+            )
+
+            return (
+              <div>
+                {!todosLoaded&&<div style={{color:'var(--textDim)',fontSize:13,padding:'8px 0'}}>Loading todos…</div>}
+                {todosLoaded&&!hasSomething&&(
+                  <div style={{color:'var(--textDim)',fontSize:13,padding:'16px 0',textAlign:'center',lineHeight:1.6}}>
+                    No todos yet.<br/>
+                    <span style={{fontSize:12,opacity:0.7}}>Use <code style={{background:'var(--surfaceAlt)',padding:'1px 5px',borderRadius:4}}>/todo</code> in any notebook to create a to-do list.</span>
+                  </div>
+                )}
+                {/* Today section */}
+                {(todayCalEvents.length>0||todayTodos.length>0)&&(
+                  <div style={{marginBottom:20}}>
+                    <SectionHeader label="Today" count={todayCalEvents.length+todayTodos.length}/>
+                    {todayCalEvents.map((evt,i)=><CalEventItem key={evt.id||i} evt={evt}/>)}
+                    {todayTodos.map((item,i)=><TodoItem key={i} item={item} accent/>)}
+                  </div>
+                )}
+                {/* Upcoming section */}
+                {laterTodos.length>0&&(
+                  <div style={{marginBottom:20}}>
+                    <SectionHeader label="Upcoming" count={laterTodos.length}/>
+                    {laterTodos.sort((a,b)=>a.dateStr<b.dateStr?-1:1).map((item,i)=>(
+                      <div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'7px 12px',borderRadius:8,background:'var(--surface)',border:'1px solid var(--borderSubtle)',marginBottom:5,opacity:item.checked?0.5:1}}>
+                        <div style={{width:14,height:14,borderRadius:4,flexShrink:0,border:`1.5px solid ${item.checked?'var(--accent)':'var(--border)'}`,background:item.checked?'var(--accent)':'none',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,color:'#fff'}}>{item.checked?'✓':''}</div>
                         <div style={{flex:1,minWidth:0}}>
-                          <div style={{fontSize:12.5,color:'var(--text)',lineHeight:1.35,textDecoration:item.checked?'line-through':'none'}}>{item.text}</div>
-                          {(item.dateStr||item.timeStr)&&(
-                            <div style={{display:'flex',gap:6,marginTop:3}}>
-                              {item.dateStr&&<span style={{fontSize:10,color:'var(--textDim)',background:'var(--surface)',borderRadius:4,padding:'1px 5px',border:'1px solid var(--borderSubtle)'}}>📅 {item.dateStr}</span>}
-                              {item.timeStr&&<span style={{fontSize:10,color:'var(--textDim)',background:'var(--surface)',borderRadius:4,padding:'1px 5px',border:'1px solid var(--borderSubtle)'}}>🕐 {item.timeStr}</span>}
-                            </div>
-                          )}
+                          <div style={{fontSize:12.5,color:'var(--text)',lineHeight:1.4,fontWeight:500}}>{item.text}</div>
+                          <div style={{display:'flex',gap:6,marginTop:3,flexWrap:'wrap'}}>
+                            <span style={{fontSize:10,color:'var(--textDim)',display:'inline-flex',alignItems:'center',gap:3}}><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>{item.dateStr}</span>
+                            <span style={{fontSize:10,color:'var(--textDim)',opacity:0.6}}>{item.listName}</span>
+                          </div>
                         </div>
                       </div>
                     ))}
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
+                )}
+                {/* Not Dated section */}
+                {notDated.length>0&&(
+                  <div style={{marginBottom:8}}>
+                    <SectionHeader label="Not Dated" count={notDated.length}/>
+                    {notDated.map((item,i)=><TodoItem key={i} item={item}/>)}
+                  </div>
+                )}
+              </div>
+            )
+          })()}
 
           {/* ── Stats tab ── */}
           {profileTab==='stats'&&(<>
@@ -1895,6 +2355,16 @@ function ProfileModal({ onClose }) {
               {heatmapDays.map((d,i)=>(
                 <div key={i} title={`${d.k}: ${Math.round(d.m)} min`} style={{height:10,borderRadius:2,background:d.level===0?'var(--surfaceAlt)':`color-mix(in srgb, var(--accent) ${Math.round(parseFloat(heatAlpha[d.level])*100)}%, transparent)`,border:d.level===0?'1px solid var(--borderSubtle)':'none'}}/>
               ))}
+            </div>
+            {/* Heatmap legend */}
+            <div style={{display:'flex',alignItems:'center',justifyContent:'flex-end',gap:4,marginTop:4,marginBottom:6}}>
+              <span style={{fontSize:9,color:'var(--textDim)',opacity:0.6}}>Less</span>
+              {[0,1,2,3,4].map(l=>(
+                <div key={l} style={{width:10,height:10,borderRadius:2,
+                  background:l===0?'var(--surfaceAlt)':`color-mix(in srgb, var(--accent) ${Math.round(parseFloat(heatAlpha[l])*100)}%, transparent)`,
+                  border:l===0?'1px solid var(--borderSubtle)':'none'}}/>
+              ))}
+              <span style={{fontSize:9,color:'var(--textDim)',opacity:0.6}}>More</span>
             </div>
             {topBooks.length > 0 && (<>
               <div style={{fontSize:10,fontWeight:700,color:'var(--textDim)',textTransform:'uppercase',letterSpacing:'0.09em',marginBottom:10,marginTop:4,opacity:0.6}}>Top Books by Progress</div>
@@ -2056,16 +2526,17 @@ export default function LibraryView() {
   // Pointer-based drag (HTML5 drag API doesn't fire reliably in Tauri/WebKit)
   useEffect(() => {
     function getTargets(x, y) {
-      // Temporarily disable pointer events on all drag items so elementFromPoint
-      // finds the element UNDERNEATH the cursor (the drop target)
-      const all = [...document.querySelectorAll('[data-drag-item]')]
-      all.forEach(el => { el.style.pointerEvents = 'none' })
-      const el = document.elementFromPoint(x, y)
-      all.forEach(el => { el.style.pointerEvents = '' })
-      return {
-        item: el?.closest('[data-drag-item]'),
-        col:  el?.closest('[data-collection-id]'),
+      // Use bounding rect detection — reliable in Tauri/WebKit unlike elementFromPoint
+      let item = null, col = null
+      for (const el of document.querySelectorAll('[data-drag-item]')) {
+        const r = el.getBoundingClientRect()
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) { item = el; break }
       }
+      for (const el of document.querySelectorAll('[data-collection-id]')) {
+        const r = el.getBoundingClientRect()
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) { col = el; break }
+      }
+      return { item, col }
     }
     function onMove(e) {
       const d = dragRef.current
@@ -2127,11 +2598,11 @@ export default function LibraryView() {
         }
       }
     }
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
+    document.addEventListener('pointermove', onMove)
+    document.addEventListener('pointerup', onUp)
     return () => {
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
+      document.removeEventListener('pointermove', onMove)
+      document.removeEventListener('pointerup', onUp)
     }
   }, [])
 
@@ -2167,7 +2638,8 @@ export default function LibraryView() {
     if (added.length) await persistLibrary()
     if (errors.length) setToast({ message: errors[0], error: true })
     else if (added.length) setToast({ message: `Added ${added.length} book${added.length > 1 ? 's' : ''}!` })
-    setTimeout(() => setToast(null), 2500)
+    else setToast({ message: 'No supported files found (.epub, .txt, .md, .pdf)', error: true })
+    setTimeout(() => setToast(null), errors.length ? 6000 : 3000)
     e.target.value = ''
   }
 
@@ -2415,7 +2887,7 @@ export default function LibraryView() {
       ...lib.map(b => (
         <div key={b.id}
           data-drag-item={b.id} data-drag-type={b.type === 'audio' ? 'audio' : 'book'}
-          onMouseDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: 0, type: b.type === 'audio' ? 'audio' : 'book', id: b.id, title: b.title, startX: e.clientX, startY: e.clientY, dragging: false } }}
+          onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: 0, type: b.type === 'audio' ? 'audio' : 'book', id: b.id, title: b.title, startX: e.clientX, startY: e.clientY, dragging: false } }}
           style={dragStyle(b.id)}>
           {b.type === 'audio'
             ? <AudiobookCard book={b} onOpen={openAudio} onMenu={showAudioMenu} />
@@ -2425,7 +2897,7 @@ export default function LibraryView() {
       ...nbs.map(nb => (
         <div key={nb.id}
           data-drag-item={nb.id} data-drag-type="nb"
-          onMouseDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: 0, type: 'nb', id: nb.id, title: nb.title, nbKind: 'notebook', startX: e.clientX, startY: e.clientY, dragging: false } }}
+          onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: 0, type: 'nb', id: nb.id, title: nb.title, nbKind: 'notebook', startX: e.clientX, startY: e.clientY, dragging: false } }}
           style={dragStyle(nb.id)}>
           <NotebookCard nb={nb} onOpen={openNotebook} onMenu={showNbMenu} />
         </div>
@@ -2433,7 +2905,7 @@ export default function LibraryView() {
       ...sbs.map(sb => (
         <div key={sb.id}
           data-drag-item={sb.id} data-drag-type="nb"
-          onMouseDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: 0, type: 'nb', id: sb.id, title: sb.title, nbKind: 'sketchbook', startX: e.clientX, startY: e.clientY, dragging: false } }}
+          onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: 0, type: 'nb', id: sb.id, title: sb.title, nbKind: 'sketchbook', startX: e.clientX, startY: e.clientY, dragging: false } }}
           style={dragStyle(sb.id)}>
           <SketchbookCard sb={sb} onOpen={openSketchbook} onMenu={showSbMenu} />
         </div>
@@ -2441,7 +2913,7 @@ export default function LibraryView() {
       ...fds.map(deck => (
         <div key={deck.id}
           data-drag-item={deck.id} data-drag-type="nb"
-          onMouseDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: 0, type: 'nb', id: deck.id, title: deck.title, nbKind: 'flashcard', startX: e.clientX, startY: e.clientY, dragging: false } }}
+          onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: 0, type: 'nb', id: deck.id, title: deck.title, nbKind: 'flashcard', startX: e.clientX, startY: e.clientY, dragging: false } }}
           style={dragStyle(deck.id)}>
           <FlashcardDeckCard deck={deck} onOpen={openFlashcardDeck} onMenu={showDeckMenu} />
         </div>
@@ -2464,7 +2936,7 @@ export default function LibraryView() {
             {books.length ? books.map((b, i) => (
               <div key={b.id}
                 data-drag-item={b.id} data-drag-type="book"
-                onMouseDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: i, type: 'book', id: b.id, title: b.title, startX: e.clientX, startY: e.clientY, dragging: false } }}
+                onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: i, type: 'book', id: b.id, title: b.title, startX: e.clientX, startY: e.clientY, dragging: false } }}
                 style={{ opacity: draggingId === b.id ? 0.35 : 1, outline: dropId === b.id ? '2px solid var(--accent)' : 'none', boxShadow: dropId === b.id ? '0 0 0 5px rgba(56,139,253,0.18)' : 'none', outlineOffset: 2, borderRadius: 10, cursor: 'grab', userSelect: 'none', transform: dropId === b.id ? 'scale(0.95)' : 'scale(1)', transition: 'transform 0.12s, box-shadow 0.12s, opacity 0.12s' }}>
                 <BookCard book={b} onOpen={openBook} onMenu={showBookMenu} />
               </div>
@@ -2489,7 +2961,7 @@ export default function LibraryView() {
             {audiobooks.length ? audiobooks.map((b, i) => (
               <div key={b.id}
                 data-drag-item={b.id} data-drag-type="audio"
-                onMouseDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: i, type: 'audio', id: b.id, title: b.title, startX: e.clientX, startY: e.clientY, dragging: false } }}
+                onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: i, type: 'audio', id: b.id, title: b.title, startX: e.clientX, startY: e.clientY, dragging: false } }}
                 style={{ opacity: draggingId === b.id ? 0.35 : 1, outline: dropId === b.id ? '2px solid var(--accent)' : 'none', boxShadow: dropId === b.id ? '0 0 0 5px rgba(56,139,253,0.18)' : 'none', outlineOffset: 2, borderRadius: 10, cursor: 'grab', userSelect: 'none', transform: dropId === b.id ? 'scale(0.95)' : 'scale(1)', transition: 'transform 0.12s, box-shadow 0.12s, opacity 0.12s' }}>
                 <AudiobookCard book={b} onOpen={openAudio} onMenu={showAudioMenu} />
               </div>
@@ -2541,7 +3013,7 @@ export default function LibraryView() {
             {combined.length ? combined.map((item, i) => (
               <div key={item.id}
                 data-drag-item={item.id} data-drag-type="nb"
-                onMouseDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: i, type: 'nb', id: item.id, title: item.title, nbKind: item._kind, startX: e.clientX, startY: e.clientY, dragging: false } }}
+                onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: i, type: 'nb', id: item.id, title: item.title, nbKind: item._kind, startX: e.clientX, startY: e.clientY, dragging: false } }}
                 style={{ opacity: draggingId === item.id ? 0.35 : 1, outline: dropId === item.id ? '2px solid var(--accent)' : 'none', boxShadow: dropId === item.id ? '0 0 0 5px rgba(56,139,253,0.18)' : 'none', outlineOffset: 2, borderRadius: 10, cursor: 'grab', userSelect: 'none', transform: dropId === item.id ? 'scale(0.95)' : 'scale(1)', transition: 'transform 0.12s, box-shadow 0.12s, opacity 0.12s' }}>
                 {item._kind === 'sketchbook'
                   ? <SketchbookCard sb={item} onOpen={openSketchbook} onMenu={showSbMenu} />
@@ -2782,6 +3254,7 @@ export default function LibraryView() {
                   onDevCommand={cmd => { if (cmd === 'onboarding') setDevOnboardingOpen(true) }}
                   onOpenGraph={() => openNewTab({ view: 'graph' })}
                   onOpenCalendar={() => navigate({ view: 'calendar' })}
+                  onOpenKanban={() => navigate({ view: 'kanban' })}
                   onReset={async () => {
                     setArchivePath('')
                     setOnboardingComplete(false)
