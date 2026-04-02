@@ -466,10 +466,13 @@ export async function importBooks(files) {
 
   for (const file of Array.from(files)) {
     if (file.name.startsWith('.')) continue
-    if (!/\.(txt|md|epub3?|pdf)$/i.test(file.name)) continue
+    const nameMatchesKnown = /\.(txt|md|epub3?|pdf)$/i.test(file.name)
+    const mimeIsEpub = /^application\/(epub\+zip|epub)$/i.test(file.type)
+    const mimeIsKnown = /^(text\/(plain|markdown)|application\/(pdf|zip|epub\+zip|epub))$/i.test(file.type)
+    if (!nameMatchesKnown && !mimeIsEpub && !mimeIsKnown) continue
 
     try {
-      const isEpub = /\.epub3?$/i.test(file.name)
+      const isEpub = /\.epub3?$/i.test(file.name) || mimeIsEpub
       const isMd   = /\.md$/i.test(file.name)
       const isPdf  = /\.pdf$/i.test(file.name)
       let bookTitle, bookAuthor = '', chapters, format, coverDataUrl = null, pdfDataUrl = null

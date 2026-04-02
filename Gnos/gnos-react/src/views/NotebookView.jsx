@@ -358,28 +358,18 @@ function blockToHtml(raw, notebooks, library, footnotesBuf, sketchbooks = [], fl
     return `<div class="nb-math nb-math-block nb-math-mq" data-latex="${esc(body)}" data-display="1"></div>`
   }
 
-  // /todo block — render as a styled checklist card (matches widget CSS)
-  if (/^\/todo(?::.*)?$/.test(first)) {
-    const block = parseTodoBlock(raw, 0)
-    if (block) {
-      const listName = block.listName
-      const doneCount = block.items.filter(it => it.checked).length
-      const itemsHtml = block.items.map(it => {
-        const checked = it.checked
-        const badges  = [it.dateStr ? `<span class="cm-todo-date">${esc(it.dateStr)}</span>` : '', it.timeStr ? `<span class="cm-todo-time">${esc(it.timeStr)}</span>` : ''].filter(Boolean).join(' ')
-        return `<div class="cm-todo-row${checked ? ' cm-todo-done' : ''}">
-          <span class="cm-todo-cb${checked ? ' cm-todo-cb-on' : ''}">${checked ? '✓' : ''}</span>
-          <span class="cm-todo-row-text">${esc(it.text)}</span>${badges}
-        </div>`
+  // /habits block — render as habit tracker preview
+  if (/^\/habits(?::.*)?$/.test(first)) {
+    try {
+      const m = first.match(/^\/habits(?::(.*))?$/)
+      const data = (m && m[1]) ? JSON.parse(m[1]) : { habits: [], log: {} }
+      const today = new Date().toISOString().slice(0, 10)
+      const rowsHtml = (data.habits || []).map((h, hi) => {
+        const done = !!(data.log && data.log[today] && data.log[today][hi])
+        return `<div class="cm-habits-preview-row"><span class="cm-habits-name">${esc(h)}</span><span class="cm-habits-cell${done ? ' done' : ''}" style="display:inline-block;width:12px;height:12px;border-radius:3px;margin-left:8px;vertical-align:middle;"></span></div>`
       }).join('')
-      return `<div class="cm-todo-block-w">
-        <div class="cm-todo-hdr-w">
-          <span class="cm-todo-title">${esc(listName)}</span>
-          <span class="cm-todo-stats">${doneCount}/${block.items.length}</span>
-        </div>
-        <div class="cm-todo-list">${itemsHtml}</div>
-      </div>`
-    }
+      return `<div class="cm-habits-widget" style="pointer-events:none"><div class="cm-habits-hdr"><span class="cm-habits-title">Habits</span></div>${rowsHtml || '<div class="cm-habits-empty">No habits yet</div>'}</div>`
+    } catch { return '' }
   }
 
   // /task block — render as a kanban board (matches widget CSS)
@@ -1297,8 +1287,12 @@ class CheckboxWidget {
 }
 
 class ImgWidget {
-  constructor(src, alt, notebookDir = null) { this.src = src; this.alt = alt; this.notebookDir = notebookDir }
-  toDOM() {
+  constructor(src, alt, notebookDir = null, from = -1, width = 0) {
+    this.src = src; this.alt = alt; this.notebookDir = notebookDir
+    this.from = from  // doc offset for write-back on resize
+    this.width = width  // user-set pixel width (0 = auto)
+  }
+  toDOM(view) {
     const wrap = document.createElement('div')
     wrap.className = 'cm-img-wrap'
     const img = document.createElement('img')
@@ -1311,6 +1305,9 @@ class ImgWidget {
     }
     img.src = resolvedSrc; img.alt = this.alt; img.loading = 'lazy'
     img.className = 'cm-img'
+    img.draggable = false
+    img.setAttribute('draggable', 'false')
+    if (this.width) img.style.width = this.width + 'px'
     img.onerror = () => {
       img.style.display = 'none'
       const ph = document.createElement('span')
@@ -1319,10 +1316,59 @@ class ImgWidget {
       wrap.appendChild(ph)
     }
     wrap.appendChild(img)
+
+    // ── Resize handle ──────────────────────────────────────────────────────
+    if (view && this.from >= 0) {
+      const handle = document.createElement('div')
+      handle.className = 'cm-img-resize-handle'
+      handle.title = 'Drag to resize'
+      let startX = 0, startW = 0
+      handle.addEventListener('pointerdown', e => {
+        e.preventDefault(); e.stopPropagation()
+        startX = e.clientX
+        startW = img.offsetWidth || this.width || 200
+        handle.setPointerCapture(e.pointerId)
+        const onMove = ev => {
+          const newW = Math.max(60, startW + (ev.clientX - startX))
+          img.style.width = newW + 'px'
+        }
+        const onUp = () => {
+          handle.removeEventListener('pointermove', onMove)
+          const newW = Math.max(60, Math.round(img.offsetWidth || startW))
+          if (!view.state || this.from >= view.state.doc.length) return
+          const line = view.state.doc.lineAt(this.from)
+          const raw = line.text
+          // Remove existing =Nx spec then append new width before closing )
+          const base = raw.replace(/\s+=\d+x(?=\s*\))/, '')
+          const updated = base.replace(/\)(\s*)$/, ` =${newW}x)$1`)
+          if (updated !== raw) {
+            view.dispatch({ changes: { from: line.from, to: line.to, insert: updated }, scrollIntoView: false })
+          }
+        }
+        handle.addEventListener('pointermove', onMove)
+        handle.addEventListener('pointerup', onUp, { once: true })
+      })
+      wrap.appendChild(handle)
+    }
+
     return wrap
   }
-  eq(o) { return o instanceof ImgWidget && o.src === this.src && o.notebookDir === this.notebookDir }
-  compare(o) { return o instanceof ImgWidget && o.src === this.src && o.notebookDir === this.notebookDir }
+  eq(o) { return o instanceof ImgWidget && o.src === this.src && o.notebookDir === this.notebookDir && o.width === this.width }
+  compare(o) { return o instanceof ImgWidget && o.src === this.src && o.notebookDir === this.notebookDir && o.width === this.width }
+  // Called when eq() is false but the widget type is the same — update DOM in-place to avoid flash
+  updateDOM(dom) {
+    const img = dom.querySelector('.cm-img')
+    if (!img) return false
+    let resolvedSrc = this.src
+    if (this.src.startsWith('./') && this.notebookDir && _convertFileSrc) {
+      resolvedSrc = _convertFileSrc(this.notebookDir + '/' + this.src.slice(2))
+    } else if (_convertFileSrc && (this.src.startsWith('/') || /^[A-Za-z]:\\/.test(this.src))) {
+      resolvedSrc = _convertFileSrc(this.src)
+    }
+    img.src = resolvedSrc
+    img.style.width = this.width ? this.width + 'px' : ''
+    return true  // reuse DOM, no remount flash
+  }
   destroy() {}
   ignoreEvent() { return false }
   get estimatedHeight() { return 160 }
@@ -1530,7 +1576,6 @@ class LinkWidget {
   coordsAt() { return null }
 }
 
-// ─── /todo single-block widget ───────────────────────────────────────────────
 // ─── Widget helpers ───────────────────────────────────────────────────────────
 
 // Custom date/time picker popup
@@ -1614,208 +1659,161 @@ function _replaceInDoc(view, oldText, newText, hintFrom = -1) {
   }
   if (idx === -1) idx = doc.indexOf(oldText)
   if (idx === -1) return false
-  view.dispatch({ changes: { from: idx, to: idx + oldText.length, insert: newText } })
+  view.dispatch({ changes: { from: idx, to: idx + oldText.length, insert: newText }, scrollIntoView: false })
   return true
 }
 
-class TodoBlockWidget {
-  constructor(listName, items, rawMd, blockFrom = -1) {
-    this.listName = listName
-    this.items = items // [{text, checked, dateStr, timeStr, cbPos}]
-    this.rawMd = rawMd
-    this.blockFrom = blockFrom
+// ─── /habits widget (habit tracker with day grid) ────────────────────────────
+class HabitsWidget {
+  constructor(rawData, rawLine, blockFrom = -1) {
+    this.rawLine = rawLine; this.blockFrom = blockFrom
+    try { this.data = rawData ? JSON.parse(rawData) : { habits: [], log: {} } }
+    catch { this.data = { habits: [], log: {} } }
+    if (!this.data.habits) this.data.habits = []
+    if (!this.data.log) this.data.log = {}
   }
-  _serialize(title, items) {
-    const hdr = `/todo${title && title !== "Todo's" ? ':' + title : ''}`
-    const lines = [hdr]
-    for (const it of items) {
-      let line = `- ${it.checked ? '[x]' : '[ ]'} ${it.text}`
-      if (it.dateStr || it.timeStr) line += ':' + (it.dateStr || '') + (it.timeStr ? ':' + it.timeStr : '')
-      lines.push(line)
-    }
-    return lines.join('\n')
-  }
+  _serialize() { return `/habits:${JSON.stringify(this.data)}` }
+  _dk(d) { return d.toISOString().slice(0, 10) }
   toDOM(cmView) {
+    const data = this.data, widget = this, DAYS = 21
     const wrap = document.createElement('div')
-    wrap.className = 'cm-todo-block-w'
-    let titleText = this.listName || "Todo's"
-    const items = this.items.map(it => ({ ...it }))
+    wrap.className = 'cm-habits-widget'
+
     const save = () => {
-      const newMd = this._serialize(titleText, items)
-      if (_replaceInDoc(cmView, this.rawMd, newMd, this.blockFrom)) { this.rawMd = newMd; this.blockFrom = -1 }
+      const newLine = widget._serialize()
+      if (_replaceInDoc(cmView, widget.rawLine, newLine, widget.blockFrom)) widget.rawLine = newLine
     }
 
     const render = () => {
       wrap.innerHTML = ''
-      const doneCount = items.filter(it => it.checked).length
-      const total = items.length
-      const pct = total > 0 ? Math.round((doneCount / total) * 100) : 0
+      const today = new Date(); today.setHours(0, 0, 0, 0)
+      const todayKey = widget._dk(today)
+      const dates = []
+      for (let i = DAYS - 1; i >= 0; i--) {
+        const d = new Date(today); d.setDate(today.getDate() - i); dates.push(d)
+      }
 
       // Header
       const hdr = document.createElement('div')
-      hdr.className = 'cm-todo-hdr-w'
+      hdr.className = 'cm-habits-hdr'
       const titleEl = document.createElement('span')
-      titleEl.className = 'cm-todo-title'
-      titleEl.textContent = titleText
-      titleEl.onclick = () => {
-        const inp = document.createElement('input')
-        inp.className = 'cm-todo-title-inp'
-        inp.value = titleText; inp.type = 'text'
-        titleEl.textContent = ''; titleEl.appendChild(inp)
-        inp.focus(); inp.select()
-        const commit = () => { titleText = inp.value.trim() || "Todo's"; save(); render() }
-        inp.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); commit() } if (ev.key === 'Escape') render() }
-        inp.onblur = commit
-      }
-      const hdrRight = document.createElement('div')
-      hdrRight.className = 'cm-todo-hdr-right'
-      const countEl = document.createElement('span')
-      countEl.className = 'cm-todo-count'
-      countEl.textContent = `${doneCount}/${total}`
-      hdrRight.appendChild(countEl)
+      titleEl.className = 'cm-habits-title'
+      titleEl.textContent = 'Habits'
       hdr.appendChild(titleEl)
-      hdr.appendChild(hdrRight)
       wrap.appendChild(hdr)
 
-      // Progress bar
-      if (total > 0) {
-        const progressWrap = document.createElement('div')
-        progressWrap.className = 'cm-todo-progress'
-        const progressFill = document.createElement('div')
-        progressFill.className = 'cm-todo-progress-fill'
-        progressFill.style.width = `${pct}%`
-        if (pct === 100) progressFill.classList.add('cm-todo-progress-done')
-        progressWrap.appendChild(progressFill)
-        wrap.appendChild(progressWrap)
-      }
+      // Grid
+      const grid = document.createElement('div')
+      grid.className = 'cm-habits-grid'
 
-      // Items
-      items.forEach((it, i) => {
+      // Date header row
+      const dateRow = document.createElement('div')
+      dateRow.className = 'cm-habits-row'
+      const corner = document.createElement('div')
+      corner.className = 'cm-habits-name-cell'
+      dateRow.appendChild(corner)
+      dates.forEach(d => {
+        const k = widget._dk(d), lbl = document.createElement('div')
+        lbl.className = 'cm-habits-day-lbl' + (k === todayKey ? ' cm-habits-today-lbl' : '')
+        lbl.textContent = k === todayKey ? '•' : (d.getDay() === 1 || d.getDate() === 1 ? String(d.getDate()) : '')
+        lbl.title = k
+        dateRow.appendChild(lbl)
+      })
+      grid.appendChild(dateRow)
+
+      // Habit rows
+      data.habits.forEach((hName, hi) => {
         const row = document.createElement('div')
-        row.className = 'cm-todo-row' + (it.checked ? ' cm-todo-row-done' : '')
+        row.className = 'cm-habits-row'
 
-        // Animated checkbox
-        const cb = document.createElement('div')
-        cb.className = 'cm-todo-cb' + (it.checked ? ' cm-todo-cb-on' : '')
-        if (it.checked) {
-          cb.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-        }
-        cb.onclick = (e) => {
-          e.stopPropagation()
-          it.checked = !it.checked
-          save(); render()
-        }
-
-        const textWrap = document.createElement('div')
-        textWrap.className = 'cm-todo-text-wrap'
-        const txt = document.createElement('span')
-        txt.className = 'cm-todo-row-text'
-        txt.textContent = it.text
-        // Double-click to edit text
-        txt.ondblclick = (e) => {
+        const nameWrap = document.createElement('div')
+        nameWrap.className = 'cm-habits-name-cell'
+        const nameSpan = document.createElement('span')
+        nameSpan.className = 'cm-habits-name'
+        nameSpan.textContent = hName
+        nameSpan.title = 'Click to rename'
+        nameSpan.onclick = e => {
           e.stopPropagation()
           const inp = document.createElement('input')
-          inp.className = 'cm-todo-edit-inp'
-          inp.value = it.text; inp.type = 'text'
-          txt.textContent = ''; txt.appendChild(inp)
+          inp.className = 'cm-habits-name-inp'; inp.value = hName; inp.type = 'text'
+          nameWrap.innerHTML = ''; nameWrap.appendChild(inp)
           inp.focus(); inp.select()
-          const commit = () => { const v = inp.value.trim(); if (v) { it.text = v; save() } render() }
-          inp.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); commit() } if (ev.key === 'Escape') render() }
+          const commit = () => { const v = inp.value.trim(); if (v) data.habits[hi] = v; save(); render() }
+          inp.onkeydown = ev => { ev.stopPropagation(); if (ev.key === 'Enter') { ev.preventDefault(); commit() } else if (ev.key === 'Escape') render() }
           inp.onblur = commit
         }
-        textWrap.appendChild(txt)
-        if (it.dateStr || it.timeStr) {
-          const meta = document.createElement('div')
-          meta.className = 'cm-todo-meta'
-          if (it.dateStr) { const d = document.createElement('span'); d.className = 'cm-todo-date'; d.textContent = it.dateStr; meta.appendChild(d) }
-          if (it.timeStr) { const t = document.createElement('span'); t.className = 'cm-todo-time'; t.textContent = it.timeStr; meta.appendChild(t) }
-          textWrap.appendChild(meta)
-        }
-
-        const actions = document.createElement('div')
-        actions.className = 'cm-todo-actions'
-
-        // Date/time button — opens custom picker
-        const dateBtn = document.createElement('button')
-        const dateLabel = it.dateStr ? (it.timeStr ? `${it.dateStr} ${it.timeStr}` : it.dateStr) : ''
-        dateBtn.className = 'cm-todo-date-btn' + (it.dateStr ? ' cm-todo-date-btn-set' : '')
-        dateBtn.title = it.dateStr ? `Due: ${dateLabel} — click to edit` : 'Set due date/time'
-        dateBtn.innerHTML = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="12" rx="2" stroke="currentColor" stroke-width="1.4"/><line x1="5" y1="1" x2="5" y2="4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="11" y1="1" x2="11" y2="4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="1.5" y1="6.5" x2="14.5" y2="6.5" stroke="currentColor" stroke-width="1.2"/></svg>'
-        if (it.dateStr) {
-          const lbl = document.createElement('span')
-          lbl.style.cssText = 'font-size:10px;margin-left:2px;'
-          lbl.textContent = it.timeStr ? `${it.dateStr} ${it.timeStr}` : it.dateStr
-          dateBtn.appendChild(lbl)
-        }
-        dateBtn.onclick = e => {
+        const delBtn = document.createElement('button')
+        delBtn.className = 'cm-habits-del'; delBtn.textContent = '×'; delBtn.title = 'Remove'
+        delBtn.onclick = e => {
           e.stopPropagation()
-          showDateTimePicker(dateBtn, it.dateStr || '', it.timeStr || '', (d, t) => {
-            it.dateStr = d; it.timeStr = t; save(); render()
-          })
-        }
-        actions.appendChild(dateBtn)
-
-        const del = document.createElement('button')
-        del.className = 'cm-todo-del-btn'
-        del.textContent = '\u00d7'
-        del.title = 'Delete'
-        del.onclick = (e) => {
-          e.stopPropagation()
-          items.splice(i, 1)
+          data.habits.splice(hi, 1)
+          for (const k of Object.keys(data.log)) { if (Array.isArray(data.log[k])) data.log[k].splice(hi, 1) }
           save(); render()
         }
-        actions.appendChild(del)
+        nameWrap.appendChild(nameSpan); nameWrap.appendChild(delBtn)
+        row.appendChild(nameWrap)
 
-        row.appendChild(cb)
-        row.appendChild(textWrap)
-        row.appendChild(actions)
-        wrap.appendChild(row)
+        dates.forEach(d => {
+          const k = widget._dk(d)
+          const done = !!(data.log[k] && data.log[k][hi])
+          const isToday = k === todayKey
+          const cell = document.createElement('div')
+          cell.className = 'cm-habits-cell' + (done ? ' done' : '') + (isToday ? ' today' : '')
+          cell.title = `${hName} — ${k}`
+          cell.onclick = e => {
+            e.stopPropagation()
+            if (!data.log[k]) data.log[k] = []
+            while (data.log[k].length <= hi) data.log[k].push(0)
+            data.log[k][hi] = data.log[k][hi] ? 0 : 1
+            save(); render()
+          }
+          row.appendChild(cell)
+        })
+        grid.appendChild(row)
       })
 
-      // Add item row with + button
-      const addRow = document.createElement('div')
-      addRow.className = 'cm-todo-add-row'
-      const addBtn = document.createElement('button')
-      addBtn.className = 'cm-todo-add-btn'
-      addBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'
-      const addInput = document.createElement('input')
-      addInput.className = 'cm-todo-add-input'
-      addInput.type = 'text'
-      addInput.placeholder = 'Add a task...'
-      const doAdd = () => {
-        const val = addInput.value.trim()
-        if (!val) return
-        addInput.value = ''
-        items.push({ text: val, checked: false, dateStr: '', timeStr: '', cbPos: 0 })
-        save(); render()
-        const ni = wrap.querySelector('.cm-todo-add-input')
-        if (ni) ni.focus()
+      if (data.habits.length) {
+        wrap.appendChild(grid)
+      } else {
+        const e = document.createElement('div'); e.className = 'cm-habits-empty'
+        e.textContent = 'No habits yet'; wrap.appendChild(e)
       }
-      addInput.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); doAdd() } }
-      addBtn.onclick = doAdd
-      addRow.appendChild(addBtn)
-      addRow.appendChild(addInput)
-      wrap.appendChild(addRow)
 
-      // Empty state
-      if (total === 0) {
-        const empty = document.createElement('div')
-        empty.className = 'cm-todo-empty'
-        empty.textContent = 'No tasks yet — add one below'
-        wrap.insertBefore(empty, addRow)
+      // Add habit row
+      const addRow = document.createElement('div')
+      addRow.className = 'cm-habits-add-row'
+      const addInput = document.createElement('input')
+      addInput.className = 'cm-habits-add-inp'; addInput.type = 'text'; addInput.placeholder = 'New habit…'
+      const addBtn = document.createElement('button')
+      addBtn.className = 'cm-habits-add-btn'; addBtn.textContent = '+'
+      const doAdd = () => {
+        const v = addInput.value.trim(); if (!v) return
+        addInput.value = ''; data.habits.push(v); save(); render()
+        const ni = wrap.querySelector('.cm-habits-add-inp'); if (ni) ni.focus()
       }
+      addInput.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); doAdd() } }
+      addBtn.onclick = e => { e.stopPropagation(); doAdd() }
+      addRow.appendChild(addBtn); addRow.appendChild(addInput)
+      wrap.appendChild(addRow)
     }
+
+    wrap._habitsRender = render
+    wrap._habitsData = data
     render()
     return wrap
   }
-  eq(o) {
-    if (!(o instanceof TodoBlockWidget) || o.listName !== this.listName || o.items.length !== this.items.length) return false
-    return this.items.every((it, i) => o.items[i].checked === it.checked && o.items[i].text === it.text && o.items[i].cbPos === it.cbPos && o.items[i].dateStr === it.dateStr && o.items[i].timeStr === it.timeStr)
-  }
+  eq(o) { return o instanceof HabitsWidget && o.blockFrom === this.blockFrom }
   compare(o) { return this.eq(o) }
+  updateDOM(dom) {
+    if (!dom._habitsRender || !dom._habitsData) return false
+    // Sync new parsed data into the live data object so render() sees it
+    Object.assign(dom._habitsData, this.data)
+    dom._habitsRender()
+    return true
+  }
   destroy() {}
   ignoreEvent() { return true }
-  get estimatedHeight() { return 48 + this.items.length * 42 + 48 }
+  get estimatedHeight() { return 60 + (this.data?.habits?.length || 0) * 26 }
   coordsAt() { return null }
 }
 
@@ -1849,6 +1847,7 @@ class TaskBlockWidget {
   toDOM(cmView) {
     const wrap = document.createElement('div')
     wrap.className = 'cm-task-board-w'
+    try {
     const cols = this.columns.map(c => ({
       title: c.title,
       tasks: c.tasks.map(t => ({ text: t.text })),
@@ -2059,6 +2058,13 @@ class TaskBlockWidget {
       wrap.appendChild(colsRow)
     }
     render()
+    } catch (err) {
+      wrap.innerHTML = ''
+      const errEl = document.createElement('div')
+      errEl.style.cssText = 'padding:8px 12px;color:var(--textDim,#888);font-size:12px;border-left:3px solid var(--border,#ccc);margin:4px 0;'
+      errEl.textContent = '/task — render error: ' + (err?.message || err)
+      wrap.appendChild(errEl)
+    }
     return wrap
   }
   eq(o) {
@@ -2078,29 +2084,6 @@ class TaskBlockWidget {
 
 // ─── Helpers for parsing inline block commands ────────────────────────────────
 /** Parse /todo block: returns { listName, items:[{text,checked,dateStr,timeStr,lineIdx}], startLine, endLine } or null */
-function parseTodoBlock(docStr, startLineIdx) {
-  const lines = docStr.split('\n')
-  const hdrLine = lines[startLineIdx]
-  const hdrM = hdrLine.match(/^\/todo(?::(.*))?$/)
-  if (!hdrM) return null
-  const listName = (hdrM[1] || "Todo's").trim()
-  let endLine = startLineIdx + 1
-  const items = []
-  while (endLine < lines.length) {
-    const l = lines[endLine]
-    if (!/^\s*[-*+]\s\[[ xX]\]/.test(l)) break
-    const checked = /\[[xX]\]/.test(l)
-    const raw = l.replace(/^\s*[-*+]\s\[[ xX]\]\s*/, '')
-    // Parse "task name:YYYY-MM-DD:HH:MM" format — match date and time explicitly
-    const dtM = raw.match(/^(.*?)(?::(\d{4}-\d{2}-\d{2})(?::(\d{1,2}:\d{2}))?)?$/)
-    const text = dtM ? (dtM[1] || raw) : raw
-    const dateStr = dtM ? (dtM[2] || '') : ''
-    const timeStr = dtM ? (dtM[3] || '') : ''
-    items.push({ text, checked, dateStr, timeStr, lineIdx: endLine })
-    endLine++
-  }
-  return { listName, items, startLine: startLineIdx, endLine: endLine - 1 }
-}
 
 /** Parse /task block: returns { boardTitle, columns, startLine, endLine } */
 function parseTaskBlock(docStr, startLineIdx) {
@@ -2229,6 +2212,7 @@ class TimerWidget {
   toDOM(cmView) {
     const wrap = document.createElement('div')
     wrap.className = 'cm-timer-widget'
+    try {
     const ref = this._ref
     const fmt = (s) => {
       const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60
@@ -2405,6 +2389,13 @@ class TimerWidget {
       ref.interval = setInterval(tick, 1000)
     }
 
+    } catch (err) {
+      wrap.innerHTML = ''
+      const errEl = document.createElement('div')
+      errEl.style.cssText = 'padding:8px 12px;color:var(--textDim,#888);font-size:12px;border-left:3px solid var(--border,#ccc);margin:4px 0;'
+      errEl.textContent = '/timer — render error: ' + (err?.message || err)
+      wrap.appendChild(errEl)
+    }
     return wrap
   }
   eq(o) { return o instanceof TimerWidget && o.totalSec === this.totalSec && o.label === this.label }
@@ -2623,12 +2614,12 @@ class CalendarWidget {
 }
 
 // ─── Live preview plugin ──────────────────────────────────────────────────────
-function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [], flashcardDecks = [], notebookDir = null) {
+function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [], flashcardDecks = [], notebookDir = null, isPreview = false) {
   const { ViewPlugin, Decoration, WidgetType } = cm.view
   const { syntaxTree } = cm.language
 
   // Patch widget classes to extend WidgetType so CM6 properly handles them
-  for (const Cls of [HRWidget, CheckboxWidget, ImgWidget, ListMarkerWidget, MathWidget, WikiWidget, LinkWidget, TableWidget, TodoBlockWidget, TaskBlockWidget, SupWidget, SubWidget, TimerWidget, CalendarWidget, TimeRefWidget, FnRefWidget, DueDateWidget, TagWidget]) {
+  for (const Cls of [HRWidget, CheckboxWidget, ImgWidget, ListMarkerWidget, MathWidget, WikiWidget, LinkWidget, TableWidget, HabitsWidget, TaskBlockWidget, SupWidget, SubWidget, TimerWidget, CalendarWidget, TimeRefWidget, FnRefWidget, DueDateWidget, TagWidget]) {
     if (!(Cls.prototype instanceof WidgetType)) {
       Object.setPrototypeOf(Cls.prototype, WidgetType.prototype)
     }
@@ -2694,7 +2685,8 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
     const { state } = view
     const cur = state.selection.main.head
     const doc = state.doc
-    const inCur = (f, t) => cur >= f && cur <= t
+    const inCur = isPreview ? () => false : (f, t) => cur >= f && cur <= t
+    const fullDoc = doc.toString()
 
     const inlines  = []
     const lineDecs = []
@@ -2746,11 +2738,13 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
           // ── Image — replace entire image node (not the line) ────────────
           if (name === 'Image') {
             const raw = doc.sliceString(from, to)
-            const m   = raw.match(/!\[([^\]]*)\]\(([^\s)]+)/)
+            // Match ![alt](src =Nx) — optional =Nx width spec
+            const m   = raw.match(/!\[([^\]]*)\]\(([^\s)]+)(?:\s+=(\d+)x)?/)
             if (m) {
               if (!inCur(from, to)) {
+                const imgWidth = m[3] ? parseInt(m[3]) : 0
                 // Replace only the image syntax, not the whole line
-                inlines.push({ from, to, deco: Decoration.replace({ widget: new ImgWidget(m[2], m[1], notebookDir), block: false }) })
+                inlines.push({ from, to, deco: Decoration.replace({ widget: new ImgWidget(m[2], m[1], notebookDir, from, imgWidth), block: false }) })
                 return false
               }
             }
@@ -2810,6 +2804,23 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
           // ── Heading line decoration ──────────────────────────────────────
           if (LINE_MAP[name]) {
             try { lineDecs.push({ pos: doc.lineAt(from).from, cls: LINE_MAP[name] }) } catch { /**/ }
+            // Hide heading marks (# / ## / etc.) when cursor is not on this heading line
+            try {
+              const headingLine = doc.lineAt(from)
+              const cursorOnLine = cur >= headingLine.from && cur <= headingLine.to
+              let child = node.node.firstChild
+              while (child) {
+                if (child.name === 'HeaderMark') {
+                  // +1 to also hide the space after the #
+                  const markTo = Math.min(child.to + 1, headingLine.to)
+                  inlines.push({
+                    from: child.from, to: markTo,
+                    deco: Decoration.mark({ class: cursorOnLine ? 'cm-lv-p' : 'cm-lv-hidden' }),
+                  })
+                }
+                child = child.nextSibling
+              }
+            } catch { /**/ }
           }
 
           // ── Blockquote line decoration ───────────────────────────────────
@@ -2819,6 +2830,20 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
             for (let n = ls; n <= le; n++) {
               try { lineDecs.push({ pos: doc.line(n).from, cls: 'cm-lv-bq' }) } catch { /**/ }
             }
+            // Hide QuoteMark (>) when cursor is not inside the blockquote
+            try {
+              const cursorInBq = inCur(from, to)
+              node.node.cursor().iterate(inner => {
+                if (inner.name === 'QuoteMark') {
+                  // +1 to consume the space after '>'
+                  const markTo = Math.min(inner.to + 1, doc.lineAt(inner.from).to)
+                  inlines.push({
+                    from: inner.from, to: markTo,
+                    deco: Decoration.mark({ class: cursorInBq ? 'cm-lv-p' : 'cm-lv-hidden' }),
+                  })
+                }
+              })
+            } catch { /**/ }
           }
 
           // ── List item: depth + ordered/unordered ─────────────────────────
@@ -3010,7 +3035,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
 
     // ── Math via regex fallback ───────────────────────────────────────────
     try {
-      const full = doc.toString()
+      const full = fullDoc
       const reBlock = /\$\$([\s\S]*?)\$\$/gm
       let mb
       while ((mb = reBlock.exec(full)) !== null) {
@@ -3037,7 +3062,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
 
     // ── Wikilinks via regex (with optional (sketch)/(flash) suffix) ─────
     try {
-      const full = doc.toString()
+      const full = fullDoc
       const re = /\[\[([^\]\n]{1,120})\]\](?:\((sketch|flash)\))?/g
       let m
       while ((m = re.exec(full)) !== null) {
@@ -3062,7 +3087,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
 
     // ── Superscript ^text^ and subscript ~text~ via regex ─────────────────
     try {
-      const full = doc.toString()
+      const full = fullDoc
       const reSup = /\^([^\^\n]+)\^/g
       let sm
       while ((sm = reSup.exec(full)) !== null) {
@@ -3083,7 +3108,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
 
     // ── Hide =:.N precision specifier in accepted equations ────────────────
     try {
-      const fullEq = doc.toString()
+      const fullEq = fullDoc
       const precRe = /=:\.(\d+)\s/g
       let pm
       while ((pm = precRe.exec(fullEq)) !== null) {
@@ -3119,7 +3144,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
 
     // ── Footnote refs [^id] inline ────────────────────────────────────────────
     try {
-      const full = doc.toString()
+      const full = fullDoc
       const fnRe = /\[\^([^\]\n]+)\]/g
       let fm
       while ((fm = fnRe.exec(full)) !== null) {
@@ -3143,7 +3168,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
 
     // ── Table regex fallback (catches tables the Lezer tree may have missed) ──
     try {
-      const full = doc.toString()
+      const full = fullDoc
       // Match: header row | sep row | optional body rows
       const tableRe = /^(\|.+\|)\n(\|[\s:|-]+\|)((?:\n\|.+\|)*)/gm
       let tm
@@ -3158,39 +3183,22 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
       }
     } catch { /**/ }
 
-    // ── /todo blocks (single-block replacement) ───────────────────────────
+    // ── /habits block widget ─────────────────────────────────────────────
     try {
-      const full = doc.toString()
-      const lines = full.split('\n')
-      const lineStarts = []
-      let pos = 0
-      for (const l of lines) { lineStarts.push(pos); pos += l.length + 1 }
-
-      for (let li = 0; li < lines.length; li++) {
-        if (!lines[li].match(/^\/todo(?::.*)?$/)) continue
-        const block = parseTodoBlock(full, li)
-        if (!block) continue
-
-        const blockFrom = lineStarts[block.startLine]
-        const blockTo   = (block.endLine + 1 < lines.length)
-          ? lineStarts[block.endLine + 1]
-          : lineStarts[block.endLine] + lines[block.endLine].length
-
-        // Never collapse — user edits via widget UI
-        const items = block.items.map(it => {
-          const cbIdx = lines[it.lineIdx].search(/\[[ xX]\]/)
-          return { text: it.text, checked: it.checked, dateStr: it.dateStr, timeStr: it.timeStr, cbPos: lineStarts[it.lineIdx] + (cbIdx >= 0 ? cbIdx : 0) }
-        })
-        const rawMd = full.slice(blockFrom, blockTo)
-        inlines.push({ from: blockFrom, to: blockTo, deco: Decoration.replace({ widget: new TodoBlockWidget(block.listName, items, rawMd, blockFrom), block: true }) })
-
-        li = block.endLine
+      const habitsRe = /^\/habits(?::(.*))?$/gm
+      let hm
+      while ((hm = habitsRe.exec(fullDoc)) !== null) {
+        const hLine = doc.lineAt(hm.index)
+        const hFrom = hLine.from
+        const hTo = hLine.to
+        // Never collapse — user edits via widget UI (same as /calendar)
+        inlines.push({ from: hFrom, to: hTo, deco: Decoration.replace({ widget: new HabitsWidget(hm[1] || '', hm[0], hFrom) }) })
       }
     } catch { /**/ }
 
     // ── /task blocks (single-block replacement) ───────────────────────────
     try {
-      const full = doc.toString()
+      const full = fullDoc
       const lines = full.split('\n')
       const lineStarts2 = []
       let pos2 = 0
@@ -3215,7 +3223,8 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
           }),
         }))
         const rawMd2 = full.slice(blockFrom, blockTo)
-        inlines.push({ from: blockFrom, to: blockTo, deco: Decoration.replace({ widget: new TaskBlockWidget(block.boardTitle, columns, rawMd2, blockFrom), block: true }) })
+        // Never collapse — user edits via widget UI, not raw markdown (same as /calendar)
+        inlines.push({ from: blockFrom, to: blockTo, deco: Decoration.replace({ widget: new TaskBlockWidget(block.boardTitle, columns, rawMd2, blockFrom) }) })
 
         li = block.endLine
       }
@@ -3223,16 +3232,15 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
 
     // ── /timer block widget ─────────────────────────────────────────────
     try {
-      const fullT = doc.toString()
       const timerRe = /^\/timer(?:\s+(.+))?$/gm
       let tm
-      while ((tm = timerRe.exec(fullT)) !== null) {
+      while ((tm = timerRe.exec(fullDoc)) !== null) {
         const timerLine = doc.lineAt(tm.index)
         const tFrom = timerLine.from
-        // Include trailing \n so block:true has a full-line range
-        const tTo = timerLine.number < doc.lines ? doc.line(timerLine.number + 1).from : doc.length
+        const tTo = timerLine.to
+        if (inCur(tFrom, tTo)) continue
         if (!tm[1]) {
-          inlines.push({ from: tFrom, to: tTo, deco: Decoration.replace({ widget: new TimerWidget(0, '', tm[0]), block: true }) })
+          inlines.push({ from: tFrom, to: tTo, deco: Decoration.replace({ widget: new TimerWidget(0, '', tm[0]) }) })
         } else {
           const raw = tm[1].trim()
           const parts = raw.match(/^(\S+)(?:\s+(.+))?$/)
@@ -3246,7 +3254,10 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
             else if (ms) totalSec = parseInt(ms[1]) * 60 + parseInt(ms[2])
             else if (m) totalSec = parseInt(m[1]) * 60
             if (totalSec > 0) {
-              inlines.push({ from: tFrom, to: tTo, deco: Decoration.replace({ widget: new TimerWidget(totalSec, label, tm[0]), block: true }) })
+              inlines.push({ from: tFrom, to: tTo, deco: Decoration.replace({ widget: new TimerWidget(totalSec, label, tm[0]) }) })
+            } else {
+              // Invalid/unrecognized time format — show as empty editable timer
+              inlines.push({ from: tFrom, to: tTo, deco: Decoration.replace({ widget: new TimerWidget(0, '', tm[0]) }) })
             }
           }
         }
@@ -3255,26 +3266,22 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
 
     // ── /pomo block widget ──────────────────────────────────────────────
     try {
-      const fullP = doc.toString()
       const pomoRe = /^\/pomo$/gm
       let pm
-      while ((pm = pomoRe.exec(fullP)) !== null) {
+      while ((pm = pomoRe.exec(fullDoc)) !== null) {
         const pomoLine = doc.lineAt(pm.index)
         const pFrom = pomoLine.from
-        const pLineEnd = pomoLine.to   // end of content (no \n) — used for inCur check
-        // Include trailing \n so block:true has a full-line range
-        const pTo = pomoLine.number < doc.lines ? doc.line(pomoLine.number + 1).from : doc.length
-        if (inCur(pFrom, pLineEnd)) continue
-        inlines.push({ from: pFrom, to: pTo, deco: Decoration.replace({ widget: new PomoWidget(pm[0]), block: true }) })
+        const pTo = pomoLine.to
+        if (inCur(pFrom, pTo)) continue
+        inlines.push({ from: pFrom, to: pTo, deco: Decoration.replace({ widget: new PomoWidget(pm[0]) }) })
       }
     } catch { /**/ }
 
     // ── /calendar block widget ──────────────────────────────────────────
     try {
-      const fullC = doc.toString()
       const calRe = /^\/calendar(?::([^\n]*))?$/gm
       let cm2
-      while ((cm2 = calRe.exec(fullC)) !== null) {
+      while ((cm2 = calRe.exec(fullDoc)) !== null) {
         const cFrom = doc.lineAt(cm2.index).from
         const cTo = doc.lineAt(cm2.index + cm2[0].length).to
         // Never collapse calendar — user edits via widget UI, not raw markdown
@@ -3336,7 +3343,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
 
     // ── Due-date tokens ::YYYY-MM-DD or ::+2d etc. ───────────────────────
     try {
-      const full = doc.toString()
+      const full = fullDoc
       const duRe = /::(\d{4}-\d{2}-\d{2}(?:,\d{1,2}:\d{2})?|\d{2}-\d{2}-(?:\d{4}|\d{2})(?:,\d{1,2}:\d{2})?|\d{1,2}:\d{2}|\+\d+[dh])/g
       let dm
       while ((dm = duRe.exec(full)) !== null) {
@@ -3351,7 +3358,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
 
     // ── Tag tokens ::tagname (letter-start, not a due-date) ──────────────
     try {
-      const full = doc.toString()
+      const full = fullDoc
       const tagRe = /::([a-zA-Z][a-zA-Z0-9_-]*)/g
       let tm
       while ((tm = tagRe.exec(full)) !== null) {
@@ -3366,7 +3373,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
 
     // ── @time references (@HH:MM, @hh:mmam/pm, @HH, @Hham/pm) ─────────
     try {
-      const full = doc.toString()
+      const full = fullDoc
       // Match @14:30, @2:30pm, @14, @2pm, @2am, etc.
       const timeRefRe = /(?<!\w)@(\d{1,2})(?::(\d{2}))?\s*(am|pm|AM|PM)?(?!\w)/g
       let trm
@@ -3404,15 +3411,24 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
     // ── Sort and build ────────────────────────────────────────────────────
     inlines.sort((a, b) => a.from !== b.from ? a.from - b.from : b.to - a.to)
 
+    // Remove mark decorations that overlap with replace-widget ranges.
+    // Overlapping mark+replace in a CM6 RangeSet causes errors that silently drop widgets.
+    const replRanges = inlines.filter(d => d.deco.spec?.widget).map(d => [d.from, d.to])
+    const safeInlines = replRanges.length === 0 ? inlines : inlines.filter(({ from, to, deco }) => {
+      if (deco.spec?.widget) return true  // always keep replace widgets
+      for (const [rf, rt] of replRanges) {
+        if (from >= rf && from < rt) return false   // mark starts inside a replace
+        if (from < rf && to > rf) return false      // mark overlaps replace's left edge
+      }
+      return true
+    })
+
     const sb = new RangeSetBuilder()
     let lastReplTo = -1
-    for (const { from, to, deco } of inlines) {
+    for (const { from, to, deco } of safeInlines) {
       if (from < 0 || to > doc.length || from >= to) continue
       const isReplace = !!deco.spec?.widget
-      // Only skip MARK decorations that fall inside a replace widget's range.
-      // Replace widgets (like /timer, /pomo) should always be attempted — they don't
-      // cause RangeSetBuilder corruption, and the try/catch handles true overlaps.
-      if (!isReplace && from < lastReplTo) continue
+      if (from < lastReplTo) continue
       try {
         sb.add(from, to, deco)
         if (isReplace) lastReplTo = to
@@ -3438,9 +3454,9 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
         catch { this.decorations = Decoration.none; this.lineDecos = Decoration.none }
       }
       update(upd) {
-        if (upd.docChanged || upd.selectionSet || upd.viewportChanged) {
+        if (upd.docChanged || upd.selectionSet) {
           try { const r = build(upd.view); this.decorations = r.spans; this.lineDecos = r.lines }
-          catch { /**/ }
+          catch { this.decorations = Decoration.none; this.lineDecos = Decoration.none }
         }
       }
     },
@@ -3715,6 +3731,113 @@ function makeMathClickHandler(cm) {
   })
 }
 
+// ─── Source mode formatting plugin (mark decorations only, no syntax hiding) ──
+function makeSourcePlugin(cm) {
+  const { ViewPlugin, Decoration } = cm.view
+  const { RangeSetBuilder } = cm.state
+  const { syntaxTree } = cm.language
+
+  const SPAN_MAP = {
+    StrongEmphasis: 'cm-lv-b',
+    Emphasis:       'cm-lv-i',
+    Strikethrough:  'cm-lv-s',
+    InlineCode:     'cm-lv-c',
+    Highlight:      'cm-lv-hl',
+    Link:           'cm-lv-lnk',
+    Image:          'cm-lv-lnk',
+  }
+  const LINE_MAP = {
+    ATXHeading1: 'cm-lv-h1', ATXHeading2: 'cm-lv-h2', ATXHeading3: 'cm-lv-h3',
+    ATXHeading4: 'cm-lv-h4', ATXHeading5: 'cm-lv-h5', ATXHeading6: 'cm-lv-h6',
+  }
+  const CODE_BLOCKS = new Set(['FencedCode', 'CodeBlock', 'IndentedCode'])
+
+  function build(view) {
+    const { state } = view
+    const doc = state.doc
+    const marks = []
+    const lineDecs = []
+
+    try {
+      syntaxTree(state).iterate({
+        enter(node) {
+          const { from, to, name } = node
+          if (from >= to) return
+
+          if (CODE_BLOCKS.has(name)) {
+            const ls = doc.lineAt(from).number
+            const le = doc.lineAt(Math.min(to, doc.length - 1)).number
+            for (let n = ls; n <= le; n++) {
+              try { lineDecs.push({ pos: doc.line(n).from, cls: 'cm-lv-cb' }) } catch { /**/ }
+            }
+            return false
+          }
+
+          if (name === 'Blockquote') {
+            const ls = doc.lineAt(from).number
+            const le = doc.lineAt(Math.min(to, doc.length - 1)).number
+            for (let n = ls; n <= le; n++) {
+              try { lineDecs.push({ pos: doc.line(n).from, cls: 'cm-lv-bq' }) } catch { /**/ }
+            }
+            return false
+          }
+
+          const lineCls = LINE_MAP[name]
+          if (lineCls) {
+            try { lineDecs.push({ pos: doc.lineAt(from).from, cls: lineCls }) } catch { /**/ }
+            return // descend into children
+          }
+
+          const spanCls = SPAN_MAP[name]
+          if (spanCls) marks.push({ from, to, cls: spanCls })
+        }
+      })
+    } catch { /**/ }
+
+    marks.sort((a, b) => a.from !== b.from ? a.from - b.from : b.to - a.to)
+    const sb = new RangeSetBuilder()
+    for (const { from, to, cls } of marks) {
+      if (from < 0 || to > doc.length || from >= to) continue
+      try { sb.add(from, to, Decoration.mark({ class: cls })) } catch { /**/ }
+    }
+
+    lineDecs.sort((a, b) => a.pos - b.pos)
+    const lb = new RangeSetBuilder()
+    const seen = new Set()
+    for (const { pos, cls } of lineDecs) {
+      const k = `${pos}:${cls}`
+      if (seen.has(k)) continue; seen.add(k)
+      try { lb.add(pos, pos, Decoration.line({ class: cls })) } catch { /**/ }
+    }
+
+    return { spans: sb.finish(), lines: lb.finish() }
+  }
+
+  return ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        try { const r = build(view); this.decorations = r.spans; this.lineDecos = r.lines }
+        catch { this.decorations = Decoration.none; this.lineDecos = Decoration.none }
+      }
+      update(upd) {
+        if (upd.docChanged || upd.viewportChanged) {
+          try { const r = build(upd.view); this.decorations = r.spans; this.lineDecos = r.lines }
+          catch { /**/ }
+        }
+      }
+    },
+    {
+      decorations: v => v.decorations,
+      provide: plugin => [
+        cm.view.EditorView.decorations.of(v => {
+          try { return v.plugin(plugin)?.lineDecos ?? Decoration.none }
+          catch { return Decoration.none }
+        }),
+      ],
+    }
+  )
+}
+
 // ─── View mode button ─────────────────────────────────────────────────────────
 const VIEW_MODE_CYCLE = ['live', 'source', 'preview']
 const IconSrc = () => (
@@ -3850,12 +3973,39 @@ export default function NotebookView() {
   const loadedFor  = useRef(null)
   const wikiNavRef = useRef(null)
   const notebookDirRef = useRef(null)
+  // Timestamp set by DOM drop handler when it inserts an image; checked by the
+  // Tauri drag-drop handler to skip processing if DOM already handled the drop.
+  const domDropRef = useRef(0)
   const [wikiDrop, setWikiDrop] = useState(null) // { options, selectedIdx, coords }
 
   contentRef.current = content
   titleRef.current   = noteTitle
 
   const isLoaded = loaded && loadedFor.current === notebookId
+
+  // ── Cross-tab content sync — when another tab saves the same notebook, apply here ──
+  const nbCacheEntry = useAppStore(s => notebookId ? s.notebookContentCache?.[notebookId] : undefined)
+  useEffect(() => {
+    if (!nbCacheEntry || !isLoaded) return
+    const { text: cachedText } = nbCacheEntry
+    // Skip if this instance is already showing this content (we're the one who saved)
+    if (cachedText === contentRef.current) return
+    contentRef.current = cachedText; setContent(cachedText)
+    // Push the new text into the live CM6 editor if mounted
+    if (cmRef.current) {
+      const view = cmRef.current
+      const current = view.state.doc.toString()
+      if (current !== cachedText) {
+        // Preserve cursor position so a cross-tab save doesn't jump the caret
+        const head = Math.min(view.state.selection.main.head, cachedText.length)
+        view.dispatch({
+          changes: { from: 0, to: current.length, insert: cachedText },
+          selection: { anchor: head },
+          scrollIntoView: false,
+        })
+      }
+    }
+  }, [nbCacheEntry, isLoaded]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const previewHtml = useMemo(
     () => renderMarkdown(content, notebooks, library, sketchbooks, flashcardDecks),
@@ -3960,7 +4110,7 @@ export default function NotebookView() {
 
   // ── Mount CodeMirror ──────────────────────────────────────────────────────
   useEffect(() => {
-    if (!isLoaded || !editorRef.current || viewMode === 'preview') return
+    if (!isLoaded || !editorRef.current) return
     let dead = false
 
     loadCM().then(cm => {
@@ -3975,7 +4125,8 @@ export default function NotebookView() {
         search: { search: searchExt, searchKeymap },
       } = cm
 
-      const isLive = viewMode === 'live'
+      const isLive    = viewMode === 'live' || viewMode === 'preview'
+      const isPreview = viewMode === 'preview'
       const gfmExts = lezerMd?.GFM ? [lezerMd.GFM] : [lezerMd?.Strikethrough, lezerMd?.Table, lezerMd?.TaskList].filter(Boolean)
 
       const extensions = [
@@ -3998,8 +4149,10 @@ export default function NotebookView() {
         ...makeGhostHintPlugin(cm),
         // Math.js inline calculator — shows result after `expr=`
         ...makeMathCalcPlugin(cm),
-        ...(isLive ? [
-          makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks, flashcardDecks, notebookDirRef.current),
+        // Live decorations (widgets, hiding syntax) — shared between live + preview
+        ...(isLive ? [makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks, flashcardDecks, notebookDirRef.current, viewMode === 'preview')] : []),
+        // Interaction handlers — live mode only (preview is read-only)
+        ...(viewMode === 'live' ? [
           makeCheckboxHandler(cm),
           makeWikiHandler(cm, wikiNavRef),
           makeMathClickHandler(cm),
@@ -4007,6 +4160,8 @@ export default function NotebookView() {
           makeTaskHandler(cm),
           makeLinkHandler(cm),
         ] : []),
+        // Source mode: style-only formatting (bold/italic/etc.) without hiding syntax or expanding widgets
+        ...(viewMode === 'source' ? [makeSourcePlugin(cm)] : []),
         // Let macOS window management shortcuts pass through to the OS.
         // ctrl+arrow = switch spaces; fn+ctrl+arrow = window tiling (Ctrl-Home/End/PageUp/PageDown)
         Prec.highest(keymap.of([
@@ -4048,6 +4203,8 @@ export default function NotebookView() {
         EditorView.lineWrapping,
         placeholder('Create something…'),
         // Image drag-and-drop + paste handler
+        // Preview mode — disable keyboard input while keeping programmatic dispatch working
+        ...(isPreview ? [EditorView.editable.of(false)] : []),
         EditorView.domEventHandlers({
           drop(e, view) {
             // Capture ALL data transfer payloads synchronously — dataTransfer clears after event
@@ -4079,12 +4236,17 @@ export default function NotebookView() {
               // Tauri exposes .path on File objects from Finder drag-drop —
               // let the Tauri drag-drop event handle those to avoid duplicate insertion
               const filePath = imgFile.path
+              if (Date.now() - domDropRef.current < 2000) {
+                return true // Tauri handler already inserted this drop
+              }
               if (filePath || (_invoke && !webUrl)) {
                 return true // Tauri handler will insert the markdown with the correct asset URL
               } else if (webUrl) {
                 // Web image file with no local path — use the URL
+                domDropRef.current = Date.now()
                 view.dispatch({ changes: { from: dropPos, insert: `![${name}](${webUrl})` } })
               } else if (notebook?.id) {
+                domDropRef.current = Date.now()
                 ;(async () => {
                   try {
                     const buf = new Uint8Array(await imgFile.arrayBuffer())
@@ -4096,11 +4258,13 @@ export default function NotebookView() {
                   }
                 })()
               } else {
+                domDropRef.current = Date.now()
                 view.dispatch({ changes: { from: dropPos, insert: `![${name}](${name})` } })
               }
             } else if (webUrl) {
               // Pure URL drop (no file object) — image dragged from browser
               const name = webUrl.split('/').pop().split('?')[0] || 'image'
+              domDropRef.current = Date.now()
               view.dispatch({ changes: { from: dropPos, insert: `![${name}](${webUrl})` } })
             }
             return true
@@ -4136,7 +4300,7 @@ export default function NotebookView() {
       const state = EditorState.create({ doc: contentRef.current, extensions })
       const view  = new EditorView({ state, parent: editorRef.current })
       cmRef.current = view
-      view.focus()
+      if (!isPreview) view.focus()
     })
 
     return () => {
@@ -4183,6 +4347,8 @@ export default function NotebookView() {
     if (newTitle !== notebook.title) patch.title = newTitle
     updateNotebook(notebook.id, patch)
     useAppStore.getState().persistNotebooks?.()
+    // Signal other tabs showing the same notebook to pull in the new content
+    useAppStore.getState().setNotebookContentCache?.(notebook.id, text)
     setSaving(false); animateSave()
   }, [notebook, updateNotebook, animateSave])
 
@@ -4208,6 +4374,7 @@ export default function NotebookView() {
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
         e.preventDefault(); findRef.current?.focus(); findRef.current?.select()
       }
+
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
@@ -4216,12 +4383,14 @@ export default function NotebookView() {
   // ── Tauri native file drop (Finder drag-and-drop) ───────────────────────────
   useEffect(() => {
     if (!notebook?.id) return
+    let mounted = true
     const unlisteners = []
     let lastDropTime = 0
 
     const handleDrop = async (event) => {
       const now = Date.now()
       if (now - lastDropTime < 300) return
+      if (now - domDropRef.current < 2000) return  // DOM handler already inserted this drop
       lastDropTime = now
       const payload = event.payload
       // Tauri 2 drag-drop payload: { paths: string[], position: {x,y} }
@@ -4251,22 +4420,23 @@ export default function NotebookView() {
           }
           const ref = mdPath || (_convertFileSrc ? _convertFileSrc(p) : p)
           const md = `![${name}](${ref})\n`
+          domDropRef.current = Date.now()
           cmRef.current.dispatch({ changes: { from: pos, insert: md } })
         } catch (err) { console.warn('[Gnos] File drop error:', p, err) }
       }
     }
 
     // Tauri 2 drag-drop event (tauri://drag-drop is the correct v2 name)
-    listen('tauri://drag-drop', handleDrop).then(u => unlisteners.push(u)).catch(() => {})
-    listen('tauri://drag', () => {}).then(u => unlisteners.push(u)).catch(() => {})
+    listen('tauri://drag-drop', handleDrop).then(u => { if (mounted) unlisteners.push(u); else u() }).catch(() => {})
+    listen('tauri://drag', () => {}).then(u => { if (mounted) unlisteners.push(u); else u() }).catch(() => {})
 
-    return () => { unlisteners.forEach(u => u?.()) }
+    return () => { mounted = false; unlisteners.forEach(u => u?.()) }
   }, [notebook?.id])
 
   // ── Find in preview / live ──────────────────────────────────────────────────
   function doFind(q) {
-    // Live mode — use CodeMirror's built-in search highlighting
-    if (viewMode === 'live' && cmRef.current && cmMods.current) {
+    // Live / preview mode — use CodeMirror's built-in search highlighting
+    if ((viewMode === 'live' || viewMode === 'preview') && cmRef.current && cmMods.current) {
       const searchMod = cmMods.current.search
       const view = cmRef.current
       if (!q) {
@@ -4318,8 +4488,8 @@ export default function NotebookView() {
   }
 
   function findNav(dir) {
-    // Live mode — use CodeMirror findNext / findPrevious
-    if (viewMode === 'live' && cmRef.current && cmMods.current) {
+    // Live / preview mode — use CodeMirror findNext / findPrevious
+    if ((viewMode === 'live' || viewMode === 'preview') && cmRef.current && cmMods.current) {
       const searchMod = cmMods.current.search
       const view = cmRef.current
       if (dir > 0) searchMod.findNext(view)
@@ -4437,8 +4607,8 @@ export default function NotebookView() {
     /* Blank lines between paragraphs get the right rhythm */
     .nb-cm .cm-line:empty { min-height: 0.5em; }
     .nb-cm .cm-placeholder { color:var(--textDim); opacity:.45; }
-    /* Hide widget buffer gaps that show caret artifacts */
-    .cm-widgetBuffer { display: none; }
+    /* Collapse widget buffer gaps without hiding from layout — display:none breaks block widget height */
+    .cm-widgetBuffer { height: 0 !important; overflow: hidden; pointer-events: none; }
     /* Hide cursor on lines that contain only block widgets */
     .nb-cm .cm-line:has(.cm-timer-widget),
     .nb-cm .cm-line:has(.cm-pomo-widget),
@@ -4449,6 +4619,27 @@ export default function NotebookView() {
     .nb-cm .cm-line:has(.cm-img-wrap) {
       caret-color: transparent;
     }
+
+    /* ── Preview mode — hide cursor, disable interaction ── */
+    .nb-preview .cm-content { caret-color: transparent; user-select: none; -webkit-user-select: none; pointer-events: none; cursor: default; }
+    .nb-preview .cm-cursor, .nb-preview .cm-cursor-primary { display: none !important; }
+    .nb-preview .cm-selectionBackground { display: none !important; }
+
+    /* ── Source mode — same visual classes as live, no hiding ── */
+    .nb-source .cm-lv-h1 { font-size: var(--nb-h1); font-weight: 600; line-height: 1.25; font-family: 'Erode', Georgia, serif; color: var(--nb-h1-color); padding-top: 0.4em; padding-bottom: 0.1em; letter-spacing: -0.3px; }
+    .nb-source .cm-lv-h2 { font-size: var(--nb-h2); font-weight: 600; line-height: 1.3; font-family: 'Erode', Georgia, serif; color: var(--nb-h2-color); padding-top: 0.35em; padding-bottom: 0.1em; letter-spacing: -0.2px; }
+    .nb-source .cm-lv-h3 { font-size: var(--nb-h3); font-weight: 600; line-height: 1.4; color: var(--nb-h3-color); font-family: 'Satoshi', 'Author', sans-serif; padding-top: 0.3em; }
+    .nb-source .cm-lv-h4 { font-size: var(--nb-h4); font-weight: 600; color: var(--nb-h4-color); font-family: 'Satoshi', 'Author', sans-serif; }
+    .nb-source .cm-lv-h5 { font-size: var(--nb-h5); font-weight: 600; color: var(--nb-h5-color); font-family: 'Satoshi', 'Author', sans-serif; }
+    .nb-source .cm-lv-h6 { font-size: var(--nb-h6); font-weight: 600; opacity:.65; color: var(--nb-h6-color); font-family: 'Satoshi', 'Author', sans-serif; }
+    .nb-source .cm-lv-b   { font-weight:700; color: var(--nb-bold-color); }
+    .nb-source .cm-lv-i   { font-style:italic; color: var(--nb-italic-color); }
+    .nb-source .cm-lv-s   { text-decoration:line-through; opacity:.75; color: var(--nb-strike-color); }
+    .nb-source .cm-lv-c   { font-family: SF Mono,Menlo,Consolas,monospace; font-size:.87em; background: var(--nb-code-bg); border-radius:4px; padding:1px 4px; color: var(--nb-code-color); }
+    .nb-source .cm-lv-lnk { color: var(--nb-link-color); text-decoration:underline; text-underline-offset:2px; }
+    .nb-source .cm-lv-hl  { background: var(--nb-hl-bg); border-radius:2px; padding:0 2px; }
+    .nb-source .cm-lv-bq  { border-left: 3px solid var(--nb-quote-border); padding-left: 14px; color: var(--nb-quote-color); background: var(--nb-quote-bg); font-style: italic; }
+    .nb-source .cm-lv-cb  { background: var(--surfaceAlt); font-family: SF Mono,Menlo,Consolas,monospace; font-size:.87em; padding: 0 8px; border-radius: 3px; color: var(--text); }
 
     /* ── Hidden syntax markers (Obsidian style — font-size:0 not replace) ── */
     .nb-live .cm-lv-hidden {
@@ -4585,8 +4776,8 @@ export default function NotebookView() {
     .cm-hr  { display:block; height:1px; background:var(--border); margin:8px 0; width:100%; pointer-events:none; }
 
     /* Image widget */
-    .cm-img-wrap { display:block; margin:6px 0; line-height:0; }
-    .cm-img { max-width:100%; max-height:340px; border-radius:6px; object-fit:contain; display:block; box-shadow:0 2px 12px rgba(0,0,0,.2); }
+    .cm-img-wrap { display:block; margin:6px 0; line-height:0; background:none; box-shadow:none; }
+    .cm-img { max-width:100%; max-height:340px; border-radius:6px; object-fit:contain; display:block; background:none; }
     .cm-img-err { display:inline-block; padding:4px 8px; background:var(--surfaceAlt); border:1px dashed var(--border); border-radius:4px; font-size:12px; color:var(--textDim); }
 
     /* Checkbox widget */
@@ -5496,33 +5687,33 @@ export default function NotebookView() {
         <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', gap:8, color:'var(--textDim)', fontSize:13 }}>
           <div className="spinner" />Loading…
         </div>
-      ) : viewMode === 'preview' ? (
-        <div style={{ flex:1, overflow:'auto', background:'var(--readerBg,var(--bg))' }}>
-          {noteTitle && (
-            <div style={{ maxWidth:780, margin:'0 auto', padding:'28px 48px 0', fontFamily:'Georgia,serif', fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2 }}>
-              {noteTitle}
-            </div>
-          )}
-          <div ref={previewRef} className="nb-prev" onClick={handlePreviewClick}
-            dangerouslySetInnerHTML={{ __html: previewHtml }} />
-        </div>
       ) : (
         <div style={{ flex:1, overflow:'hidden', display:'flex', flexDirection:'column', position:'relative', background:'var(--readerBg,var(--bg))' }}>
-          {/* Title input — same padding as CM content area */}
+          {/* Title — static in preview, editable input in live/source */}
           <div style={{ maxWidth:780, margin:'0 auto', width:'100%', padding:'24px 48px 0', boxSizing:'border-box' }}>
-            <input value={noteTitle}
-              onChange={e => { const t=e.target.value; setTitle(t); titleRef.current=t; scheduleSave(contentRef.current) }}
-              placeholder="Title…"
-              style={{ width:'100%', background:'none', border:'none', outline:'none', fontFamily:'Georgia,serif', fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2, padding:0, caretColor:'var(--accent)' }}
-              onKeyDown={e => { if(e.key==='Enter'){e.preventDefault();cmRef.current?.focus()} }}
-            />
+            {viewMode === 'preview' ? (
+              noteTitle && (
+                <div style={{ fontFamily:'Georgia,serif', fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2 }}>
+                  {noteTitle}
+                </div>
+              )
+            ) : (
+              <input value={noteTitle}
+                onChange={e => { const t=e.target.value; setTitle(t); titleRef.current=t; scheduleSave(contentRef.current) }}
+                placeholder="Title…"
+                style={{ width:'100%', background:'none', border:'none', outline:'none', fontFamily:'Georgia,serif', fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2, padding:0, caretColor:'var(--accent)' }}
+                onKeyDown={e => { if(e.key==='Enter'){e.preventDefault();cmRef.current?.focus()} }}
+              />
+            )}
           </div>
-          {/* Divider */}
-          <div style={{ maxWidth:780, margin:'4px auto 0', width:'100%', padding:'0 48px', boxSizing:'border-box', pointerEvents:'none' }}>
-            <div style={{ height:1, background:'var(--borderSubtle)', opacity:.5 }} />
-          </div>
-          {/* CodeMirror */}
-          <div ref={editorRef} className={`nb-cm${viewMode==='live'?' nb-live':''}`} style={{ flex:1, overflow:'hidden', minHeight:0 }} />
+          {/* Divider — hidden in preview */}
+          {viewMode !== 'preview' && (
+            <div style={{ maxWidth:780, margin:'4px auto 0', width:'100%', padding:'0 48px', boxSizing:'border-box', pointerEvents:'none' }}>
+              <div style={{ height:1, background:'var(--borderSubtle)', opacity:.5 }} />
+            </div>
+          )}
+          {/* CodeMirror — mounted in all modes; read-only + live decorations in preview */}
+          <div ref={editorRef} className={`nb-cm${(viewMode==='live'||viewMode==='preview')?' nb-live':''}${viewMode==='preview'?' nb-preview':''}${viewMode==='source'?' nb-source':''}`} style={{ flex:1, overflow:'hidden', minHeight:0 }} />
           {/* Wiki-link dropdown */}
           {wikiDrop && wikiDrop.coords && (
             <div className="nb-wiki-dropdown" style={{
@@ -5728,7 +5919,7 @@ function NotebookSettingsPanel({ notebook, notebooks, onClose }) {
       {k:'  - nested',d:'Nested list (2 spaces)'},{k:'- [ ] task',d:'Task item'},
       {k:'- [x] done',d:'Checked task (clickable)'},{k:'```lang',d:'Code block'},
       {k:'---',d:'Horizontal rule'},{k:'| a | b |',d:'Table'},
-      {k:'/todo or /todo:Name',d:'Interactive todo list'},
+      {k:'/habits',d:'Habit tracker (add habits, check off per day)'},
       {k:'/task or /task:Title',d:'Kanban board'},
       {k:'/timer mm:ss or hh:mm:ss',d:'Countdown timer with progress bar'},
       {k:'/calendar',d:'Interactive inline calendar'},

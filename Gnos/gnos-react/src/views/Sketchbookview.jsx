@@ -13,8 +13,9 @@
  * • All other Excalidraw / storage / save behaviour is unchanged.
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useContext } from 'react'
 import useAppStore from '@/store/useAppStore'
+import { PaneContext } from '@/lib/PaneContext'
 import { loadSketchbookContent, saveSketchbookContent } from '@/lib/storage'
 import { GnosNavButton } from '@/components/SideNav'
 
@@ -250,7 +251,14 @@ async function pdfToExcalidrawImages(file, onProgress) {
 // SketchbookView
 // ─────────────────────────────────────────────────────────────────────────────
 export default function SketchbookView() {
-  const sketchbook          = useAppStore(s => s.activeSketchbook)
+  const paneTabId           = useContext(PaneContext)
+  const sketchbook          = useAppStore(useCallback(
+    s => {
+      const tab = paneTabId ? s.tabs.find(t => t.id === paneTabId) : null
+      return tab?.activeSketchbook ?? null
+    },
+    [paneTabId]
+  ))
   const setView             = useAppStore(s => s.setView)
   const updateSketchbook    = useAppStore(s => s.updateSketchbook)
   const setActiveSketchbook = useAppStore(s => s.setActiveSketchbook)
@@ -269,10 +277,19 @@ export default function SketchbookView() {
   const [bgLocked,     setBgLocked]     = useState(false)
   const pdfInputRef = useRef(null)
 
-  const excalidrawApiRef = useRef(null)
-  const saveTimerRef     = useRef(null)
-  const saveVisTimer     = useRef(null)
-  const savedFilesRef    = useRef({})   // accumulates all files ever seen — never loses images
+  const excalidrawApiRef  = useRef(null)
+  const saveTimerRef      = useRef(null)
+  const saveVisTimer      = useRef(null)
+  const savedFilesRef     = useRef({})   // accumulates all files ever seen — never loses images
+  const lastSavedSigRef   = useRef(null) // dirty-flag: skip saves when only viewport changed
+  const latestSaveArgsRef = useRef(null) // latest onChange args — flushed synchronously on unmount
+  // Always holds the last non-null sketchbook so the unmount cleanup can save
+  // even after `sketchbook` has become null in the selector (tab closed).
+  const stableSketchbookRef = useRef(sketchbook)
+
+  // Keep stableSketchbookRef pointing at the last non-null sketchbook.
+  // Never nulled — the unmount cleanup needs the previous value after the tab closes.
+  useEffect(() => { if (sketchbook) stableSketchbookRef.current = sketchbook }, [sketchbook])
 
   const themeConfig = getThemeConfig(themeKey)
   const excalidrawTheme = themeConfig.mode
@@ -318,7 +335,10 @@ export default function SketchbookView() {
   useEffect(() => {
     if (!sketchbook?.id) return
     let cancelled = false
-    excalidrawApiRef.current = null
+    // Do NOT null excalidrawApiRef here — the switch-save effect (below) needs the old
+    // API reference to flush a save before the new sketchbook loads. The ref will be
+    // overwritten naturally when the new Excalidraw instance calls its onMount callback.
+    lastSavedSigRef.current = null  // reset dirty-flag for fresh load
 
     loadSketchbookContent(sketchbook.id).then(data => {
       if (cancelled) return
@@ -371,6 +391,10 @@ export default function SketchbookView() {
     const saved = await saveSketchbookContent(latestSb, { excalidraw: saveState })
     if (!saved) console.error('[SketchbookView] saveSketchbookContent returned false for sketchbook', sketchbook.id)
     await useAppStore.getState().persistSketchbooks?.()
+    // Update dirty-flag so subsequent viewport-only onChange calls are skipped
+    lastSavedSigRef.current = elements?.length
+      ? elements.map(e => `${e.id}:${e.versionNonce ?? e.version ?? 0}`).join(',')
+      : '[]'
     setSaving(false)
     const el = document.getElementById('sk-save-icon')
     if (el) {
@@ -386,13 +410,57 @@ export default function SketchbookView() {
   }, [sketchbook, updateSketchbook])
 
   const scheduleSave = useCallback((elements, appState, files) => {
+    // Build a cheap signature of element IDs + version nonces.
+    // If only viewport (scroll/zoom) changed, elements are identical — skip the save.
+    const sig = elements?.length
+      ? elements.map(e => `${e.id}:${e.versionNonce ?? e.version ?? 0}`).join(',')
+      : '[]'
+    if (sig === lastSavedSigRef.current) return
+
     clearTimeout(saveTimerRef.current)
     // Deep-copy files immediately — Excalidraw can mutate the reference after onChange
     const filesCopy = files ? JSON.parse(JSON.stringify(files)) : null
     // Also merge into savedFilesRef right away (don't wait for the debounce)
     if (filesCopy) Object.assign(savedFilesRef.current, filesCopy)
+    // Track latest args so unmount flush can use them
+    latestSaveArgsRef.current = { elements, appState, files: filesCopy }
     saveTimerRef.current = setTimeout(() => doSave(elements, appState, filesCopy), 300)
   }, [doSave])
+
+  // Flush any pending save when this component unmounts.
+  //
+  // IMPORTANT: do NOT call api.getSceneElements() here. When a tab is closed,
+  // `sketchbook` becomes null → `isLoaded` becomes false → Excalidraw unmounts
+  // internally BEFORE this cleanup runs. At that point getSceneElements() returns []
+  // and would overwrite the real save with an empty canvas (the 324-byte bug).
+  //
+  // Instead, use latestSaveArgsRef which was updated by every real onChange call
+  // and always holds the actual elements the user drew. Call saveSketchbookContent
+  // directly through stableSketchbookRef so we bypass doSave's `if (!sketchbook)`
+  // guard (sketchbook is null in the closure by unmount time).
+  useEffect(() => {
+    return () => {
+      clearTimeout(saveTimerRef.current)
+      const args = latestSaveArgsRef.current
+      if (!args) return
+      const sig = args.elements?.length
+        ? args.elements.map(e => `${e.id}:${e.versionNonce ?? e.version ?? 0}`).join(',')
+        : '[]'
+      if (sig === lastSavedSigRef.current) return // already saved — nothing to do
+      const sb = stableSketchbookRef.current
+      if (!sb) return
+      // Prefer the live store value so a rename that happened before close is reflected
+      const liveSb = useAppStore.getState().sketchbooks.find(s => s.id === sb.id) ?? sb
+      const allFiles = { ...savedFilesRef.current, ...(args.files || {}) }
+      saveSketchbookContent(liveSb, {
+        excalidraw: {
+          elements: args.elements ?? [],
+          appState: args.appState ?? {},
+          files: allFiles,
+        },
+      }).catch(e => console.warn('[SketchbookView] flush-save on unmount failed:', e))
+    }
+  }, []) // empty deps — refs only
 
   // ── PDF import ────────────────────────────────────────────────────────────────
   const handlePdfImport = useCallback(async (file) => {
@@ -483,6 +551,27 @@ export default function SketchbookView() {
   const doSaveRef = useRef(doSave)
   useEffect(() => { doSaveRef.current = doSave }, [doSave])
 
+  // Force-save when the app window closes
+  useEffect(() => {
+    const handler = () => {
+      clearTimeout(saveTimerRef.current)
+      const api = excalidrawApiRef.current
+      if (!api) return
+      const elements = api.getSceneElements() ?? []
+      const appState = api.getAppState()
+      const newFiles = api.getFiles() ?? {}
+      if (newFiles) Object.assign(savedFilesRef.current, newFiles)
+      const sig = elements.length
+        ? elements.map(e => `${e.id}:${e.versionNonce ?? e.version ?? 0}`).join(',')
+        : '[]'
+      if (sig !== lastSavedSigRef.current) {
+        doSaveRef.current(elements, appState, savedFilesRef.current)
+      }
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [])
+
   // ── Flush save on sketchbook switch — saves to the PREVIOUS sketchbook ──────
   // We capture the full previous sketchbook object (not just id) inside this single
   // effect so it always uses the OLD value before updating the ref.
@@ -516,21 +605,13 @@ export default function SketchbookView() {
         },
         files: allFiles,
       }
-      saveSketchbookContent(prevSb, { excalidraw: saveState })
+      const patch = { updatedAt: new Date().toISOString(), elementCount: elements?.length ?? 0 }
+      useAppStore.getState().updateSketchbook?.(prevSb.id, patch)
+      saveSketchbookContent({ ...prevSb, ...patch }, { excalidraw: saveState })
+        .then(() => useAppStore.getState().persistSketchbooks?.())
         .catch(e => console.warn('[SketchbookView] flush-save on switch failed:', e))
     } catch (e) { console.warn('[SketchbookView] flush-save on switch failed:', e) }
   }, [sketchbook]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    return () => {
-      clearTimeout(saveTimerRef.current)
-      const api = excalidrawApiRef.current
-      if (api) {
-        try { doSaveRef.current(api.getSceneElements(), api.getAppState(), api.getFiles()) }
-        catch (e) { console.warn('[SketchbookView] flush-save on unmount failed:', e) }
-      }
-    }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
 
   // ── Empty state ──────────────────────────────────────────────────────────────
@@ -581,7 +662,19 @@ export default function SketchbookView() {
                   onBlur={() => {
                     const t = titleDraft.trim() || sketchbook.title
                     updateSketchbook(sketchbook.id, { title: t })
-                    setActiveSketchbook({ ...sketchbook, title: t })
+                    // Use the freshest sketchbook from the store so we don't spread
+                    // a stale prop that's missing updatedAt/elementCount from prior saves
+                    const fresh = useAppStore.getState().sketchbooks.find(s => s.id === sketchbook.id)
+                    setActiveSketchbook(fresh ?? { ...sketchbook, title: t })
+                    // Flush any pending debounced save before persisting meta so canvas
+                    // content is written under the correct sketchbook object
+                    clearTimeout(saveTimerRef.current)
+                    const api = excalidrawApiRef.current
+                    if (api) {
+                      try {
+                        doSave(api.getSceneElements(), api.getAppState(), api.getFiles())
+                      } catch { /* non-fatal */ }
+                    }
                     useAppStore.getState().persistSketchbooks?.()
                     setEditingTitle(false)
                   }}

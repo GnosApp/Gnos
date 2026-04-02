@@ -129,8 +129,12 @@ export default function GraphView() {
   const [tagFrequencies,   setTagFrequencies]   = useState({})
 
   const rafRef       = useRef(null)
+  const graphTabRef  = useRef(graphTab)  // readable inside RAF without closure staleness
   const spawnRef     = useRef(null)   // timeout handle for node-by-node spawn
   const allNodesRef  = useRef([])     // full unfiltered node list
+
+  // Keep graphTabRef in sync so RAF tick can read it without stale closure
+  useEffect(() => { graphTabRef.current = graphTab }, [graphTab])
 
   // Drip nodes in one-at-a-time, oldest → newest
   const startSpawn = useCallback((nodes) => {
@@ -376,6 +380,10 @@ export default function GraphView() {
     ro.observe(canvas.parentElement)
 
     function tick() { try {
+      if (graphTabRef.current === 'tags') {
+        rafRef.current = requestAnimationFrame(tick)
+        return
+      }
       const sim  = simRef.current
       const cfg  = settingsRef.current
       const ctx  = canvas.getContext('2d')
@@ -990,7 +998,7 @@ export default function GraphView() {
 
         <canvas
           ref={canvasRef}
-          style={{ position:'absolute', inset:0 }}
+          style={{ position:'absolute', inset:0, display: graphTab === 'tags' ? 'none' : undefined }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
@@ -998,9 +1006,11 @@ export default function GraphView() {
           onWheel={onWheel}
         />
 
-        {/* Tags heatmap overlay */}
+        {/* Tags — full-area separate view, not an overlay on the canvas */}
         {graphTab === 'tags' && !loading && (
-          <TagsHeatmap tagFrequencies={tagFrequencies} />
+          <div style={{ position:'absolute', inset:0, overflow:'auto' }}>
+            <TagsHeatmap tagFrequencies={tagFrequencies} />
+          </div>
         )}
 
         {/* Loading state */}
@@ -1020,8 +1030,8 @@ export default function GraphView() {
           </div>
         )}
 
-        {/* Bottom-left: legend when idle, info panel when a node is focused */}
-        {!loading && (
+        {/* Bottom-left: legend when idle, info panel when a node is focused — hidden on tags tab */}
+        {!loading && graphTab !== 'tags' && (
           <div style={{ position:'absolute', bottom:14, left:14, maxWidth:300 }}>
             {focusedNode ? (
               <NodeInfoPanel
@@ -1059,8 +1069,8 @@ export default function GraphView() {
           </div>
         )}
 
-        {/* Controls hint — bottom-right, hidden while a node is focused */}
-        {!loading && !focusedNode && (
+        {/* Controls hint — bottom-right, hidden while a node is focused or on tags tab */}
+        {!loading && !focusedNode && graphTab !== 'tags' && (
           <div style={{
             position:'absolute', bottom:14, right:14,
             fontSize:10, color:'var(--textDim)', textAlign:'right',

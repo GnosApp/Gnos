@@ -432,7 +432,6 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [prevActiveTabId, setPrevActiveTabId] = useState(null)
   const [zenMode, setZenMode] = useState(false)
-  const [zenPeekTop,  setZenPeekTop]  = useState(false)
   const [zenPeekLeft, setZenPeekLeft] = useState(false)
   const zenPeekTimerRef = useRef({})
   const [dragTabId,  setDragTabId]  = useState(null)
@@ -532,21 +531,12 @@ export default function App() {
     return () => document.body.classList.remove('zen-active')
   }, [zenMode])
 
-  // Zen peek — track mouse near edges to reveal titlebar / sidenav
+  // Zen peek — track mouse near left edge to reveal sidenav
   useEffect(() => {
-    if (!zenMode) { setZenPeekTop(false); setZenPeekLeft(false); return }
+    if (!zenMode) { setZenPeekLeft(false); return }
     const EDGE = 12
     const HIDE_DELAY = 600
     const onMove = (e) => {
-      // Top edge → peek titlebar
-      if (e.clientY <= EDGE) {
-        clearTimeout(zenPeekTimerRef.current.top)
-        setZenPeekTop(true)
-      } else if (e.clientY > TITLEBAR_H + 8) {
-        clearTimeout(zenPeekTimerRef.current.top)
-        zenPeekTimerRef.current.top = setTimeout(() => setZenPeekTop(false), HIDE_DELAY)
-      }
-      // Left edge → peek sidenav
       if (e.clientX <= EDGE) {
         clearTimeout(zenPeekTimerRef.current.left)
         setZenPeekLeft(true)
@@ -556,7 +546,7 @@ export default function App() {
       }
     }
     window.addEventListener('mousemove', onMove)
-    return () => { window.removeEventListener('mousemove', onMove); clearTimeout(zenPeekTimerRef.current.top); clearTimeout(zenPeekTimerRef.current.left) }
+    return () => { window.removeEventListener('mousemove', onMove); clearTimeout(zenPeekTimerRef.current.left) }
   }, [zenMode])
 
   // Pointer-based tab drag (HTML5 drag API doesn't fire reliably in Tauri/WebKit)
@@ -677,7 +667,7 @@ export default function App() {
       <style>{TAB_CSS}</style>
 
       {/* ── Title bar ──────────────────────────────────────────────────────── */}
-      <div className={`gnos-titlebar${isFullscreen ? ' is-fullscreen' : ''}${zenMode && !zenPeekTop ? ' zen-hidden' : ''}${zenMode && zenPeekTop ? ' zen-peek' : ''}`}>
+      <div className={`gnos-titlebar${isFullscreen ? ' is-fullscreen' : ''}`}>
         {/* Left drag area covers the traffic-light / padding gap */}
         <div ref={leftDragRef} style={{ position: 'absolute', left: 0, top: 0, width: 88, height: '100%', cursor: 'default' }} />
 
@@ -775,7 +765,7 @@ export default function App() {
         ref={contentRef}
         className={`sidenav-push-wrapper${sideNavOpen ? ' pushed' : ''}${zenMode && zenPeekLeft ? ' zen-force-nav' : ''}`}
         style={{
-          paddingTop: zenMode && !zenPeekTop ? 0 : TITLEBAR_H, height: '100vh',
+          paddingTop: TITLEBAR_H, height: '100vh',
           boxSizing: 'border-box', display: 'flex',
           flexDirection: isSplit && splitDir === 'vertical' ? 'column' : 'row',
           overflow: 'hidden', position: 'relative',

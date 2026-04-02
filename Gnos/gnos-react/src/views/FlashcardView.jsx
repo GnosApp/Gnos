@@ -616,6 +616,37 @@ export default function FlashcardView() {
     )
   }
 
+  // Streak dot indicator (approximated from streak count + lastStudyDate)
+  const fcStreakDots = (() => {
+    const streak = liveDeck?.streak || 0
+    if (!streak) return null
+    const lastDate = liveDeck?.lastStudyDate ? new Date(liveDeck.lastStudyDate) : new Date()
+    const today = new Date()
+    const startOfWeek = new Date(today)
+    startOfWeek.setDate(today.getDate() - ((today.getDay() + 6) % 7))
+    const weekActivity = Array.from({ length: 7 }, (_, i) => {
+      const day = new Date(startOfWeek)
+      day.setDate(startOfWeek.getDate() + i)
+      const diffDays = Math.round((+lastDate - +day) / 86400000)
+      return diffDays >= 0 && diffDays < streak
+    })
+    const days = ['M','T','W','T','F','S','S']
+    return (
+      <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+        <span style={{ fontSize:10, fontWeight:700, color:'var(--textDim)', letterSpacing:'0.08em', textTransform:'uppercase' }}>Streak</span>
+        <div style={{ display:'flex', gap:3 }}>
+          {days.map((d, i) => (
+            <div key={i} title={d} style={{
+              width:7, height:7, borderRadius:'50%',
+              background: weekActivity[i] ? 'var(--accent)' : 'var(--border)',
+            }} />
+          ))}
+        </div>
+        <span style={{ fontSize:11, fontWeight:600, color:'var(--textDim)' }}>{streak}d</span>
+      </div>
+    )
+  })()
+
   return (
     <div className="fc-container">
       <style>{FLASHCARD_CSS}</style>
@@ -639,7 +670,7 @@ export default function FlashcardView() {
           <span style={{ color: dueCards.length > 0 ? '#ff9800' : 'var(--textDim)' }}>
             {dueCards.length} due
           </span>
-          {(liveDeck?.streak || 0) > 0 && <span>🔥 {liveDeck.streak} day streak</span>}
+          {fcStreakDots}
         </div>
         <button className="fc-mode-btn" onClick={handleImport} title="Import CSV/TSV">Import</button>
         <button className={`fc-mode-btn${mode === 'study' ? ' active' : ''}`} onClick={() => { setMode('study'); setFlipped(false); setCurrentIdx(0) }}>Study</button>

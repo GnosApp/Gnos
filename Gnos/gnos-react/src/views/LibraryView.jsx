@@ -20,9 +20,13 @@ const DotsIcon = () => (
   </svg>
 )
 const MusicIcon = () => (
-  <svg width="40" height="40" viewBox="0 0 24 24" fill="none">
-    <path d="M9 18c0 1.66-1.34 3-3 3H4c-1.66 0-3-1.34-3-3v-1c0-1.66 1.34-3 3-3h2c1.66 0 3 1.34 3 3v1zM22 15c0 1.66-1.34 3-3 3h-2c-1.66 0-3-1.34-3-3v-1c0-1.66 1.34-3 3-3h2c1.66 0 3 1.34 3 3v1z" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-    <path d="M9 19V8l13-3v10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+  <svg width="36" height="28" viewBox="0 0 36 28" fill="none">
+    <rect x="0"  y="10" width="4" height="8"  rx="2" fill="currentColor" opacity="0.6"/>
+    <rect x="6"  y="5"  width="4" height="18" rx="2" fill="currentColor" opacity="0.8"/>
+    <rect x="12" y="2"  width="4" height="24" rx="2" fill="currentColor" opacity="1"/>
+    <rect x="18" y="7"  width="4" height="14" rx="2" fill="currentColor" opacity="0.85"/>
+    <rect x="24" y="9"  width="4" height="10" rx="2" fill="currentColor" opacity="0.65"/>
+    <rect x="30" y="7"  width="4" height="14" rx="2" fill="currentColor" opacity="0.5"/>
   </svg>
 )
 const PlusIcon = () => (
@@ -59,12 +63,13 @@ function BookCard({ book, onOpen, onMenu }) {
   const fmt = (book.format === 'epub' || book.format === 'epub3') ? 'EPUB' : (book.format?.toUpperCase() || 'TXT')
   return (
     <div className="book-card-container">
-      <div className="book-cover" style={{ '--c1': c1, '--c2': c2 }} onClick={() => onOpen(book)}>
-        {book.coverDataUrl ? <img src={book.coverDataUrl} alt={book.title} draggable="false" /> : <>
-          <div className="cover-spine" /><div className="cover-crease" /><div className="cover-edge" />
-          <div className="cover-title">{book.title}</div>
-          {book.author && <div className="cover-author">{book.author}</div>}
-        </>}
+      <div className="book-cover" style={{ '--c1': c1, '--c2': c2, background: `linear-gradient(135deg, ${c1}, ${c2})` }} onClick={() => onOpen(book)}>
+        {book.coverDataUrl ? <img src={book.coverDataUrl} alt={book.title} draggable="false" /> : (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '14px 12px', gap: 6 }}>
+            <div className="cover-title">{book.title}</div>
+            {book.author && <div className="cover-author">{book.author}</div>}
+          </div>
+        )}
         <div className="cover-badge">{fmt}</div>
       </div>
       {pct > 0 && <div className="meta-prog-row" style={{ marginTop: 4, padding: '0 2px' }}><div className="meta-prog-track"><div className="meta-prog-fill" style={{ width: `${pct}%` }} /></div><span className="meta-prog-pct">{pct}%</span></div>}
@@ -86,17 +91,16 @@ function AudiobookCard({ book, onOpen, onMenu }) {
   const pct = book.listenProgress ? Math.round(book.listenProgress * 100) : 0
   return (
     <div className="book-card-container">
-      <div className="book-cover" style={{ '--c1': c1, '--c2': c2 }} onClick={() => onOpen(book)}>
+      <div className="book-cover" style={{ '--c1': c1, '--c2': c2, background: `linear-gradient(135deg, ${c1}, ${c2})` }} onClick={() => onOpen(book)}>
         {book.coverDataUrl
           ? <img src={book.coverDataUrl} alt={book.title} draggable="false" />
-          : <>
-            <div className="cover-spine" /><div className="cover-crease" /><div className="cover-edge" />
-            <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '0 12px' }}>
+          : (
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '0 12px' }}>
               <div style={{ opacity: 0.55 }}><MusicIcon /></div>
-              <div className="cover-title" style={{ textAlign: 'center' }}>{book.title}</div>
+              <div style={{ fontSize:13, fontWeight:800, color:'#fff', lineHeight:1.25, textAlign:'center', wordBreak:'break-word', overflow:'hidden', display:'-webkit-box', WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>{book.title}</div>
               {book.author && <div className="cover-author">{book.author}</div>}
             </div>
-          </>}
+          )}
         <div className="cover-badge">AUDIO</div>
       </div>
       <div className="book-meta">
@@ -676,17 +680,8 @@ function NotebookCard({ nb, onOpen, onMenu }) {
 
         {/* Title + date — top section */}
         <div style={{ position:'relative', padding:'14px 12px 0 16px', flex:1, zIndex:2 }}>
-          <div style={{ fontSize:13, fontWeight:800, color:'#fff',
-            lineHeight:1.25, wordBreak:'break-word',
-            overflow:'hidden', display:'-webkit-box',
-            WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>
-            {nb.title}
-          </div>
-          {dateStr && (
-            <div style={{ fontSize:10, color:'rgba(255,255,255,0.6)', marginTop:7, fontWeight:400 }}>
-              {dateStr}
-            </div>
-          )}
+          <div style={{ fontSize:13, fontWeight:800, color:'#fff', lineHeight:1.25, wordBreak:'break-word', overflow:'hidden', display:'-webkit-box', WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>{nb.title}</div>
+          {dateStr && <div style={{ fontSize:10, color:'rgba(255,255,255,0.6)', marginTop:7, fontWeight:400 }}>{dateStr}</div>}
         </div>
 
         {/* Bottom area — due date badge replaces ruled lines when present */}
@@ -740,17 +735,8 @@ function SketchbookCard({ sb, onOpen, onMenu }) {
 
         {/* Title + date — top section */}
         <div style={{ position:'relative', padding:'14px 12px 0 16px', flex:1, zIndex:2 }}>
-          <div style={{ fontSize:13, fontWeight:800, color:'#fff',
-            lineHeight:1.25, wordBreak:'break-word',
-            overflow:'hidden', display:'-webkit-box',
-            WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>
-            {sb.title}
-          </div>
-          {dateStr && (
-            <div style={{ fontSize:10, color:'rgba(255,255,255,0.6)', marginTop:7, fontWeight:400 }}>
-              {dateStr}
-            </div>
-          )}
+          <div style={{ fontSize:13, fontWeight:800, color:'#fff', lineHeight:1.25, wordBreak:'break-word', overflow:'hidden', display:'-webkit-box', WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>{sb.title}</div>
+          {dateStr && <div style={{ fontSize:10, color:'rgba(255,255,255,0.6)', marginTop:7, fontWeight:400 }}>{dateStr}</div>}
         </div>
 
         {/* Dot-grid pattern overlay — starts after spine so dots don't bleed onto it */}
@@ -807,12 +793,7 @@ function FlashcardDeckCard({ deck, onOpen, onMenu }) {
             <rect x="2" y="4" width="16" height="12" rx="2" stroke="rgba(255,255,255,0.8)" strokeWidth="1.5"/>
             <rect x="6" y="8" width="16" height="12" rx="2" stroke="rgba(255,255,255,0.5)" strokeWidth="1.5"/>
           </svg>
-          <div style={{ fontSize:13, fontWeight:800, color:'#fff',
-            lineHeight:1.25, wordBreak:'break-word',
-            overflow:'hidden', display:'-webkit-box',
-            WebkitLineClamp:3, WebkitBoxOrient:'vertical' }}>
-            {deck.title}
-          </div>
+          <div style={{ fontSize:13, fontWeight:800, color:'#fff', lineHeight:1.25, wordBreak:'break-word', overflow:'hidden', display:'-webkit-box', WebkitLineClamp:3, WebkitBoxOrient:'vertical' }}>{deck.title}</div>
         </div>
         {/* Card count + due badge */}
         <div style={{ position:'relative', padding:'0 16px 14px', zIndex:2, display:'flex', gap:8, alignItems:'center' }}>
@@ -2515,6 +2496,7 @@ export default function LibraryView() {
   const [searchFocused, setSearchFocused] = useState(false)
   const nbSubFilter = useAppStore(s => s.libSubFilter)
   const setNbSubFilter = useAppStore(s => s.setLibSubFilter)
+  const [bookFormatFilter, setBookFormatFilter] = useState('all')
   const searchRef = useRef()
 
   const fileInputRef   = useRef()
@@ -2804,7 +2786,7 @@ export default function LibraryView() {
       },
       { label: 'Delete', icon: ICON_TRASH, danger: true, action: async () => {
         const { moveToTrash } = await import('@/lib/storage')
-        await moveToTrash('audio', book.id, book.title)
+        await moveToTrash('audio', book.id, book.title, book)
         removeBook(book.id)
         persistLibrary()
       }},
@@ -2840,9 +2822,8 @@ export default function LibraryView() {
         submenu: makeCollectionSubmenu(sb.id),
       },
       { label: 'Delete', icon: ICON_TRASH, danger: true, action: async () => {
-        const { moveToTrash, deleteSketchbookContent } = await import('@/lib/storage')
+        const { moveToTrash } = await import('@/lib/storage')
         await moveToTrash('sketchbook', sb.id, sb.title)
-        await deleteSketchbookContent(sb.id)
         removeSketchbook(sb.id)
         useAppStore.getState().persistSketchbooks?.()
       }},
@@ -2930,10 +2911,38 @@ export default function LibraryView() {
       )
     }
     if (activeTab === 'books') {
+      const BOOK_FORMAT_FILTERS = [
+        { id: 'all',  label: 'All' },
+        { id: 'epub', label: 'EPUB' },
+        { id: 'pdf',  label: 'PDF' },
+        { id: 'txt',  label: 'TXT' },
+        { id: 'md',   label: 'Markdown' },
+      ]
+      const visibleBooks = bookFormatFilter === 'all'
+        ? books
+        : books.filter(b => {
+            const fmt = (b.format || '').toLowerCase()
+            if (bookFormatFilter === 'epub') return fmt === 'epub' || fmt === 'epub3'
+            return fmt === bookFormatFilter
+          })
       return (
         <div className="lib-tab-inner">
+          {/* Format filter pills */}
+          <div style={{ display:'flex', gap:6, marginBottom:14, flexWrap:'wrap' }}>
+            {BOOK_FORMAT_FILTERS.map(f => (
+              <button key={f.id} onClick={() => setBookFormatFilter(f.id)}
+                style={{
+                  padding:'4px 12px', borderRadius:14, border:'1px solid',
+                  borderColor: bookFormatFilter === f.id ? 'var(--accent)' : 'var(--border)',
+                  background: bookFormatFilter === f.id ? 'var(--accent)' : 'none',
+                  color: bookFormatFilter === f.id ? '#fff' : 'var(--textDim)',
+                  fontSize:11, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
+                  transition:'all 0.12s',
+                }}>{f.label}</button>
+            ))}
+          </div>
           <div className="library-grid" style={{gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))"}}>
-            {books.length ? books.map((b, i) => (
+            {visibleBooks.length ? visibleBooks.map((b, i) => (
               <div key={b.id}
                 data-drag-item={b.id} data-drag-type="book"
                 onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: i, type: 'book', id: b.id, title: b.title, startX: e.clientX, startY: e.clientY, dragging: false } }}
@@ -2942,13 +2951,26 @@ export default function LibraryView() {
               </div>
             )) : null}
           </div>
-          {!books.length && (
-            <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10}}>
-              <button className="lib-empty-plus" onClick={() => fileInputRef.current?.click()}>
-                <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
-              </button>
-              <p className="lib-empty-hint">Click to add books, or right-click anywhere</p>
-              <p className="lib-empty-formats">.epub · .txt · .md · .pdf</p>
+          {!visibleBooks.length && (
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10,paddingTop:60,paddingBottom:40}}>
+              {bookFormatFilter === 'all' ? (
+                <>
+                  <button className="lib-empty-plus" onClick={() => fileInputRef.current?.click()}>
+                    <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
+                  </button>
+                  <p className="lib-empty-hint">Click to add books, or right-click anywhere</p>
+                  <p className="lib-empty-formats">.epub · .txt · .md · .pdf</p>
+                </>
+              ) : (
+                <>
+                  <p className="lib-empty-hint">No {BOOK_FORMAT_FILTERS.find(f=>f.id===bookFormatFilter)?.label} books yet.</p>
+                  <button onClick={() => setBookFormatFilter('all')} style={{
+                    padding: '6px 16px', borderRadius: 8, border: '1px solid var(--border)',
+                    background: 'none', color: 'var(--accent)', fontSize: 12, fontWeight: 600,
+                    cursor: 'pointer', fontFamily: 'inherit',
+                  }}>Show All</button>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -3219,7 +3241,7 @@ export default function LibraryView() {
         .search-drop-badge { font-size: 14px; flex-shrink: 0; opacity: 0.6; }
       `}</style>
       {/* Hidden inputs */}
-      <input ref={fileInputRef}  type="file" accept=".epub,.txt,.md,.pdf" className="hidden-input" multiple onChange={handleBookFiles} />
+      <input ref={fileInputRef}  type="file" accept=".epub,.epub3,.txt,.md,.pdf,application/epub+zip" className="hidden-input" multiple onChange={handleBookFiles} />
       <input ref={audioInputRef} type="file" accept="audio/*" className="hidden-input" multiple onChange={handleAudioImport} />
 
       {/* Header */}
@@ -3336,6 +3358,30 @@ export default function LibraryView() {
           </div>
 
         </div>
+
+        {/* ── Tab bar ───────────────────────────────────────────────────────── */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 0,
+          padding: '0 20px', height: 30,
+          borderBottom: '1px solid var(--borderSubtle)',
+          overflowX: 'auto', flexShrink: 0,
+        }}>
+          {TABS.map(t => (
+            <button key={t.id} onClick={() => setActiveLibTab(t.id)} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              padding: '0 12px', height: 30, border: 'none', background: 'none',
+              fontSize: 11, fontWeight: 500, letterSpacing: '0.04em', textTransform: 'uppercase',
+              color: activeTab === t.id ? 'var(--text)' : 'var(--textDim)',
+              borderBottom: activeTab === t.id ? '2px solid var(--accent)' : '2px solid transparent',
+              marginBottom: -1, cursor: 'pointer', fontFamily: 'inherit',
+              whiteSpace: 'nowrap', transition: 'color 0.12s, border-color 0.12s',
+            }}
+            onMouseEnter={e => { if (activeTab !== t.id) e.currentTarget.style.color = 'var(--text)' }}
+            onMouseLeave={e => { if (activeTab !== t.id) e.currentTarget.style.color = 'var(--textDim)' }}
+            >{t.label}</button>
+          ))}
+        </div>
+
       </header>
 
       {/* Content */}

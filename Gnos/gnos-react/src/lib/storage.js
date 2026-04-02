@@ -137,18 +137,81 @@ async function getTrashDir() {
   return dir
 }
 
-export async function moveToTrash(type, id, title) {
+/** Scan a parent directory for a subfolder whose meta.json has the given id. */
+async function _findFolderById(parentDir, id) {
+  try {
+    const entries = await readDir(parentDir)
+    for (const entry of entries) {
+      if (!entry.name) continue
+      const metaPath = await join(parentDir, entry.name, 'meta.json')
+      if (await exists(metaPath)) {
+        try {
+          const meta = JSON.parse(await readTextFile(metaPath))
+          if (meta.id === id) return await join(parentDir, entry.name)
+        } catch { /* skip corrupt */ }
+      }
+    }
+  } catch { /* parent dir may not exist */ }
+  return null
+}
+
+/**
+ * Move an item's on-disk content folder into the trash directory and write a manifest.
+ * For audiobooks, keyed-store audio payload (which can be 100s of MB) is deleted
+ * immediately — it is too large to keep in trash.
+ * @param {'book'|'audio'|'notebook'|'sketchbook'} type
+ * @param {string} id
+ * @param {string} title
+ * @param {object} [bookObj]  Full book object — needed for audio payload cleanup.
+ */
+export async function moveToTrash(type, id, title, bookObj = null) {
+  const ts = Date.now()
+  const safeName = (title || id).replace(/[^a-zA-Z0-9_\- ]/g, '_').slice(0, 80)
   try {
     const trashDir = await getTrashDir()
-    const timestamp = new Date().toISOString()
-    const safeName = (title || id).replace(/[^a-zA-Z0-9_\- ]/g, '_').slice(0, 80)
-    const trashEntry = await join(trashDir, `${type}_${safeName}_${Date.now()}`)
+    const trashEntry = await join(trashDir, `${type}_${safeName}_${ts}`)
     await mkdir(trashEntry, { recursive: true })
-    // Write a manifest so we know what this trash item is
+
+    // Find and atomically move the content folder into the trash entry.
+    // rename() is O(1) on the same filesystem and never leaves a partial state.
+    let contentFolder = null
+    try {
+      if (type === 'book')       contentFolder = await _findFolderById(await getBooksDir(), id)
+      else if (type === 'audio') contentFolder = await _findFolderById(await getAudioDir(), id)
+      else if (type === 'notebook')   contentFolder = await _findFolderById(await getNotebooksDir(), id)
+      else if (type === 'sketchbook') contentFolder = await _findFolderById(await getSketchesDir(), id)
+    } catch { /* folder lookup failed — non-fatal */ }
+
+    if (contentFolder && (await exists(contentFolder))) {
+      try {
+        await rename(contentFolder, await join(trashEntry, 'content'))
+      } catch (renameErr) {
+        console.warn('[Gnos] moveToTrash: rename failed, content left in place', renameErr)
+      }
+    }
+
+    // Audio keyed-store payload is too large to keep; delete it immediately.
+    if (type === 'audio') {
+      try {
+        const obj = bookObj
+        if (obj?.format === 'audiofolder' && obj?.audioChapters) {
+          for (let i = 0; i < obj.audioChapters.length; i++) {
+            await storage.delete(`audiochap_${id}_${i}`)
+          }
+          await storage.delete(`audiochaps_${id}`)
+        } else {
+          await storage.delete(`audiodata_${id}`)
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    // Write manifest last — a missing manifest means an interrupted delete, not a valid entry.
     await writeTextFile(await join(trashEntry, '_trash_meta.json'), JSON.stringify({
-      type, id, title, deletedAt: timestamp,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      type, id, title,
+      deletedAt: new Date(ts).toISOString(),
+      expiresAt: new Date(ts + 7 * 24 * 60 * 60 * 1000).toISOString(),
     }, null, 2))
+
     return trashEntry
   } catch (err) {
     console.warn('[Gnos] moveToTrash failed:', err)
@@ -163,20 +226,16 @@ export async function cleanupTrash() {
     const now = Date.now()
     for (const entry of entries) {
       if (!entry.name) continue
-      const metaPath = await join(trashDir, entry.name, '_trash_meta.json')
+      const entryPath = await join(trashDir, entry.name)
+      const metaPath = await join(entryPath, '_trash_meta.json')
       if (await exists(metaPath)) {
         try {
           const meta = JSON.parse(await readTextFile(metaPath))
           if (meta.expiresAt && new Date(meta.expiresAt).getTime() < now) {
-            // Expired — permanently delete
-            const entryPath = await join(trashDir, entry.name)
-            const files = await readDir(entryPath)
-            for (const f of files) {
-              if (f.name) await remove(await join(entryPath, f.name))
-            }
-            try { await remove(entryPath) } catch { /* not empty */ }
+            // Recursively remove the entire trash entry (includes moved content folder).
+            await remove(entryPath, { recursive: true })
           }
-        } catch { /* skip corrupt */ }
+        } catch { /* skip corrupt entry */ }
       }
     }
   } catch (err) { console.debug('[Gnos] cleanupTrash error:', err) }

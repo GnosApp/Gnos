@@ -469,37 +469,32 @@ export default function AudioPlayerView() {
 
       <div className="ap-layout" style={{ flex: 1, overflow: 'hidden' }}>
 
-        {/* ── Floating chapters button + popout panel ── */}
-        <button
-          onClick={() => setChapOpen(o => !o)}
-          title={chapOpen ? 'Close chapters' : 'Open chapters'}
-          style={{
-            position: 'fixed', left: chapOpen ? 278 : 12, top: TITLEBAR_H + 58,
-            zIndex: 1200, padding: '7px 12px 7px 10px', borderRadius: 9,
-            border: '1px solid var(--border)',
-            background: chapOpen ? 'var(--surfaceAlt)' : 'var(--surface)',
-            color: chapOpen ? 'var(--text)' : 'var(--textDim)',
-            cursor: 'pointer', fontFamily: 'inherit',
-            fontSize: 12, fontWeight: 600,
-            boxShadow: '0 2px 12px rgba(0,0,0,0.3)',
-            transition: 'left 0.25s cubic-bezier(0.4,0,0.2,1), background 0.15s, color 0.15s',
-            display: 'flex', alignItems: 'center', gap: 7,
-          }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'var(--hover)'; e.currentTarget.style.color = 'var(--text)' }}
-          onMouseLeave={e => { e.currentTarget.style.background = chapOpen ? 'var(--surfaceAlt)' : 'var(--surface)'; e.currentTarget.style.color = chapOpen ? 'var(--text)' : 'var(--textDim)' }}
-        >
-          {/* Chapters icon (stacked lines) */}
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <line x1="3" y1="4" x2="13" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-            <line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-            <line x1="3" y1="12" x2="10" y2="12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-          </svg>
-          <span style={{ letterSpacing: '0.01em' }}>Chapters</span>
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none"
-            style={{ transition: 'transform 0.18s', transform: chapOpen ? 'rotate(180deg)' : 'rotate(0deg)', opacity: 0.6 }}>
-            <path d="M2 3.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </button>
+        {/* ── Floating open-chapters button (only when closed) ── */}
+        {!chapOpen && (
+          <button
+            onClick={() => setChapOpen(true)}
+            title="Open chapters"
+            style={{
+              position: 'fixed', left: 12, top: TITLEBAR_H + 58,
+              zIndex: 1200, padding: '7px 12px 7px 10px', borderRadius: 9,
+              border: '1px solid var(--border)', background: 'var(--surface)',
+              color: 'var(--textDim)', cursor: 'pointer', fontFamily: 'inherit',
+              fontSize: 12, fontWeight: 600,
+              boxShadow: '0 2px 12px rgba(0,0,0,0.3)',
+              display: 'flex', alignItems: 'center', gap: 7,
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--surfaceAlt)'; e.currentTarget.style.color = 'var(--text)' }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'var(--surface)'; e.currentTarget.style.color = 'var(--textDim)' }}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <line x1="3" y1="4" x2="13" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+              <line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+              <line x1="3" y1="12" x2="10" y2="12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+            </svg>
+            <span style={{ letterSpacing: '0.01em' }}>Chapters</span>
+          </button>
+        )}
+        {/* ── Chapters sidebar — close button lives inside the header ── */}
         {chapOpen && (
           <aside style={{
             position: 'fixed', left: 0, top: TITLEBAR_H + 48, bottom: 0, width: 270, zIndex: 1100,
@@ -507,7 +502,31 @@ export default function AudioPlayerView() {
             boxShadow: '6px 0 24px rgba(0,0,0,0.35)', display: 'flex', flexDirection: 'column',
             animation: 'ap-slide-in 0.2s ease',
           }}>
-            <div style={{ padding: '14px 14px 8px', fontSize: 12, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--textDim)' }}>Chapters</div>
+            {/* Integrated header row */}
+            <div style={{
+              padding: '12px 10px 8px 14px',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              borderBottom: '1px solid var(--borderSubtle)', flexShrink: 0,
+            }}>
+              <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--textDim)' }}>
+                Chapters
+              </span>
+              <button
+                onClick={() => setChapOpen(false)}
+                title="Close chapters"
+                style={{
+                  width: 26, height: 26, borderRadius: 6, border: '1px solid var(--border)',
+                  background: 'transparent', color: 'var(--textDim)', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.12s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'var(--surfaceAlt)'; e.currentTarget.style.color = 'var(--text)' }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--textDim)' }}
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                  <path d="M1 1l8 8M9 1L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                </svg>
+              </button>
+            </div>
             <div className="ap-chapter-list" style={{ flex: 1, overflow: 'auto', padding: '0 6px 12px' }}>
               {isMulti ? chaps.map((c, i) => (
                 <button key={i} className={`ap-chap-item${i === chapIdx ? ' active' : ''}`}

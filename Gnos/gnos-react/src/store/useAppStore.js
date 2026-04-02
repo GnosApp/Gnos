@@ -344,6 +344,13 @@ const useAppStore = create((set, get) => ({
   calendarStartHour: 7,
   calendarEndHour: 21,
   calendarWeekStart: 0,
+  // Cross-tab notebook content sync — holds the most recently saved text per notebook id
+  // so other tabs showing the same notebook can detect and apply the new content.
+  notebookContentCache: {},
+  setNotebookContentCache: (id, text) => set(s => ({
+    notebookContentCache: { ...s.notebookContentCache, [id]: { text, ts: Date.now() } },
+  })),
+
   // Filter persistence
   libSubFilter: 'all',
   setLibSubFilter: (f) => { set({ libSubFilter: f }); get().persistPreferences() },
