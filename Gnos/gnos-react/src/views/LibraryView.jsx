@@ -449,7 +449,7 @@ function EditAudiobookModal({ book, onSave, onClose }) {
 
 // ── Graph Modal ────────────────────────────────────────────────────────────────
 
-function SearchDropdown({ query, library, notebooks, onOpenBook, onOpenAudio, onOpenNotebook, onClose, onDevCommand, onOpenGraph, onOpenCalendar, onOpenKanban, onReset }) {
+function SearchDropdown({ query, library, notebooks, sketchbooks, onOpenBook, onOpenAudio, onOpenNotebook, onOpenSketchbook, onClose, onDevCommand, onOpenGraph, onOpenCalendar, onOpenKanban, onReset }) {
   const q = query.trim().toLowerCase()
   if (!q) return null
 
@@ -598,7 +598,12 @@ function SearchDropdown({ query, library, notebooks, onOpenBook, onOpenAudio, on
 
   const bookResults = library.filter(b => b.title?.toLowerCase().includes(q) || b.author?.toLowerCase().includes(q))
   const nbResults   = notebooks.filter(n => n.title?.toLowerCase().includes(q) || n.tags?.some(t => t.toLowerCase().includes(q)))
-  const all = [...bookResults, ...nbResults.map(n => ({ ...n, _isNb: true }))]
+  const sbResults   = (sketchbooks || []).filter(s => s.title?.toLowerCase().includes(q) || s.ocrText?.toLowerCase().includes(q))
+  const all = [
+    ...bookResults,
+    ...nbResults.map(n => ({ ...n, _isNb: true })),
+    ...sbResults.map(s => ({ ...s, _isSb: true })),
+  ]
   if (!all.length) return (
     <div className="search-dropdown">
       <div style={{ padding: '12px 14px', color: 'var(--textDim)', fontSize: 13 }}>No results for "{query}"</div>
@@ -610,18 +615,29 @@ function SearchDropdown({ query, library, notebooks, onOpenBook, onOpenAudio, on
         const [c1, c2] = generateCoverColor(item.title)
         const isAudio = item.type === 'audio'
         const isNb    = item._isNb
+        const isSb    = item._isSb
+        // For sketchbooks that matched via OCR text, show a snippet
+        const ocrSnippet = isSb && item.ocrText && item.ocrText.toLowerCase().includes(q)
+          ? (() => {
+              const idx = item.ocrText.toLowerCase().indexOf(q)
+              const start = Math.max(0, idx - 20)
+              const end   = Math.min(item.ocrText.length, idx + q.length + 30)
+              return (start > 0 ? '…' : '') + item.ocrText.slice(start, end).trim() + (end < item.ocrText.length ? '…' : '')
+            })()
+          : null
         return (
           <button key={item.id} className="search-drop-item" onClick={() => {
-            if (isNb) onOpenNotebook(item)
+            if (isSb) onOpenSketchbook?.(item)
+            else if (isNb) onOpenNotebook(item)
             else if (isAudio) onOpenAudio(item)
             else onOpenBook(item)
             onClose()
           }}>
-            <div className="search-drop-cover" style={{ background: `linear-gradient(135deg,${c1},${c2})` }}>
+            <div className="search-drop-cover" style={{ background: isSb ? (item.coverColor || `linear-gradient(135deg,${c1},${c2})`) : `linear-gradient(135deg,${c1},${c2})` }}>
               {item.coverDataUrl
                 ? <img src={item.coverDataUrl} alt="" style={{ width:'100%',height:'100%',objectFit:'cover',borderRadius:4 }} />
                 : <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.5)', fontWeight: 600 }}>
-                    {isAudio ? 'AUDIO' : isNb ? 'NOTE' : 'BOOK'}
+                    {isAudio ? 'AUDIO' : isNb ? 'NOTE' : isSb ? 'SKETCH' : 'BOOK'}
                   </span>
               }
             </div>
@@ -629,8 +645,9 @@ function SearchDropdown({ query, library, notebooks, onOpenBook, onOpenAudio, on
               <div className="search-drop-title">{item.title}</div>
               {item.author && <div className="search-drop-sub">{item.author}</div>}
               {isNb && <div className="search-drop-sub">{item.wordCount || 0} words</div>}
+              {ocrSnippet && <div className="search-drop-sub" style={{ fontStyle:'italic', opacity:0.75 }}>{ocrSnippet}</div>}
             </div>
-            <div className="search-drop-badge">{isAudio ? '♪' : isNb ? '📝' : '📖'}</div>
+            <div className="search-drop-badge">{isAudio ? '♪' : isNb ? '📝' : isSb ? '✏️' : '📖'}</div>
           </button>
         )
       })}
@@ -729,29 +746,48 @@ function SketchbookCard({ sb, onOpen, onMenu }) {
       onContextMenu={e => { e.preventDefault(); onMenu(e, sb) }}>
       {/* Cover — same fixed size as book covers */}
       <div className="book-cover" style={{ background: color, padding: 0, justifyContent: 'flex-start', alignItems: 'stretch' }}>
-        {/* Solid colored spine — like BookCard's .cover-spine */}
-        <div style={{ position:'absolute', left:0, top:0, bottom:0, width:8,
-          background: color, filter:'brightness(0.7)', zIndex:1 }} />
 
-        {/* Title + date — top section */}
-        <div style={{ position:'relative', padding:'14px 12px 0 16px', flex:1, zIndex:2 }}>
-          <div style={{ fontSize:13, fontWeight:800, color:'#fff', lineHeight:1.25, wordBreak:'break-word', overflow:'hidden', display:'-webkit-box', WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>{sb.title}</div>
-          {dateStr && <div style={{ fontSize:10, color:'rgba(255,255,255,0.6)', marginTop:7, fontWeight:400 }}>{dateStr}</div>}
-        </div>
+        {sb.coverDataUrl ? (
+          <>
+            {/* Thumbnail preview — padded so it doesn't touch the card walls */}
+            <div style={{ position:'absolute', inset:0, borderRadius:'inherit', background: sb.coverBgColor || '#ffffff', padding:'8px 10px', display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <img
+                src={sb.coverDataUrl}
+                alt=""
+                draggable="false"
+                style={{ width:'100%', height:'100%', objectFit:'contain', objectPosition:'center', borderRadius:3 }}
+              />
+            </div>
+            {/* Border overlay to match app aesthetic */}
+            <div style={{ position:'absolute', inset:0, borderRadius:'inherit', border:'1px solid var(--border)', pointerEvents:'none', zIndex:2 }} />
+          </>
+        ) : (
+          <>
+            {/* Solid colored spine */}
+            <div style={{ position:'absolute', left:0, top:0, bottom:0, width:8,
+              background: color, filter:'brightness(0.7)', zIndex:1 }} />
 
-        {/* Dot-grid pattern overlay — starts after spine so dots don't bleed onto it */}
-        <div style={{
-          position:'absolute', top:0, right:0, bottom:0, left:8, zIndex:1, pointerEvents:'none',
-          backgroundImage:'radial-gradient(circle, rgba(255,255,255,0.18) 1px, transparent 1px)',
-          backgroundSize:'8px 8px',
-        }} />
-        {/* SKETCH badge + pencil icon */}
-        <div style={{ position:'relative', padding:'0 12px 16px 16px', display:'flex', alignItems:'center', gap:6, zIndex:2 }}>
-          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ opacity:0.7, flexShrink:0 }}>
-            <path d="M11.5 2.5a2.121 2.121 0 0 1 3 3L5 15l-4 1 1-4 9.5-9.5z" stroke="rgba(255,255,255,0.85)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-          <span style={{ fontSize:8, fontWeight:800, letterSpacing:'.1em', color:'rgba(255,255,255,0.7)', textTransform:'uppercase' }}>Sketch</span>
-        </div>
+            {/* Title + date */}
+            <div style={{ position:'relative', padding:'14px 12px 0 16px', flex:1, zIndex:2 }}>
+              <div style={{ fontSize:13, fontWeight:800, color:'#fff', lineHeight:1.25, wordBreak:'break-word', overflow:'hidden', display:'-webkit-box', WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>{sb.title}</div>
+              {dateStr && <div style={{ fontSize:10, color:'rgba(255,255,255,0.6)', marginTop:7, fontWeight:400 }}>{dateStr}</div>}
+            </div>
+
+            {/* Dot-grid pattern overlay */}
+            <div style={{
+              position:'absolute', top:0, right:0, bottom:0, left:8, zIndex:1, pointerEvents:'none',
+              backgroundImage:'radial-gradient(circle, rgba(255,255,255,0.18) 1px, transparent 1px)',
+              backgroundSize:'8px 8px',
+            }} />
+            {/* SKETCH badge + pencil icon */}
+            <div style={{ position:'relative', padding:'0 12px 16px 16px', display:'flex', alignItems:'center', gap:6, zIndex:2 }}>
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ opacity:0.7, flexShrink:0 }}>
+                <path d="M11.5 2.5a2.121 2.121 0 0 1 3 3L5 15l-4 1 1-4 9.5-9.5z" stroke="rgba(255,255,255,0.85)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              <span style={{ fontSize:8, fontWeight:800, letterSpacing:'.1em', color:'rgba(255,255,255,0.7)', textTransform:'uppercase' }}>Sketch</span>
+            </div>
+          </>
+        )}
       </div>
       {/* Meta */}
       <div className="book-meta">
@@ -968,7 +1004,38 @@ function extractTodosFromText(text) {
   return lists
 }
 
+/** Parse /habits blocks from a notebook's content text. Returns array of habit data objects. */
+function extractHabitsFromText(text) {
+  if (!text) return []
+  const blocks = []
+  const lines = text.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^\/habits(?::(.*))?$/)
+    if (m && m[1]) {
+      try {
+        const data = JSON.parse(m[1])
+        if (data.habits && data.habits.length > 0) blocks.push(data)
+      } catch { /* skip corrupt block */ }
+    }
+  }
+  return blocks
+}
+
 /** Parse /calendar blocks from a notebook's content text. Returns array of { title, events } */
+function extractTaskDueDatesFromText(text) {
+  if (!text) return {}
+  const events = {}
+  const re = /^\s*[-*+]\s\[[ xX]\]\s+(.*?)\{date:(\d{4}-\d{2}-\d{2})\}/gm
+  let m
+  while ((m = re.exec(text)) !== null) {
+    const label = m[1].replace(/\{label:\d+\}/g, '').trim() || 'Task'
+    const dateKey = m[2]
+    if (!events[dateKey]) events[dateKey] = []
+    events[dateKey].push(label)
+  }
+  return events
+}
+
 function extractCalendarsFromText(text) {
   if (!text) return []
   const cals = []
@@ -2083,11 +2150,31 @@ function ProfileModal({ onClose }) {
   const [todoLists,    setTodoLists]    = useState([])
   const [todosLoaded,  setTodosLoaded]  = useState(false)
   const [calendarEvents, setCalendarEvents] = useState({})
+  const [habitBlocks,  setHabitBlocks]  = useState([])
+  const [habitsLoaded, setHabitsLoaded] = useState(false)
 
   useEffect(() => { loadReadingLog().then(setLog).catch(() => setLog({})) }, [])
 
   useEffect(() => {
-    if ((profileTab !== 'todos' && profileTab !== 'calendar') || todosLoaded) return
+    if (profileTab !== 'habits' || habitsLoaded) return
+    setHabitsLoaded(true)
+    ;(async () => {
+      const allBlocks = []
+      for (const nb of notebooks) {
+        try {
+          const raw = await loadNotebookContent(nb.id)
+          if (!raw) continue
+          const text = typeof raw === 'string' ? raw.replace(/^# .+\n/, '') : ''
+          const blocks = extractHabitsFromText(text)
+          blocks.forEach(b => allBlocks.push({ notebookTitle: nb.title, ...b }))
+        } catch { /* skip */ }
+      }
+      setHabitBlocks(allBlocks)
+    })()
+  }, [profileTab, habitsLoaded, notebooks])
+
+  useEffect(() => {
+    if ((profileTab !== 'calendar') || todosLoaded) return
     setTodosLoaded(true)
     ;(async () => {
       const all = [], allCals = []
@@ -2100,6 +2187,8 @@ function ProfileModal({ onClose }) {
           lists.forEach(l => all.push({ notebookTitle: nb.title, ...l }))
           const cals = extractCalendarsFromText(text)
           allCals.push(...cals)
+          const taskEvts = extractTaskDueDatesFromText(text)
+          if (Object.keys(taskEvts).length) allCals.push({ title: 'Tasks', events: taskEvts })
         } catch { /* skip */ }
       }
       setTodoLists(all)
@@ -2152,7 +2241,7 @@ function ProfileModal({ onClose }) {
 
   const title = username ? `${username} — Profile` : 'Reading Profile'
   const heatAlpha = ['0','0.22','0.45','0.7','1']
-  const TABS = [['stats','Stats'],['review','Review'],['calendar','Calendar'],['todos',"Todo's"]]
+  const TABS = [['stats','Stats'],['review','Review'],['calendar','Calendar'],['habits','Habits']]
 
   return (
     <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:2000,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={onClose}>
@@ -2232,94 +2321,65 @@ function ProfileModal({ onClose }) {
             </div>
           )}
 
-          {/* ── Todo's tab ── */}
-          {profileTab==='todos'&&(()=>{
-            const todayKey = today
-            // Calendar events for today
-            const todayCalEvents = eventsForDateKey(todayKey, storeCalendarEvents)
-            // All todo items across all lists, with list context
-            const allItems = todoLists.flatMap(list =>
-              list.items.map(item => ({...item, listName:list.listName, notebookTitle:list.notebookTitle}))
-            )
-            const todayTodos  = allItems.filter(i => i.dateStr === todayKey)
-            const notDated    = allItems.filter(i => !i.dateStr && !i.checked)
-            const laterTodos  = allItems.filter(i => i.dateStr && i.dateStr > todayKey)
-            const hasSomething = todayCalEvents.length > 0 || todayTodos.length > 0 || notDated.length > 0 || laterTodos.length > 0
-
-            const SectionHeader = ({label, count}) => (
-              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,marginTop:4}}>
-                <span style={{fontSize:11,fontWeight:700,color:'var(--textDim)',textTransform:'uppercase',letterSpacing:'0.07em'}}>{label}</span>
-                {count>0&&<span style={{fontSize:10,color:'var(--textDim)',background:'var(--surfaceAlt)',borderRadius:10,padding:'1px 7px',fontWeight:700,border:'1px solid var(--borderSubtle)'}}>{count}</span>}
-              </div>
-            )
-            const TodoItem = ({item, accent=false}) => (
-              <div style={{display:'flex',alignItems:'center',gap:10,padding:'7px 12px',borderRadius:8,background:'var(--surface)',border:'1px solid var(--borderSubtle)',marginBottom:5,opacity:item.checked?0.5:1}}>
-                <div style={{width:14,height:14,borderRadius:4,flexShrink:0,border:`1.5px solid ${item.checked?'var(--accent)':'var(--border)'}`,background:item.checked?'var(--accent)':'none',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,color:'#fff'}}>{item.checked?'✓':''}</div>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:12.5,color:'var(--text)',lineHeight:1.4,textDecoration:item.checked?'line-through':'none',fontWeight:item.checked?400:500}}>{item.text}</div>
-                  <div style={{display:'flex',gap:5,marginTop:item.timeStr?3:0,flexWrap:'wrap'}}>
-                    {item.timeStr&&<span style={{fontSize:10,color:'var(--textDim)',display:'inline-flex',alignItems:'center',gap:3}}><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>{item.timeStr}</span>}
-                    <span style={{fontSize:10,color:'var(--textDim)',opacity:0.6}}>{item.listName} · {item.notebookTitle}</span>
-                  </div>
+          {/* ── Habits tab ── */}
+          {profileTab==='habits'&&(
+            <div>
+              {!habitsLoaded&&<div style={{color:'var(--textDim)',fontSize:13,padding:'8px 0'}}>Loading habits…</div>}
+              {habitsLoaded&&habitBlocks.length===0&&(
+                <div style={{color:'var(--textDim)',fontSize:13,padding:'16px 0',textAlign:'center',lineHeight:1.6}}>
+                  No habits yet.<br/>
+                  <span style={{fontSize:12,opacity:0.7}}>Use <code style={{background:'var(--surfaceAlt)',padding:'1px 5px',borderRadius:4}}>/habits</code> in any notebook to create a habit tracker.</span>
                 </div>
-              </div>
-            )
-            const CalEventItem = ({evt}) => (
-              <div style={{display:'flex',alignItems:'center',gap:10,padding:'7px 12px',borderRadius:8,background:'var(--surface)',border:'1px solid var(--borderSubtle)',marginBottom:5}}>
-                <div style={{width:10,height:10,borderRadius:'50%',background:evt.color||'var(--accent)',flexShrink:0}}/>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:12.5,color:'var(--text)',fontWeight:500,lineHeight:1.4}}>{evt.title}</div>
-                  {!evt.allDay&&evt.startTime&&<div style={{fontSize:10,color:'var(--textDim)',marginTop:1}}>{evt.startTime}{evt.endTime?` → ${evt.endTime}`:''}</div>}
-                </div>
-                {evt.allDay&&<span style={{fontSize:9,color:'var(--textDim)',background:'var(--surfaceAlt)',borderRadius:4,padding:'1px 5px',border:'1px solid var(--borderSubtle)',flexShrink:0}}>All day</span>}
-              </div>
-            )
-
-            return (
-              <div>
-                {!todosLoaded&&<div style={{color:'var(--textDim)',fontSize:13,padding:'8px 0'}}>Loading todos…</div>}
-                {todosLoaded&&!hasSomething&&(
-                  <div style={{color:'var(--textDim)',fontSize:13,padding:'16px 0',textAlign:'center',lineHeight:1.6}}>
-                    No todos yet.<br/>
-                    <span style={{fontSize:12,opacity:0.7}}>Use <code style={{background:'var(--surfaceAlt)',padding:'1px 5px',borderRadius:4}}>/todo</code> in any notebook to create a to-do list.</span>
-                  </div>
-                )}
-                {/* Today section */}
-                {(todayCalEvents.length>0||todayTodos.length>0)&&(
-                  <div style={{marginBottom:20}}>
-                    <SectionHeader label="Today" count={todayCalEvents.length+todayTodos.length}/>
-                    {todayCalEvents.map((evt,i)=><CalEventItem key={evt.id||i} evt={evt}/>)}
-                    {todayTodos.map((item,i)=><TodoItem key={i} item={item} accent/>)}
-                  </div>
-                )}
-                {/* Upcoming section */}
-                {laterTodos.length>0&&(
-                  <div style={{marginBottom:20}}>
-                    <SectionHeader label="Upcoming" count={laterTodos.length}/>
-                    {laterTodos.sort((a,b)=>a.dateStr<b.dateStr?-1:1).map((item,i)=>(
-                      <div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'7px 12px',borderRadius:8,background:'var(--surface)',border:'1px solid var(--borderSubtle)',marginBottom:5,opacity:item.checked?0.5:1}}>
-                        <div style={{width:14,height:14,borderRadius:4,flexShrink:0,border:`1.5px solid ${item.checked?'var(--accent)':'var(--border)'}`,background:item.checked?'var(--accent)':'none',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,color:'#fff'}}>{item.checked?'✓':''}</div>
-                        <div style={{flex:1,minWidth:0}}>
-                          <div style={{fontSize:12.5,color:'var(--text)',lineHeight:1.4,fontWeight:500}}>{item.text}</div>
-                          <div style={{display:'flex',gap:6,marginTop:3,flexWrap:'wrap'}}>
-                            <span style={{fontSize:10,color:'var(--textDim)',display:'inline-flex',alignItems:'center',gap:3}}><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>{item.dateStr}</span>
-                            <span style={{fontSize:10,color:'var(--textDim)',opacity:0.6}}>{item.listName}</span>
-                          </div>
-                        </div>
+              )}
+              {habitsLoaded&&habitBlocks.map((block, bi) => {
+                const todayKey = today
+                const totalHabits = block.habits.length
+                const todayLog = block.log?.[todayKey] || []
+                const todayDone = todayLog.filter(Boolean).length
+                return (
+                  <div key={bi} style={{marginBottom:16,padding:'12px 14px',borderRadius:10,background:'var(--surface)',border:'1px solid var(--borderSubtle)'}}>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+                      <div>
+                        <div style={{fontSize:13,fontWeight:700,color:'var(--text)'}}>{block.title || 'Habits'}</div>
+                        <div style={{fontSize:10,color:'var(--textDim)',marginTop:2}}>{block.notebookTitle}</div>
                       </div>
-                    ))}
+                      <div style={{textAlign:'right'}}>
+                        <div style={{fontSize:20,fontWeight:800,color:'var(--accent)',lineHeight:1}}>{todayDone}/{totalHabits}</div>
+                        <div style={{fontSize:10,color:'var(--textDim)',marginTop:1}}>today</div>
+                      </div>
+                    </div>
+                    <div style={{display:'flex',flexDirection:'column',gap:5}}>
+                      {block.habits.map((hName, hi) => {
+                        const done = !!(block.log?.[todayKey]?.[hi])
+                        // Compute last 7-day completion rate
+                        let streak7 = 0
+                        for (let d = 0; d < 7; d++) {
+                          const dt = new Date(); dt.setDate(dt.getDate() - d)
+                          const k = dt.toISOString().slice(0, 10)
+                          if (block.log?.[k]?.[hi]) streak7++
+                        }
+                        return (
+                          <div key={hi} style={{display:'flex',alignItems:'center',gap:10,padding:'6px 10px',borderRadius:7,background:done?'color-mix(in srgb, var(--accent) 8%, var(--surface))':'var(--surfaceAlt)',border:`1px solid ${done?'color-mix(in srgb, var(--accent) 25%, var(--border))':'var(--borderSubtle)'}`}}>
+                            <div style={{width:16,height:16,borderRadius:4,flexShrink:0,border:`1.5px solid ${done?'var(--accent)':'var(--border)'}`,background:done?'var(--accent)':'none',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,color:'#fff'}}>{done?'✓':''}</div>
+                            <div style={{flex:1,minWidth:0,fontSize:12.5,color:'var(--text)',fontWeight:done?600:400,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={hName}>{hName}</div>
+                            <div style={{display:'flex',gap:2,flexShrink:0}}>
+                              {Array.from({length:7}).map((_,d) => {
+                                const dt = new Date(); dt.setDate(dt.getDate() - (6-d))
+                                const k = dt.toISOString().slice(0, 10)
+                                const on = !!(block.log?.[k]?.[hi])
+                                return <div key={d} style={{width:8,height:8,borderRadius:2,background:on?'var(--accent)':'var(--surfaceAlt)',border:'1px solid var(--borderSubtle)',opacity:on?1:0.5}} title={k}/>
+                              })}
+                            </div>
+                            <span style={{fontSize:10,color:streak7>=5?'var(--accent)':'var(--textDim)',fontWeight:600,flexShrink:0,minWidth:24,textAlign:'right'}}>{streak7}/7</span>
+                          </div>
+                        )
+                      })}
+                    </div>
                   </div>
-                )}
-                {/* Not Dated section */}
-                {notDated.length>0&&(
-                  <div style={{marginBottom:8}}>
-                    <SectionHeader label="Not Dated" count={notDated.length}/>
-                    {notDated.map((item,i)=><TodoItem key={i} item={item}/>)}
-                  </div>
-                )}
-              </div>
-            )
-          })()}
+                )
+              })}
+            </div>
+          )}
 
           {/* ── Stats tab ── */}
           {profileTab==='stats'&&(<>
@@ -2471,9 +2531,13 @@ export default function LibraryView() {
   const setOnboardingComplete = useAppStore(s => s.setOnboardingComplete)
   const setArchivePath        = useAppStore(s => s.setArchivePath)
   const persistPreferences    = useAppStore(s => s.persistPreferences)
+  const unifiedLibraryOrder   = useAppStore(s => s.unifiedLibraryOrder)
+  const setUnifiedLibraryOrder = useAppStore(s => s.setUnifiedLibraryOrder)
+  const openOnCreate          = useAppStore(s => s.openOnCreate)
 
   const [search,     setSearch]     = useState('')
   const [addOpen,    setAddOpen]    = useState(false)
+  const [newlyCreatedId, setNewlyCreatedId] = useState(null)
   const [devOnboardingOpen, setDevOnboardingOpen] = useState(false)
   const [draggingId, setDraggingId] = useState(null)
   const [dropId,     setDropId]     = useState(null)
@@ -2556,26 +2620,50 @@ export default function LibraryView() {
       if (drop.col && d.id) {
         store.addToCollection?.(drop.col, d.id)
         store.persistCollections?.()
-      } else if (drop.item && drop.item !== d.id && drop.itemType === d.type) {
+      } else if (drop.item && drop.item !== d.id) {
         const toId = drop.item
-        if (d.type === 'book' || d.type === 'audio') {
-          const fi = store.library.findIndex(x => x.id === d.id)
-          const ti = store.library.findIndex(x => x.id === toId)
-          if (fi !== -1 && ti !== -1) { store.reorderLibrary(fi, ti); store.persistLibrary?.() }
-        } else if (d.type === 'nb') {
-          // Look up which array the target actually belongs to (avoids cross-category mismatch)
-          const tiNotebook   = store.notebooks.findIndex(n => n.id === toId)
-          const tiSketchbook = store.sketchbooks.findIndex(s => s.id === toId)
-          const tiFlashcard  = store.flashcardDecks.findIndex(fd => fd.id === toId)
-          if (d.nbKind === 'notebook' && tiNotebook !== -1) {
-            const fi = store.notebooks.findIndex(n => n.id === d.id)
-            if (fi !== -1) { store.reorderNotebooks(fi, tiNotebook); store.persistNotebooks?.() }
-          } else if (d.nbKind === 'sketchbook' && tiSketchbook !== -1) {
-            const fi = store.sketchbooks.findIndex(s => s.id === d.id)
-            if (fi !== -1) { store.reorderSketchbooks(fi, tiSketchbook); store.persistSketchbooks?.() }
-          } else if (d.nbKind === 'flashcard' && tiFlashcard !== -1) {
-            const fi = store.flashcardDecks.findIndex(fd => fd.id === d.id)
-            if (fi !== -1) { store.reorderFlashcardDecks(fi, tiFlashcard); store.persistFlashcardDecks?.() }
+        const isMainLib = store.activeLibTab === 'library'
+
+        if (isMainLib) {
+          // Unified cross-type reorder for the main library tab
+          const allIds = [
+            ...store.library.map(b => b.id),
+            ...store.notebooks.map(n => n.id),
+            ...store.sketchbooks.map(s => s.id),
+            ...store.flashcardDecks.map(f => f.id),
+          ]
+          const currentOrder = store.unifiedLibraryOrder?.length > 0
+            ? [...store.unifiedLibraryOrder, ...allIds.filter(id => !store.unifiedLibraryOrder.includes(id))]
+            : allIds
+          const fromIdx = currentOrder.indexOf(d.id)
+          const toIdx   = currentOrder.indexOf(toId)
+          if (fromIdx !== -1 && toIdx !== -1) {
+            const newOrder = [...currentOrder]
+            const [moved] = newOrder.splice(fromIdx, 1)
+            newOrder.splice(toIdx, 0, moved)
+            store.setUnifiedLibraryOrder(newOrder)
+            store.persistPreferences?.()
+          }
+        } else if (drop.itemType === d.type) {
+          // Same-type reorder in type-specific tabs (existing behaviour)
+          if (d.type === 'book' || d.type === 'audio') {
+            const fi = store.library.findIndex(x => x.id === d.id)
+            const ti = store.library.findIndex(x => x.id === toId)
+            if (fi !== -1 && ti !== -1) { store.reorderLibrary(fi, ti); store.persistLibrary?.() }
+          } else if (d.type === 'nb') {
+            const tiNotebook   = store.notebooks.findIndex(n => n.id === toId)
+            const tiSketchbook = store.sketchbooks.findIndex(s => s.id === toId)
+            const tiFlashcard  = store.flashcardDecks.findIndex(fd => fd.id === toId)
+            if (d.nbKind === 'notebook' && tiNotebook !== -1) {
+              const fi = store.notebooks.findIndex(n => n.id === d.id)
+              if (fi !== -1) { store.reorderNotebooks(fi, tiNotebook); store.persistNotebooks?.() }
+            } else if (d.nbKind === 'sketchbook' && tiSketchbook !== -1) {
+              const fi = store.sketchbooks.findIndex(s => s.id === d.id)
+              if (fi !== -1) { store.reorderSketchbooks(fi, tiSketchbook); store.persistSketchbooks?.() }
+            } else if (d.nbKind === 'flashcard' && tiFlashcard !== -1) {
+              const fi = store.flashcardDecks.findIndex(fd => fd.id === d.id)
+              if (fi !== -1) { store.reorderFlashcardDecks(fi, tiFlashcard); store.persistFlashcardDecks?.() }
+            }
           }
         }
       }
@@ -2858,48 +2946,46 @@ export default function LibraryView() {
     )
     const dragStyle = (id) => ({
       opacity: draggingId === id ? 0.35 : 1,
-      outline: dropId === id ? '2px solid var(--accent)' : 'none',
-      boxShadow: dropId === id ? '0 0 0 5px rgba(56,139,253,0.18)' : 'none',
+      outline: dropId === id ? '2px solid var(--accent)' : newlyCreatedId === id ? '2px solid var(--accent)' : 'none',
+      boxShadow: dropId === id ? '0 0 0 5px rgba(56,139,253,0.18)' : newlyCreatedId === id ? '0 0 0 6px rgba(56,139,253,0.22)' : 'none',
       outlineOffset: 2, borderRadius: 10, cursor: 'grab', userSelect: 'none',
       transform: dropId === id ? 'scale(0.95)' : 'scale(1)',
       transition: 'transform 0.12s, box-shadow 0.12s, opacity 0.12s',
     })
-    return [
-      ...lib.map(b => (
-        <div key={b.id}
-          data-drag-item={b.id} data-drag-type={b.type === 'audio' ? 'audio' : 'book'}
-          onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: 0, type: b.type === 'audio' ? 'audio' : 'book', id: b.id, title: b.title, startX: e.clientX, startY: e.clientY, dragging: false } }}
-          style={dragStyle(b.id)}>
-          {b.type === 'audio'
-            ? <AudiobookCard book={b} onOpen={openAudio} onMenu={showAudioMenu} />
-            : <BookCard book={b} onOpen={openBook} onMenu={showBookMenu} />}
-        </div>
-      )),
-      ...nbs.map(nb => (
-        <div key={nb.id}
-          data-drag-item={nb.id} data-drag-type="nb"
-          onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: 0, type: 'nb', id: nb.id, title: nb.title, nbKind: 'notebook', startX: e.clientX, startY: e.clientY, dragging: false } }}
-          style={dragStyle(nb.id)}>
-          <NotebookCard nb={nb} onOpen={openNotebook} onMenu={showNbMenu} />
-        </div>
-      )),
-      ...sbs.map(sb => (
-        <div key={sb.id}
-          data-drag-item={sb.id} data-drag-type="nb"
-          onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: 0, type: 'nb', id: sb.id, title: sb.title, nbKind: 'sketchbook', startX: e.clientX, startY: e.clientY, dragging: false } }}
-          style={dragStyle(sb.id)}>
-          <SketchbookCard sb={sb} onOpen={openSketchbook} onMenu={showSbMenu} />
-        </div>
-      )),
-      ...fds.map(deck => (
-        <div key={deck.id}
-          data-drag-item={deck.id} data-drag-type="nb"
-          onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: 0, type: 'nb', id: deck.id, title: deck.title, nbKind: 'flashcard', startX: e.clientX, startY: e.clientY, dragging: false } }}
-          style={dragStyle(deck.id)}>
-          <FlashcardDeckCard deck={deck} onOpen={openFlashcardDeck} onMenu={showDeckMenu} />
-        </div>
-      )),
+
+    // Build a flat list of all items, then sort by unifiedLibraryOrder if set
+    const allEntries = [
+      ...lib.map(b => ({ item: b, _type: b.type === 'audio' ? 'audio' : 'book' })),
+      ...nbs.map(n => ({ item: n, _type: 'nb', _kind: 'notebook' })),
+      ...sbs.map(s => ({ item: s, _type: 'nb', _kind: 'sketchbook' })),
+      ...fds.map(d => ({ item: d, _type: 'nb', _kind: 'flashcard' })),
     ]
+    let ordered
+    if (unifiedLibraryOrder.length) {
+      const orderMap = new Map(unifiedLibraryOrder.map((id, i) => [id, i]))
+      const inOrder    = allEntries.filter(e => orderMap.has(e.item.id)).sort((a, b) => orderMap.get(a.item.id) - orderMap.get(b.item.id))
+      const notInOrder = allEntries.filter(e => !orderMap.has(e.item.id))
+      ordered = [...inOrder, ...notInOrder]
+    } else {
+      ordered = allEntries
+    }
+
+    return ordered.map(({ item, _type, _kind }) => {
+      const dragType = _type
+      const nbKind   = _kind
+      return (
+        <div key={item.id}
+          data-drag-item={item.id} data-drag-type={dragType}
+          onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: 0, type: dragType, id: item.id, title: item.title, nbKind, startX: e.clientX, startY: e.clientY, dragging: false } }}
+          style={dragStyle(item.id)}>
+          {_type === 'audio'       && <AudiobookCard book={item} onOpen={openAudio} onMenu={showAudioMenu} />}
+          {_type === 'book'        && <BookCard book={item} onOpen={openBook} onMenu={showBookMenu} />}
+          {_kind === 'notebook'    && <NotebookCard nb={item} onOpen={openNotebook} onMenu={showNbMenu} />}
+          {_kind === 'sketchbook'  && <SketchbookCard sb={item} onOpen={openSketchbook} onMenu={showSbMenu} />}
+          {_kind === 'flashcard'   && <FlashcardDeckCard deck={item} onOpen={openFlashcardDeck} onMenu={showDeckMenu} />}
+        </div>
+      )
+    })
   }
 
   function renderTab() {
@@ -3270,9 +3356,11 @@ export default function LibraryView() {
                   query={search}
                   library={library}
                   notebooks={notebooks}
+                  sketchbooks={sketchbooks}
                   onOpenBook={openBook}
                   onOpenAudio={openAudio}
                   onOpenNotebook={openNotebook}
+                  onOpenSketchbook={openSketchbook}
                   onDevCommand={cmd => { if (cmd === 'onboarding') setDevOnboardingOpen(true) }}
                   onOpenGraph={() => openNewTab({ view: 'graph' })}
                   onOpenCalendar={() => navigate({ view: 'calendar' })}
@@ -3297,22 +3385,30 @@ export default function LibraryView() {
                   onAddAudio={() => audioInputRef.current?.click()}
                   onNewNotebook={() => {
                     const nb = { id: makeId('nb'), title: 'Untitled', wordCount: 0, createdAt: new Date().toISOString() }
-                    addNotebook(nb)
-                    persistNotebooks()
-                    setActiveNotebook(nb)
-                    if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'notebook', activeNotebook: nb })
-                    setView('notebook')
+                    addNotebook(nb); persistNotebooks()
                     setAddOpen(false)
+                    if (openOnCreate) {
+                      setActiveNotebook(nb)
+                      if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'notebook', activeNotebook: nb })
+                      setView('notebook')
+                    } else {
+                      setNewlyCreatedId(nb.id)
+                      setTimeout(() => setNewlyCreatedId(null), 2200)
+                    }
                   }}
                   onNewSketchbook={() => {
                     const COLORS = ['#2d1b69','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#6b3fa0','#2e7d32']
                     const sb = { id: makeId('sb'), title: 'Untitled Sketch', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), coverColor: COLORS[Math.floor(sketchbooks.length % COLORS.length)] }
-                    addSketchbook(sb)
-                    persistSketchbooks()
-                    setActiveSketchbook(sb)
-                    if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'sketchbook', activeSketchbook: sb })
-                    setView('sketchbook')
+                    addSketchbook(sb); persistSketchbooks()
                     setAddOpen(false)
+                    if (openOnCreate) {
+                      setActiveSketchbook(sb)
+                      if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'sketchbook', activeSketchbook: sb })
+                      setView('sketchbook')
+                    } else {
+                      setNewlyCreatedId(sb.id)
+                      setTimeout(() => setNewlyCreatedId(null), 2200)
+                    }
                   }}
                   onNewFlashcardDeck={() => {
                     const COLORS = ['#6b3fa0','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#2e7d32','#c0392b']
@@ -3321,12 +3417,16 @@ export default function LibraryView() {
                       color: COLORS[Math.floor(flashcardDecks.length % COLORS.length)],
                       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
                     }
-                    addDeck(deck)
-                    persistFlashcardDecks()
-                    setActiveFlashcardDeck(deck)
-                    if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'flashcard', activeFlashcardDeck: deck })
-                    setView('flashcard')
+                    addDeck(deck); persistFlashcardDecks()
                     setAddOpen(false)
+                    if (openOnCreate) {
+                      setActiveFlashcardDeck(deck)
+                      if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'flashcard', activeFlashcardDeck: deck })
+                      setView('flashcard')
+                    } else {
+                      setNewlyCreatedId(deck.id)
+                      setTimeout(() => setNewlyCreatedId(null), 2200)
+                    }
                   }}
                   onNewCollection={() => {
                     const COLLECTION_COLORS = ['#388bfd', '#e05c7a', '#4a7c3f', '#e8922a', '#8250df', '#f0883e', '#56d4dd']

@@ -450,6 +450,28 @@ export default function ReaderView() {
     persistDebounceRef.current = setTimeout(() => persistPreferences(), 400)
   }
 
+  // Keep a stable ref so the zoom keydown effect can call the current rebuild
+  const handleRebuildRef = useRef(null)
+
+  // ── Cmd/Ctrl + +/- zoom ───────────────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e) => {
+      if (!(e.metaKey || e.ctrlKey)) return
+      if (e.key !== '+' && e.key !== '=' && e.key !== '-') return
+      e.preventDefault()
+      const current = prefsRef.current.fontSize
+      const next = e.key === '-' ? Math.max(14, current - 1) : Math.min(28, current + 1)
+      if (next === current) return
+      setPref('fontSize', next)
+      clearTimeout(persistDebounceRef.current)
+      persistDebounceRef.current = setTimeout(() => persistPreferences(), 400)
+      // Trigger a re-render then rebuild pagination with new size
+      setTimeout(() => handleRebuildRef.current?.(), 0)
+    }
+    window.addEventListener('keydown', handler, { capture: true })
+    return () => window.removeEventListener('keydown', handler, { capture: true })
+  }, []) // refs only — stable
+
   function handleRebuild() {
     if (!cardRef.current || chaptersRef.current.length === 0) return
     const p = prefsRef.current
@@ -502,6 +524,7 @@ export default function ReaderView() {
     setCurPage(targetPage)
     renderPage(cardEl, chaptersRef.current, targetChapter, targetPage, p.twoPage, false)
   }
+  handleRebuildRef.current = handleRebuild
 
   // ── Page jump ─────────────────────────────────────────────────────────────
   function handlePageJump(val) {

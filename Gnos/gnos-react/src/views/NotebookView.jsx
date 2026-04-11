@@ -28,7 +28,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, useContext, createEl
 import { createRoot } from 'react-dom/client'
 import useAppStore from '@/store/useAppStore'
 import { PaneContext } from '@/lib/PaneContext'
-import { loadNotebookContent, saveNotebookContent, saveNotebookImage, getNotebookFolderPath } from '@/lib/storage'
+import { loadNotebookContent, saveNotebookContent, saveNotebookImage, getNotebookFolderPath, addReadingMinutes } from '@/lib/storage'
 import { GnosNavButton } from '@/components/SideNav'
 import { listen } from '@tauri-apps/api/event'
 
@@ -303,18 +303,38 @@ function blockToHtml(raw, notebooks, library, footnotesBuf, sketchbooks = [], fl
     return `<blockquote>${il(inner.replace(/\n/g, '<br>'))}</blockquote>`
   }
 
-  if (/^\|/.test(first) && lines.length >= 2) {
-    const parseRow = row => row.split('|').slice(1, -1).map(c => c.trim())
-    const headers = parseRow(lines[0])
-    const sep     = lines[1] ? parseRow(lines[1]) : []
+  if ((/^\s*\|/.test(first) || /^\[[^\]]+\]$/.test(first.trim())) && lines.length >= 2) {
+    const parseRow = row => {
+      const trimmed = row.trim()
+      const inner = trimmed.replace(/^(?<!\\)\|/, '').replace(/(?<!\\)\|$/, '')
+      return inner.split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, '|'))
+    }
+    // Extract optional caption line (first or last line matching [caption text])
+    let captionText = null
+    let tLines = lines
+    if (/^\[[^\]]+\]$/.test(lines[lines.length - 1].trim())) {
+      captionText = lines[lines.length - 1].trim().slice(1, -1)
+      tLines = lines.slice(0, -1)
+    } else if (/^\[[^\]]+\]$/.test(lines[0].trim())) {
+      captionText = lines[0].trim().slice(1, -1)
+      tLines = lines.slice(1)
+    }
+    if (tLines.length < 2 || !/^\s*\|/.test(tLines[0])) return `<p>${il(raw)}</p>`
+    const headers = parseRow(tLines[0])
+    const sep     = tLines[1] ? parseRow(tLines[1]) : []
     const aligns  = sep.map(c => /^:-+:$/.test(c) ? 'center' : /-+:$/.test(c) ? 'right' : 'left')
-    const rows    = lines.slice(2).filter(l => /\|/.test(l) && !/^[\s|:-]+$/.test(l))
+    const isSepRow = l => parseRow(l).every(c => /^:?-+:?$/.test(c))
+    const rows    = tLines.slice(2).filter(l => /\|/.test(l) && !isSepRow(l))
     const thHtml  = headers.map((h, i) => `<th style="text-align:${aligns[i]||'left'}">${il(h)}</th>`).join('')
     const tbHtml  = rows.map(r => {
       const cells = parseRow(r)
-      return `<tr>${cells.map((c, i) => `<td style="text-align:${aligns[i]||'left'}">${il(c)}</td>`).join('')}</tr>`
+      const norm  = Array.from({ length: headers.length }, (_, i) => cells[i] ?? '')
+      return `<tr>${norm.map((c, i) => `<td style="text-align:${aligns[i]||'left'}">${il(c)}</td>`).join('')}</tr>`
     }).join('')
-    return `<table class="nb-table"><thead><tr>${thHtml}</tr></thead><tbody>${tbHtml}</tbody></table>`
+    const tableHtml = `<table class="nb-table"><thead><tr>${thHtml}</tr></thead><tbody>${tbHtml}</tbody></table>`
+    return captionText
+      ? `<figure class="nb-table-fig">${tableHtml}<figcaption class="nb-table-cap">${il(captionText)}</figcaption></figure>`
+      : tableHtml
   }
 
   if (/^\s*[-*+]\s\[[ xX]\]/.test(first)) {
@@ -462,10 +482,16 @@ function parseBlocks(text) {
     if (line.trim() === '$$') { buf.push(line); continue }
     if (line.trim() === '') { flush(); continue }
 
+    // Keep /task block lines together (column headers == ... == and task items - [ ] ...)
+    const wasTaskBlock = buf.length > 0 && /^\/task(?::.*)?$/.test(buf[0])
+    if (wasTaskBlock) { buf.push(line); continue }
+
     const isTable   = /^\s*\|/.test(line)
     const wasTable  = buf.length > 0 && /^\s*\|/.test(buf[0])
     if (isTable && wasTable) { buf.push(line); continue }
     if (isTable && !wasTable) { flush(); buf.push(line); continue }
+    // Body rows without a leading pipe (optional outer pipes) continue a table block
+    if (!isTable && wasTable && /\|/.test(line) && !/^\s*(#{1,6}\s|[-*+]\s|\d+[.)] |>|`{3,}|~{3,})/.test(line)) { buf.push(line); continue }
 
     const isUl   = /^\s*[-*+]\s/.test(line) && !/^\s*[-*+]\s\[[ xX]\]/.test(line)
     const isOl   = /^\s*\d+[.)]\s/.test(line)
@@ -487,6 +513,17 @@ function renderMarkdown(text, notebooks = [], library = [], sketchbooks = [], fl
   if (!text?.trim()) return ''
   const footnotes = []
   const blocks = parseBlocks(text)
+  // Merge standalone [caption] blocks with adjacent table blocks
+  for (let ci = 0; ci < blocks.length; ci++) {
+    if (!/^\[[^\]]+\]$/.test(blocks[ci].trim())) continue
+    if (ci + 1 < blocks.length && /^\s*\|/.test(blocks[ci + 1])) {
+      blocks[ci + 1] = blocks[ci] + '\n' + blocks[ci + 1]
+      blocks.splice(ci, 1); ci--
+    } else if (ci > 0 && /^\s*\|/.test(blocks[ci - 1])) {
+      blocks[ci - 1] = blocks[ci - 1] + '\n' + blocks[ci]
+      blocks.splice(ci, 1); ci--
+    }
+  }
   const html = blocks.map((raw, i) =>
     blockToHtml(raw, notebooks, library, footnotes, sketchbooks, flashcardDecks)
       .replace(/^(<\w+)/, `$1 data-bi="${i}"`)
@@ -1287,14 +1324,26 @@ class CheckboxWidget {
 }
 
 class ImgWidget {
-  constructor(src, alt, notebookDir = null, from = -1, width = 0) {
+  constructor(src, alt, notebookDir = null, from = -1, width = 0, align = null) {
     this.src = src; this.alt = alt; this.notebookDir = notebookDir
     this.from = from  // doc offset for write-back on resize
     this.width = width  // user-set pixel width (0 = auto)
+    this.align = align  // null | 'left' | 'right' | 'center'
+  }
+  _applyAlign(wrap) {
+    wrap.style.float = ''
+    wrap.style.marginLeft = ''
+    wrap.style.marginRight = ''
+    wrap.style.marginBottom = ''
+    wrap.style.display = ''
+    if (this.align === 'left')   { wrap.style.float = 'left';  wrap.style.marginRight = '1em'; wrap.style.marginBottom = '0.5em' }
+    if (this.align === 'right')  { wrap.style.float = 'right'; wrap.style.marginLeft  = '1em'; wrap.style.marginBottom = '0.5em' }
+    if (this.align === 'center') { wrap.style.display = 'block'; wrap.style.marginLeft = 'auto'; wrap.style.marginRight = 'auto' }
   }
   toDOM(view) {
     const wrap = document.createElement('div')
     wrap.className = 'cm-img-wrap'
+    this._applyAlign(wrap)
     const img = document.createElement('img')
     // Resolve relative paths (./images/...) or absolute paths to Tauri asset:// URLs
     let resolvedSrc = this.src
@@ -1353,9 +1402,9 @@ class ImgWidget {
 
     return wrap
   }
-  eq(o) { return o instanceof ImgWidget && o.src === this.src && o.notebookDir === this.notebookDir && o.width === this.width }
-  compare(o) { return o instanceof ImgWidget && o.src === this.src && o.notebookDir === this.notebookDir && o.width === this.width }
-  // Called when eq() is false but the widget type is the same — update DOM in-place to avoid flash
+  eq(o) { return o instanceof ImgWidget && o.src === this.src && o.notebookDir === this.notebookDir && o.width === this.width && o.align === this.align }
+  compare(o) { return o instanceof ImgWidget && o.src === this.src && o.notebookDir === this.notebookDir && o.width === this.width && o.align === this.align }
+  // Called when eq() is false — update DOM in-place to avoid flash
   updateDOM(dom) {
     const img = dom.querySelector('.cm-img')
     if (!img) return false
@@ -1367,6 +1416,7 @@ class ImgWidget {
     }
     img.src = resolvedSrc
     img.style.width = this.width ? this.width + 'px' : ''
+    this._applyAlign(dom)
     return true  // reuse DOM, no remount flash
   }
   destroy() {}
@@ -1374,6 +1424,9 @@ class ImgWidget {
   get estimatedHeight() { return 160 }
   coordsAt() { return null }
 }
+
+// ─── Timer persistence — survives widget reconstruction within a session ──────
+const _timerPersist = new Map() // rawLine → { remaining: number, paused: boolean }
 
 // ─── Due-date helpers ────────────────────────────────────────────────────────
 function parseDueDate(expr) {
@@ -1446,6 +1499,184 @@ class DueDateWidget {
   eq(o) { return o instanceof DueDateWidget && o.expr === this.expr }
   compare(o) { return o instanceof DueDateWidget && o.expr === this.expr }
   destroy() {}
+  ignoreEvent() { return true }
+  get estimatedHeight() { return -1 }
+  coordsAt() { return null }
+}
+
+// ─── ?[question](ref) — review/flashcard question widget ─────────────────────
+class QuestionWidget {
+  constructor(fullAlt, ref, rawText, from) {
+    // Parse "question:answer" — colon separates front from back of card
+    const sep = fullAlt.indexOf(':')
+    this.question = (sep >= 0 ? fullAlt.slice(0, sep) : fullAlt).trim()
+    this.answer   = (sep >= 0 ? fullAlt.slice(sep + 1) : '').trim()
+    this.fullAlt  = fullAlt   // preserved for write-back
+    this.ref = ref            // '' | 'YYYY-MM-DD' | deck-id
+    this.rawText = rawText
+    this.from = from
+  }
+  toDOM(cmView) {
+    const wrap = document.createElement('span')
+    wrap.className = 'cm-question-widget'
+
+    const isDate = /^\d{4}-\d{2}-\d{2}$/.test(this.ref)
+    const decks = (typeof useAppStore !== 'undefined' ? useAppStore.getState().flashcardDecks : null) || []
+    const linkedDeck = this.ref && !isDate ? decks.find(d => d.id === this.ref) : null
+
+    const badge = document.createElement('span')
+    const qText = this.question || '…'
+    const mkSpan = (cls, text) => { const s = document.createElement('span'); s.className = cls; s.textContent = text; return s }
+    if (linkedDeck) {
+      badge.className = 'cm-question-badge cm-question-flash'
+      badge.appendChild(mkSpan('cm-q-text', qText))
+      badge.appendChild(mkSpan('cm-q-ref', `\uD83C\uDFA0 ${linkedDeck.title}`))
+    } else if (isDate) {
+      badge.className = 'cm-question-badge cm-question-date'
+      badge.appendChild(mkSpan('cm-q-text', qText))
+      badge.appendChild(mkSpan('cm-q-ref', `\uD83D\uDDD3 ${this.ref}`))
+    } else {
+      badge.className = 'cm-question-badge cm-question-open'
+      badge.appendChild(mkSpan('cm-q-mark', '?'))
+      badge.appendChild(mkSpan('cm-q-text', qText))
+    }
+
+    badge.onclick = (e) => {
+      e.preventDefault(); e.stopPropagation()
+      const existing = document.querySelector('.cm-question-dropdown')
+      if (existing) {
+        const isSame = existing._sourceBadge === badge
+        existing.remove()
+        if (isSame) return
+      }
+
+      const dropdown = document.createElement('div')
+      dropdown.className = 'cm-question-dropdown'
+      dropdown._sourceBadge = badge
+
+      // ── Section: Answer reveal ────────────────────────────
+      const answerSection = document.createElement('div')
+      answerSection.className = 'cm-qd-section cm-qd-answer-section'
+      const answerLabel = document.createElement('div')
+      answerLabel.className = 'cm-qd-label'
+      answerLabel.textContent = 'Answer'
+      answerSection.appendChild(answerLabel)
+      if (this.answer) {
+        const answerBody = document.createElement('div')
+        answerBody.className = 'cm-qd-answer-body cm-qd-answer-hidden'
+        answerBody.textContent = this.answer
+        const revealBtn = document.createElement('button')
+        revealBtn.className = 'cm-qd-reveal-btn'
+        revealBtn.textContent = 'Reveal'
+        revealBtn.onclick = () => {
+          answerBody.classList.toggle('cm-qd-answer-hidden')
+          revealBtn.textContent = answerBody.classList.contains('cm-qd-answer-hidden') ? 'Reveal' : 'Hide'
+        }
+        answerSection.appendChild(answerBody)
+        answerSection.appendChild(revealBtn)
+      } else {
+        const noAnswer = document.createElement('div')
+        noAnswer.className = 'cm-qd-none'
+        noAnswer.textContent = 'No answer — add one with ?[question:answer]()'
+        answerSection.appendChild(noAnswer)
+      }
+      dropdown.appendChild(answerSection)
+
+      // ── Divider ───────────────────────────────────────────
+      const divider = document.createElement('div')
+      divider.className = 'cm-qd-divider'
+      dropdown.appendChild(divider)
+
+      // ── Section: Set review date ──────────────────────────
+      const dateSection = document.createElement('div')
+      dateSection.className = 'cm-qd-section'
+      const dateLabel = document.createElement('div')
+      dateLabel.className = 'cm-qd-label'
+      dateLabel.textContent = 'Set review date'
+      const dateRow = document.createElement('div')
+      dateRow.className = 'cm-qd-row'
+      const dateInp = document.createElement('input')
+      dateInp.type = 'date'
+      dateInp.className = 'cm-qd-date-inp'
+      dateInp.value = isDate ? this.ref : ''
+      const dateConfirm = document.createElement('button')
+      dateConfirm.className = 'cm-qd-confirm'
+      dateConfirm.textContent = 'Set'
+      dateConfirm.onclick = () => {
+        const v = dateInp.value
+        if (!v) return
+        _replaceInDoc(cmView, this.rawText, `?[${this.fullAlt}](${v})`)
+        dropdown.remove()
+      }
+      dateRow.appendChild(dateInp)
+      dateRow.appendChild(dateConfirm)
+      dateSection.appendChild(dateLabel)
+      dateSection.appendChild(dateRow)
+
+      // ── Section: Add to flashcard deck ────────────────────
+      const flashSection = document.createElement('div')
+      flashSection.className = 'cm-qd-section'
+      const flashLabel = document.createElement('div')
+      flashLabel.className = 'cm-qd-label'
+      flashLabel.textContent = 'Add to flashcard deck'
+      flashSection.appendChild(flashLabel)
+
+      const freshDecks = (typeof useAppStore !== 'undefined' ? useAppStore.getState().flashcardDecks : null) || []
+      if (freshDecks.length === 0) {
+        const none = document.createElement('div')
+        none.className = 'cm-qd-none'
+        none.textContent = 'No flashcard decks yet'
+        flashSection.appendChild(none)
+      } else {
+        freshDecks.forEach(deck => {
+          const btn = document.createElement('button')
+          btn.className = 'cm-qd-deck-btn' + (deck.id === this.ref ? ' cm-qd-deck-active' : '')
+          btn.textContent = deck.title || 'Untitled Deck'
+          btn.onclick = () => {
+            const store = useAppStore.getState()
+            const card = {
+              id: `fc-${Date.now()}`,
+              front: this.question,
+              back: this.answer,    // answer after ':' becomes the card back
+              nextReview: 0, interval: 1, ease: 2.5, repetitions: 0
+            }
+            const curDeck = store.flashcardDecks.find(d => d.id === deck.id)
+            if (curDeck) {
+              store.updateDeck(deck.id, { cards: [...(curDeck.cards || []), card], updatedAt: new Date().toISOString() })
+              store.persistFlashcardDecks?.()
+            }
+            _replaceInDoc(cmView, this.rawText, `?[${this.fullAlt}](${deck.id})`)
+            dropdown.remove()
+          }
+          flashSection.appendChild(btn)
+        })
+      }
+
+      dropdown.appendChild(dateSection)
+      dropdown.appendChild(flashSection)
+      document.body.appendChild(dropdown)
+
+      const rect = badge.getBoundingClientRect()
+      const ddW = 240
+      let left = rect.left
+      if (left + ddW > window.innerWidth - 8) left = window.innerWidth - ddW - 8
+      dropdown.style.cssText = `position:fixed;top:${rect.bottom + 6}px;left:${left}px;z-index:9999;`
+
+      const close = (ev) => {
+        if (!dropdown.contains(ev.target) && ev.target !== badge) {
+          dropdown.remove()
+          document.removeEventListener('mousedown', close, true)
+        }
+      }
+      setTimeout(() => document.addEventListener('mousedown', close, true), 10)
+    }
+
+    wrap.appendChild(badge)
+    return wrap
+  }
+  eq(o) { return o instanceof QuestionWidget && o.fullAlt === this.fullAlt && o.ref === this.ref }
+  compare(o) { return this.eq(o) }
+  destroy() { document.querySelector('.cm-question-dropdown')?.remove() }
   ignoreEvent() { return true }
   get estimatedHeight() { return -1 }
   coordsAt() { return null }
@@ -1663,19 +1894,26 @@ function _replaceInDoc(view, oldText, newText, hintFrom = -1) {
   return true
 }
 
-// ─── /habits widget (habit tracker with day grid) ────────────────────────────
+// ─── /habits widget (habit tracker with day grid + line graph) ───────────────
 class HabitsWidget {
   constructor(rawData, rawLine, blockFrom = -1) {
     this.rawLine = rawLine; this.blockFrom = blockFrom
-    try { this.data = rawData ? JSON.parse(rawData) : { habits: [], log: {} } }
-    catch { this.data = { habits: [], log: {} } }
+    try { this.data = rawData ? JSON.parse(rawData) : {} }
+    catch { this.data = {} }
     if (!this.data.habits) this.data.habits = []
     if (!this.data.log) this.data.log = {}
+    if (!this.data.startDate) {
+      const logKeys = Object.keys(this.data.log || {}).sort()
+      this.data.startDate = logKeys.length > 0 ? logKeys[0] : new Date().toISOString().slice(0, 10)
+    }
+    if (!this.data.length) this.data.length = 30
+    if (!this.data.view) this.data.view = 'grid'
+    if (!this.data.title) this.data.title = 'Habits'
   }
   _serialize() { return `/habits:${JSON.stringify(this.data)}` }
   _dk(d) { return d.toISOString().slice(0, 10) }
   toDOM(cmView) {
-    const data = this.data, widget = this, DAYS = 21
+    const data = this.data, widget = this
     const wrap = document.createElement('div')
     wrap.className = 'cm-habits-widget'
 
@@ -1688,98 +1926,330 @@ class HabitsWidget {
       wrap.innerHTML = ''
       const today = new Date(); today.setHours(0, 0, 0, 0)
       const todayKey = widget._dk(today)
+
+      const start = new Date(data.startDate + 'T00:00:00')
       const dates = []
-      for (let i = DAYS - 1; i >= 0; i--) {
-        const d = new Date(today); d.setDate(today.getDate() - i); dates.push(d)
+      for (let i = 0; i < data.length; i++) {
+        const d = new Date(start); d.setDate(start.getDate() + i); dates.push(d)
       }
 
-      // Header
+      // ── Header ────────────────────────────────────────────────────────────
       const hdr = document.createElement('div')
       hdr.className = 'cm-habits-hdr'
       const titleEl = document.createElement('span')
       titleEl.className = 'cm-habits-title'
-      titleEl.textContent = 'Habits'
+      titleEl.textContent = data.title || 'Habits'
+      titleEl.title = 'Click to rename'
+      titleEl.style.cursor = 'pointer'
+      titleEl.onclick = e => {
+        e.stopPropagation()
+        const inp = document.createElement('input')
+        inp.className = 'cm-habits-title-inp'
+        inp.value = data.title || 'Habits'
+        inp.style.cssText = 'font-size:13px;font-weight:700;background:transparent;border:none;border-bottom:1px solid var(--accent);outline:none;color:var(--text);width:120px;font-family:var(--font-ui);'
+        hdr.replaceChild(inp, titleEl)
+        inp.focus(); inp.select()
+        const commit = () => {
+          const v = inp.value.trim() || 'Habits'
+          data.title = v; save(); render()
+        }
+        inp.onkeydown = ev => { ev.stopPropagation(); if (ev.key === 'Enter') { ev.preventDefault(); commit() } else if (ev.key === 'Escape') render() }
+        inp.onblur = commit
+      }
       hdr.appendChild(titleEl)
+
+      // ── Animated view toggle ─────────────────────────────────────────────
+      const toggleBtn = document.createElement('button')
+      toggleBtn.className = 'cm-habits-view-toggle'
+      toggleBtn.dataset.view = data.view
+      toggleBtn.title = data.view === 'grid' ? 'Switch to graph' : 'Switch to grid'
+      toggleBtn.innerHTML = `<svg class="cm-habits-toggle-icon" data-for="grid" width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="4" height="4" rx="1"/><rect x="7" y="1" width="4" height="4" rx="1"/><rect x="1" y="7" width="4" height="4" rx="1"/><rect x="7" y="7" width="4" height="4" rx="1"/></svg><svg class="cm-habits-toggle-icon" data-for="graph" width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1,10 3.5,6 6,8 8.5,3.5 11,1.5"/></svg>`
+      toggleBtn.onclick = e => { e.stopPropagation(); data.view = data.view === 'grid' ? 'graph' : 'grid'; save(); render() }
+      hdr.appendChild(toggleBtn)
+
+      // ── Delete widget button ──────────────────────────────────────────────
+      const deleteBtn = document.createElement('button')
+      deleteBtn.className = 'cm-habits-delete-btn'
+      deleteBtn.title = 'Delete habits tracker'
+      deleteBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="2" y1="2" x2="10" y2="10"/><line x1="10" y1="2" x2="2" y2="10"/></svg>'
+      deleteBtn.onclick = e => {
+        e.stopPropagation()
+        if (!cmView) return
+        const doc = cmView.state.doc.toString()
+        let idx = -1
+        if (widget.blockFrom >= 0) {
+          const s = Math.max(0, widget.blockFrom - 200)
+          const slice = doc.slice(s, Math.min(doc.length, s + widget.rawLine.length + 400))
+          const li = slice.indexOf(widget.rawLine)
+          if (li !== -1) idx = s + li
+        }
+        if (idx === -1) idx = doc.indexOf(widget.rawLine)
+        if (idx === -1) return
+        const end = idx + widget.rawLine.length
+        const to = end < doc.length && doc[end] === '\n' ? end + 1 : end
+        cmView.dispatch({ changes: { from: idx, to }, scrollIntoView: false })
+      }
+      hdr.appendChild(deleteBtn)
       wrap.appendChild(hdr)
 
-      // Grid
-      const grid = document.createElement('div')
-      grid.className = 'cm-habits-grid'
+      // ── Content ───────────────────────────────────────────────────────────
+      if (data.view === 'graph') {
+        // Line graph view
+        if (!data.habits.length) {
+          const e = document.createElement('div'); e.className = 'cm-habits-empty'
+          e.textContent = 'No habits yet'; wrap.appendChild(e)
+        } else {
+          const graphWrap = document.createElement('div')
+          graphWrap.className = 'cm-habits-graph-wrap'
+          const W = 600, H = 130, PAD_L = 28, PAD_R = 10, PAD_T = 10, PAD_B = 22
+          const innerW = W - PAD_L - PAD_R, innerH = H - PAD_T - PAD_B
+          const maxY = data.habits.length
+          const NS = 'http://www.w3.org/2000/svg'
+          const svg = document.createElementNS(NS, 'svg')
+          svg.setAttribute('viewBox', `0 0 ${W} ${H}`)
+          svg.style.cssText = 'width:100%;height:130px;display:block;overflow:visible'
 
-      // Date header row
-      const dateRow = document.createElement('div')
-      dateRow.className = 'cm-habits-row'
-      const corner = document.createElement('div')
-      corner.className = 'cm-habits-name-cell'
-      dateRow.appendChild(corner)
-      dates.forEach(d => {
-        const k = widget._dk(d), lbl = document.createElement('div')
-        lbl.className = 'cm-habits-day-lbl' + (k === todayKey ? ' cm-habits-today-lbl' : '')
-        lbl.textContent = k === todayKey ? '•' : (d.getDay() === 1 || d.getDate() === 1 ? String(d.getDate()) : '')
-        lbl.title = k
-        dateRow.appendChild(lbl)
-      })
-      grid.appendChild(dateRow)
-
-      // Habit rows
-      data.habits.forEach((hName, hi) => {
-        const row = document.createElement('div')
-        row.className = 'cm-habits-row'
-
-        const nameWrap = document.createElement('div')
-        nameWrap.className = 'cm-habits-name-cell'
-        const nameSpan = document.createElement('span')
-        nameSpan.className = 'cm-habits-name'
-        nameSpan.textContent = hName
-        nameSpan.title = 'Click to rename'
-        nameSpan.onclick = e => {
-          e.stopPropagation()
-          const inp = document.createElement('input')
-          inp.className = 'cm-habits-name-inp'; inp.value = hName; inp.type = 'text'
-          nameWrap.innerHTML = ''; nameWrap.appendChild(inp)
-          inp.focus(); inp.select()
-          const commit = () => { const v = inp.value.trim(); if (v) data.habits[hi] = v; save(); render() }
-          inp.onkeydown = ev => { ev.stopPropagation(); if (ev.key === 'Enter') { ev.preventDefault(); commit() } else if (ev.key === 'Escape') render() }
-          inp.onblur = commit
-        }
-        const delBtn = document.createElement('button')
-        delBtn.className = 'cm-habits-del'; delBtn.textContent = '×'; delBtn.title = 'Remove'
-        delBtn.onclick = e => {
-          e.stopPropagation()
-          data.habits.splice(hi, 1)
-          for (const k of Object.keys(data.log)) { if (Array.isArray(data.log[k])) data.log[k].splice(hi, 1) }
-          save(); render()
-        }
-        nameWrap.appendChild(nameSpan); nameWrap.appendChild(delBtn)
-        row.appendChild(nameWrap)
-
-        dates.forEach(d => {
-          const k = widget._dk(d)
-          const done = !!(data.log[k] && data.log[k][hi])
-          const isToday = k === todayKey
-          const cell = document.createElement('div')
-          cell.className = 'cm-habits-cell' + (done ? ' done' : '') + (isToday ? ' today' : '')
-          cell.title = `${hName} — ${k}`
-          cell.onclick = e => {
-            e.stopPropagation()
-            if (!data.log[k]) data.log[k] = []
-            while (data.log[k].length <= hi) data.log[k].push(0)
-            data.log[k][hi] = data.log[k][hi] ? 0 : 1
-            save(); render()
+          // Y gridlines + labels
+          for (let y = 0; y <= maxY; y++) {
+            const yPx = PAD_T + innerH - (y / maxY) * innerH
+            const gl = document.createElementNS(NS, 'line')
+            gl.setAttribute('x1', PAD_L); gl.setAttribute('x2', W - PAD_R)
+            gl.setAttribute('y1', yPx); gl.setAttribute('y2', yPx)
+            gl.setAttribute('stroke', 'var(--borderSubtle)'); gl.setAttribute('stroke-width', '1')
+            svg.appendChild(gl)
+            const lt = document.createElementNS(NS, 'text')
+            lt.setAttribute('x', PAD_L - 4); lt.setAttribute('y', yPx + 4)
+            lt.setAttribute('text-anchor', 'end'); lt.setAttribute('font-size', '9')
+            lt.setAttribute('fill', 'var(--textDim)'); lt.textContent = String(y)
+            svg.appendChild(lt)
           }
-          row.appendChild(cell)
-        })
-        grid.appendChild(row)
-      })
 
-      if (data.habits.length) {
-        wrap.appendChild(grid)
+          // Data points
+          const pts = dates.map((d, i) => {
+            const k = widget._dk(d)
+            const logRow = data.log[k]
+            const count = logRow ? logRow.reduce((s, v) => s + (v ? 1 : 0), 0) : 0
+            const x = PAD_L + (data.length <= 1 ? innerW / 2 : (i / (data.length - 1)) * innerW)
+            const y = PAD_T + innerH - (maxY > 0 ? (count / maxY) * innerH : 0)
+            return { x, y, count, k, d }
+          })
+
+          if (pts.length > 1) {
+            // Area
+            const area = document.createElementNS(NS, 'path')
+            area.setAttribute('d', `M${pts[0].x},${PAD_T + innerH} ` + pts.map(p => `L${p.x},${p.y}`).join(' ') + ` L${pts[pts.length-1].x},${PAD_T + innerH} Z`)
+            area.setAttribute('fill', 'var(--accent)'); area.setAttribute('fill-opacity', '0.12')
+            svg.appendChild(area)
+            // Line
+            const lp = document.createElementNS(NS, 'path')
+            lp.setAttribute('d', `M${pts.map(p => `${p.x},${p.y}`).join(' L')}`)
+            lp.setAttribute('stroke', 'var(--accent)'); lp.setAttribute('stroke-width', '2')
+            lp.setAttribute('fill', 'none'); lp.setAttribute('stroke-linejoin', 'round'); lp.setAttribute('stroke-linecap', 'round')
+            svg.appendChild(lp)
+          }
+
+          // Dots
+          pts.forEach(p => {
+            const c = document.createElementNS(NS, 'circle')
+            c.setAttribute('cx', p.x); c.setAttribute('cy', p.y)
+            c.setAttribute('r', '3'); c.setAttribute('fill', 'var(--accent)')
+            const t = document.createElementNS(NS, 'title')
+            t.textContent = `${p.k}: ${p.count}/${maxY}`
+            c.appendChild(t); svg.appendChild(c)
+          })
+
+          // X labels (sparse)
+          const step = Math.max(1, Math.ceil(data.length / 7))
+          pts.forEach((p, i) => {
+            if (i % step !== 0 && i !== pts.length - 1) return
+            const xt = document.createElementNS(NS, 'text')
+            xt.setAttribute('x', p.x); xt.setAttribute('y', H - 4)
+            xt.setAttribute('text-anchor', 'middle'); xt.setAttribute('font-size', '9')
+            xt.setAttribute('fill', 'var(--textDim)')
+            xt.textContent = `${p.d.getMonth()+1}/${p.d.getDate()}`
+            svg.appendChild(xt)
+          })
+
+          graphWrap.appendChild(svg)
+          wrap.appendChild(graphWrap)
+        }
       } else {
-        const e = document.createElement('div'); e.className = 'cm-habits-empty'
-        e.textContent = 'No habits yet'; wrap.appendChild(e)
+        // Grid view
+        if (!data.habits.length) {
+          const e = document.createElement('div'); e.className = 'cm-habits-empty'
+          e.textContent = 'No habits yet'; wrap.appendChild(e)
+        } else {
+          const grid = document.createElement('div')
+          grid.className = 'cm-habits-grid'
+
+          // Date header row
+          const dateRow = document.createElement('div')
+          dateRow.className = 'cm-habits-row date-hdr-row'
+          const corner = document.createElement('div')
+          corner.className = 'cm-habits-name-cell'
+          dateRow.appendChild(corner)
+          dates.forEach(d => {
+            const k = widget._dk(d), lbl = document.createElement('div')
+            lbl.className = 'cm-habits-day-lbl' + (k === todayKey ? ' cm-habits-today-lbl' : '')
+            lbl.textContent = k === todayKey ? '•' : (d.getDay() === 1 || d.getDate() === 1 ? String(d.getDate()) : '')
+            lbl.title = k
+            dateRow.appendChild(lbl)
+          })
+          grid.appendChild(dateRow)
+
+          // Habit rows — mouse-event-based reorder (avoids CodeMirror's capture-phase
+          // dragover interception which prevents HTML5 DnD from working in live mode).
+          data.habits.forEach((hName, hi) => {
+            const row = document.createElement('div')
+            row.className = 'cm-habits-row'
+            row.dataset.hi = String(hi)
+            const nameWrap = document.createElement('div')
+            nameWrap.className = 'cm-habits-name-cell'
+            // Drag handle — uses mousedown/mousemove/mouseup to bypass CM's
+            // capture-phase dragover intercept that blocks HTML5 DnD in live mode.
+            const dragHandle = document.createElement('span')
+            dragHandle.className = 'cm-habits-drag-handle'
+            dragHandle.innerHTML = '<svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor"><circle cx="3" cy="3" r="1.3"/><circle cx="7" cy="3" r="1.3"/><circle cx="3" cy="7" r="1.3"/><circle cx="7" cy="7" r="1.3"/><circle cx="3" cy="11" r="1.3"/><circle cx="7" cy="11" r="1.3"/></svg>'
+            dragHandle.title = 'Drag to reorder'
+            dragHandle.addEventListener('mousedown', e => {
+              e.preventDefault(); e.stopPropagation()
+              const allRows = [...grid.querySelectorAll('.cm-habits-row[data-hi]')]
+              let targetIdx = hi
+
+              const indicator = document.createElement('div')
+              indicator.style.cssText = 'position:fixed;left:0;right:0;height:2px;background:var(--accent);pointer-events:none;z-index:99999;border-radius:2px;display:none;'
+              document.body.appendChild(indicator)
+              row.style.opacity = '0.4'
+
+              const onMove = ev => {
+                let newTarget = hi
+                for (let i = 0; i < allRows.length; i++) {
+                  const r = allRows[i]
+                  const rect = r.getBoundingClientRect()
+                  if (ev.clientY <= rect.top + rect.height / 2) { newTarget = parseInt(r.dataset.hi, 10); break }
+                  newTarget = parseInt(r.dataset.hi, 10)
+                }
+                targetIdx = newTarget
+                // Show insertion line above the target row
+                const targetRow = allRows.find(r => parseInt(r.dataset.hi, 10) === targetIdx)
+                if (targetRow && targetIdx !== hi) {
+                  const rect = targetRow.getBoundingClientRect()
+                  const insertBefore = ev.clientY <= rect.top + rect.height / 2
+                  indicator.style.display = 'block'
+                  indicator.style.top = (insertBefore ? rect.top : rect.bottom) - 1 + 'px'
+                } else {
+                  indicator.style.display = 'none'
+                }
+              }
+
+              const onUp = () => {
+                document.removeEventListener('mousemove', onMove)
+                document.removeEventListener('mouseup', onUp)
+                indicator.remove()
+                row.style.opacity = ''
+                if (targetIdx !== hi) {
+                  const from = hi, to = targetIdx
+                  const [movedH] = data.habits.splice(from, 1)
+                  data.habits.splice(to, 0, movedH)
+                  for (const k of Object.keys(data.log)) {
+                    if (Array.isArray(data.log[k])) {
+                      const [movedL] = data.log[k].splice(from, 1)
+                      data.log[k].splice(to, 0, movedL ?? 0)
+                    }
+                  }
+                  save(); render()
+                }
+              }
+
+              document.addEventListener('mousemove', onMove)
+              document.addEventListener('mouseup', onUp)
+            })
+            nameWrap.appendChild(dragHandle)
+            const nameSpan = document.createElement('span')
+            nameSpan.className = 'cm-habits-name'; nameSpan.textContent = hName; nameSpan.title = hName
+            nameSpan.onclick = e => {
+              e.stopPropagation()
+              const inp = document.createElement('input')
+              inp.className = 'cm-habits-name-inp'; inp.value = hName; inp.type = 'text'
+              nameWrap.innerHTML = ''; nameWrap.appendChild(inp)
+              inp.focus(); inp.select()
+              const commit = () => { const v = inp.value.trim(); if (v) data.habits[hi] = v; save(); render() }
+              inp.onkeydown = ev => { ev.stopPropagation(); if (ev.key === 'Enter') { ev.preventDefault(); commit() } else if (ev.key === 'Escape') render() }
+              inp.onblur = commit
+            }
+            const delBtn = document.createElement('button')
+            delBtn.className = 'cm-habits-del'; delBtn.textContent = '×'; delBtn.title = 'Remove'
+            delBtn.onclick = e => {
+              e.stopPropagation()
+              data.habits.splice(hi, 1)
+              for (const k of Object.keys(data.log)) { if (Array.isArray(data.log[k])) data.log[k].splice(hi, 1) }
+              save(); render()
+            }
+            nameWrap.appendChild(nameSpan); nameWrap.appendChild(delBtn)
+            row.appendChild(nameWrap)
+
+            dates.forEach(d => {
+              const k = widget._dk(d)
+              const done = !!(data.log[k] && data.log[k][hi])
+              const isToday = k === todayKey
+              const cell = document.createElement('div')
+              cell.className = 'cm-habits-cell' + (done ? ' done' : '') + (isToday ? ' today' : '')
+              cell.title = `${hName} — ${k}`
+              cell.onclick = e => {
+                e.stopPropagation()
+                if (!data.log[k]) data.log[k] = []
+                while (data.log[k].length <= hi) data.log[k].push(0)
+                data.log[k][hi] = data.log[k][hi] ? 0 : 1
+                save(); render()
+              }
+              row.appendChild(cell)
+            })
+            grid.appendChild(row)
+          })
+          wrap.appendChild(grid)
+        }
       }
 
-      // Add habit row
+      // ── Date/days meta row (right-aligned) ────────────────────────────────
+      const metaRow = document.createElement('div')
+      metaRow.className = 'cm-habits-meta-row'
+
+      const sdFormatted = new Date(data.startDate + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+      const endD = new Date(data.startDate + 'T00:00:00'); endD.setDate(endD.getDate() + data.length - 1)
+      const edFormatted = endD.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+
+      const sdChip = document.createElement('button')
+      sdChip.className = 'cm-habits-meta-chip'; sdChip.title = 'Change start date'
+      const sdHiddenInp = document.createElement('input')
+      sdHiddenInp.type = 'date'; sdHiddenInp.value = data.startDate
+      sdHiddenInp.style.cssText = 'position:absolute;opacity:0;width:1px;height:1px;pointer-events:none;'
+      sdHiddenInp.onchange = e => { e.stopPropagation(); data.startDate = sdHiddenInp.value; save(); render() }
+      sdHiddenInp.onkeydown = e => e.stopPropagation()
+      sdChip.appendChild(document.createTextNode(sdFormatted)); sdChip.appendChild(sdHiddenInp)
+      sdChip.onclick = e => { e.stopPropagation(); sdHiddenInp.showPicker ? sdHiddenInp.showPicker() : sdHiddenInp.click() }
+
+      const metaArrow = document.createElement('span'); metaArrow.className = 'cm-habits-meta-sep'; metaArrow.textContent = '→'
+      const edSpan = document.createElement('span'); edSpan.className = 'cm-habits-meta-text'; edSpan.textContent = edFormatted
+      const metaDot = document.createElement('span'); metaDot.className = 'cm-habits-meta-sep'; metaDot.textContent = '·'
+
+      const lenChip = document.createElement('button')
+      lenChip.className = 'cm-habits-meta-chip'; lenChip.title = 'Edit number of days'
+      lenChip.textContent = `${data.length}d`
+      lenChip.onclick = e => {
+        e.stopPropagation()
+        const inp = document.createElement('input')
+        inp.type = 'number'; inp.value = String(data.length); inp.min = '1'; inp.max = '365'
+        inp.className = 'cm-habits-meta-inp'; lenChip.replaceWith(inp); inp.focus(); inp.select()
+        const commit = () => { const v = parseInt(inp.value); if (v > 0) { data.length = v; save(); render() } else render() }
+        inp.onkeydown = ev => { ev.stopPropagation(); if (ev.key === 'Enter') { ev.preventDefault(); commit() } else if (ev.key === 'Escape') render() }
+        inp.onblur = commit
+      }
+
+      metaRow.appendChild(sdChip); metaRow.appendChild(metaArrow); metaRow.appendChild(edSpan)
+      metaRow.appendChild(metaDot); metaRow.appendChild(lenChip)
+      wrap.appendChild(metaRow)
+
+      // ── Add habit row ──────────────────────────────────────────────────────
       const addRow = document.createElement('div')
       addRow.className = 'cm-habits-add-row'
       const addInput = document.createElement('input')
@@ -1793,7 +2263,7 @@ class HabitsWidget {
       }
       addInput.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); doAdd() } }
       addBtn.onclick = e => { e.stopPropagation(); doAdd() }
-      addRow.appendChild(addBtn); addRow.appendChild(addInput)
+      addRow.appendChild(addInput); addRow.appendChild(addBtn)
       wrap.appendChild(addRow)
     }
 
@@ -1802,19 +2272,91 @@ class HabitsWidget {
     render()
     return wrap
   }
-  eq(o) { return o instanceof HabitsWidget && o.blockFrom === this.blockFrom }
+  eq(o) {
+    return o instanceof HabitsWidget &&
+      o.blockFrom === this.blockFrom &&
+      o.data.view === this.data.view &&
+      o.data.title === this.data.title &&
+      o.data.startDate === this.data.startDate &&
+      o.data.length === this.data.length &&
+      JSON.stringify(o.data.habits) === JSON.stringify(this.data.habits) &&
+      JSON.stringify(o.data.log) === JSON.stringify(this.data.log)
+  }
   compare(o) { return this.eq(o) }
   updateDOM(dom) {
     if (!dom._habitsRender || !dom._habitsData) return false
-    // Sync new parsed data into the live data object so render() sees it
     Object.assign(dom._habitsData, this.data)
     dom._habitsRender()
     return true
   }
   destroy() {}
   ignoreEvent() { return true }
-  get estimatedHeight() { return 60 + (this.data?.habits?.length || 0) * 26 }
+  get estimatedHeight() { return 80 + (this.data?.habits?.length || 0) * 26 }
   coordsAt() { return null }
+}
+
+// ─── /task mini calendar date picker ─────────────────────────────────────────
+function _makeTaskDatePicker(anchor, currentDate, onPick) {
+  document.querySelectorAll('.cm-task-date-picker').forEach(el => el.remove())
+  const today = new Date()
+  let viewYear  = currentDate ? parseInt(currentDate.slice(0,4)) : today.getFullYear()
+  let viewMonth = currentDate ? parseInt(currentDate.slice(5,7)) - 1 : today.getMonth()
+
+  const picker = document.createElement('div')
+  picker.className = 'cm-task-date-picker'
+
+  const positionPicker = () => {
+    const rect = anchor.getBoundingClientRect()
+    const ph = picker.offsetHeight || 240
+    const pw = picker.offsetWidth  || 214
+    const top = (window.innerHeight - rect.bottom >= ph + 8)
+      ? rect.bottom + 4
+      : rect.top - ph - 4
+    picker.style.top  = `${Math.max(4, top)}px`
+    picker.style.left = `${Math.min(rect.left, window.innerWidth - pw - 8)}px`
+  }
+
+  const render = () => {
+    picker.innerHTML = ''
+    // Header
+    const hdr = document.createElement('div'); hdr.className = 'cm-cal-header'
+    const prev = document.createElement('button'); prev.className = 'cm-cal-nav'; prev.textContent = '‹'
+    prev.onclick = e => { e.stopPropagation(); viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear-- }; render(); positionPicker() }
+    const lbl = document.createElement('span'); lbl.className = 'cm-cal-month'
+    lbl.textContent = `${_MONTHS[viewMonth]} ${viewYear}`
+    const next = document.createElement('button'); next.className = 'cm-cal-nav'; next.textContent = '›'
+    next.onclick = e => { e.stopPropagation(); viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++ }; render(); positionPicker() }
+    hdr.appendChild(prev); hdr.appendChild(lbl); hdr.appendChild(next)
+    picker.appendChild(hdr)
+    // Grid
+    const grid = document.createElement('div'); grid.className = 'cm-cal-grid'
+    for (const d of ['Su','Mo','Tu','We','Th','Fr','Sa']) {
+      const dh = document.createElement('div'); dh.className = 'cm-cal-day-hdr cm-task-date-hdr'; dh.textContent = d; grid.appendChild(dh)
+    }
+    const firstDay = new Date(viewYear, viewMonth, 1).getDay()
+    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
+    for (let i = 0; i < firstDay; i++) {
+      const b = document.createElement('div'); b.className = 'cm-task-date-blank'; grid.appendChild(b)
+    }
+    for (let d = 1; d <= daysInMonth; d++) {
+      const ds = `${viewYear}-${String(viewMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+      const cell = document.createElement('div'); cell.className = 'cm-task-date-cell'
+      const isToday = today.getFullYear() === viewYear && today.getMonth() === viewMonth && today.getDate() === d
+      if (isToday) cell.classList.add('cm-task-date-today')
+      if (currentDate === ds) cell.classList.add('cm-task-date-selected')
+      cell.textContent = String(d)
+      cell.onclick = e => { e.stopPropagation(); onPick(ds); picker.remove(); document.removeEventListener('mousedown', outside) }
+      grid.appendChild(cell)
+    }
+    picker.appendChild(grid)
+  }
+
+  render()
+  document.body.appendChild(picker)
+  positionPicker()
+
+  const outside = e => { if (!picker.contains(e.target) && e.target !== anchor) { picker.remove(); document.removeEventListener('mousedown', outside) } }
+  setTimeout(() => document.addEventListener('mousedown', outside), 0)
 }
 
 // ─── /task single-block widget (interactive kanban) ───────────────────────────
@@ -1839,7 +2381,7 @@ class TaskBlockWidget {
     for (const col of cols) {
       lines.push(`== ${col.title} ==`)
       for (const t of col.tasks) {
-        lines.push(`- [ ] ${t.text}`)
+        lines.push(`- [ ] ${t.text}${t.date ? ' {date:' + t.date + '}' : ''}`)
       }
     }
     return lines.join('\n')
@@ -1850,7 +2392,7 @@ class TaskBlockWidget {
     try {
     const cols = this.columns.map(c => ({
       title: c.title,
-      tasks: c.tasks.map(t => ({ text: t.text })),
+      tasks: c.tasks.map(t => ({ text: t.text, date: t.date || null })),
     }))
     const bt = this.boardTitle
     const save = () => {
@@ -1885,8 +2427,10 @@ class TaskBlockWidget {
         colDiv.className = 'cm-task-col-w'
 
         // Column header
+        const _colColors = ['#f59e0b99','#3b82f699','#10b98199','#8b5cf699','#ef444499','#06b6d499']
         const colHdr = document.createElement('div')
         colHdr.className = 'cm-task-col-hdr-w'
+        colHdr.style.background = _colColors[ci % _colColors.length]
         const colTitleEl = document.createElement('span')
         colTitleEl.className = 'cm-task-col-title'
         colTitleEl.textContent = col.title
@@ -1930,7 +2474,11 @@ class TaskBlockWidget {
           // Pointer-based drag
           card.onpointerdown = e => {
             if (e.button !== 0) return
-            e.preventDefault(); e.stopPropagation()
+            e.stopPropagation()
+            if (e.target.closest('.cm-task-card-date-row')) return
+            if (e.target.closest('.cm-task-card-del-btn')) return
+            if (e.target.closest('.cm-task-card-text')) return
+            e.preventDefault()
             const rect = card.getBoundingClientRect()
             const ghost = card.cloneNode(true)
             ghost.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;pointer-events:none;z-index:9999;opacity:0.85;transform:rotate(1.5deg);box-shadow:0 8px 24px rgba(0,0,0,.3);border-radius:6px;`
@@ -1977,7 +2525,7 @@ class TaskBlockWidget {
           const txt = document.createElement('span')
           txt.className = 'cm-task-card-text'
           txt.textContent = task.text
-          txt.ondblclick = e => {
+          txt.onclick = e => {
             e.stopPropagation()
             const inp = document.createElement('input')
             inp.className = 'cm-task-card-edit'
@@ -1998,11 +2546,33 @@ class TaskBlockWidget {
           cardBody.appendChild(txt)
           cardBody.appendChild(del)
           card.appendChild(cardBody)
+
+          // Date row
+          const dateRow = document.createElement('div')
+          dateRow.className = 'cm-task-card-date-row'
+          if (task.date) {
+            const badge = document.createElement('span')
+            badge.className = 'cm-task-card-date-badge'
+            badge.textContent = task.date
+            badge.onclick = e => { e.stopPropagation(); _makeTaskDatePicker(badge, task.date, ds => { task.date = ds; save(); render() }) }
+            const clearBtn = document.createElement('button')
+            clearBtn.className = 'cm-task-card-date-clear'
+            clearBtn.textContent = '\u00d7'
+            clearBtn.title = 'Remove date'
+            clearBtn.onclick = e => { e.stopPropagation(); task.date = null; save(); render() }
+            dateRow.appendChild(badge)
+            dateRow.appendChild(clearBtn)
+          } else {
+            const addDateBtn = document.createElement('button')
+            addDateBtn.className = 'cm-task-card-add-date'
+            addDateBtn.textContent = '+ date'
+            addDateBtn.onclick = e => { e.stopPropagation(); _makeTaskDatePicker(addDateBtn, null, ds => { task.date = ds; save(); render() }) }
+            dateRow.appendChild(addDateBtn)
+          }
+          card.appendChild(dateRow)
           cardsArea.appendChild(card)
         })
-        colDiv.appendChild(cardsArea)
-
-        // Add task input
+        // Add task input — sits between header and cards
         const addRow = document.createElement('div')
         addRow.className = 'cm-task-add-row'
         const addInput = document.createElement('input')
@@ -2016,13 +2586,14 @@ class TaskBlockWidget {
             const val = addInput.value.trim()
             if (!val) return
             addInput.value = ''
-            cols[ci].tasks.push({ text: val, done: false, label: null })
+            cols[ci].tasks.push({ text: val, done: false, label: null, date: null })
             save(); render()
             const col = wrap.querySelectorAll('.cm-task-add-input')[ci]
             if (col) col.focus()
           }
         }
         addRow.appendChild(addInput)
+        colDiv.appendChild(cardsArea)
         colDiv.appendChild(addRow)
         colsRow.appendChild(colDiv)
       })
@@ -2034,24 +2605,14 @@ class TaskBlockWidget {
       addColBtn.className = 'cm-task-add-col-btn'
       addColBtn.textContent = '+'
       addColBtn.onclick = () => {
-        addCol.innerHTML = ''
-        const inp = document.createElement('input')
-        inp.className = 'cm-task-add-col-input'
-        inp.type = 'text'
-        inp.placeholder = 'List name...'
-        inp.onkeydown = (e) => {
-          e.stopPropagation()
-          if (e.key === 'Enter') {
-            e.preventDefault()
-            const val = inp.value.trim() || 'New List'
-            cols.push({ title: val, tasks: [], color: null })
-            save(); render()
-          }
-          if (e.key === 'Escape') render()
-        }
-        inp.onblur = () => { setTimeout(() => render(), 150) }
-        addCol.appendChild(inp)
-        inp.focus()
+        cols.push({ title: 'New List', tasks: [], color: null })
+        save(); render()
+        // After render, open title edit on the new column
+        setTimeout(() => {
+          const titles = wrap.querySelectorAll('.cm-task-col-title')
+          const last = titles[titles.length - 1]
+          if (last) last.click()
+        }, 0)
       }
       addCol.appendChild(addColBtn)
       colsRow.appendChild(addCol)
@@ -2072,7 +2633,7 @@ class TaskBlockWidget {
     return this.columns.every((col, ci) => {
       const oc = o.columns[ci]
       if (oc.title !== col.title || oc.tasks.length !== col.tasks.length) return false
-      return col.tasks.every((t, ti) => oc.tasks[ti].text === t.text)
+      return col.tasks.every((t, ti) => oc.tasks[ti].text === t.text && oc.tasks[ti].date === t.date)
     })
   }
   compare(o) { return this.eq(o) }
@@ -2103,22 +2664,26 @@ function parseTaskBlock(docStr, startLineIdx) {
     if (colM) {
       currentCol = { title: colM[1], tasks: [], lineIdx: endLine, color: colM[2] != null ? parseInt(colM[2]) : null }
       columns.push(currentCol)
-    } else if (currentCol && /^\s*[-*+]\s/.test(l)) {
+    } else if (currentCol && /^\s*[-*+]\s\[[ xX]\]/.test(l)) {
       const done = /\[[xX]\]/.test(l)
-      const raw = l.replace(/^\s*[-*+]\s(?:\[[ xX]\]\s*)?/, '').trim()
-      const lblM = raw.match(/^(.*?)\{label:(\d+)\}$/)
-      const text = lblM ? lblM[1].trim() : raw
-      const label = lblM ? parseInt(lblM[2]) : null
-      currentCol.tasks.push({ text, done, lineIdx: endLine, label })
-    } else if (!currentCol && /^\s*[-*+]\s/.test(l)) {
+      const raw = l.replace(/^\s*[-*+]\s\[[ xX]\]\s*/, '').trim()
+      const lblM = raw.match(/\{label:(\d+)\}/)
+      const label = lblM ? parseInt(lblM[1]) : null
+      const dateM = raw.match(/\{date:(\d{4}-\d{2}-\d{2})\}/)
+      const date = dateM ? dateM[1] : null
+      const text = raw.replace(/\{label:\d+\}/, '').replace(/\{date:\d{4}-\d{2}-\d{2}\}/, '').trim()
+      currentCol.tasks.push({ text, done, lineIdx: endLine, label, date })
+    } else if (!currentCol && /^\s*[-*+]\s\[[ xX]\]/.test(l)) {
       currentCol = { title: 'Tasks', tasks: [], lineIdx: endLine, color: null }
       columns.push(currentCol)
       const done = /\[[xX]\]/.test(l)
-      const raw = l.replace(/^\s*[-*+]\s(?:\[[ xX]\]\s*)?/, '').trim()
-      const lblM = raw.match(/^(.*?)\{label:(\d+)\}$/)
-      const text = lblM ? lblM[1].trim() : raw
-      const label = lblM ? parseInt(lblM[2]) : null
-      currentCol.tasks.push({ text, done, lineIdx: endLine, label })
+      const raw = l.replace(/^\s*[-*+]\s\[[ xX]\]\s*/, '').trim()
+      const lblM = raw.match(/\{label:(\d+)\}/)
+      const label = lblM ? parseInt(lblM[1]) : null
+      const dateM = raw.match(/\{date:(\d{4}-\d{2}-\d{2})\}/)
+      const date = dateM ? dateM[1] : null
+      const text = raw.replace(/\{label:\d+\}/, '').replace(/\{date:\d{4}-\d{2}-\d{2}\}/, '').trim()
+      currentCol.tasks.push({ text, done, lineIdx: endLine, label, date })
     } else {
       break // non-task content ends the block
     }
@@ -2134,25 +2699,296 @@ function serializeTaskBlock(boardTitle, columns) {
   for (const col of columns) {
     lines.push(`== ${col.title} ==`)
     for (const t of col.tasks) {
-      lines.push(`- ${t.done ? '[x]' : '[ ]'} ${t.text}`)
+      lines.push(`- ${t.done ? '[x]' : '[ ]'} ${t.text}${t.date ? ' {date:' + t.date + '}' : ''}`)
     }
   }
   return lines.join('\n')
 }
 
-// Table widget — renders markdown table as HTML table in live view
+// Pending Tab/Enter focus across widget rebuilds (set before dispatch, read in new toDOM)
+let _tablePendingFocus = null // { rawText, rowIdx, colIdx } | null
+
+// Table widget — renders markdown table as a contenteditable HTML table.
+// All events are stopped at the wrap boundary (bubble phase) so CM6 never sees
+// typing or mouse activity inside the table. CM6's MutationObserver already
+// ignores widget DOM by default, so contenteditable cells work without interference.
 class TableWidget {
-  constructor(html) { this.html = html }
-  toDOM() {
+  constructor(html, rawText) { this.html = html; this.rawText = rawText }
+
+  toDOM(cmView) {
+    // outer has padding (counted in offsetHeight by CM6) instead of margin (not counted)
+    // This prevents the widget from visually overlapping adjacent text lines.
+    const outer = document.createElement('div')
+    outer.className = 'cm-table-outer'
+
     const wrap = document.createElement('div')
     wrap.className = 'cm-table-wrap'
     wrap.innerHTML = this.html
-    return wrap
+    outer.appendChild(wrap)
+
+    // Make every cell contenteditable and store its original text for change detection
+    wrap.querySelectorAll('td, th').forEach(cell => {
+      cell.contentEditable = 'true'
+      cell.spellcheck = false
+      cell._nbRaw = cell.textContent
+    })
+
+    // Resume Tab/Enter navigation after a cell write triggered a widget rebuild
+    if (_tablePendingFocus) {
+      const full = cmView.state.doc.toString()
+      const myFrom = full.indexOf(this.rawText)
+      if (myFrom !== -1 && myFrom === _tablePendingFocus.tableFrom) {
+        const pf = _tablePendingFocus
+        _tablePendingFocus = null
+        requestAnimationFrame(() => {
+          const rows = Array.from(wrap.querySelectorAll('tr'))
+          const cell = rows[pf.rowIdx]?.querySelectorAll('td, th')[pf.colIdx]
+          if (cell) { cell.focus(); this._selectAll(cell) }
+        })
+      }
+    }
+
+    // Stop all events from bubbling past the wrap to CM6's cm-content listeners
+    ;['keydown','keyup','keypress','input','beforeinput',
+      'compositionstart','compositionend','compositionupdate',
+      'mousedown','mouseup','click','contextmenu','paste','cut','copy','dragstart','drop'
+    ].forEach(type => wrap.addEventListener(type, e => e.stopPropagation()))
+
+    // Force plain-text paste (no rich HTML)
+    wrap.addEventListener('paste', e => {
+      e.preventDefault()
+      const text = (e.clipboardData || window.clipboardData).getData('text/plain')
+      document.execCommand('insertText', false, text)
+    })
+
+    // Commit cell when focus leaves the table entirely
+    wrap.addEventListener('focusout', e => {
+      if (wrap.contains(e.relatedTarget)) return // focus still inside table
+      const cell = e.target.closest('td, th')
+      if (!cell) return
+      const { rowIdx, colIdx } = this._indices(wrap, cell)
+      if (rowIdx !== -1) this._commitCell(cmView, cell, rowIdx, colIdx, null)
+    })
+
+    // Right-click context menu for row/column management
+    wrap.addEventListener('contextmenu', e => {
+      e.preventDefault()
+      const cell = e.target.closest('td, th')
+      if (!cell) return
+      const { rowIdx, colIdx } = this._indices(wrap, cell)
+      if (rowIdx !== -1) this._showContextMenu(e, cmView, rowIdx, colIdx)
+    })
+
+    // Keyboard navigation: Enter (next row), Tab (next/prev cell), Escape (revert)
+    wrap.addEventListener('keydown', e => {
+      const cell = e.target.closest('td, th')
+      if (!cell || !wrap.contains(cell)) return
+      const { rowIdx, colIdx } = this._indices(wrap, cell)
+      if (rowIdx === -1) return
+
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        cell.textContent = cell._nbRaw
+        cell.blur()
+        return
+      }
+
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        const rows = Array.from(wrap.querySelectorAll('tr'))
+        const nRow = rowIdx + 1 < rows.length ? rowIdx + 1 : null
+        const dispatched = this._commitCell(cmView, cell, rowIdx, colIdx,
+          nRow !== null ? { rowIdx: nRow, colIdx } : null)
+        if (!dispatched && nRow !== null) {
+          const next = rows[nRow].querySelectorAll('td, th')[colIdx]
+          if (next) { next.focus(); this._selectAll(next) }
+        }
+        return
+      }
+
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        const rows = Array.from(wrap.querySelectorAll('tr'))
+        const cols = rows[rowIdx]?.querySelectorAll('td, th').length ?? 0
+        let nRow = rowIdx, nCol = colIdx + (e.shiftKey ? -1 : 1)
+        if (nCol >= cols)  { nRow++; nCol = 0 }
+        else if (nCol < 0) { nRow--; nCol = Math.max(0, cols - 1) }
+        const valid = nRow >= 0 && nRow < rows.length
+        const dispatched = this._commitCell(cmView, cell, rowIdx, colIdx,
+          valid ? { rowIdx: nRow, colIdx: nCol } : null)
+        if (!dispatched && valid) {
+          const next = rows[nRow].querySelectorAll('td, th')[nCol]
+          if (next) { next.focus(); this._selectAll(next) }
+        }
+      }
+    })
+
+    return outer
   }
-  eq(o) { return o instanceof TableWidget && o.html === this.html }
-  compare(o) { return o instanceof TableWidget && o.html === this.html }
+
+  // Select all content in a contenteditable cell
+  _selectAll(cell) {
+    const range = document.createRange()
+    range.selectNodeContents(cell)
+    const sel = window.getSelection()
+    sel.removeAllRanges()
+    sel.addRange(range)
+  }
+
+  // Return { rowIdx, colIdx } of a cell within its table wrap
+  _indices(wrap, cell) {
+    const row  = cell.parentElement
+    const rows = Array.from(wrap.querySelectorAll('tr'))
+    return {
+      rowIdx: rows.indexOf(row),
+      colIdx: Array.from(row.querySelectorAll('td, th')).indexOf(cell),
+    }
+  }
+
+  // Write the cell's current textContent back to the CM6 doc if it changed.
+  // Returns true if a dispatch was made (widget will rebuild).
+  _commitCell(cmView, cell, rowIdx, colIdx, pendingNext) {
+    const newValue = cell.textContent
+    const rawValue = cell._nbRaw ?? ''
+    if (newValue.trim() === rawValue.trim()) return false
+
+    const full = cmView.state.doc.toString()
+    const tIdx = full.indexOf(this.rawText)
+    if (tIdx === -1) return false
+
+    // Widget will rebuild — store pending focus using table start position as key
+    // (rawText changes after the edit, but the table's document position stays the same)
+    if (pendingNext) {
+      _tablePendingFocus = { tableFrom: tIdx, rowIdx: pendingNext.rowIdx, colIdx: pendingNext.colIdx }
+      setTimeout(() => { _tablePendingFocus = null }, 500)
+    }
+
+    const lines   = this.rawText.split('\n')
+    const lineIdx = rowIdx === 0 ? 0 : rowIdx + 1
+    if (lineIdx >= lines.length) return false
+    const line = lines[lineIdx]
+    const r = this._cellRange(line, colIdx)
+    if (!r) return false
+
+    let lineStart = tIdx
+    for (let i = 0; i < lineIdx; i++) lineStart += lines[i].length + 1
+
+    const old    = line.slice(r[0], r[1])
+    const lead   = old.match(/^\s*/)[0]
+    const trail  = old.match(/\s*$/)[0]
+    const insert = lead + newValue.trim() + trail
+
+    cmView.dispatch({ changes: { from: lineStart + r[0], to: lineStart + r[1], insert } })
+    return true
+  }
+
+  _cellRange(line, colIdx) {
+    let pipe = -1, start = -1
+    for (let i = 0; i < line.length; i++) {
+      if (line[i] === '\\' && line[i + 1] === '|') { i++; continue } // skip escaped pipe
+      if (line[i] !== '|') continue
+      pipe++
+      if (pipe === colIdx) start = i + 1
+      else if (pipe === colIdx + 1) return [start, i]
+    }
+    return start !== -1 ? [start, line.length] : null
+  }
+
+  _parseRowRaw(row) {
+    const trimmed = row.trim()
+    const inner = trimmed.replace(/^(?<!\\)\|/, '').replace(/(?<!\\)\|$/, '')
+    return inner.split(/(?<!\\)\|/).map(c => c.trim())
+  }
+
+  _replaceRaw(cmView, newRaw) {
+    const full = cmView.state.doc.toString()
+    const from = full.indexOf(this.rawText)
+    if (from === -1) return
+    cmView.dispatch({ changes: { from, to: from + this.rawText.length, insert: newRaw } })
+  }
+
+  _insertRow(cmView, rowIdx, below) {
+    const lines = this.rawText.split('\n')
+    const numCols = this._parseRowRaw(lines[0]).length
+    const newRow = '|' + Array(numCols).fill('    ').join('|') + '|'
+    // rowIdx 0 = header; body rows map to lines[rowIdx + 1] (separator is at lines[1])
+    const insertAt = rowIdx === 0 ? 2 : (below ? rowIdx + 2 : rowIdx + 1)
+    lines.splice(insertAt, 0, newRow)
+    this._replaceRaw(cmView, lines.join('\n'))
+  }
+
+  _deleteRow(cmView, rowIdx) {
+    if (rowIdx === 0) return // never delete header
+    const lines = this.rawText.split('\n')
+    const lineIdx = rowIdx + 1 // separator at 1, body rows at 2+
+    if (lineIdx >= lines.length) return
+    lines.splice(lineIdx, 1)
+    this._replaceRaw(cmView, lines.join('\n'))
+  }
+
+  _insertCol(cmView, colIdx, right) {
+    const insertAt = right ? colIdx + 1 : colIdx
+    const lines = this.rawText.split('\n')
+    const newLines = lines.map((line, li) => {
+      if (!line.trim()) return line
+      const cells = this._parseRowRaw(line)
+      cells.splice(insertAt, 0, li === 1 ? '---' : '')
+      return '| ' + cells.join(' | ') + ' |'
+    })
+    this._replaceRaw(cmView, newLines.join('\n'))
+  }
+
+  _deleteCol(cmView, colIdx) {
+    const lines = this.rawText.split('\n')
+    const newLines = lines.map(line => {
+      if (!line.trim()) return line
+      const cells = this._parseRowRaw(line)
+      if (cells.length <= 1) return line
+      cells.splice(colIdx, 1)
+      return '| ' + cells.join(' | ') + ' |'
+    })
+    this._replaceRaw(cmView, newLines.join('\n'))
+  }
+
+  _showContextMenu(e, cmView, rowIdx, colIdx) {
+    document.querySelectorAll('.nb-table-ctx').forEach(m => m.remove())
+    const numCols = this._parseRowRaw(this.rawText.split('\n')[0]).length
+    const isHeader = rowIdx === 0
+    const menu = document.createElement('div')
+    menu.className = 'nb-table-ctx'
+
+    const items = [
+      !isHeader && { label: 'Add row above', fn: () => this._insertRow(cmView, rowIdx, false) },
+      { label: isHeader ? 'Add row below header' : 'Add row below', fn: () => this._insertRow(cmView, rowIdx, true) },
+      !isHeader && { label: 'Delete row', fn: () => this._deleteRow(cmView, rowIdx), danger: true },
+      null,
+      { label: 'Add column left',  fn: () => this._insertCol(cmView, colIdx, false) },
+      { label: 'Add column right', fn: () => this._insertCol(cmView, colIdx, true) },
+      numCols > 1 && { label: 'Delete column', fn: () => this._deleteCol(cmView, colIdx), danger: true },
+    ].filter(Boolean)
+
+    for (const item of items) {
+      if (item === null) {
+        const sep = document.createElement('div'); sep.className = 'nb-table-ctx-sep'; menu.appendChild(sep); continue
+      }
+      const el = document.createElement('div')
+      el.className = 'nb-table-ctx-item' + (item.danger ? ' nb-table-ctx-danger' : '')
+      el.textContent = item.label
+      el.addEventListener('mousedown', ev => { ev.preventDefault(); menu.remove(); item.fn() })
+      menu.appendChild(el)
+    }
+
+    menu.style.left = e.clientX + 'px'
+    menu.style.top  = e.clientY + 'px'
+    document.body.appendChild(menu)
+    const dismiss = ev => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('mousedown', dismiss) } }
+    setTimeout(() => document.addEventListener('mousedown', dismiss), 0)
+  }
+
+  eq(o) { return o instanceof TableWidget && o.rawText === this.rawText }
+  compare(o) { return this.eq(o) }
   destroy() {}
-  ignoreEvent() { return false }
+  ignoreEvent() { return true }
   get estimatedHeight() { return 80 }
   coordsAt() { return null }
 }
@@ -2207,7 +3043,7 @@ class FnRefWidget {
 class TimerWidget {
   constructor(totalSec, label, rawLine) {
     this.totalSec = totalSec; this.label = label; this.rawLine = rawLine
-    this._ref = { interval: null }
+    this._ref = { interval: null, remaining: -1, paused: false }
   }
   toDOM(cmView) {
     const wrap = document.createElement('div')
@@ -2271,8 +3107,14 @@ class TimerWidget {
 
     // ── Active timer ─────────────────────────────────────
     const total = this.totalSec
-    let remaining = total
-    let paused = false
+    // Restore state — pick up time ticked by background interval while widget was unmounted
+    const _tp = _timerPersist.get(this.rawLine)
+    if (_tp?.bgInterval) { clearInterval(_tp.bgInterval); _tp.bgInterval = null }
+    let remaining = (_tp && _tp.remaining >= 0) ? _tp.remaining : total
+    let paused = _tp ? _tp.paused : false
+    // Live shared entry — both DOM interval and destroy's background interval mutate this
+    const entry = { remaining, paused, bgInterval: null }
+    _timerPersist.set(this.rawLine, entry)
 
     if (this.label) {
       const lbl = document.createElement('div')
@@ -2287,7 +3129,7 @@ class TimerWidget {
     timeText.className = 'cm-timer-time'
     timeText.textContent = fmt(remaining)
 
-    // Click time to edit (only when paused)
+    // Click time to edit (only when paused) — this is the only path that writes to doc
     timeText.onclick = () => {
       if (!paused) return
       const inp = document.createElement('input')
@@ -2307,6 +3149,8 @@ class TimerWidget {
         else if (ms) ns = +ms[1]*60 + +ms[2]
         else if (mn) ns = +mn[1]*60
         if (ns > 0) {
+          // Clear persist so new widget starts fresh at the edited value
+          _timerPersist.delete(this.rawLine)
           const newLine = this.label ? `/timer ${v} ${this.label}` : `/timer ${v}`
           _replaceInDoc(cmView, this.rawLine, newLine)
         } else {
@@ -2319,7 +3163,7 @@ class TimerWidget {
 
     const pauseBtn = document.createElement('button')
     pauseBtn.className = 'cm-timer-btn'
-    pauseBtn.textContent = '\u23f8'
+    pauseBtn.textContent = paused ? '\u25b6' : '\u23f8'
     const resetBtn = document.createElement('button')
     resetBtn.className = 'cm-timer-btn'
     resetBtn.textContent = '\u21ba'
@@ -2333,7 +3177,7 @@ class TimerWidget {
     bar.className = 'cm-timer-bar'
     const fill = document.createElement('div')
     fill.className = 'cm-timer-fill'
-    fill.style.width = '100%'
+    fill.style.width = `${(remaining / total) * 100}%`
     bar.appendChild(fill)
     wrap.appendChild(bar)
 
@@ -2355,32 +3199,41 @@ class TimerWidget {
 
     const tick = () => {
       remaining--
+      entry.remaining = remaining
       if (remaining <= 0) {
-        remaining = 0; clearInterval(ref.interval); ref.interval = null
+        remaining = 0; entry.remaining = 0
+        clearInterval(ref.interval); ref.interval = null
         timeText.textContent = 'Done!'
         timeText.classList.add('cm-timer-done')
         fill.style.width = '0%'
         pauseBtn.textContent = '\u23f8'
+        _timerPersist.delete(this.rawLine)
         playTimerSound()
         return
       }
       timeText.textContent = fmt(remaining)
       fill.style.width = `${(remaining / total) * 100}%`
     }
-    ref.interval = setInterval(tick, 1000)
+
+    if (!paused) {
+      ref.interval = setInterval(tick, 1000)
+    }
 
     pauseBtn.onclick = () => {
       if (remaining <= 0) return
       if (paused) {
         paused = false; pauseBtn.textContent = '\u23f8'
+        entry.paused = false
         ref.interval = setInterval(tick, 1000)
       } else {
         paused = true; pauseBtn.textContent = '\u25b6'
+        entry.paused = true
         if (ref.interval) { clearInterval(ref.interval); ref.interval = null }
       }
     }
     resetBtn.onclick = () => {
       remaining = total; paused = false
+      entry.remaining = total; entry.paused = false
       timeText.textContent = fmt(remaining)
       timeText.classList.remove('cm-timer-done')
       fill.style.width = '100%'
@@ -2400,7 +3253,20 @@ class TimerWidget {
   }
   eq(o) { return o instanceof TimerWidget && o.totalSec === this.totalSec && o.label === this.label }
   compare(o) { return this.eq(o) }
-  destroy() { if (this._ref.interval) clearInterval(this._ref.interval) }
+  destroy() {
+    if (this._ref.interval) { clearInterval(this._ref.interval); this._ref.interval = null }
+    // If still running, hand off to a background interval so time keeps ticking while unmounted
+    const entry = _timerPersist.get(this.rawLine)
+    if (entry && !entry.paused && entry.remaining > 0) {
+      entry.bgInterval = setInterval(() => {
+        if (!entry || entry.paused || entry.remaining <= 0) {
+          clearInterval(entry.bgInterval); entry.bgInterval = null; return
+        }
+        entry.remaining = Math.max(0, entry.remaining - 1)
+        if (entry.remaining <= 0) { clearInterval(entry.bgInterval); entry.bgInterval = null }
+      }, 1000)
+    }
+  }
   ignoreEvent() { return true }
   get estimatedHeight() { return this.totalSec === 0 ? 48 : 72 }
   coordsAt() { return null }
@@ -2616,10 +3482,11 @@ class CalendarWidget {
 // ─── Live preview plugin ──────────────────────────────────────────────────────
 function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [], flashcardDecks = [], notebookDir = null, isPreview = false) {
   const { ViewPlugin, Decoration, WidgetType } = cm.view
+  const { StateField } = cm.state
   const { syntaxTree } = cm.language
 
   // Patch widget classes to extend WidgetType so CM6 properly handles them
-  for (const Cls of [HRWidget, CheckboxWidget, ImgWidget, ListMarkerWidget, MathWidget, WikiWidget, LinkWidget, TableWidget, HabitsWidget, TaskBlockWidget, SupWidget, SubWidget, TimerWidget, CalendarWidget, TimeRefWidget, FnRefWidget, DueDateWidget, TagWidget]) {
+  for (const Cls of [HRWidget, CheckboxWidget, ImgWidget, ListMarkerWidget, MathWidget, WikiWidget, LinkWidget, TableWidget, HabitsWidget, TaskBlockWidget, SupWidget, SubWidget, TimerWidget, CalendarWidget, TimeRefWidget, FnRefWidget, DueDateWidget, TagWidget, QuestionWidget]) {
     if (!(Cls.prototype instanceof WidgetType)) {
       Object.setPrototypeOf(Cls.prototype, WidgetType.prototype)
     }
@@ -2659,26 +3526,76 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
     if (!/^[\s|:-]+$/.test(tableLines[1])) return
     const parseRow = row => {
       const trimmed = row.trim()
-      const inner = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed
-      const end = inner.endsWith('|') ? inner.slice(0, -1) : inner
-      return end.split('|').map(c => c.trim())
+      const inner = trimmed.replace(/^(?<!\\)\|/, '').replace(/(?<!\\)\|$/, '')
+      return inner.split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, '|'))
     }
     const headers = parseRow(tableLines[0])
     const sep = parseRow(tableLines[1])
     const aligns = sep.map(c => /^:-+:$/.test(c) ? 'center' : /-+:$/.test(c) ? 'right' : 'left')
-    const rows = tableLines.slice(2).filter(l => /\|/.test(l) && !/^[\s|:-]+$/.test(l))
+    const isSepRow = l => parseRow(l).every(c => /^:?-+:?$/.test(c))
+    const rows = tableLines.slice(2).filter(l => /\|/.test(l) && !isSepRow(l))
     const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     const thHtml = headers.map((h, i) => `<th style="text-align:${aligns[i]||'left'}">${esc(h)}</th>`).join('')
     const tbHtml = rows.map(r => {
       const cells = parseRow(r)
-      return `<tr>${cells.map((c, i) => `<td style="text-align:${aligns[i]||'left'}">${esc(c)}</td>`).join('')}</tr>`
+      const norm  = Array.from({ length: headers.length }, (_, i) => cells[i] ?? '')
+      return `<tr>${norm.map((c, i) => `<td style="text-align:${aligns[i]||'left'}">${esc(c)}</td>`).join('')}</tr>`
     }).join('')
     const html = `<table class="nb-table"><thead><tr>${thHtml}</tr></thead><tbody>${tbHtml}</tbody></table>`
-    // Align to line boundaries
+    // block: true requires both positions to be line starts
     const tLineFrom = doc.lineAt(from).from
-    const lastCharPos = Math.max(from, Math.min(to - 1, doc.length - 1))
-    const tLineTo = doc.lineAt(lastCharPos).to
+    const lastLine = doc.lineAt(Math.max(from, Math.min(to - 1, doc.length - 1)))
+    // Position after the last table line's \n = start of next line (a valid line start)
+    const tLineTo = lastLine.to < doc.length ? lastLine.to + 1 : doc.length
     inlines.push({ from: tLineFrom, to: tLineTo, deco: Decoration.replace({ widget: new TableWidget(html) }) })
+  }
+
+  /** Build a RangeSet of block-replace table decorations for a given EditorState.
+   *  Must live in a StateField because block: true is forbidden in ViewPlugin.
+   *  Tables always render as widgets; editing is done via inline cell inputs. */
+  function _buildTableDecos(state) {
+    const builder = new RangeSetBuilder()
+    const doc  = state.doc
+    const full = doc.toString()
+    const decos = []
+    // Match header row \n separator row \n optional body rows
+    const tableRe = /^(\|?.+\|.+)\n(\|?[\s:|-]+\|[\s:|-]*)((?:\n\|?.+\|.+)*)/gm
+    let tm
+    while ((tm = tableRe.exec(full)) !== null) {
+      const tFrom   = tm.index
+      const tTo     = tm.index + tm[0].length
+      const rawText = tm[0]
+      const tableLines = rawText.split('\n').filter(l => l.trim())
+      if (tableLines.length < 2) continue
+      if (!/^[\s|:-]+$/.test(tableLines[1])) continue
+      const parseRow = row => {
+        const trimmed = row.trim()
+        const inner = trimmed.replace(/^(?<!\\)\|/, '').replace(/(?<!\\)\|$/, '')
+        return inner.split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, '|'))
+      }
+      const headers = parseRow(tableLines[0])
+      const sep     = parseRow(tableLines[1])
+      const aligns  = sep.map(c => /^:-+:$/.test(c) ? 'center' : /-+:$/.test(c) ? 'right' : 'left')
+      const isSepRow = l => parseRow(l).every(c => /^:?-+:?$/.test(c))
+      const rows    = tableLines.slice(2).filter(l => /\|/.test(l) && !isSepRow(l))
+      const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      const thHtml = headers.map((h, i) => `<th style="text-align:${aligns[i]||'left'}">${esc(h)}</th>`).join('')
+      const tbHtml = rows.map(r => {
+        const cells = parseRow(r)
+        const norm  = Array.from({ length: headers.length }, (_, i) => cells[i] ?? '')
+        return `<tr>${norm.map((c, i) => `<td style="text-align:${aligns[i]||'left'}">${esc(c)}</td>`).join('')}</tr>`
+      }).join('')
+      const html = `<table class="nb-table"><thead><tr>${thHtml}</tr></thead><tbody>${tbHtml}</tbody></table>`
+      const tLineFrom = doc.lineAt(tFrom).from
+      const lastLine  = doc.lineAt(Math.max(tFrom, Math.min(tTo - 1, doc.length - 1)))
+      const tLineTo   = lastLine.to < doc.length ? lastLine.to + 1 : doc.length
+      if (tLineTo > tLineFrom) decos.push({ from: tLineFrom, to: tLineTo, html, rawText })
+    }
+    decos.sort((a, b) => a.from - b.from)
+    for (const { from, to, html, rawText } of decos) {
+      try { builder.add(from, to, Decoration.replace({ widget: new TableWidget(html, rawText), block: true })) } catch { /**/ }
+    }
+    try { return builder.finish() } catch { return Decoration.none }
   }
 
   function build(view) {
@@ -2716,12 +3633,8 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
             return false
           }
 
-          // ── Table — render as HTML table unless cursor is inside ──
-          if (name === 'Table') {
-            if (inCur(from, to)) return false
-            try { _renderTableDeco(doc, from, to, inCur, inlines) } catch { /**/ }
-            return false
-          }
+          // ── Table — handled in tableDecoField (block: true requires StateField) ──
+          if (name === 'Table') return false
 
           // ── Task checkbox ────────────────────────────────────────────────
           if (name === 'TaskMarker') {
@@ -2743,8 +3656,11 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
             if (m) {
               if (!inCur(from, to)) {
                 const imgWidth = m[3] ? parseInt(m[3]) : 0
+                // Parse alignment from end of alt text: :left, :right, :center
+                const alignMatch = m[1].match(/:(?:left|right|center)$/i)
+                const align = alignMatch ? alignMatch[0].slice(1).toLowerCase() : null
                 // Replace only the image syntax, not the whole line
-                inlines.push({ from, to, deco: Decoration.replace({ widget: new ImgWidget(m[2], m[1], notebookDir, from, imgWidth), block: false }) })
+                inlines.push({ from, to, deco: Decoration.replace({ widget: new ImgWidget(m[2], m[1], notebookDir, from, imgWidth, align), block: false }) })
                 return false
               }
             }
@@ -2946,7 +3862,11 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
                 const raw = doc.sliceString(from, to)
                 const lm = raw.match(/^\[([^\]]*)\]\(([^\s)]*)\)$/)
                 if (lm) {
-                  inlines.push({ from, to, deco: Decoration.replace({ widget: new LinkWidget(lm[1], lm[2]) }) })
+                  // Skip — let QuestionWidget own the whole ?[...](...)  range
+                  const prevChar = from > 0 ? doc.sliceString(from - 1, from) : ''
+                  if (prevChar !== '?') {
+                    inlines.push({ from, to, deco: Decoration.replace({ widget: new LinkWidget(lm[1], lm[2]) }) })
+                  }
                   return false
                 }
               }
@@ -3166,23 +4086,6 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
       }
     } catch { /**/ }
 
-    // ── Table regex fallback (catches tables the Lezer tree may have missed) ──
-    try {
-      const full = fullDoc
-      // Match: header row | sep row | optional body rows
-      const tableRe = /^(\|.+\|)\n(\|[\s:|-]+\|)((?:\n\|.+\|)*)/gm
-      let tm
-      while ((tm = tableRe.exec(full)) !== null) {
-        const tFrom = tm.index
-        const tTo = tm.index + tm[0].length
-        // Skip if already decorated by the tree walk
-        const already = inlines.some(d => d.from <= tFrom && d.to >= tTo && d.deco.spec?.widget instanceof TableWidget)
-        if (already) continue
-        if (inCur(tFrom, tTo)) continue
-        _renderTableDeco(doc, tFrom, tTo, inCur, inlines)
-      }
-    } catch { /**/ }
-
     // ── /habits block widget ─────────────────────────────────────────────
     try {
       const habitsRe = /^\/habits(?::(.*))?$/gm
@@ -3193,40 +4096,6 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
         const hTo = hLine.to
         // Never collapse — user edits via widget UI (same as /calendar)
         inlines.push({ from: hFrom, to: hTo, deco: Decoration.replace({ widget: new HabitsWidget(hm[1] || '', hm[0], hFrom) }) })
-      }
-    } catch { /**/ }
-
-    // ── /task blocks (single-block replacement) ───────────────────────────
-    try {
-      const full = fullDoc
-      const lines = full.split('\n')
-      const lineStarts2 = []
-      let pos2 = 0
-      for (const l of lines) { lineStarts2.push(pos2); pos2 += l.length + 1 }
-
-      for (let li = 0; li < lines.length; li++) {
-        if (!lines[li].match(/^\/task(?::.*)?$/)) continue
-        const block = parseTaskBlock(full, li)
-        if (!block) continue
-
-        const blockFrom = lineStarts2[block.startLine]
-        const blockTo   = (block.endLine + 1 < lines.length)
-          ? lineStarts2[block.endLine + 1]
-          : lineStarts2[block.endLine] + lines[block.endLine].length
-
-        // Never collapse — user edits via widget UI
-        const columns = block.columns.map(col => ({
-          title: col.title,
-          tasks: col.tasks.map(task => {
-            const cbIdx = lines[task.lineIdx].search(/\[[ xX]\]/)
-            return { text: task.text, done: task.done, cbPos: lineStarts2[task.lineIdx] + (cbIdx >= 0 ? cbIdx : 0) }
-          }),
-        }))
-        const rawMd2 = full.slice(blockFrom, blockTo)
-        // Never collapse — user edits via widget UI, not raw markdown (same as /calendar)
-        inlines.push({ from: blockFrom, to: blockTo, deco: Decoration.replace({ widget: new TaskBlockWidget(block.boardTitle, columns, rawMd2, blockFrom) }) })
-
-        li = block.endLine
       }
     } catch { /**/ }
 
@@ -3371,6 +4240,20 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
       }
     } catch { /**/ }
 
+    // ── ?[question](ref) review/flashcard widgets ────────────────────────
+    try {
+      const qRe = /\?\[([^\]]*)\]\(([^)]*)\)/g
+      let qm
+      while ((qm = qRe.exec(fullDoc)) !== null) {
+        const from = qm.index, to = qm.index + qm[0].length
+        if (inCur(from, to)) {
+          inlines.push({ from, to: from + 1, deco: Decoration.mark({ class: 'cm-lv-p' }) })
+        } else {
+          inlines.push({ from, to, deco: Decoration.replace({ widget: new QuestionWidget(qm[1], qm[2], qm[0], from) }) })
+        }
+      }
+    } catch { /**/ }
+
     // ── @time references (@HH:MM, @hh:mmam/pm, @HH, @Hham/pm) ─────────
     try {
       const full = fullDoc
@@ -3444,10 +4327,33 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
       try { lb.add(pos, pos, Decoration.line({ class: cls })) } catch { /**/ }
     }
 
-    return { spans: sb.finish(), lines: lb.finish() }
+    let spans, lines
+    try { spans = sb.finish() } catch { spans = Decoration.none }
+    try { lines = lb.finish() } catch { lines = Decoration.none }
+    return { spans, lines }
   }
 
-  return ViewPlugin.fromClass(
+  // ── /task block decorations live in a StateField (multi-line replace forbidden in ViewPlugin) ──
+  const taskDecoField = StateField.define({
+    create(state) { return _buildTaskDecos(state.doc.toString(), Decoration, RangeSetBuilder) },
+    update(decos, tr) {
+      if (!tr.docChanged) return decos
+      return _buildTaskDecos(tr.newDoc.toString(), Decoration, RangeSetBuilder)
+    },
+    provide: f => cm.view.EditorView.decorations.from(f),
+  })
+
+  // ── Table decorations also live in a StateField (block: true, multi-line) ──
+  const tableDecoField = StateField.define({
+    create(state) { return _buildTableDecos(state) },
+    update(decos, tr) {
+      if (!tr.docChanged) return decos
+      return _buildTableDecos(tr.state)
+    },
+    provide: f => cm.view.EditorView.decorations.from(f),
+  })
+
+  return [taskDecoField, tableDecoField, ViewPlugin.fromClass(
     class {
       constructor(view) {
         try { const r = build(view); this.decorations = r.spans; this.lineDecos = r.lines }
@@ -3469,7 +4375,44 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
         }),
       ],
     }
-  )
+  )]
+}
+
+// ─── /task block decoration builder (StateField — multi-line replace forbidden in ViewPlugin) ───
+function _buildTaskDecos(fullDoc, Decoration, RangeSetBuilder) {
+  const builder = new RangeSetBuilder()
+  try {
+    const lines = fullDoc.split('\n')
+    const lineStarts = []
+    let pos = 0
+    for (const l of lines) { lineStarts.push(pos); pos += l.length + 1 }
+
+    const decos = []
+    for (let li = 0; li < lines.length; li++) {
+      if (!lines[li].match(/^\/task(?::.*)?$/)) continue
+      const block = parseTaskBlock(fullDoc, li)
+      if (!block) continue
+
+      const blockFrom = lineStarts[block.startLine]
+      const blockTo   = lineStarts[block.endLine] + lines[block.endLine].length
+
+      const columns = block.columns.map(col => ({
+        title: col.title,
+        tasks: col.tasks.map(task => {
+          const cbIdx = lines[task.lineIdx].search(/\[[ xX]\]/)
+          return { text: task.text, done: task.done, date: task.date || null, cbPos: lineStarts[task.lineIdx] + (cbIdx >= 0 ? cbIdx : 0) }
+        }),
+      }))
+      const rawMd = fullDoc.slice(blockFrom, blockTo)
+      decos.push({ from: blockFrom, to: blockTo, widget: new TaskBlockWidget(block.boardTitle, columns, rawMd, blockFrom) })
+      li = block.endLine
+    }
+    decos.sort((a, b) => a.from - b.from)
+    for (const { from, to, widget } of decos) {
+      builder.add(from, to, Decoration.replace({ widget }))
+    }
+  } catch { /**/ }
+  return builder.finish()
 }
 
 // ─── Checkbox click handler (live mode) ──────────────────────────────────────
@@ -3936,6 +4879,9 @@ export default function NotebookView() {
   ))
   const notebooks      = useAppStore(s => s.notebooks)
   const updateNotebook = useAppStore(s => s.updateNotebook)
+  const nbFontSize     = useAppStore(s => s.nbFontSize ?? 15)
+  const setPref        = useAppStore(s => s.setPref)
+  const persistPreferences = useAppStore(s => s.persistPreferences)
   const setView        = useAppStore(s => s.setView)
   const updateTab      = useAppStore(s => s.updateTab)
   const activeTabId    = useAppStore(s => s.activeTabId)
@@ -4056,7 +5002,7 @@ export default function NotebookView() {
     const fds = s.flashcardDecks || []
     if (type === 'notebook') {
       const nb = nbs.find(n => n.id === id)
-      if (nb) { s.setActiveNotebook(nb); s.updateTab(tabId, { view: 'notebook', activeNotebook: nb }); s.setView('notebook') }
+      if (nb) { s.openNewTab({ view: 'notebook', activeNotebook: nb }) }
       else createAndOpenItem(title, 'notebook')
     } else if (type === 'book') {
       const bk = lib.find(b => b.id === id)
@@ -4108,6 +5054,49 @@ export default function NotebookView() {
     }
   }
 
+  // ── Study timer — tracks minutes spent in notebook for streak/stats ────────
+  useEffect(() => {
+    if (!notebook) return
+    const TICK_MS = 60_000
+    const IDLE_MS = 120_000
+    let lastActive = Date.now()
+    let accumulated = 0
+    const onActivity = () => { lastActive = Date.now() }
+    window.addEventListener('mousemove', onActivity, { passive: true })
+    window.addEventListener('keydown',   onActivity, { passive: true })
+    const interval = setInterval(() => {
+      if (Date.now() - lastActive < IDLE_MS) {
+        accumulated += TICK_MS / 60_000
+        if (accumulated >= 1) {
+          addReadingMinutes(Math.floor(accumulated)).catch(() => {})
+          accumulated -= Math.floor(accumulated)
+        }
+      }
+    }, TICK_MS)
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener('mousemove', onActivity)
+      window.removeEventListener('keydown',   onActivity)
+      if (accumulated >= 0.1) addReadingMinutes(Math.max(1, Math.round(accumulated))).catch(() => {})
+    }
+  }, [notebook])
+
+  // ── Cmd/Ctrl + +/- font size zoom ─────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e) => {
+      if (!(e.metaKey || e.ctrlKey)) return
+      if (e.key !== '+' && e.key !== '=' && e.key !== '-') return
+      e.preventDefault()
+      const current = useAppStore.getState().nbFontSize ?? 15
+      const next = e.key === '-' ? Math.max(11, current - 1) : Math.min(24, current + 1)
+      if (next === current) return
+      setPref('nbFontSize', next)
+      persistPreferences()
+    }
+    window.addEventListener('keydown', handler, { capture: true })
+    return () => window.removeEventListener('keydown', handler, { capture: true })
+  }, [setPref, persistPreferences])
+
   // ── Mount CodeMirror ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!isLoaded || !editorRef.current) return
@@ -4150,7 +5139,7 @@ export default function NotebookView() {
         // Math.js inline calculator — shows result after `expr=`
         ...makeMathCalcPlugin(cm),
         // Live decorations (widgets, hiding syntax) — shared between live + preview
-        ...(isLive ? [makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks, flashcardDecks, notebookDirRef.current, viewMode === 'preview')] : []),
+        ...(isLive ? makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks, flashcardDecks, notebookDirRef.current, viewMode === 'preview') : []),
         // Interaction handlers — live mode only (preview is read-only)
         ...(viewMode === 'live' ? [
           makeCheckboxHandler(cm),
@@ -4344,7 +5333,26 @@ export default function NotebookView() {
     const tags = tagSet.size ? [...tagSet] : null
     const newTitle = title || notebook.title
     const patch = { updatedAt: new Date().toISOString(), wordCount: wc, dueDate: dueDate?.toISOString() || null, tags }
-    if (newTitle !== notebook.title) patch.title = newTitle
+    if (newTitle !== notebook.title) {
+      patch.title = newTitle
+      // Propagate the rename to wikilinks in all other notebooks
+      const oldTitle = notebook.title
+      if (oldTitle) {
+        const allNbs = useAppStore.getState().notebooks
+        const escaped = oldTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const wikilinkRe = new RegExp(`\\[\\[${escaped}\\]\\]`, 'gi')
+        for (const nb of allNbs) {
+          if (nb.id === notebook.id) continue
+          try {
+            const raw = await loadNotebookContent(nb.id)
+            if (!raw || !wikilinkRe.test(raw)) continue
+            wikilinkRe.lastIndex = 0
+            const updated = raw.replace(wikilinkRe, `[[${newTitle}]]`)
+            await saveNotebookContent(nb, updated)
+          } catch { /* non-fatal — skip this notebook */ }
+        }
+      }
+    }
     updateNotebook(notebook.id, patch)
     useAppStore.getState().persistNotebooks?.()
     // Signal other tabs showing the same notebook to pull in the new content
@@ -4816,25 +5824,38 @@ export default function NotebookView() {
     .cm-math-block:hover { background: rgba(56,139,253,.06); border-radius:4px; }
 
     /* ── Table widget in live view ── */
+    .cm-table-outer { padding: 5px 0 7px; }
     .cm-table-wrap {
-      margin: 0.6em 0; overflow-x: auto; border-radius: 8px;
-      border: 1px solid var(--border); overflow: hidden;
+      overflow-x: auto; border-radius: 6px;
+      border: 1px solid var(--border);
     }
     .cm-table-wrap table.nb-table {
-      border-collapse: collapse; width: 100%; font-size: .93em;
+      border-collapse: collapse; width: auto; min-width: 100%; font-size: .92em;
     }
     .cm-table-wrap table.nb-table th,
     .cm-table-wrap table.nb-table td {
-      border: none; border-bottom: 1px solid var(--borderSubtle);
-      padding: 8px 12px; text-align: left;
+      border-right: 1px solid var(--borderSubtle);
+      border-bottom: 1px solid var(--borderSubtle);
+      padding: 5px 10px; text-align: left;
+      white-space: nowrap; min-width: 80px;
     }
-    .cm-table-wrap table.nb-table th {
-      background: var(--surfaceAlt); font-weight: 700; font-size: .88em;
-      text-transform: uppercase; letter-spacing: .03em; color: var(--textDim);
-      border-bottom: 2px solid var(--border);
-    }
+    .cm-table-wrap table.nb-table th:last-child,
+    .cm-table-wrap table.nb-table td:last-child { border-right: none; }
     .cm-table-wrap table.nb-table tr:last-child td { border-bottom: none; }
-    .cm-table-wrap table.nb-table tbody tr:hover td { background: var(--surfaceAlt); }
+    .cm-table-wrap table.nb-table th {
+      background: var(--surfaceAlt); font-weight: 600; font-size: .85em;
+      text-transform: uppercase; letter-spacing: .04em; color: var(--textDim);
+      border-bottom: 1px solid var(--border);
+    }
+    .cm-table-wrap table.nb-table tbody tr:hover td {
+      background: color-mix(in srgb, var(--surfaceAlt) 60%, transparent);
+    }
+    .cm-table-wrap td, .cm-table-wrap th { cursor: text; }
+    .cm-table-wrap td:focus, .cm-table-wrap th:focus {
+      outline: 2px solid var(--accent); outline-offset: -2px;
+      background: color-mix(in srgb, var(--accent) 8%, transparent) !important;
+      white-space: pre-wrap;
+    }
 
     /* ── /todo block widget ── */
     .cm-todo-block-w {
@@ -4939,10 +5960,7 @@ export default function NotebookView() {
 
     /* ── /task board widget (kanban) ── */
     .cm-task-board-w {
-      margin: 0.6em 0; border-radius: 8px; overflow: hidden;
-      background: var(--surface);
-      border: 1px solid var(--borderSubtle);
-      box-shadow: 0 1px 3px rgba(0,0,0,.08);
+      margin: 0.6em 0;
     }
     .cm-task-titlebar {
       display: flex; align-items: center; padding: 10px 14px 6px;
@@ -4990,7 +6008,7 @@ export default function NotebookView() {
     }
     .cm-task-col-hdr-w:hover .cm-task-col-del { opacity: .6; }
     .cm-task-col-del:hover { color: #f85149 !important; opacity: 1 !important; }
-    .cm-task-cards-area { flex: 1; min-height: 24px; padding: 4px 5px 2px; }
+    .cm-task-cards-area { padding: 4px 5px 2px; }
     .cm-task-card-w {
       background: var(--surface); border-radius: 7px; margin-bottom: 5px;
       border: 1px solid var(--border);
@@ -5006,7 +6024,8 @@ export default function NotebookView() {
     }
     .cm-task-card-text { flex: 1; min-width: 0; line-height: 1.45; font-size: 12px; }
     .cm-task-card-edit {
-      background: none; border: none; outline: none; font-size: 12px;
+      background: var(--bg); border: 1px solid var(--accent); outline: none;
+      border-radius: 4px; padding: 1px 4px; font-size: 12px;
       color: var(--text); font-family: inherit; width: 100%;
     }
     .cm-task-card-del-btn {
@@ -5016,6 +6035,47 @@ export default function NotebookView() {
     }
     .cm-task-card-w:hover .cm-task-card-del-btn { opacity: 0.5; }
     .cm-task-card-del-btn:hover { opacity: 1 !important; color: #f85149; }
+    .cm-task-card-date-row {
+      display: flex; align-items: center; gap: 4px;
+      padding: 0 10px 6px;
+    }
+    .cm-task-card-date-badge {
+      font-size: 10px; color: var(--accent); cursor: pointer;
+      background: rgba(var(--accentRgb, 99,102,241),.1);
+      border-radius: 4px; padding: 1px 6px; font-family: 'Author', system-ui, sans-serif;
+    }
+    .cm-task-card-date-badge:hover { opacity: .8; }
+    .cm-task-card-date-clear {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      font-size: 12px; padding: 0 2px; opacity: 0; line-height: 1;
+      transition: opacity .1s;
+    }
+    .cm-task-card-w:hover .cm-task-card-date-clear { opacity: 0.5; }
+    .cm-task-card-date-clear:hover { opacity: 1 !important; color: #f85149; }
+    .cm-task-card-add-date {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      font-size: 10px; padding: 0; opacity: 0; transition: opacity .1s;
+      font-family: 'Author', system-ui, sans-serif;
+    }
+    .cm-task-card-w:hover .cm-task-card-add-date { opacity: 0.45; }
+    .cm-task-card-add-date:hover { opacity: 1 !important; color: var(--accent); }
+    .cm-task-date-picker {
+      position: fixed; z-index: 99999;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px; min-width: 210px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.2);
+    }
+    .cm-task-date-hdr { min-height: unset !important; padding: 4px 0 !important; }
+    .cm-task-date-blank { background: var(--surface); height: 28px; }
+    .cm-task-date-cell {
+      text-align: center; height: 28px; line-height: 28px; font-size: 11px;
+      color: var(--text); cursor: pointer; border-radius: 0;
+      transition: background .1s; background: var(--surface);
+      font-family: 'Satoshi', 'Author', sans-serif;
+    }
+    .cm-task-date-cell:hover { background: var(--surfaceAlt); }
+    .cm-task-date-today { color: var(--accent); font-weight: 700; }
+    .cm-task-date-selected { background: rgba(56,139,253,.15) !important; color: var(--accent); font-weight: 600; }
     .cm-task-add-row { padding: 3px 5px 6px; }
     .cm-task-add-input {
       width: 100%; background: transparent; border: 1px dashed var(--borderSubtle);
@@ -5606,7 +6666,7 @@ export default function NotebookView() {
   `
 
   return (
-    <div className="nb-root" style={{ display:'flex', flexDirection:'column', height:'100vh', overflow:'hidden', background:'var(--readerBg, var(--bg))', color:'var(--text)', position:'relative' }}>
+    <div className="nb-root" style={{ display:'flex', flexDirection:'column', height:'100vh', overflow:'hidden', background:'var(--readerBg, var(--bg))', color:'var(--text)', position:'relative', '--nb-fs': `${nbFontSize}px` }}>
       <style>{CSS}</style>
       <style>{THEME_CSS}</style>
 
@@ -5690,7 +6750,7 @@ export default function NotebookView() {
       ) : (
         <div style={{ flex:1, overflow:'hidden', display:'flex', flexDirection:'column', position:'relative', background:'var(--readerBg,var(--bg))' }}>
           {/* Title — static in preview, editable input in live/source */}
-          <div style={{ maxWidth:780, margin:'0 auto', width:'100%', padding:'24px 48px 0', boxSizing:'border-box' }}>
+          <div className="nb-content-wrap" style={{ maxWidth:780, margin:'0 auto', width:'100%', padding:'24px 48px 0', boxSizing:'border-box' }}>
             {viewMode === 'preview' ? (
               noteTitle && (
                 <div style={{ fontFamily:'Georgia,serif', fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2 }}>
@@ -5907,7 +6967,7 @@ function NotebookSettingsPanel({ notebook, notebooks, onClose }) {
       {k:'***bold italic***',d:'Bold + italic'},{k:'~~strike~~',d:'Strikethrough'},
       {k:'==highlight==',d:'Highlight'},{k:'`code`',d:'Inline code'},
       {k:'^sup^',d:'Superscript'},{k:'~sub~',d:'Subscript'},
-      {k:'[text](url)',d:'Hyperlink'},{k:'![alt](url)',d:'Image'},
+      {k:'[text](url)',d:'Hyperlink'},{k:'![alt](url)',d:'Image'},{k:'![alt :left](url)',d:'Image aligned left/right/center'},
     ]},
     { title:'Headings', rows:[
       {k:'# H1',d:'Heading 1'},{k:'## H2',d:'Heading 2'},{k:'### H3',d:'Heading 3'},
@@ -5923,6 +6983,7 @@ function NotebookSettingsPanel({ notebook, notebooks, onClose }) {
       {k:'/task or /task:Title',d:'Kanban board'},
       {k:'/timer mm:ss or hh:mm:ss',d:'Countdown timer with progress bar'},
       {k:'/calendar',d:'Interactive inline calendar'},
+      {k:'?[question]()',d:'Review question — click to set date or link to flashcard deck'},
       {k:'[^1]: note',d:'Footnote definition'},
       {k:'$math$',d:'Inline math (MathQuill — click to edit)'},
       {k:'$$\nmath\n$$',d:'Math block (MathQuill — click to edit)'},

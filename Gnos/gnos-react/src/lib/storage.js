@@ -187,6 +187,12 @@ export async function moveToTrash(type, id, title, bookObj = null) {
         await rename(contentFolder, await join(trashEntry, 'content'))
       } catch (renameErr) {
         console.warn('[Gnos] moveToTrash: rename failed, content left in place', renameErr)
+        // Rename failed — remove meta.json from the original folder so
+        // loadNotebooksMeta / loadLibrary won't resurrect this item on next launch.
+        try {
+          const staleMeta = await join(contentFolder, 'meta.json')
+          if (await exists(staleMeta)) await remove(staleMeta)
+        } catch { /* non-fatal */ }
       }
     }
 
@@ -332,10 +338,11 @@ export async function loadLibrary() {
 }
 
 export async function saveLibrary(library) {
-  // Strip coverDataUrl — covers are persisted as cover.jpg files in each book folder
-  // eslint-disable-next-line no-unused-vars
-  const lean = library.map(({ coverDataUrl, ...b }) => b)
-  return setJSON('library', lean)
+  // coverDataUrl is kept in the JSON as a reliable fallback.
+  // Covers are also written as cover.jpg files in each book's folder,
+  // but the folder-based reload can silently fail for books not yet migrated
+  // or whose cover file write failed. Keeping it in JSON prevents any stripping.
+  return setJSON('library', library)
 }
 
 // ── Notebooks (named-folder format) ──────────────────────────────────────────
@@ -358,6 +365,7 @@ async function getNotebooksDir() {
 async function getNotebookDir(notebook) {
   const notebooksDir = await getNotebooksDir()
   const folderName = sanitizeFolderName(notebook.title || notebook.id)
+  if (!folderName || folderName.startsWith('.')) throw new Error(`Invalid notebook folder name: ${folderName}`)
   const dir = await join(notebooksDir, folderName)
   if (!(await exists(dir))) await mkdir(dir, { recursive: true })
   return dir
@@ -399,6 +407,41 @@ export async function loadNotebooksMeta() {
         } catch { /* skip corrupt meta */ }
       }
     }
+
+    // Filter out notebooks whose IDs appear in the trash manifests.
+    // This handles the case where moveToTrash's folder rename failed (e.g. cross-device)
+    // but the manifest was still written, leaving a stale meta.json in notebooksDir.
+    try {
+      const trashDir = await getTrashDir()
+      const trashEntries = await readDir(trashDir)
+      const trashedIds = new Set()
+      for (const te of trashEntries) {
+        if (!te.name) continue
+        const tmPath = await join(trashDir, te.name, '_trash_meta.json')
+        if (await exists(tmPath)) {
+          try {
+            const tm = JSON.parse(await readTextFile(tmPath))
+            if (tm.type === 'notebook' && tm.id) trashedIds.add(tm.id)
+          } catch { /* skip corrupt manifest */ }
+        }
+      }
+      if (trashedIds.size > 0) {
+        // For any notebook still on disk whose id is in the trash, remove the
+        // meta.json so it won't resurface on the next launch either.
+        for (const m of metas) {
+          if (!trashedIds.has(m.id)) continue
+          try {
+            const staleFolder = await _findFolderById(notebooksDir, m.id)
+            if (staleFolder) {
+              const staleMeta = await join(staleFolder, 'meta.json')
+              if (await exists(staleMeta)) await remove(staleMeta)
+            }
+          } catch { /* non-fatal */ }
+        }
+        metas.splice(0, metas.length, ...metas.filter(m => !trashedIds.has(m.id)))
+      }
+    } catch { /* trash dir may not exist yet — ignore */ }
+
     if (metas.length > 0) {
       // Use the saved JSON order as the authoritative sort so manual reordering persists.
       // Items not in the saved order (newly created) go at the end sorted by updatedAt.
@@ -429,7 +472,7 @@ export async function saveNotebooksMeta(notebooks) {
       // Find the existing folder for this notebook by id
       let existingFolderName = null
       for (const entry of existingEntries) {
-        if (!entry.name) continue
+        if (!entry.name || entry.name === '.DS_Store') continue
         const metaPath = await join(notebooksDir, entry.name, 'meta.json')
         if (await exists(metaPath)) {
           try {

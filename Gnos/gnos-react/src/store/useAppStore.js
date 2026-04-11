@@ -331,6 +331,7 @@ const useAppStore = create((set, get) => ({
   // Notebook prefs
   defaultViewMode: 'live',
   autosave: true,
+  nbFontSize: 15,
   smartListContinuation: true,
   syntaxAutocomplete: true,
   // TTS prefs
@@ -354,6 +355,13 @@ const useAppStore = create((set, get) => ({
   // Filter persistence
   libSubFilter: 'all',
   setLibSubFilter: (f) => { set({ libSubFilter: f }); get().persistPreferences() },
+
+  // Unified cross-type order for the main library tab
+  unifiedLibraryOrder: [],
+  setUnifiedLibraryOrder: (order) => set({ unifiedLibraryOrder: order }),
+
+  // Creation behaviour
+  openOnCreate: true,
   setPreference: (key, value) => set({ [key]: value }),
   setPref: (key, value) => set({ [key]: value }),
   updateBookProgress: (id, chapter, page) => set(s => ({
@@ -410,22 +418,24 @@ const useAppStore = create((set, get) => ({
         fontSize = 18, lineSpacing = 1.7, fontFamily = 'Georgia, serif',
         tapToTurn = true, twoPage = false,
         justifyText = true, highlightWords = false, underlineLine = false,
-        defaultViewMode = 'live', autosave = true, smartListContinuation = true, syntaxAutocomplete = true,
+        defaultViewMode = 'live', autosave = true, smartListContinuation = true, syntaxAutocomplete = true, nbFontSize = 15,
         rememberPosition = true, defaultPlaybackSpeed = 1,
         ttsEnabled = false, ttsVoice = '', ttsSpeed = 1,
         ollamaUrl = '', ollamaModel = 'llama3',
         username = '', archivePath = '', onboardingComplete = false,
         libSubFilter = 'all',
         calendarStartHour = 7, calendarEndHour = 21, calendarWeekStart = 0,
+        unifiedLibraryOrder = [], openOnCreate = true,
       } = prefs
       // archivePath from prefs wins over the pointer (they should match, but prefs is authoritative)
       set({ themeKey, customThemes, fontSize, lineSpacing, fontFamily,
             tapToTurn, twoPage, justifyText, highlightWords, underlineLine,
-            defaultViewMode, autosave, smartListContinuation, syntaxAutocomplete,
+            defaultViewMode, autosave, smartListContinuation, syntaxAutocomplete, nbFontSize,
             rememberPosition, defaultPlaybackSpeed,
             ttsEnabled, ttsVoice, ttsSpeed,
             ollamaUrl, ollamaModel, username, libSubFilter,
             calendarStartHour, calendarEndHour, calendarWeekStart,
+            unifiedLibraryOrder, openOnCreate,
             archivePath: archivePath || savedArchivePath,
             onboardingComplete })
       applyTheme(themeKey, customThemes)
@@ -463,13 +473,14 @@ const useAppStore = create((set, get) => ({
       tapToTurn: s.tapToTurn, twoPage: s.twoPage,
       justifyText: s.justifyText, highlightWords: s.highlightWords, underlineLine: s.underlineLine,
       defaultViewMode: s.defaultViewMode, autosave: s.autosave,
-      smartListContinuation: s.smartListContinuation, syntaxAutocomplete: s.syntaxAutocomplete,
+      smartListContinuation: s.smartListContinuation, syntaxAutocomplete: s.syntaxAutocomplete, nbFontSize: s.nbFontSize,
       rememberPosition: s.rememberPosition, defaultPlaybackSpeed: s.defaultPlaybackSpeed,
       ttsEnabled: s.ttsEnabled, ttsVoice: s.ttsVoice, ttsSpeed: s.ttsSpeed,
       ollamaUrl: s.ollamaUrl, ollamaModel: s.ollamaModel,
       username: s.username, archivePath: s.archivePath, onboardingComplete: s.onboardingComplete,
       libSubFilter: s.libSubFilter,
       calendarStartHour: s.calendarStartHour, calendarEndHour: s.calendarEndHour, calendarWeekStart: s.calendarWeekStart,
+      unifiedLibraryOrder: s.unifiedLibraryOrder, openOnCreate: s.openOnCreate,
     })
     // Always keep the pointer file up to date so init() can find the archive on next launch
     if (s.archivePath) {

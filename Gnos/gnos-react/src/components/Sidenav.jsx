@@ -513,6 +513,7 @@ export function UniversalSettingsModal({ onClose }) {
 
   const setPref            = useAppStore(s => s.setPref)
   const persistPreferences = useAppStore(s => s.persistPreferences)
+  const openOnCreate       = useAppStore(s => s.openOnCreate)
   const fontSize           = useAppStore(s => s.fontSize)
   const lineSpacing        = useAppStore(s => s.lineSpacing)
   const fontFamily         = useAppStore(s => s.fontFamily)
@@ -669,6 +670,10 @@ export function UniversalSettingsModal({ onClose }) {
 
           {tab === 'library' && (
             <>
+              <SettingsSectionLabel>Creation</SettingsSectionLabel>
+              <SettingsRow label="Open on create" desc="Automatically open new notebooks, sketchbooks, and decks when created">
+                <SettingsToggle on={openOnCreate !== false} onClick={() => pref('openOnCreate', openOnCreate === false)} />
+              </SettingsRow>
               <SettingsSectionLabel>Discover Books</SettingsSectionLabel>
               <a href="https://www.gutenberg.org" target="_blank" rel="noopener" style={{
                 display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',

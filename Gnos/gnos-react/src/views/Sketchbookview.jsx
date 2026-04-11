@@ -248,6 +248,48 @@ async function pdfToExcalidrawImages(file, onProgress) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Thumbnail generation — exports canvas, downscales to a compact JPEG
+// ─────────────────────────────────────────────────────────────────────────────
+// Returns { dataUrl, bgColor } so the card can match the canvas background exactly.
+async function generateSketchbookThumbnail(api, files) {
+  const elements = (api.getSceneElements() || []).filter(e => !e.isDeleted)
+  if (!elements.length) return null
+  try {
+    const appState = api.getAppState()
+    const bgColor = appState.viewBackgroundColor || '#ffffff'
+    const { utils } = await loadExcalidraw()
+    const blob = await utils.exportToBlob({
+      elements,
+      appState: { exportBackground: true, viewBackgroundColor: bgColor, exportWithDarkMode: false },
+      files: files || {},
+      mimeType: 'image/png',
+    })
+    const url = URL.createObjectURL(blob)
+    const img = await new Promise((res, rej) => {
+      const i = new Image()
+      i.onload = () => res(i)
+      i.onerror = rej
+      i.src = url
+    })
+    URL.revokeObjectURL(url)
+    const MAX_W = 280, MAX_H = 400
+    const ratio = Math.min(MAX_W / img.naturalWidth, MAX_H / img.naturalHeight, 1)
+    const w = Math.max(1, Math.round(img.naturalWidth * ratio))
+    const h = Math.max(1, Math.round(img.naturalHeight * ratio))
+    const canvas = document.createElement('canvas')
+    canvas.width = w; canvas.height = h
+    const ctx = canvas.getContext('2d')
+    ctx.fillStyle = bgColor
+    ctx.fillRect(0, 0, w, h)
+    ctx.drawImage(img, 0, 0, w, h)
+    return { dataUrl: canvas.toDataURL('image/jpeg', 0.72), bgColor }
+  } catch (err) {
+    console.warn('[SketchbookView] thumbnail failed:', err)
+    return null
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SketchbookView
 // ─────────────────────────────────────────────────────────────────────────────
 export default function SketchbookView() {
@@ -276,6 +318,8 @@ export default function SketchbookView() {
   const [pdfProgress,  setPdfProgress]  = useState('')
   const [bgLocked,     setBgLocked]     = useState(false)
   const pdfInputRef = useRef(null)
+  // OCR indexing state
+  const [ocrStatus, setOcrStatus] = useState('idle') // 'idle' | 'indexing' | 'done' | 'error'
 
   const excalidrawApiRef  = useRef(null)
   const saveTimerRef      = useRef(null)
@@ -283,6 +327,7 @@ export default function SketchbookView() {
   const savedFilesRef     = useRef({})   // accumulates all files ever seen — never loses images
   const lastSavedSigRef   = useRef(null) // dirty-flag: skip saves when only viewport changed
   const latestSaveArgsRef = useRef(null) // latest onChange args — flushed synchronously on unmount
+  const thumbnailTimerRef = useRef(null) // debounces thumbnail regeneration after saves
   // Always holds the last non-null sketchbook so the unmount cleanup can save
   // even after `sketchbook` has become null in the selector (tab closed).
   const stableSketchbookRef = useRef(sketchbook)
@@ -407,6 +452,18 @@ export default function SketchbookView() {
         saveVisTimer.current = setTimeout(() => el.classList.remove('vis', 'closing'), 450)
       }, 600)
     }
+
+    // Regenerate cover thumbnail 2s after the last save, non-blocking
+    clearTimeout(thumbnailTimerRef.current)
+    const sbId = latestSb.id
+    thumbnailTimerRef.current = setTimeout(async () => {
+      const api = excalidrawApiRef.current
+      if (!api) return
+      const thumb = await generateSketchbookThumbnail(api, savedFilesRef.current)
+      if (!thumb) return
+      useAppStore.getState().updateSketchbook?.(sbId, { coverDataUrl: thumb.dataUrl, coverBgColor: thumb.bgColor })
+      useAppStore.getState().persistSketchbooks?.()
+    }, 2000)
   }, [sketchbook, updateSketchbook])
 
   const scheduleSave = useCallback((elements, appState, files) => {
@@ -547,6 +604,44 @@ export default function SketchbookView() {
     scheduleSave(updated, appState, api.getFiles())
   }, [scheduleSave])
 
+  // ── OCR indexing ──────────────────────────────────────────────────────────────
+  // Exports the current canvas to a PNG and runs Tesseract to extract text.
+  // The result is stored as `ocrText` on the sketchbook meta so LibraryView
+  // search can find it.
+  const runSketchbookOcr = useCallback(async () => {
+    const api = excalidrawApiRef.current
+    if (!api || !sketchbook) return
+    const elements = api.getSceneElements()
+    if (!elements?.length) return
+
+    setOcrStatus('indexing')
+    try {
+      const { utils } = await loadExcalidraw()
+      const blob = await utils.exportToBlob({
+        elements,
+        appState: { ...api.getAppState(), exportBackground: true },
+        files: savedFilesRef.current,
+        mimeType: 'image/png',
+        quality: 1,
+      })
+
+      const { createWorker } = await import('tesseract.js')
+      const worker = await createWorker('eng')
+      const { data: { text } } = await worker.recognize(blob)
+      await worker.terminate()
+
+      const ocrText = text.trim()
+      updateSketchbook(sketchbook.id, { ocrText, ocrIndexedAt: new Date().toISOString() })
+      await useAppStore.getState().persistSketchbooks?.()
+      setOcrStatus('done')
+      setTimeout(() => setOcrStatus('idle'), 2200)
+    } catch (err) {
+      console.error('[SketchbookView] OCR failed:', err)
+      setOcrStatus('error')
+      setTimeout(() => setOcrStatus('idle'), 2500)
+    }
+  }, [sketchbook, updateSketchbook])
+
   // Keep a ref to the latest doSave so the unmount effect can call the current version
   const doSaveRef = useRef(doSave)
   useEffect(() => { doSaveRef.current = doSave }, [doSave])
@@ -664,8 +759,10 @@ export default function SketchbookView() {
                     updateSketchbook(sketchbook.id, { title: t })
                     // Use the freshest sketchbook from the store so we don't spread
                     // a stale prop that's missing updatedAt/elementCount from prior saves
-                    const fresh = useAppStore.getState().sketchbooks.find(s => s.id === sketchbook.id)
-                    setActiveSketchbook(fresh ?? { ...sketchbook, title: t })
+                    const fresh = useAppStore.getState().sketchbooks.find(s => s.id === sketchbook.id) ?? { ...sketchbook, title: t }
+                    setActiveSketchbook(fresh)
+                    // Also update the tab's activeSketchbook so the selector re-renders immediately
+                    if (paneTabId) useAppStore.getState().updateTab?.(paneTabId, { activeSketchbook: fresh })
                     // Flush any pending debounced save before persisting meta so canvas
                     // content is written under the correct sketchbook object
                     clearTimeout(saveTimerRef.current)
@@ -772,6 +869,58 @@ export default function SketchbookView() {
             </svg>
             Import PDF
           </button>
+
+          {/* OCR Index button */}
+          {isLoaded && ExcalidrawCmp && (
+            <button
+              onClick={runSketchbookOcr}
+              disabled={ocrStatus === 'indexing'}
+              title={
+                ocrStatus === 'done'  ? 'Text indexed — searchable in Library' :
+                ocrStatus === 'error' ? 'OCR failed — try again' :
+                'Index written text so this sketchbook appears in Library search'
+              }
+              style={{
+                display:'flex', alignItems:'center', gap:5,
+                background: ocrStatus === 'done'  ? 'rgba(56,139,253,0.12)' :
+                            ocrStatus === 'error' ? 'rgba(248,81,73,0.10)'  : 'var(--surfaceAlt)',
+                border: ocrStatus === 'done'  ? '1px solid var(--accent)'       :
+                        ocrStatus === 'error' ? '1px solid rgba(248,81,73,0.5)' : '1px solid var(--border)',
+                borderRadius:7, padding:'0 10px', height:28, cursor: ocrStatus === 'indexing' ? 'default' : 'pointer',
+                fontSize:12, fontFamily:'inherit',
+                color: ocrStatus === 'done'  ? 'var(--accent)'  :
+                       ocrStatus === 'error' ? '#f85149'        : 'var(--text)',
+                transition:'background 0.1s, border-color 0.1s, color 0.1s',
+                opacity: ocrStatus === 'indexing' ? 0.7 : 1,
+              }}
+              onMouseEnter={e=>{ if (ocrStatus === 'idle') { e.currentTarget.style.borderColor='var(--accent)'; e.currentTarget.style.background='var(--hover,rgba(255,255,255,0.06))' }}}
+              onMouseLeave={e=>{ if (ocrStatus === 'idle') { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.background='var(--surfaceAlt)' }}}
+            >
+              {ocrStatus === 'indexing' ? (
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ animation:'spin 0.8s linear infinite' }}>
+                  <circle cx="8" cy="8" r="6" stroke="var(--border)" strokeWidth="2"/>
+                  <path d="M8 2a6 6 0 0 1 6 6" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+              ) : ocrStatus === 'done' ? (
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                  <polyline points="3,8 6.5,12 13,4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              ) : ocrStatus === 'error' ? (
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                  <path d="M8 3v6M8 11.5v1.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                </svg>
+              ) : (
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                  <circle cx="6.5" cy="6.5" r="4" stroke="currentColor" strokeWidth="1.4"/>
+                  <line x1="9.8" y1="9.8" x2="14" y2="14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                  <path d="M4.5 6.5h4M6.5 4.5v4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                </svg>
+              )}
+              {ocrStatus === 'indexing' ? 'Indexing…' :
+               ocrStatus === 'done'     ? 'Indexed'   :
+               ocrStatus === 'error'    ? 'OCR Error' : 'Index Text'}
+            </button>
+          )}
 
         </div>
       </header>
