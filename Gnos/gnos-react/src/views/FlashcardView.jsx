@@ -113,6 +113,14 @@ const FLASHCARD_CSS = `
     font-size: 10px; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.08em; color: var(--textDim); opacity: 0.6;
   }
+  .fc-card-html {
+    max-width: 100%; overflow-wrap: break-word; text-align: center;
+    line-height: 1.5;
+  }
+  .fc-card-html img {
+    max-width: 100%; max-height: 120px; object-fit: contain;
+    border-radius: 6px; display: block; margin: 8px auto 0;
+  }
   .fc-rating-bar {
     display: flex; gap: 10px;
   }
@@ -332,6 +340,18 @@ function stripHtml(html) {
   return { text: el.textContent?.trim() || '', sounds }
 }
 
+/** Inline media data URLs into HTML and strip [sound:] refs */
+function processCardHtml(html, mediaData) {
+  if (!html) return ''
+  let out = html.replace(/\[sound:[^\]]+\]/g, '')
+  out = out.replace(/<img([^>]*?)src=["']([^"']+)["']([^>]*?)>/g, (match, pre, src, post) => {
+    const bare = src.replace(/^.*[/\\]/, '')
+    const m = mediaData[src] || mediaData[bare]
+    return m?.isImage ? `<img${pre}src="${m.url}"${post}>` : match
+  })
+  return out
+}
+
 /** Parse .apkg file (ZIP containing SQLite) and return { cards, media } */
 async function parseApkg(arrayBuffer) {
   const zip = await JSZip.loadAsync(arrayBuffer)
@@ -391,6 +411,8 @@ async function parseApkg(arrayBuffer) {
           id: makeId('fc'),
           front: front.text,
           back: back.text,
+          frontHtml: processCardHtml(frontHtml, mediaData),
+          backHtml:  processCardHtml(backHtml,  mediaData),
           nextReview: 0, interval: 1, ease: 2.5, repetitions: 0,
         }
 
@@ -687,15 +709,19 @@ export default function FlashcardView() {
                 <div className={`fc-card-inner${flipped ? ' flipped' : ''}`}>
                   <div className="fc-card-face fc-card-front" style={{ flexDirection: 'column', gap: 8, borderLeftColor: studyCard.color && studyCard.color !== 'transparent' ? studyCard.color : undefined, borderLeftWidth: studyCard.color && studyCard.color !== 'transparent' ? 4 : undefined }}>
                     <div className="fc-card-label">Front</div>
-                    {studyCard.front || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>Empty card</span>}
-                    {studyCard.imageUrl && <img src={studyCard.imageUrl} alt="" style={{ maxWidth: '70%', maxHeight: 100, borderRadius: 8, objectFit: 'contain' }} />}
+                    {studyCard.frontHtml
+                      ? <div className="fc-card-html" dangerouslySetInnerHTML={{ __html: studyCard.frontHtml }} />
+                      : studyCard.front || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>Empty card</span>}
+                    {!studyCard.frontHtml && studyCard.imageUrl && <img src={studyCard.imageUrl} alt="" style={{ maxWidth: '70%', maxHeight: 100, borderRadius: 8, objectFit: 'contain' }} />}
                     {studyCard.sketchUrl && <img src={studyCard.sketchUrl} alt="" style={{ maxWidth: '80%', maxHeight: 80, borderRadius: 6 }} />}
                     {studyCard.audioUrl && <AudioPlayBtn src={studyCard.audioUrl} />}
                   </div>
                   <div className="fc-card-face fc-card-back" style={{ flexDirection: 'column', gap: 8 }}>
                     <div className="fc-card-label">Back</div>
-                    {studyCard.back || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>No answer</span>}
-                    {studyCard.backImageUrl && <img src={studyCard.backImageUrl} alt="" style={{ maxWidth: '70%', maxHeight: 100, borderRadius: 8, objectFit: 'contain' }} />}
+                    {studyCard.backHtml
+                      ? <div className="fc-card-html" dangerouslySetInnerHTML={{ __html: studyCard.backHtml }} />
+                      : studyCard.back || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>No answer</span>}
+                    {!studyCard.backHtml && studyCard.backImageUrl && <img src={studyCard.backImageUrl} alt="" style={{ maxWidth: '70%', maxHeight: 100, borderRadius: 8, objectFit: 'contain' }} />}
                     {studyCard.backAudioUrl && <AudioPlayBtn src={studyCard.backAudioUrl} />}
                   </div>
                 </div>

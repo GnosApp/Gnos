@@ -102,6 +102,160 @@ async fn piper_speak(
     Ok(output_path.to_string_lossy().to_string())
 }
 
+/// Create a child webview at the given logical coordinates inside the main window.
+/// Requires the "unstable" Tauri feature.
+#[tauri::command]
+async fn create_inline_webview(
+    app: tauri::AppHandle,
+    label: String,
+    url: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let window = app
+        .get_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    let parsed_url = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
+    window
+        .add_child(
+            tauri::WebviewBuilder::new(&label, tauri::WebviewUrl::External(parsed_url)),
+            tauri::LogicalPosition::new(x, y),
+            tauri::LogicalSize::new(width, height),
+        )
+        .map_err(|e: tauri::Error| e.to_string())?;
+    Ok(())
+}
+
+/// Reposition / resize an inline child webview
+#[tauri::command]
+async fn reposition_inline_webview(
+    app: tauri::AppHandle,
+    label: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    if let Some(webview) = app.get_webview(&label) {
+        webview
+            .set_position(tauri::LogicalPosition::new(x, y))
+            .map_err(|e| e.to_string())?;
+        webview
+            .set_size(tauri::LogicalSize::new(width, height))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Close an inline child webview
+#[tauri::command]
+async fn close_inline_webview(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    if let Some(webview) = app.get_webview(&label) {
+        webview.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Fetch og:image (or twitter:image) from a page's HTML head.
+/// Streams only until </head> or 64 KB so it is fast.
+#[tauri::command]
+async fn fetch_og_image(url: String) -> Result<Option<String>, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .get(&url)
+        .header("Accept", "text/html,application/xhtml+xml")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Stream only until </head> or 64 KB
+    use futures_util::StreamExt;
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::with_capacity(65536);
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        buf.extend_from_slice(&chunk);
+        if buf.len() >= 65536 { break; }
+        if let Ok(s) = std::str::from_utf8(&buf) {
+            if s.to_ascii_lowercase().contains("</head>") { break; }
+        }
+    }
+
+    let html = String::from_utf8_lossy(&buf);
+    for prop in &["og:image", "twitter:image"] {
+        if let Some(img_url) = extract_meta_content(&html, prop) {
+            return Ok(Some(resolve_url(&url, &img_url)));
+        }
+    }
+    Ok(None)
+}
+
+fn extract_meta_content(html: &str, property: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let prop_lower = property.to_ascii_lowercase();
+    let mut pos = 0;
+    while let Some(meta_off) = lower[pos..].find("<meta") {
+        let meta_pos = pos + meta_off;
+        let tag_end = lower[meta_pos..].find('>').map(|p| meta_pos + p + 1).unwrap_or(html.len());
+        let tag = &html[meta_pos..tag_end];
+        let tag_lower = &lower[meta_pos..tag_end];
+        let has_prop = tag_lower.contains(&format!("property=\"{}\"", prop_lower))
+            || tag_lower.contains(&format!("property='{}'",  prop_lower))
+            || tag_lower.contains(&format!("name=\"{}\"",    prop_lower))
+            || tag_lower.contains(&format!("name='{}'",      prop_lower));
+        if has_prop {
+            if let Some(content) = extract_attr_value(tag, "content") {
+                return Some(content);
+            }
+        }
+        pos = tag_end;
+    }
+    None
+}
+
+fn extract_attr_value(tag: &str, attr: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    // Try attr="..."
+    let dq = format!("{}=\"", attr.to_ascii_lowercase());
+    if let Some(p) = lower.find(&dq) {
+        let start = p + dq.len();
+        let end = tag[start..].find('"')? + start;
+        return Some(tag[start..end].trim().to_string());
+    }
+    // Try attr='...'
+    let sq = format!("{}='", attr.to_ascii_lowercase());
+    if let Some(p) = lower.find(&sq) {
+        let start = p + sq.len();
+        let end = tag[start..].find('\'')? + start;
+        return Some(tag[start..end].trim().to_string());
+    }
+    None
+}
+
+fn resolve_url(base: &str, img_url: &str) -> String {
+    if img_url.starts_with("https://") || img_url.starts_with("http://") {
+        return img_url.to_string();
+    }
+    if img_url.starts_with("//") {
+        let proto = if base.starts_with("https") { "https:" } else { "http:" };
+        return format!("{}{}", proto, img_url);
+    }
+    if img_url.starts_with('/') {
+        let proto = if base.starts_with("https") { "https" } else { "http" };
+        let after = base.strip_prefix("https://").or_else(|| base.strip_prefix("http://")).unwrap_or(base);
+        let host = after.split('/').next().unwrap_or("");
+        return format!("{}://{}{}", proto, host, img_url);
+    }
+    img_url.to_string()
+}
+
 /// Open a folder in the system file manager (Finder on macOS, Explorer on Windows, etc.)
 #[tauri::command]
 async fn open_in_finder(path: String) -> Result<(), String> {
@@ -232,6 +386,10 @@ pub fn run() {
       piper_check,
       copy_file_bytes,
       open_in_finder,
+      create_inline_webview,
+      reposition_inline_webview,
+      close_inline_webview,
+      fetch_og_image,
     ])
     .on_menu_event(|app, event| {
       let id = event.id().as_ref();

@@ -62,6 +62,31 @@ async function loadJSZip() {
   return JSZip
 }
 
+// ── Image inliner ─────────────────────────────────────────────────────────────
+
+const MIME_MAP = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', avif: 'image/avif' }
+
+async function inlineImages(html, zip, baseDir) {
+  const full = /<img([^>]*?)(?:\/)?>/gi
+  const matches = []
+  let m
+  while ((m = full.exec(html)) !== null) {
+    const src = getAttr(m[1], 'src')
+    if (src && !src.startsWith('data:')) matches.push({ match: m[0], attrs: m[1], src })
+  }
+  let result = html
+  for (const { match, src } of matches) {
+    const path  = resolveHref(baseDir, src)
+    const entry = path ? zipFind(zip, path) : null
+    if (!entry) continue
+    const b64  = await entry.async('base64')
+    const ext  = src.split('.').pop().toLowerCase().split('?')[0]
+    const mime = MIME_MAP[ext] || 'image/jpeg'
+    result = result.replace(match, match.replace(src, `data:${mime};base64,${b64}`))
+  }
+  return result
+}
+
 // ── Block parsers ─────────────────────────────────────────────────────────────
 
 function htmlToBlocks(html) {
@@ -103,6 +128,12 @@ function htmlToBlocks(html) {
         const afterGt = h.indexOf('>', closeIdx)
         pos = afterGt !== -1 ? afterGt + 1 : closeIdx + closeStr.length
       }
+      continue
+    }
+    if (name === 'img' && !isClose) {
+      flush()
+      const src = getAttr(tag, 'src')
+      if (src) blocks.push({ type: 'image', src })
       continue
     }
     if (BLOCK_OPEN.has(name) || BLOCK_CLOSE.has(name)) { flush(); continue }
@@ -313,7 +344,11 @@ export async function parseEpub(file) {
 
   const rawFiles = await Promise.all(spineHrefs.map(async (href) => {
     const entry = zipFind(zip, href)
-    return entry ? { href, html: await entry.async('string') } : null
+    if (!entry) return null
+    const baseDir = href.includes('/') ? href.slice(0, href.lastIndexOf('/') + 1) : ''
+    const raw  = await entry.async('string')
+    const html = await inlineImages(raw, zip, baseDir)
+    return { href, html }
   }))
 
   // Parse TOC (NCX or EPUB3 nav)

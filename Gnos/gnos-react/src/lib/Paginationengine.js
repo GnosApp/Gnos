@@ -1,384 +1,357 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// paginationEngine.js
-// Direct port of the CSS-columns pagination engine from Script.js.
-// Zero React dependency — operates on a DOM element ref passed in from
-// ReaderView. This keeps the heavy DOM work isolated so React's reconciler
-// never touches it.
+// PaginationEngine.js — CSS-columns pagination
+//
+// Instead of computing page breaks in JS (probe DOM + getBoundingClientRect),
+// content is rendered into a CSS multi-column container and the browser handles
+// all text measurement natively.  Navigation is a CSS translateX — zero JS
+// layout reads after the initial render.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── Module-level state (mirrors original Script.js globals) ──────────────────
-
-let _pageBreaks           = []
-let _pageStyleEl          = null
-let _currentRenderedChapter = -1
-let _animating            = false
-let _outgoingPage         = null
-let _chapterBreaksCache   = {}
+// ── Module state ─────────────────────────────────────────────────────────────
+let _pageStyleEl  = null
+let _wrapWords    = false
+let _colW         = 0      // width of one CSS column (= one logical page)
+let _colGap       = 0      // gap between columns (two-page mode only)
+let _twoPage      = false
+let _colH         = 0      // column / card height (px)
+let _container    = null   // the multi-column div (scrolls left/right)
+let _wrapper      = null   // overflow:hidden clip div
+let _overlay      = null   // solid cover div — hides content during render without deferring GPU rasterization
+let _lastNavTime  = 0      // timestamp of last showPage call (ms)
+let _fadeTimer    = null   // pending setTimeout id for fade transitions
 
 // ── HTML builders ─────────────────────────────────────────────────────────────
 
 export function blocksToHTML(blocks) {
   return blocks.map(b => {
-    if (!b?.text?.trim() && b?.type !== 'cover') return ''
-    if (b.type === 'cover')      return `<img src="${b.src}" alt="Book cover">`
+    if (!b?.text?.trim() && b?.type !== 'cover' && b?.type !== 'image') return ''
+    if (b.type === 'cover')      return `<img src="${b.src}" alt="Book cover" class="cover-img">`
     if (b.type === 'pdfPage')    return `<img src="${b.src}" alt="" class="pdf-page-img">`
+    if (b.type === 'image')      return `<img src="${b.src}" alt="" class="epub-inline-img">`
     if (b.type === 'heading')    return `<h2>${b.text}</h2>`
     if (b.type === 'subheading') return `<h3>${b.text}</h3>`
     return `<p>${b.text}</p>`
-  }).join('')
+  }).join('\n')
 }
 
-let _wrapWords = false
-export function setWordWrapEnabled(enabled) { _wrapWords = enabled }
+export function setWordWrapEnabled(enabled) { _wrapWords = !!enabled }
 
 export function blocksToDisplayHTML(blocks) {
   return blocks.map(b => {
-    if (!b?.text?.trim() && b?.type !== 'cover') return ''
-    if (b.type === 'cover')      return `<img src="${b.src}" alt="Book cover">`
+    if (!b?.text?.trim() && b?.type !== 'cover' && b?.type !== 'image') return ''
+    if (b.type === 'cover')      return `<img src="${b.src}" alt="Book cover" class="cover-img">`
     if (b.type === 'pdfPage')    return `<img src="${b.src}" alt="" class="pdf-page-img">`
+    if (b.type === 'image')      return `<img src="${b.src}" alt="" class="epub-inline-img">`
     if (b.type === 'heading')    return `<h2>${b.text}</h2>`
     if (b.type === 'subheading') return `<h3>${b.text}</h3>`
     if (_wrapWords) {
-      const wrapped = b.text.replace(/(\S+)/g, (w) => {
+      const wrapped = b.text.replace(/(\S+)/g, w => {
         const clean = w.replace(/[^a-zA-Z'\u2019-]/g, '')
         return `<span class="col-word" data-word="${clean}">${w}</span>`
       })
       return `<p>${wrapped}</p>`
     }
     return `<p>${b.text}</p>`
-  }).join('')
+  }).join('\n')
 }
 
-// ── CSS injection ─────────────────────────────────────────────────────────────
+// ── Typography CSS ─────────────────────────────────────────────────────────────
+// Padding is applied to child elements rather than the container so that it
+// is consistent across every CSS column (= every page).
 
 export function buildPageStyles(prefs) {
-  const { fontSize: fs, lineSpacing: ls, fontFamily, justifyText } = prefs
-  const paraGap = Math.round(fs * 0.55)
+  const fs       = prefs.fontSize    || 18
+  const ls       = prefs.lineSpacing || 1.6
+  const ff       = prefs.fontFamily  || 'Georgia, serif'
+  const paraGap  = Math.round(fs * 0.55)
+  const justify  = prefs.justifyText !== false ? 'justify' : 'left'
+
   return `
-    .page-content {
-      font-family: ${fontFamily};
+    .col-container {
+      font-family: ${ff};
       font-size: ${fs}px;
       line-height: ${ls};
       color: var(--readerText);
-      padding: 36px 64px;
-      box-sizing: border-box;
-      word-break: break-word;
-      hyphens: auto;
-      height: 100%;
-      overflow: hidden;
       text-rendering: optimizeLegibility;
+      hyphens: auto;
+      box-sizing: border-box;
     }
-    .page-content p {
-      margin: 0 0 ${paraGap}px 0;
-      text-align: ${justifyText !== false ? 'justify' : 'left'};
-      text-align-last: left;
+    .col-container > * {
+      padding-left: 64px;
+      padding-right: 64px;
+      box-sizing: border-box;
+    }
+    .col-container > img {
+      padding-left: 0;
+      padding-right: 0;
+    }
+    .col-container > p:first-child,
+    .col-container > h2:first-child,
+    .col-container > h3:first-child { margin-top: 36px; }
+    .col-container p {
+      margin: 0 0 ${paraGap}px;
+      text-align: ${justify};
       hanging-punctuation: first last;
       font-feature-settings: "kern" 1, "liga" 1, "onum" 1;
       orphans: 3; widows: 3;
+      text-indent: 2em;
     }
-    .page-content p + p { text-indent: 2em; margin-bottom: 0; }
-    .page-content h2 + p, .page-content h3 + p { text-indent: 0; }
-    .page-content h2 {
-      font-size: ${Math.round(fs * 1.65)}px; font-weight: 700;
-      line-height: 1.2; font-family: Georgia, serif;
-      margin: 0 0 ${Math.round(fs * 0.5)}px 0; letter-spacing: -0.01em;
+    .col-container h2 + p,
+    .col-container h3 + p { text-indent: 0; }
+    .col-container h2 {
+      font-family: Georgia, serif;
+      font-size: ${Math.round(fs * 1.65)}px;
+      font-weight: 700; line-height: 1.2;
+      margin: 1.2em 0 0.5em; text-indent: 0;
     }
-    .page-content h3 {
-      font-size: ${Math.round(fs * 1.1)}px; font-weight: 400;
-      line-height: 1.4; font-family: Georgia, serif;
-      margin: 0 0 ${Math.round(fs * 0.4)}px 0;
-      opacity: 0.72; letter-spacing: 0.02em; font-style: italic;
+    .col-container h3 {
+      font-family: Georgia, serif;
+      font-size: ${Math.round(fs * 1.1)}px;
+      font-weight: 600; line-height: 1.3;
+      margin: 1em 0 0.4em; text-indent: 0;
     }
-    .page-content.chapter-title-page {
-      display: flex; flex-direction: column;
-      justify-content: center; align-items: center; text-align: center;
+    .col-container .cover-img {
+      display: block;
+      width: 100%;
+      height: var(--col-h, 600px);
+      object-fit: contain;
+      border-radius: 0;
     }
-    .page-content.chapter-title-page h2,
-    .page-content.chapter-title-page h3 { width: 100%; text-align: center; }
-    .page-content.chapter-title-page h2 { margin-bottom: ${Math.round(fs * 0.3)}px; }
-    .page-content.chapter-title-page h3 { margin-bottom: 0; }
-    .page-content.cover-page {
-      padding: 0; display: flex; align-items: center; justify-content: center;
-      background: var(--readerCard);
+    .col-container .epub-inline-img {
+      width: 100%;
+      max-height: var(--col-h, 600px);
+      height: auto; display: block; margin: 0 auto; border-radius: 4px;
+      object-fit: contain;
     }
-    .page-content.cover-page img {
-      max-width: 100%; max-height: 100%; object-fit: contain;
-      display: block; border-radius: 4px; box-shadow: 0 8px 40px rgba(0,0,0,0.32);
+    .pdf-fill-page .pdf-page-img {
+      width: 100% !important; height: 100% !important;
+      object-fit: contain !important; display: block; background: #fff;
+    }
+    .highlight-words .col-word:hover {
+      background: rgba(56,139,253,0.22); border-radius: 2px; cursor: default;
+    }
+    .col-word.reader-hl {
+      background: rgba(255,210,0,0.65);
+      box-shadow: 5px 0 0 rgba(255,210,0,0.65), -1px 0 0 rgba(255,210,0,0.65);
+      border-radius: 1px; cursor: pointer; color: #1a1200;
+    }
+    .col-word.reader-hl:hover {
+      background: rgba(255,210,0,0.85);
+      box-shadow: 5px 0 0 rgba(255,210,0,0.85), -1px 0 0 rgba(255,210,0,0.85);
+    }
+    .col-word.tts-word-active {
+      background: rgba(56,139,253,0.28); border-radius: 2px;
+    }
+    .underline-line .col-word.same-line {
+      text-decoration: underline;
+      text-decoration-color: rgba(56,139,253,0.55);
+      text-underline-offset: 3px;
     }
   `
 }
 
 export function ensurePageStyle(prefs) {
-  const css = buildPageStyles(prefs)
-  if (_pageStyleEl && _pageStyleEl.parentNode) {
-    _pageStyleEl.textContent = css
-  } else {
+  if (!_pageStyleEl) {
     _pageStyleEl = document.createElement('style')
-    _pageStyleEl.textContent = css
+    _pageStyleEl.id = 'gnos-page-style'
     document.head.appendChild(_pageStyleEl)
   }
+  _pageStyleEl.textContent = buildPageStyles(prefs)
 }
 
-export function removePageStyle() {
-  if (_pageStyleEl) { _pageStyleEl.remove(); _pageStyleEl = null }
-}
+// ── Column setup ──────────────────────────────────────────────────────────────
+// Call once after the card element is mounted (and again when prefs change).
 
-// ── Core: compute page breaks ─────────────────────────────────────────────────
+// Top padding applied inside every column so text never starts flush against
+// the header. Reducing column height by this amount keeps content from being
+// clipped at the bottom.
+const COL_TOP_PAD = 20
 
-export function computePageBreaks(chapter, prefs, cardEl) {
-  if (!chapter || !chapter.blocks.length) return [0]
-  if (!cardEl) return [0]
-
-  const cardW = cardEl.clientWidth || 720
-  const cardH = cardEl.offsetHeight || 600
-
-  const { fontSize: fs, lineSpacing: ls, fontFamily, justifyText, twoPage } = prefs
-  const PAD_V = 36, PAD_H = 64
-  const colW  = twoPage ? Math.floor(cardW / 2) - PAD_H * 2 : cardW - PAD_H * 2
-  const pageH = cardH - PAD_V * 2
-  if (pageH <= 0 || colW <= 0) return [0]
-
-  const paraGap  = Math.round(fs * 0.55)
-  const textAlign = justifyText !== false ? 'justify' : 'left'
-
-  const probe = document.createElement('div')
-  probe.style.cssText = `
-    position: fixed; top: 0; left: -9999px;
-    width: ${colW}px; height: auto; padding: 0; margin: 0; border: none;
-    opacity: 0; pointer-events: none; z-index: -1; overflow: visible;
-    font-family: ${fontFamily}; font-size: ${fs}px;
-    line-height: ${ls}; word-break: break-word;
-    hyphens: auto; box-sizing: border-box;
-  `
-  const probeStyle = document.createElement('style')
-  probeStyle.textContent = `
-    .gnos-probe p  { margin: 0 0 ${paraGap}px 0; text-align: ${textAlign};
-                     text-align-last: left;
-                     font-feature-settings: "kern" 1, "liga" 1, "onum" 1; }
-    .gnos-probe p + p { text-indent: 2em; margin-bottom: 0; }
-    .gnos-probe h2 { font-size: ${Math.round(fs * 1.65)}px; font-weight: 700;
-                     line-height: 1.2; margin: 0 0 ${Math.round(fs * 0.5)}px 0; }
-    .gnos-probe h3 { font-size: ${Math.round(fs * 1.1)}px; font-weight: 400;
-                     line-height: 1.4; margin: 0 0 ${Math.round(fs * 0.4)}px 0; }
-  `
-  document.head.appendChild(probeStyle)
-  probe.className = 'gnos-probe'
-  document.body.appendChild(probe)
-
-  function probeHeight() {
-    const last = probe.lastElementChild
-    if (!last) return 0
-    const probeTop = probe.getBoundingClientRect().top
-    return last.getBoundingClientRect().bottom - probeTop
-  }
-
-  function splitParaAtPageBoundary(text, prefixBlocks) {
-    const words = text.split(' ')
-    let lo = 1, hi = words.length - 1, bestSplit = 1
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1
-      probe.innerHTML = blocksToHTML([...prefixBlocks, { type: 'para', text: words.slice(0, mid).join(' ') }])
-      if (probeHeight() <= pageH) { bestSplit = mid; lo = mid + 1 }
-      else { hi = mid - 1 }
-    }
-    if (bestSplit === 1 && prefixBlocks.length > 0) {
-      bestSplit = 0
-    } else if (bestSplit >= 2) {
-      probe.innerHTML = blocksToHTML([...prefixBlocks, { type: 'para', text: words.slice(0, bestSplit).join(' ') }])
-      const hFull = probeHeight()
-      probe.innerHTML = blocksToHTML([...prefixBlocks, { type: 'para', text: words.slice(0, bestSplit - 1).join(' ') }])
-      const hShort = probeHeight()
-      if (hFull > hShort) {
-        if (bestSplit - 1 >= 2) bestSplit--
-        else if (prefixBlocks.length > 0) bestSplit = 0
-      }
-    }
-    return [words.slice(0, bestSplit).join(' '), words.slice(bestSplit).join(' ')]
-  }
-
-  const expanded = []
-  for (const b of chapter.blocks) {
-    if (!b?.text?.trim() && b?.type !== 'cover' && b?.type !== 'pdfPage') continue
-    expanded.push({ ...b })
-  }
-
-  const breaks = [0]
-  let pageBlocks = [], pageIsHeadingOnly = false
-
-  for (let i = 0; i < expanded.length; i++) {
-    const b = expanded[i]
-    const isHeading = b.type === 'heading' || b.type === 'subheading'
-
-    if (isHeading && pageBlocks.length > 0 && !pageIsHeadingOnly) {
-      breaks.push(i); pageBlocks = []; pageIsHeadingOnly = false
-    } else if (!isHeading && pageIsHeadingOnly) {
-      breaks.push(i); pageBlocks = []; pageIsHeadingOnly = false
-    }
-
-    pageBlocks.push(b)
-    pageIsHeadingOnly = pageBlocks.every(bl => bl.type === 'heading' || bl.type === 'subheading')
-    probe.innerHTML = blocksToHTML(pageBlocks)
-
-    if (probeHeight() > pageH) {
-      if (b.type === 'para' && b.text.split(' ').length > 2) {
-        const prefixForSplit = pageBlocks.length > 1 ? pageBlocks.slice(0, -1) : []
-        const [first, rest] = splitParaAtPageBoundary(b.text, prefixForSplit)
-        if (first && rest) {
-          expanded.splice(i + 1, 0, { type: 'para', text: rest, continued: true })
-          expanded[i] = { ...b, text: first }
-          pageBlocks[pageBlocks.length - 1] = expanded[i]
-          breaks.push(i + 1); pageBlocks = []; pageIsHeadingOnly = false
-        } else if (pageBlocks.length > 1) {
-          breaks.push(i); pageBlocks = [b]
-          probe.innerHTML = blocksToHTML(pageBlocks)
-          if (probeHeight() > pageH) {
-            const [f2, r2] = splitParaAtPageBoundary(b.text, [])
-            if (f2 && r2) {
-              expanded.splice(i + 1, 0, { type: 'para', text: r2, continued: true })
-              expanded[i] = { ...b, text: f2 }
-              pageBlocks[0] = expanded[i]
-              breaks.push(i + 1); pageBlocks = []
-            }
-          }
-          pageIsHeadingOnly = false
-        }
-      } else if (pageBlocks.length > 1) {
-        breaks.push(i); pageBlocks = [b]
-        pageIsHeadingOnly = b.type === 'heading' || b.type === 'subheading'
-        probe.innerHTML = blocksToHTML(pageBlocks)
-      }
-    }
-  }
-
-  document.body.removeChild(probe)
-  probeStyle.remove()
-  chapter._expanded = expanded
-  return breaks
-}
-
-// ── Render a page into the card element ───────────────────────────────────────
-
-export function renderPage(cardEl, chapters, currentChapter, currentPage, twoPage, animate) {
+export function setupColumns(cardEl, prefs) {
   if (!cardEl) return
 
-  const chapter = chapters[currentChapter]
-  if (!chapter) return
+  cardEl.innerHTML = ''
 
-  if (currentChapter !== _currentRenderedChapter) {
-    if (_chapterBreaksCache[currentChapter]) {
-      _pageBreaks = _chapterBreaksCache[currentChapter]
-    }
-    _currentRenderedChapter = currentChapter
-  }
+  const w   = cardEl.clientWidth
+  const h   = cardEl.clientHeight - COL_TOP_PAD
+  const gap = prefs.twoPage ? 64 : 0
 
-  const totalPagesInChapter = _pageBreaks.length
-  const pageIdx = Math.max(0, Math.min(currentPage, totalPagesInChapter - 1))
-  const cardH   = cardEl.offsetHeight
+  _colW    = prefs.twoPage ? Math.floor((w - gap) / 2) : w
+  _colGap  = gap
+  _twoPage = !!prefs.twoPage
+  _colH    = h
 
-  function makePageDiv(pIdx) {
-    const source     = chapter._expanded || chapter.blocks
-    const startBlock = _pageBreaks[pIdx]
-    const endBlock   = _pageBreaks[pIdx + 1] ?? source.length
-    const blocks     = source.slice(startBlock, endBlock)
-    const div        = document.createElement('div')
-    div.className    = 'page-content'
-    div.style.height = cardH + 'px'
-    div.innerHTML    = blocksToDisplayHTML(blocks)
-    const nonEmpty   = blocks.filter(b => b?.text?.trim() || b?.type === 'cover' || b?.type === 'pdfPage')
-    if (nonEmpty.length > 0) {
-      if (nonEmpty.every(b => b.type === 'cover'))       div.classList.add('cover-page')
-      else if (nonEmpty.every(b => b.type === 'heading' || b.type === 'subheading')) div.classList.add('chapter-title-page')
-    }
-    if (nonEmpty[0]?.continued) {
-      const firstP = div.querySelector('p')
-      if (firstP) firstP.style.textIndent = '0'
-    }
-    return div
-  }
+  _wrapper = document.createElement('div')
+  // padding-top creates the gap between the header border and the first line
+  // of text on every page. The wrapper stays overflow:hidden so nothing bleeds
+  // outside the card; the container height is reduced by the same amount so
+  // the last line of each page is never clipped by the wrapper's bottom edge.
+  _wrapper.style.cssText = `overflow:hidden;width:100%;height:100%;position:relative;padding-top:${COL_TOP_PAD}px;box-sizing:border-box;`
 
-  let newSurface
-  if (twoPage) {
-    newSurface = document.createElement('div')
-    newSurface.className = 'page-spread'
-    newSurface.style.height = cardH + 'px'
-    const rightPage = pageIdx + 1 < totalPagesInChapter
-      ? makePageDiv(pageIdx + 1)
-      : (() => { const e = document.createElement('div'); e.className = 'page-content'; e.style.height = cardH + 'px'; return e })()
-    newSurface.appendChild(makePageDiv(pageIdx))
-    newSurface.appendChild(rightPage)
+  _container = document.createElement('div')
+  // Keep 'page-content' class so existing selectors in ReaderView still work
+  _container.className = 'col-container page-content'
+
+  // Give the container an explicit wide CSS width so every CSS column falls
+  // inside the container's own box (not in its scrollable overflow).
+  // WebKit does not paint content in the scrollable-overflow region of a
+  // multi-column container, which causes all pages after the first to appear
+  // blank.  100 columns covers even very dense book chapters while keeping
+  // browser layout work proportional to actual content.
+  const containerW = 100 * (_colW + _colGap)
+
+  _container.style.cssText = [
+    `column-width:${_colW}px`,
+    'column-fill:auto',
+    `column-gap:${_colGap}px`,
+    `height:${h}px`,
+    `width:${containerW}px`,
+    'overflow-y:hidden',
+    'will-change:transform',
+    'word-break:break-word',
+  ].join(';')
+  _container.style.setProperty('--col-h', h + 'px')
+
+  // Overlay sits on top of the container at z-index 1. It is shown (opaque)
+  // while new chapter content is being laid out and rasterized, then faded
+  // out by revealContent(). Because the content underneath stays at opacity:1,
+  // the browser rasterizes it eagerly — unlike opacity:0 on the wrapper which
+  // causes WebKit to defer GPU rasterization entirely, producing the
+  // "half-page then full-page" visual lag.
+  _overlay = document.createElement('div')
+  _overlay.style.cssText = 'position:absolute;inset:0;background:var(--readerCard);z-index:1;pointer-events:none;'
+
+  _wrapper.appendChild(_container)
+  _wrapper.appendChild(_overlay)
+  cardEl.appendChild(_wrapper)
+}
+
+// ── Chapter rendering ─────────────────────────────────────────────────────────
+// Sets innerHTML on the container and resets scroll position.
+// Must call measurePageCount() after a rAF to let the browser lay out columns.
+
+// pageIdx — optional logical page to start at (default 0).
+// The wrapper is hidden with opacity:0 before the innerHTML swap so the user
+// never sees a flash of partially-laid-out content. Call revealContent() once
+// the two-rAF measurement cycle is done and the correct position is confirmed.
+export function renderChapterContent(blocks, pageIdx = 0) {
+  if (!_container) return
+  const step   = _twoPage ? 2 : 1
+  const offset = pageIdx * step * (_colW + _colGap)
+  _container.style.transition = 'none'
+  _container.style.transform  = `translateX(-${offset}px)`
+  // Show overlay instantly so new content is hidden during layout/rasterization.
+  // The container itself stays opacity:1 so the browser rasterizes it eagerly.
+  if (_overlay) { _overlay.style.transition = 'none'; _overlay.style.opacity = '1' }
+  _container.innerHTML = blocksToDisplayHTML(blocks)
+}
+
+// Fade the overlay out once layout is settled and the position is confirmed.
+// Because content was rasterized at opacity:1 underneath, it is fully painted
+// by the time the overlay becomes transparent.
+export function revealContent() {
+  if (!_overlay) return
+  _overlay.style.transition = 'opacity 0.18s ease'
+  _overlay.style.opacity    = '0'
+}
+
+// ── Page measurement ──────────────────────────────────────────────────────────
+// Call inside a requestAnimationFrame after renderChapterContent().
+// Returns the number of logical pages (columns / step) in the chapter.
+
+export function measurePageCount() {
+  if (!_container || _colW <= 0) return 1
+  const lastEl = _container.lastElementChild
+  if (!lastEl) return 1
+  const unit = _colW + _colGap
+  // getBoundingClientRect() returns the actual rendered position including
+  // CSS-column offsets, unlike offsetLeft which WebKit reports incorrectly
+  // inside multi-column containers.  Both rects are affected equally by any
+  // translateX on the container, so the difference is always accurate.
+  const containerRect = _container.getBoundingClientRect()
+  const elRect        = lastEl.getBoundingClientRect()
+  const midX          = (elRect.left + elRect.right) / 2 - containerRect.left
+  const colIdx        = Math.max(0, Math.floor(midX / unit))
+  return _twoPage ? Math.ceil((colIdx + 1) / 2) : colIdx + 1
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+// Translates the container to reveal the given logical page.
+// Each logical page = 1 CSS column in single-page mode, 2 in two-page mode.
+
+// transition: false = instant, 'slide' = translateX animation, 'fade' = opacity cross-fade
+// Animations are automatically skipped when pages are turned rapidly (< 180 ms apart)
+// so the compositor never queues up a backlog of in-flight transitions.
+export function showPage(pageIdx, transition) {
+  if (!_container || !_wrapper) return
+  const step   = _twoPage ? 2 : 1
+  const offset = pageIdx * step * (_colW + _colGap)
+
+  const now     = Date.now()
+  const rapid   = now - _lastNavTime < 180   // user is navigating quickly — skip animation
+  _lastNavTime  = now
+
+  // Cancel any pending fade timer from a previous call
+  if (_fadeTimer !== null) { clearTimeout(_fadeTimer); _fadeTimer = null }
+
+  if (!rapid && transition === 'fade') {
+    // Fade transition: use the overlay (not the wrapper) so content stays
+    // opacity:1 and the GPU keeps its rasterized tiles during the cross-fade.
+    if (_overlay) { _overlay.style.transition = 'opacity 0.14s ease'; _overlay.style.opacity = '1' }
+    _fadeTimer = setTimeout(() => {
+      _fadeTimer = null
+      if (!_container || !_overlay) return
+      _container.style.transition = 'none'
+      _container.style.transform  = `translateX(-${offset}px)`
+      _overlay.style.transition   = 'opacity 0.18s ease'
+      _overlay.style.opacity      = '0'
+    }, 140)
+  } else if (!rapid && transition === 'slide') {
+    _container.style.transition = 'transform 0.22s ease'
+    _container.style.transform  = `translateX(-${offset}px)`
   } else {
-    newSurface = makePageDiv(pageIdx)
-  }
-
-  // Snap any in-flight animation
-  if (_animating && _outgoingPage) {
-    _outgoingPage.remove(); _outgoingPage = null; _animating = false
-    cardEl.querySelectorAll('.page-content, .page-spread').forEach(el => el.remove())
-  }
-
-  if (animate) {
-    const existing = cardEl.querySelector('.page-content, .page-spread')
-    if (existing) {
-      _animating = true; _outgoingPage = existing
-      newSurface.style.cssText = 'position:absolute;inset:0;opacity:0;transition:opacity 0.18s ease;'
-      cardEl.appendChild(newSurface)
-      void newSurface.offsetWidth
-      existing.style.cssText  = 'position:absolute;inset:0;opacity:1;transition:opacity 0.18s ease;'
-      existing.style.opacity  = '0'
-      newSurface.style.opacity = '1'
-      const cleanup = () => {
-        if (_outgoingPage === existing) {
-          existing.remove()
-          newSurface.style.cssText = ''
-          _outgoingPage = null; _animating = false
-        }
-      }
-      existing.addEventListener('transitionend', cleanup, { once: true })
-      setTimeout(cleanup, 260)
-    } else {
-      cardEl.innerHTML = ''; cardEl.appendChild(newSurface)
-    }
-  } else {
-    cardEl.innerHTML = ''; cardEl.appendChild(newSurface)
+    // Instant: no animation, or rapid-fire override
+    _container.style.transition = 'none'
+    _container.style.transform  = `translateX(-${offset}px)`
   }
 }
 
-// ── Cache management ──────────────────────────────────────────────────────────
-
-export function precomputeAllChapters(chapters, prefs, cardEl) {
-  _chapterBreaksCache = {}
-  for (let i = 0; i < chapters.length; i++) {
-    _chapterBreaksCache[i] = computePageBreaks(chapters[i], prefs, cardEl)
-  }
+// Shrink the container to the exact column count after measuring.
+// The GPU compositor rasterizes the container in tiles; trimming from
+// 100 pre-allocated columns to the real count slashes rasterization work
+// and eliminates the "partial page then full page" visual lag.
+// Called while the overlay is still opaque so the reflow is invisible.
+export function trimContainerWidth(pageCount) {
+  if (!_container || _colW <= 0) return
+  const step       = _twoPage ? 2 : 1
+  const colCount   = pageCount * step
+  // +1 column as a safety buffer against sub-pixel rounding edge cases
+  const trimmedW   = (colCount + 1) * (_colW + _colGap)
+  _container.style.width = trimmedW + 'px'
 }
+
+// ── Cache / teardown ──────────────────────────────────────────────────────────
 
 export function invalidateCache() {
-  _chapterBreaksCache = {}
-  _currentRenderedChapter = -1
-  _pageBreaks = []
+  _colW = 0; _colGap = 0; _container = null; _wrapper = null; _overlay = null
+  if (_fadeTimer !== null) { clearTimeout(_fadeTimer); _fadeTimer = null }
+  _lastNavTime = 0
 }
 
-export function getPageBreaks(chapterIdx) {
-  return _chapterBreaksCache[chapterIdx] || _pageBreaks
-}
-
-export function getTotalPages() {
-  return Math.max(1, Object.values(_chapterBreaksCache).reduce((s, b) => s + b.length, 0))
-}
-
-export function getGlobalPage(currentChapter, currentPage) {
-  let offset = 0
-  for (let i = 0; i < currentChapter; i++) {
-    offset += (_chapterBreaksCache[i]?.length || 1)
+// Sums known chapter page-counts and estimates unmeasured chapters using the
+// average of the ones already measured.  This avoids the wildly-low totals
+// that come from defaulting every unmeasured chapter to 1.
+export function getTotalPages(chapterPageCounts, numChapters) {
+  let measuredSum   = 0
+  let measuredCount = 0
+  for (let i = 0; i < numChapters; i++) {
+    const c = chapterPageCounts[i]
+    if (c != null) { measuredSum += c; measuredCount++ }
   }
-  return offset + currentPage
-}
-
-export function reset() {
-  _pageBreaks = []
-  _currentRenderedChapter = -1
-  _chapterBreaksCache = {}
-  _animating = false
-  _outgoingPage = null
-  removePageStyle()
+  const avg = measuredCount > 0 ? measuredSum / measuredCount : 10
+  let total = 0
+  for (let i = 0; i < numChapters; i++) {
+    total += chapterPageCounts[i] ?? avg
+  }
+  return Math.round(total)
 }

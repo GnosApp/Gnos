@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useContext, useMemo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useContext, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { PaneContext } from '@/lib/PaneContext'
 import useAppStore from '@/store/useAppStore'
@@ -126,11 +126,21 @@ function ContextMenu({ x, y, items, onClose }) {
     setTimeout(() => document.addEventListener('mousedown', h), 0)
     return () => document.removeEventListener('mousedown', h)
   }, [onClose])
-  const safeX = Math.min(x, window.innerWidth - 180)
-  const safeY = Math.min(y, window.innerHeight - 120)
+  useLayoutEffect(() => {
+    if (!ref.current) return
+    const el = ref.current
+    const { offsetWidth: w, offsetHeight: h } = el
+    const clampedLeft = Math.max(8, Math.min(x, window.innerWidth - w - 8))
+    const clampedTop  = Math.max(60, Math.min(y, window.innerHeight - h - 8))
+    el.style.left = clampedLeft + 'px'
+    el.style.top  = clampedTop  + 'px'
+  }, [x, y])
+  const safeX = Math.max(8, Math.min(x, window.innerWidth - 180))
+  const subLeft = safeX + 320 > window.innerWidth ? 'auto' : '100%'
+  const subRight = safeX + 320 > window.innerWidth ? '100%' : 'auto'
   return (
     <div ref={ref} className="card-ctx-menu" style={{
-      position: 'fixed', left: safeX, top: safeY, zIndex: 9999,
+      position: 'fixed', left: safeX, top: y, zIndex: 9999,
       background: 'var(--surface)', border: '1px solid var(--border)',
       borderRadius: 10, padding: 4, minWidth: 160,
       boxShadow: '0 10px 28px rgba(0,0,0,0.5)',
@@ -152,7 +162,7 @@ function ContextMenu({ x, y, items, onClose }) {
           </button>
           {item.submenu && openSub === i && (
             <div style={{
-              position: 'absolute', left: '100%', top: -4, zIndex: 10000,
+              position: 'absolute', left: subLeft, right: subRight, top: -4, zIndex: 10000,
               background: 'var(--surface)', border: '1px solid var(--border)',
               borderRadius: 10, padding: 4, minWidth: 140,
               boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
@@ -331,8 +341,15 @@ function LibContextMenu({ x, y, onClose, onOpenNebuli, onAddBook, onAddAudio, on
     setTimeout(() => document.addEventListener('mousedown', h), 0)
     return () => document.removeEventListener('mousedown', h)
   }, [onClose])
+  useLayoutEffect(() => {
+    if (!ref.current) return
+    const el = ref.current
+    const { offsetWidth: w, offsetHeight: h } = el
+    el.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + 'px'
+    el.style.top  = Math.max(60, Math.min(y, window.innerHeight - h - 8)) + 'px'
+  }, [x, y])
   return (
-    <div ref={ref} className="add-choice-popup" style={{ position: 'fixed', left: Math.min(x, window.innerWidth - 260), top: Math.min(y, window.innerHeight - 380) }}>
+    <div ref={ref} className="add-choice-popup" style={{ position: 'fixed', left: x, top: y }}>
       <div className="add-choice-header">Add to Library</div>
       <button className="add-choice-btn" onClick={() => { onOpenNebuli?.(); onClose() }}>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
@@ -2166,12 +2183,54 @@ function ProfileModal({ onClose }) {
           if (!raw) continue
           const text = typeof raw === 'string' ? raw.replace(/^# .+\n/, '') : ''
           const blocks = extractHabitsFromText(text)
-          blocks.forEach(b => allBlocks.push({ notebookTitle: nb.title, ...b }))
+          blocks.forEach((b, idx) => allBlocks.push({ notebookId: nb.id, notebookTitle: nb.title, blockIdx: idx, ...b }))
         } catch { /* skip */ }
       }
       setHabitBlocks(allBlocks)
     })()
   }, [profileTab, habitsLoaded, notebooks])
+
+  async function toggleProfileHabit(blockIdx_in_array, habitIndex) {
+    const block = habitBlocks[blockIdx_in_array]
+    if (!block) return
+    const dateKey = today
+    // Optimistic UI update
+    setHabitBlocks(prev => prev.map((b, i) => {
+      if (i !== blockIdx_in_array) return b
+      const log = { ...(b.log || {}) }
+      const arr = [...(log[dateKey] || [])]
+      while (arr.length <= habitIndex) arr.push(0)
+      arr[habitIndex] = arr[habitIndex] ? 0 : 1
+      log[dateKey] = arr
+      return { ...b, log }
+    }))
+    // Persist to notebook file
+    try {
+      const { loadNotebookContent, saveNotebookContent } = await import('@/lib/storage')
+      const content = await loadNotebookContent(block.notebookId)
+      if (!content) return
+      const lines = content.split('\n')
+      let blockCount = 0
+      for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(/^\/habits(?::(.*))?$/)
+        if (m && m[1]) {
+          try {
+            const data = JSON.parse(m[1])
+            if (blockCount === block.blockIdx) {
+              if (!data.log) data.log = {}
+              if (!data.log[dateKey]) data.log[dateKey] = []
+              while (data.log[dateKey].length <= habitIndex) data.log[dateKey].push(0)
+              data.log[dateKey][habitIndex] = data.log[dateKey][habitIndex] ? 0 : 1
+              lines[i] = `/habits:${JSON.stringify(data)}`
+              await saveNotebookContent(block.notebookId, lines.join('\n'))
+              break
+            }
+            blockCount++
+          } catch { /* skip */ }
+        }
+      }
+    } catch (e) { console.warn('[Gnos] toggleProfileHabit failed:', e) }
+  }
 
   useEffect(() => {
     if ((profileTab !== 'calendar') || todosLoaded) return
@@ -2335,7 +2394,12 @@ function ProfileModal({ onClose }) {
                 const todayKey = today
                 const totalHabits = block.habits.length
                 const todayLog = block.log?.[todayKey] || []
-                const todayDone = todayLog.filter(Boolean).length
+                const todayDone = Array.from({length:totalHabits}).filter((_,i)=>todayLog[i]).length
+                // Build last 7 days for the date header
+                const last7 = Array.from({length:7}).map((_,d)=>{
+                  const dt = new Date(); dt.setDate(dt.getDate()-(6-d))
+                  return { k: dt.toISOString().slice(0,10), label: `${dt.getMonth()+1}/${dt.getDate()}`, isToday: d===6 }
+                })
                 return (
                   <div key={bi} style={{marginBottom:16,padding:'12px 14px',borderRadius:10,background:'var(--surface)',border:'1px solid var(--borderSubtle)'}}>
                     <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
@@ -2348,10 +2412,19 @@ function ProfileModal({ onClose }) {
                         <div style={{fontSize:10,color:'var(--textDim)',marginTop:1}}>today</div>
                       </div>
                     </div>
+                    {/* Date header row */}
+                    <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:4,paddingLeft:0}}>
+                      <div style={{flex:1,minWidth:0}}/>
+                      <div style={{display:'flex',gap:2,flexShrink:0}}>
+                        {last7.map(({k,label,isToday})=>(
+                          <div key={k} style={{width:28,textAlign:'center',fontSize:9,fontWeight:isToday?700:400,color:isToday?'var(--accent)':'var(--textDim)',lineHeight:1}}>{label}</div>
+                        ))}
+                      </div>
+                      <div style={{width:32}}/>
+                    </div>
                     <div style={{display:'flex',flexDirection:'column',gap:5}}>
                       {block.habits.map((hName, hi) => {
                         const done = !!(block.log?.[todayKey]?.[hi])
-                        // Compute last 7-day completion rate
                         let streak7 = 0
                         for (let d = 0; d < 7; d++) {
                           const dt = new Date(); dt.setDate(dt.getDate() - d)
@@ -2359,18 +2432,16 @@ function ProfileModal({ onClose }) {
                           if (block.log?.[k]?.[hi]) streak7++
                         }
                         return (
-                          <div key={hi} style={{display:'flex',alignItems:'center',gap:10,padding:'6px 10px',borderRadius:7,background:done?'color-mix(in srgb, var(--accent) 8%, var(--surface))':'var(--surfaceAlt)',border:`1px solid ${done?'color-mix(in srgb, var(--accent) 25%, var(--border))':'var(--borderSubtle)'}`}}>
-                            <div style={{width:16,height:16,borderRadius:4,flexShrink:0,border:`1.5px solid ${done?'var(--accent)':'var(--border)'}`,background:done?'var(--accent)':'none',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,color:'#fff'}}>{done?'✓':''}</div>
+                          <div key={hi} onClick={()=>toggleProfileHabit(bi,hi)} style={{display:'flex',alignItems:'center',gap:10,padding:'6px 10px',borderRadius:7,cursor:'pointer',background:done?'color-mix(in srgb, var(--accent) 8%, var(--surface))':'var(--surfaceAlt)',border:`1px solid ${done?'color-mix(in srgb, var(--accent) 25%, var(--border))':'var(--borderSubtle)'}`,transition:'background 0.12s,border-color 0.12s'}}>
+                            <div style={{width:16,height:16,borderRadius:4,flexShrink:0,border:`1.5px solid ${done?'var(--accent)':'var(--border)'}`,background:done?'var(--accent)':'none',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,color:'#fff',transition:'background 0.12s,border-color 0.12s'}}>{done?'✓':''}</div>
                             <div style={{flex:1,minWidth:0,fontSize:12.5,color:'var(--text)',fontWeight:done?600:400,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={hName}>{hName}</div>
                             <div style={{display:'flex',gap:2,flexShrink:0}}>
-                              {Array.from({length:7}).map((_,d) => {
-                                const dt = new Date(); dt.setDate(dt.getDate() - (6-d))
-                                const k = dt.toISOString().slice(0, 10)
+                              {last7.map(({k,isToday})=>{
                                 const on = !!(block.log?.[k]?.[hi])
-                                return <div key={d} style={{width:8,height:8,borderRadius:2,background:on?'var(--accent)':'var(--surfaceAlt)',border:'1px solid var(--borderSubtle)',opacity:on?1:0.5}} title={k}/>
+                                return <div key={k} style={{width:28,height:14,borderRadius:3,background:on?'var(--accent)':'var(--surfaceAlt)',border:`1px solid ${isToday?'var(--accent)':'var(--borderSubtle)'}`,opacity:on?1:0.5,boxShadow:isToday&&!on?'inset 0 0 0 1px var(--accent)':undefined}} title={k}/>
                               })}
                             </div>
-                            <span style={{fontSize:10,color:streak7>=5?'var(--accent)':'var(--textDim)',fontWeight:600,flexShrink:0,minWidth:24,textAlign:'right'}}>{streak7}/7</span>
+                            <span style={{fontSize:10,color:streak7>=5?'var(--accent)':'var(--textDim)',fontWeight:600,flexShrink:0,width:32,textAlign:'right'}}>{streak7}/7</span>
                           </div>
                         )
                       })}
@@ -3464,7 +3535,7 @@ export default function LibraryView() {
           display: 'flex', alignItems: 'center', gap: 0,
           padding: '0 20px', height: 30,
           borderBottom: '1px solid var(--borderSubtle)',
-          overflowX: 'auto', flexShrink: 0,
+          flexShrink: 0,
         }}>
           {TABS.map(t => (
             <button key={t.id} onClick={() => setActiveLibTab(t.id)} style={{

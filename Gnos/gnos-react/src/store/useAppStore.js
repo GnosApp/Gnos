@@ -202,7 +202,17 @@ const useAppStore = create((set, get) => ({
   updateBook: (id, patch) => set(s => ({
     library: s.library.map(b => b.id === id ? { ...b, ...patch } : b),
   })),
-  removeBook: (id) => set(s => ({ library: s.library.filter(b => b.id !== id) })),
+  removeBook: (id) => set(s => {
+    const updatedTabs = s.tabs.map(t =>
+      t.activeBook?.id === id ? { ...t, view: 'library', activeBook: null } : t
+    )
+    const activeAffected = s.activeBook?.id === id
+    return {
+      library: s.library.filter(b => b.id !== id),
+      tabs: updatedTabs,
+      ...(activeAffected ? { view: 'library', activeBook: null } : {}),
+    }
+  }),
   reorderLibrary: (fromIdx, toIdx) => set(s => {
     const lib = [...s.library]
     const [moved] = lib.splice(fromIdx, 1)
@@ -217,7 +227,17 @@ const useAppStore = create((set, get) => ({
   updateNotebook: (id, patch) => set(s => ({
     notebooks: s.notebooks.map(n => n.id === id ? { ...n, ...patch } : n),
   })),
-  removeNotebook: (id) => set(s => ({ notebooks: s.notebooks.filter(n => n.id !== id) })),
+  removeNotebook: (id) => set(s => {
+    const updatedTabs = s.tabs.map(t =>
+      t.activeNotebook?.id === id ? { ...t, view: 'library', activeNotebook: null } : t
+    )
+    const activeAffected = s.activeNotebook?.id === id
+    return {
+      notebooks: s.notebooks.filter(n => n.id !== id),
+      tabs: updatedTabs,
+      ...(activeAffected ? { view: 'library', activeNotebook: null } : {}),
+    }
+  }),
   reorderNotebooks: (fromIdx, toIdx) => set(s => {
     const nbs = [...s.notebooks]
     const [moved] = nbs.splice(fromIdx, 1)
@@ -248,7 +268,17 @@ const useAppStore = create((set, get) => ({
   updateSketchbook: (id, patch) => set(s => ({
     sketchbooks: s.sketchbooks.map(sb => sb.id === id ? { ...sb, ...patch } : sb),
   })),
-  removeSketchbook: (id) => set(s => ({ sketchbooks: s.sketchbooks.filter(sb => sb.id !== id) })),
+  removeSketchbook: (id) => set(s => {
+    const updatedTabs = s.tabs.map(t =>
+      t.activeSketchbook?.id === id ? { ...t, view: 'library', activeSketchbook: null } : t
+    )
+    const activeAffected = s.activeSketchbook?.id === id
+    return {
+      sketchbooks: s.sketchbooks.filter(sb => sb.id !== id),
+      tabs: updatedTabs,
+      ...(activeAffected ? { view: 'library', activeSketchbook: null } : {}),
+    }
+  }),
   reorderSketchbooks: (fromIdx, toIdx) => set(s => {
     const sbs = [...s.sketchbooks]
     const [moved] = sbs.splice(fromIdx, 1)
@@ -328,6 +358,7 @@ const useAppStore = create((set, get) => ({
   justifyText: true,
   highlightWords: false,
   underlineLine: false,
+  pageTransition: 'slide',
   // Notebook prefs
   defaultViewMode: 'live',
   autosave: true,
@@ -417,7 +448,7 @@ const useAppStore = create((set, get) => ({
         themeKey = 'dark', customThemes = {},
         fontSize = 18, lineSpacing = 1.7, fontFamily = 'Georgia, serif',
         tapToTurn = true, twoPage = false,
-        justifyText = true, highlightWords = false, underlineLine = false,
+        justifyText = true, highlightWords = false, underlineLine = false, pageTransition = 'slide',
         defaultViewMode = 'live', autosave = true, smartListContinuation = true, syntaxAutocomplete = true, nbFontSize = 15,
         rememberPosition = true, defaultPlaybackSpeed = 1,
         ttsEnabled = false, ttsVoice = '', ttsSpeed = 1,
@@ -429,7 +460,7 @@ const useAppStore = create((set, get) => ({
       } = prefs
       // archivePath from prefs wins over the pointer (they should match, but prefs is authoritative)
       set({ themeKey, customThemes, fontSize, lineSpacing, fontFamily,
-            tapToTurn, twoPage, justifyText, highlightWords, underlineLine,
+            tapToTurn, twoPage, justifyText, highlightWords, underlineLine, pageTransition,
             defaultViewMode, autosave, smartListContinuation, syntaxAutocomplete, nbFontSize,
             rememberPosition, defaultPlaybackSpeed,
             ttsEnabled, ttsVoice, ttsSpeed,
@@ -471,7 +502,7 @@ const useAppStore = create((set, get) => ({
       themeKey: s.themeKey, customThemes: s.customThemes,
       fontSize: s.fontSize, lineSpacing: s.lineSpacing, fontFamily: s.fontFamily,
       tapToTurn: s.tapToTurn, twoPage: s.twoPage,
-      justifyText: s.justifyText, highlightWords: s.highlightWords, underlineLine: s.underlineLine,
+      justifyText: s.justifyText, highlightWords: s.highlightWords, underlineLine: s.underlineLine, pageTransition: s.pageTransition,
       defaultViewMode: s.defaultViewMode, autosave: s.autosave,
       smartListContinuation: s.smartListContinuation, syntaxAutocomplete: s.syntaxAutocomplete, nbFontSize: s.nbFontSize,
       rememberPosition: s.rememberPosition, defaultPlaybackSpeed: s.defaultPlaybackSpeed,

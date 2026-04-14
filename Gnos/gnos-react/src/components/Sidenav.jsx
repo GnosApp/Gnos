@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useContext, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useContext, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { PaneContext } from '@/lib/PaneContext'
 import useAppStore from '@/store/useAppStore'
@@ -122,7 +122,7 @@ function MiniCover({ item }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // NavDropdown — 10% shorter vertical padding on rows
 // ─────────────────────────────────────────────────────────────────────────────
-function NavDropdown({ items, onOpen, onMenu, onReorder }) {
+function NavDropdown({ items, onOpen, onMenu, onReorder, activeId }) {
   const [draggingId, setDraggingId] = useState(null)
   const [dropId,     setDropId]     = useState(null)
   const dragRef = useRef(null) // { idx, id, startX, startY, dragging }
@@ -201,12 +201,12 @@ function NavDropdown({ items, onOpen, onMenu, onReorder }) {
           style={{
             display:'flex', alignItems:'center', position:'relative',
             opacity: draggingId === item.id ? 0.4 : 1,
-            background: dropId === item.id ? 'var(--accent)18' : 'none',
-            borderLeft: dropId === item.id ? '2px solid var(--accent)' : '2px solid transparent',
+            background: dropId === item.id ? 'var(--accent)18' : activeId === item.id ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'none',
+            borderLeft: dropId === item.id ? '2px solid var(--accent)' : activeId === item.id ? '2px solid var(--accent)' : '2px solid transparent',
             cursor: onReorder ? 'grab' : undefined,
           }}
-          onMouseEnter={e => { if (dropId !== item.id) e.currentTarget.style.background='var(--hover)' }}
-          onMouseLeave={e => { if (dropId !== item.id) e.currentTarget.style.background='none' }}
+          onMouseEnter={e => { if (dropId !== item.id && activeId !== item.id) e.currentTarget.style.background='var(--hover)' }}
+          onMouseLeave={e => { if (dropId !== item.id) e.currentTarget.style.background= activeId === item.id ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'none' }}
         >
           <button
             onClick={() => onOpen(item)}
@@ -873,11 +873,21 @@ function SideNavCtxMenu({ x, y, items, onClose }) {
     setTimeout(() => document.addEventListener('mousedown', h), 0)
     return () => document.removeEventListener('mousedown', h)
   }, [onClose])
-  const safeX = Math.min(x, window.innerWidth - 180)
-  const safeY = Math.min(y, window.innerHeight - 160)
+  useLayoutEffect(() => {
+    if (!ref.current) return
+    const el = ref.current
+    const { offsetWidth: w, offsetHeight: h } = el
+    const clampedLeft = Math.max(8, Math.min(x, window.innerWidth - w - 8))
+    const clampedTop  = Math.max(60, Math.min(y, window.innerHeight - h - 8))
+    el.style.left = clampedLeft + 'px'
+    el.style.top  = clampedTop  + 'px'
+  }, [x, y])
+  const safeX = Math.max(8, Math.min(x, window.innerWidth - 180))
+  const subLeft = safeX + 310 > window.innerWidth ? 'auto' : '100%'
+  const subRight = safeX + 310 > window.innerWidth ? '100%' : 'auto'
   return (
     <div ref={ref} style={{
-      position:'fixed', left:safeX, top:safeY, zIndex:99999,
+      position:'fixed', left:safeX, top:y, zIndex:99999,
       background:'var(--surface)', border:'1px solid var(--border)',
       borderRadius:10, padding:4, minWidth:168,
       boxShadow:'0 10px 28px rgba(0,0,0,0.5)',
@@ -903,7 +913,7 @@ function SideNavCtxMenu({ x, y, items, onClose }) {
           </button>
           {item.submenu && openSub === i && (
             <div style={{
-              position:'absolute', left:'100%', top:-4, zIndex:100000,
+              position:'absolute', left:subLeft, right:subRight, top:-4, zIndex:100000,
               background:'var(--surface)', border:'1px solid var(--border)',
               borderRadius:10, padding:4, minWidth:130,
               boxShadow:'0 8px 24px rgba(0,0,0,0.4)',
@@ -1149,6 +1159,22 @@ export default function SideNav({ isSplitPane = false }) {
   const openNewTab          = useAppStore(s => s.openNewTab)
   const updateTab           = useAppStore(s => s.updateTab)
   const navigate            = useAppStore(s => s.navigate)
+  const activeNotebook      = useAppStore(s => s.activeNotebook)
+  const activeBook          = useAppStore(s => s.activeBook)
+  const activeSketchbook    = useAppStore(s => s.activeSketchbook)
+  const activeFlashcardDeck = useAppStore(s => s.activeFlashcardDeck)
+  const activeAudioBook     = useAppStore(s => s.activeAudioBook)
+
+  // Compute the ID of the item currently open in this pane (for sidebar highlighting)
+  const curView = paneTab?.view ?? view
+  const activeItemId = (() => {
+    if (curView === 'notebook')     return paneTab?.activeNotebook?.id     ?? activeNotebook?.id
+    if (curView === 'sketchbook')   return paneTab?.activeSketchbook?.id   ?? activeSketchbook?.id
+    if (curView === 'reader' || curView === 'pdf') return paneTab?.activeBook?.id ?? activeBook?.id
+    if (curView === 'audio-player') return paneTab?.activeAudioBook?.id    ?? activeAudioBook?.id
+    if (curView === 'flashcards' || curView === 'flashcard') return paneTab?.activeFlashcardDeck?.id ?? activeFlashcardDeck?.id
+    return null
+  })()
 
   const VIEW_TO_TAB = { reader:'books', pdf:'books', 'audio-player':'audiobooks', notebook:'notebooks', sketchbook:'notebooks' }
 
@@ -1720,7 +1746,7 @@ export default function SideNav({ isSplitPane = false }) {
                               {/* Then render items */}
                               {colItems.length > 0 && (
                                 <div style={{ paddingLeft: depth > 0 ? 14 : 12 }}>
-                                  <NavDropdown items={colItems} onOpen={openItem} onMenu={(e, ci) => {
+                                  <NavDropdown items={colItems} onOpen={openItem} activeId={activeItemId} onMenu={(e, ci) => {
                                     e.stopPropagation()
                                     const ICON_EDIT_CI = '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
                                     const ICON_NEWTAB = '<path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1h4v4M14 1l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
@@ -1756,7 +1782,7 @@ export default function SideNav({ isSplitPane = false }) {
                       </div>
                     )
                   })() : isOpen && (
-                    <NavDropdown items={items} onOpen={openItem}
+                    <NavDropdown items={items} onOpen={openItem} activeId={activeItemId}
                       onReorder={(item.id === 'notebooks' || item.id === 'books' || item.id === 'audiobooks' || item.id === 'library') ? (from, to, fromId, toId) => {
                         const store = useAppStore.getState()
                         if (item.id === 'notebooks') {
@@ -1812,62 +1838,10 @@ export default function SideNav({ isSplitPane = false }) {
                       setEditSideItem(item)
                       setSideNavMenu(null)
                     }
-                    const ICON_PDF = '<path d="M4 1h5l4 4v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 1v4h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 8v4M6 10l2 2 2-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
                     const items2 = isNb
                       ? [ { label:'Edit', icon:ICON_EDIT_ITEM, action: editAction },
                           { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
                           { label:'Open Here', icon:ICON_BOOK, action:()=>openItemInCurrentTab(item) },
-                          { label:'Export as PDF', icon:ICON_PDF, action: async () => {
-                            try {
-                              const { loadNotebookContent } = await import('@/lib/storage')
-                              const content = await loadNotebookContent(item.id)
-                              if (!content) return
-                              // Simple markdown-to-HTML for print
-                              const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-                              let html = ''
-                              const lines = (content || '').split('\n')
-                              let inCode = false, codeBuf = ''
-                              for (const line of lines) {
-                                if (line.startsWith('```')) {
-                                  if (inCode) { html += `<pre><code>${esc(codeBuf)}</code></pre>`; codeBuf = ''; inCode = false }
-                                  else { inCode = true }
-                                  continue
-                                }
-                                if (inCode) { codeBuf += (codeBuf ? '\n' : '') + line; continue }
-                                if (line.startsWith('######')) html += `<h6>${line.slice(7)}</h6>`
-                                else if (line.startsWith('#####')) html += `<h5>${line.slice(6)}</h5>`
-                                else if (line.startsWith('####')) html += `<h4>${line.slice(5)}</h4>`
-                                else if (line.startsWith('###')) html += `<h3>${line.slice(4)}</h3>`
-                                else if (line.startsWith('##')) html += `<h2>${line.slice(3)}</h2>`
-                                else if (line.startsWith('#')) html += `<h1>${line.slice(2)}</h1>`
-                                else if (line.startsWith('---')) html += '<hr/>'
-                                else if (line.startsWith('> ')) html += `<blockquote><p>${line.slice(2)}</p></blockquote>`
-                                else if (/^[-*] /.test(line)) html += `<ul><li>${line.slice(2)}</li></ul>`
-                                else if (/^\d+\. /.test(line)) html += `<ol><li>${line.replace(/^\d+\.\s/,'')}</li></ol>`
-                                else if (line.trim() === '') html += ''
-                                else html += `<p>${line}</p>`
-                              }
-                              if (inCode) html += `<pre><code>${esc(codeBuf)}</code></pre>`
-                              // Apply basic inline formatting
-                              html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-                              html = html.replace(/\*(.+?)\*/g, '<em>$1</em>')
-                              html = html.replace(/`(.+?)`/g, '<code>$1</code>')
-                              html = html.replace(/~~(.+?)~~/g, '<del>$1</del>')
-                              html = html.replace(/==(.+?)==/g, '<mark>$1</mark>')
-                              // Print
-                              const title = item.title || 'Notebook'
-                              const win = window.open('', '_blank')
-                              if (!win) return
-                              win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
-<style>@page{margin:1in .8in}body{font-family:Georgia,'Times New Roman',serif;font-size:14px;line-height:1.7;color:#222;max-width:700px;margin:0 auto;padding:20px 0}h1{font-size:1.8em;font-weight:600;margin:1.2em 0 .5em}h2{font-size:1.5em;font-weight:600;margin:1.1em 0 .4em}h3{font-size:1.25em;font-weight:600;margin:1em 0 .35em}h4,h5,h6{font-weight:600;margin:.9em 0 .3em}p{margin:0 0 .75em}blockquote{border-left:3px solid #ccc;margin:.8em 0;padding:8px 14px;color:#555;font-style:italic}pre{background:#f5f5f5;border:1px solid #ddd;border-radius:6px;padding:12px 14px;overflow-x:auto;margin:.8em 0;font-size:.87em}code{font-family:SF Mono,Menlo,Consolas,monospace;font-size:.87em}table{border-collapse:collapse;width:100%;margin:.8em 0}th,td{border:1px solid #ccc;padding:6px 10px}th{background:#f5f5f5;font-weight:600}ul,ol{margin:0 0 .75em;padding-left:1.6em}li{margin-bottom:.25em}img{max-width:100%;height:auto}hr{border:none;border-top:1px solid #ccc;margin:1.5em 0}mark{background:#fff3b0;padding:1px 3px;border-radius:2px}</style>
-</head><body>`)
-                              win.document.write(`<h1 style="margin-top:0">${esc(title)}</h1>`)
-                              win.document.write(html)
-                              win.document.write('</body></html>')
-                              win.document.close()
-                              setTimeout(() => { win.print(); win.close() }, 400)
-                            } catch (e) { console.warn('[Gnos] PDF export failed:', e) }
-                          }},
                           ...colSub,
                           { label:'Delete', icon:ICON_TRASH, danger:true, action:()=>{ useAppStore.getState().removeNotebook?.(item.id); useAppStore.getState().persistNotebooks?.() } } ]
                       : isSb
@@ -1909,11 +1883,11 @@ export default function SideNav({ isSplitPane = false }) {
               >
                 <div className="sidenav-tab-indicator" />
                 <span className="sidenav-tab-name">{VIEW_LABELS[tab.view] || tab.view}</span>
-                <button className="sidenav-tab-close" onClick={e => handleTabClose(e, tab.id)} title="Close tab">
+                <div className="sidenav-tab-close" role="button" tabIndex={-1} onClick={e => handleTabClose(e, tab.id)} title="Close tab">
                   <svg width="8" height="8" viewBox="0 0 10 10" fill="none">
                     <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
                   </svg>
-                </button>
+                </div>
               </button>
             ))}
           </div>

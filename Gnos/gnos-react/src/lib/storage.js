@@ -142,7 +142,7 @@ async function _findFolderById(parentDir, id) {
   try {
     const entries = await readDir(parentDir)
     for (const entry of entries) {
-      if (!entry.name) continue
+      if (!entry.name || entry.name.startsWith('.')) continue
       const metaPath = await join(parentDir, entry.name, 'meta.json')
       if (await exists(metaPath)) {
         try {
@@ -274,7 +274,7 @@ export async function loadLibrary() {
     // Build id → folder name map from meta.json files
     const folderById = {}
     for (const entry of entries) {
-      if (!entry.name) continue
+      if (!entry.name || entry.name.startsWith('.')) continue
       const metaPath = await join(booksDir, entry.name, 'meta.json')
       if (await exists(metaPath)) {
         try {
@@ -289,7 +289,7 @@ export async function loadLibrary() {
       const audioDir = await getAudioDir()
       const audioEntries = await readDir(audioDir)
       for (const entry of audioEntries) {
-        if (!entry.name) continue
+        if (!entry.name || entry.name.startsWith('.')) continue
         const metaPath = await join(audioDir, entry.name, 'meta.json')
         if (await exists(metaPath)) {
           try {
@@ -377,7 +377,7 @@ export async function getNotebookFolderPath(notebook) {
     const notebooksDir = await getNotebooksDir()
     const entries = await readDir(notebooksDir)
     for (const entry of entries) {
-      if (!entry.name) continue
+      if (!entry.name || entry.name.startsWith('.')) continue
       const metaPath = await join(notebooksDir, entry.name, 'meta.json')
       if (await exists(metaPath)) {
         try {
@@ -398,7 +398,7 @@ export async function loadNotebooksMeta() {
     const entries = await readDir(notebooksDir)
     const metas = []
     for (const entry of entries) {
-      if (!entry.name) continue
+      if (!entry.name || entry.name.startsWith('.')) continue
       const metaPath = await join(notebooksDir, entry.name, 'meta.json')
       if (await exists(metaPath)) {
         try {
@@ -443,19 +443,30 @@ export async function loadNotebooksMeta() {
     } catch { /* trash dir may not exist yet — ignore */ }
 
     if (metas.length > 0) {
+      // Deduplicate by ID — keep the entry with the most recent updatedAt (rename can create duplicates)
+      const seen = new Map()
+      for (const m of metas) {
+        if (!m.id) continue
+        const existing = seen.get(m.id)
+        if (!existing || new Date(m.updatedAt) > new Date(existing.updatedAt)) {
+          seen.set(m.id, m)
+        }
+      }
+      const uniqueMetas = [...seen.values()]
+
       // Use the saved JSON order as the authoritative sort so manual reordering persists.
       // Items not in the saved order (newly created) go at the end sorted by updatedAt.
       const savedOrder = await getJSON('notebooks_meta', [])
       if (savedOrder.length > 0) {
         const idxMap = new Map(savedOrder.map((n, i) => [n.id, i]))
-        return metas.sort((a, b) => {
+        return uniqueMetas.sort((a, b) => {
           const ai = idxMap.has(a.id) ? idxMap.get(a.id) : Infinity
           const bi = idxMap.has(b.id) ? idxMap.get(b.id) : Infinity
           if (ai !== bi) return ai - bi
           return new Date(b.updatedAt) - new Date(a.updatedAt)
         })
       }
-      return metas.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+      return uniqueMetas.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
     }
   } catch { /* fall through to flat file */ }
   return getJSON('notebooks_meta', [])
@@ -576,7 +587,7 @@ export async function saveNotebookImage(notebookId, filename, data) {
     const notebooksDir = await getNotebooksDir()
     const entries = await readDir(notebooksDir)
     for (const entry of entries) {
-      if (!entry.name) continue
+      if (!entry.name || entry.name.startsWith('.')) continue
       const metaPath = await join(notebooksDir, entry.name, 'meta.json')
       if (await exists(metaPath)) {
         const meta = JSON.parse(await readTextFile(metaPath))
@@ -1043,7 +1054,7 @@ export async function migrateAudiobooksToFolders(library) {
       const entries = await readDir(audioDir)
       let found = false
       for (const entry of entries) {
-        if (!entry.name) continue
+        if (!entry.name || entry.name.startsWith('.')) continue
         const metaPath = await join(audioDir, entry.name, 'meta.json')
         if (await exists(metaPath)) {
           const meta = JSON.parse(await readTextFile(metaPath))

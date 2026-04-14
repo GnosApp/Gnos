@@ -1,14 +1,14 @@
-import { useEffect, useRef, useState, useCallback, useContext } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useContext } from 'react'
 import useAppStore, { useAppStoreShallow } from '@/store/useAppStore'
 import { PaneContext } from '@/lib/PaneContext'
 import { loadBookContent, addReadingMinutes } from '@/lib/storage'
 import { GnosNavButton } from '@/components/SideNav'
 import { generateCoverColor } from '@/lib/utils'
 import {
-  ensurePageStyle, renderPage, precomputeAllChapters,
-  invalidateCache, getPageBreaks, getTotalPages,
-  getGlobalPage, setWordWrapEnabled
-} from '@/lib/paginationEngine'
+  ensurePageStyle, setupColumns, renderChapterContent, revealContent,
+  measurePageCount, showPage, trimContainerWidth, invalidateCache,
+  getTotalPages, setWordWrapEnabled
+} from '@/lib/Paginationengine'
 
 // ── SettingsPanel ─────────────────────────────────────────────────────────────
 
@@ -21,7 +21,7 @@ function Toggle({ on, onClick }) {
 }
 
 function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose }) {
-  const { fontSize, lineSpacing, fontFamily, justifyText, tapToTurn, twoPage, highlightWords, underlineLine } = prefs
+  const { fontSize, lineSpacing, fontFamily, justifyText, tapToTurn, twoPage, highlightWords, underlineLine, pageTransition } = prefs
   return (
     <div className="settings-panel" style={{ display: 'block' }} onClick={e => e.stopPropagation()}>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14,paddingBottom:12,borderBottom:'1px solid var(--borderSubtle)'}}>
@@ -72,6 +72,25 @@ function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose }) {
             <Toggle on={!!val} onClick={() => { onPrefChange(key, !val); if (rebuild) setTimeout(onRebuild, 20) }} />
           </label>
         ))}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 500 }}>Page transition</div>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {['slide', 'fade'].map(opt => (
+              <button key={opt}
+                onClick={() => onPrefChange('pageTransition', opt)}
+                style={{
+                  padding: '3px 10px', fontSize: 11, fontWeight: 600, borderRadius: 6, cursor: 'pointer',
+                  border: `1px solid ${pageTransition === opt ? 'var(--accent)' : 'var(--border)'}`,
+                  background: pageTransition === opt ? 'rgba(56,139,253,0.12)' : 'var(--surfaceAlt)',
+                  color: pageTransition === opt ? 'var(--accent)' : 'var(--textDim)',
+                  transition: 'all 0.1s',
+                  textTransform: 'capitalize',
+                }}>
+                {opt}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--borderSubtle)' }}>
@@ -92,17 +111,17 @@ function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose }) {
 
 // ── ChapterDropdown ───────────────────────────────────────────────────────────
 
-function ChapterDropdown({ chapters, currentChapter, breaksCache, onJump, onClose }) {
+function ChapterDropdown({ chapters, currentChapter, chapterPageCounts, onJump, onClose }) {
   const [search, setSearch] = useState('')
   const realChapters = chapters.filter(c => c.title !== '_cover_')
 
-  // Build global page start map (same logic as original buildChapterDropdown)
+  // Build global page start map
   let globalPageStart = 0
   const chapterStartPages = chapters.map((_, i) => {
     const pg = globalPageStart
-    const cached = breaksCache[i]
-    if (cached) globalPageStart += cached.length
-    return cached ? pg : null
+    const count = chapterPageCounts[i]
+    if (count != null) globalPageStart += count
+    return count != null ? pg : null
   })
 
   const q = search.trim().toLowerCase()
@@ -144,7 +163,7 @@ function ChapterDropdown({ chapters, currentChapter, breaksCache, onJump, onClos
           const pageNum = parseInt(pageNumMatch[1] || pageNumMatch[2], 10) - 1
           const lastIdx = chapters.length - 1
           const knownTotal = chapterStartPages[lastIdx] != null
-            ? (chapterStartPages[lastIdx] || 0) + (breaksCache[lastIdx]?.length || 1)
+            ? (chapterStartPages[lastIdx] || 0) + (chapterPageCounts[lastIdx] || 1)
             : null
           if (!knownTotal || pageNum < 0 || pageNum >= knownTotal) return null
           return (
@@ -153,7 +172,7 @@ function ChapterDropdown({ chapters, currentChapter, breaksCache, onJump, onClos
               <div className="chapter-item" onClick={() => {
                 let remaining = pageNum
                 for (let i = 0; i < chapters.length; i++) {
-                  const chPgs = breaksCache[i]?.length || 1
+                  const chPgs = chapterPageCounts[i] || 1
                   if (remaining < chPgs) { onJump(i, remaining); onClose(); return }
                   remaining -= chPgs
                 }
@@ -199,16 +218,17 @@ export default function ReaderView() {
 
   // Read all prefs in one selector so settings panel always stays in sync
   const prefs = useAppStoreShallow(s => ({
-    fontSize:       s.fontSize,
-    lineSpacing:    s.lineSpacing,
-    fontFamily:     s.fontFamily,
-    justifyText:    s.justifyText,
-    tapToTurn:      s.tapToTurn,
-    twoPage:        s.twoPage,
-    highlightWords: s.highlightWords,
-    underlineLine:  s.underlineLine,
-    themeKey:       s.themeKey,
-    customThemes:   s.customThemes,
+    fontSize:        s.fontSize,
+    lineSpacing:     s.lineSpacing,
+    fontFamily:      s.fontFamily,
+    justifyText:     s.justifyText,
+    tapToTurn:       s.tapToTurn,
+    twoPage:         s.twoPage,
+    highlightWords:  s.highlightWords,
+    underlineLine:   s.underlineLine,
+    themeKey:        s.themeKey,
+    customThemes:    s.customThemes,
+    pageTransition:  s.pageTransition ?? 'slide',
   }))
 
   const cardRef = useRef(null)
@@ -219,8 +239,10 @@ export default function ReaderView() {
   const [loading,      setLoading]      = useState(true)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [dropdownOpen, setDropdownOpen] = useState(false)
-  const [breaksCache,  setBreaksCache]  = useState({})
+  const [pageCount,    setPageCount]    = useState(1)  // pages in current chapter
   const [pageInput,    setPageInput]    = useState(null)
+
+  const chapterPageCountsRef = useRef({}) // { [chapterIdx]: pageCount }
 
   const chaptersRef   = useRef([])
   const curChapterRef = useRef(0)
@@ -310,15 +332,22 @@ export default function ReaderView() {
       cardRef.current.classList.toggle('highlight-words', p.highlightWords)
       cardRef.current.classList.toggle('underline-line', p.underlineLine)
 
-      precomputeAllChapters(allChapters, p, cardRef.current)
-      const cache = {}
-      for (let i = 0; i < allChapters.length; i++) cache[i] = getPageBreaks(i)
+      invalidateCache()
+      setupColumns(cardRef.current, p)
+      chapterPageCountsRef.current = {}
+      renderChapterContent(allChapters[resumeChapter].blocks, resumePage)
 
-      console.log('[Reader] cache built, pages in ch0:', cache[0]?.length)
-      if (cancelled) return
-      setBreaksCache(cache)
-      renderPage(cardRef.current, allChapters, resumeChapter, resumePage, p.twoPage, false)
-      console.log('[Reader] renderPage done, card children:', cardRef.current.children.length)
+      await new Promise(r => requestAnimationFrame(r))
+      if (cancelled || !cardRef.current) return
+
+      const count = measurePageCount()
+      chapterPageCountsRef.current[resumeChapter] = count
+      prevChapterRef.current = resumeChapter  // prevent re-render effect from re-rendering
+      console.log('[Reader] pages in ch', resumeChapter, ':', count)
+      setPageCount(count)
+      trimContainerWidth(count)
+      showPage(resumePage, false)
+      revealContent()
       setLoading(false)
     }
 
@@ -357,12 +386,35 @@ export default function ReaderView() {
   }, []) // attach once — card element never changes
 
   // ── Re-render when chapter/page changes (after load) ─────────────────────
+  const prevChapterRef   = useRef(-1)
+  const chapterRenderRef = useRef(null) // debounce timer for cross-chapter renders
+
   useEffect(() => {
     if (loading || !cardRef.current || chapters.length === 0) return
-    renderPage(cardRef.current, chapters, curChapter, curPage, prefs.twoPage, true)
-    requestAnimationFrame(() => applyHighlightsToCard(cardRef.current, bookIdRef.current, curChapter))
+    if (prevChapterRef.current === curChapter) return // page-only change: handled directly in nextPage/prevPage
+    prevChapterRef.current = curChapter
+    const chapterAtRender = curChapter
+
+    // Debounce so rapid chapter-boundary crossings skip intermediate renders
+    // and only commit the chapter the user actually lands on.
+    clearTimeout(chapterRenderRef.current)
+    chapterRenderRef.current = setTimeout(() => {
+      if (prevChapterRef.current !== chapterAtRender) return
+      const pageAtRender = curPageRef.current  // read ref — always current even in closure
+      renderChapterContent(chapters[chapterAtRender].blocks, pageAtRender)
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (prevChapterRef.current !== chapterAtRender) return
+        const count = measurePageCount()
+        chapterPageCountsRef.current[chapterAtRender] = count
+        setPageCount(count)
+        trimContainerWidth(count)
+        showPage(pageAtRender, false)
+        revealContent()
+        applyHighlightsToCard(cardRef.current, bookIdRef.current, chapterAtRender)
+      }))
+    }, 60)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [curChapter, curPage])
+  }, [curChapter])
 
   // ── Keyboard nav ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -374,7 +426,7 @@ export default function ReaderView() {
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settingsOpen, dropdownOpen, curChapter, curPage, chapters])
+  }, [settingsOpen, dropdownOpen])
 
   // ── Close panels on outside click ────────────────────────────────────────
   useEffect(() => {
@@ -401,15 +453,23 @@ export default function ReaderView() {
     const pg    = curPageRef.current
     const p     = prefsRef.current
     const step  = p.twoPage ? 2 : 1
-    const breaks = getPageBreaks(ch)
-    const total  = breaks.length || 1
+    const total = chapterPageCountsRef.current[ch] || 1
+    const trans = p.pageTransition || 'slide'
 
     if (pg + step <= total - 1) {
-      const np = pg + step; setCurPage(np); saveProgress(ch, np)
+      const np = pg + step
+      curPageRef.current = np
+      showPage(np, trans)       // immediate DOM update — no React round-trip
+      setCurPage(np); saveProgress(ch, np)
     } else if (pg < total - 1) {
-      const np = total - 1; setCurPage(np); saveProgress(ch, np)
+      const np = total - 1
+      curPageRef.current = np
+      showPage(np, trans)
+      setCurPage(np); saveProgress(ch, np)
     } else if (ch < chaps.length - 1) {
-      const nc = ch + 1; setCurChapter(nc); setCurPage(0); saveProgress(nc, 0)
+      const nc = ch + 1
+      curChapterRef.current = nc; curPageRef.current = 0
+      setCurChapter(nc); setCurPage(0); saveProgress(nc, 0)
     }
   }
 
@@ -418,26 +478,34 @@ export default function ReaderView() {
     const pg    = curPageRef.current
     const p     = prefsRef.current
     const step  = p.twoPage ? 2 : 1
+    const trans = p.pageTransition || 'slide'
 
     if (pg >= step) {
-      const np = pg - step; setCurPage(np); saveProgress(ch, np)
+      const np = pg - step
+      curPageRef.current = np
+      showPage(np, trans)       // immediate DOM update — no React round-trip
+      setCurPage(np); saveProgress(ch, np)
     } else if (pg > 0) {
+      curPageRef.current = 0
+      showPage(0, trans)
       setCurPage(0); saveProgress(ch, 0)
     } else if (ch > 0) {
       const nc = ch - 1
-      const prevBreaks = getPageBreaks(nc)
-      const lastPage   = p.twoPage
-        ? Math.floor((prevBreaks.length - 1) / 2) * 2
-        : prevBreaks.length - 1
+      const prevCount = chapterPageCountsRef.current[nc]
+      const lastPage  = prevCount != null
+        ? (p.twoPage ? Math.floor((prevCount - 1) / 2) * 2 : prevCount - 1)
+        : 0
+      curChapterRef.current = nc; curPageRef.current = lastPage
       setCurChapter(nc); setCurPage(lastPage); saveProgress(nc, lastPage)
     }
   }
 
   function jumpToChapter(chIdx, pgIdx = 0) {
+    const sameChapter = chIdx === curChapterRef.current
+    curChapterRef.current = chIdx
+    curPageRef.current    = pgIdx
+    if (sameChapter) showPage(pgIdx, false)
     setCurChapter(chIdx); setCurPage(pgIdx)
-    if (cardRef.current && chaptersRef.current.length) {
-      renderPage(cardRef.current, chaptersRef.current, chIdx, pgIdx, prefsRef.current.twoPage, false)
-    }
     saveProgress(chIdx, pgIdx)
   }
 
@@ -474,67 +542,46 @@ export default function ReaderView() {
 
   function handleRebuild() {
     if (!cardRef.current || chaptersRef.current.length === 0) return
-    const p = prefsRef.current
-
-    // Save current words on screen before rebuild so we can restore position
+    const p     = prefsRef.current
     const cardEl = cardRef.current
-    const firstWordEl = cardEl.querySelector('.col-word')
-    const savedWord = firstWordEl?.dataset?.word || null
+    const ch    = curChapterRef.current
+    const pg    = curPageRef.current
 
     setWordWrapEnabled(p.highlightWords || p.underlineLine)
     ensurePageStyle(p)
     cardEl.classList.toggle('two-page', p.twoPage)
     cardEl.classList.toggle('highlight-words', p.highlightWords)
     cardEl.classList.toggle('underline-line', p.underlineLine)
+
     invalidateCache()
-    precomputeAllChapters(chaptersRef.current, p, cardEl)
-    const cache = {}
-    for (let i = 0; i < chaptersRef.current.length; i++) cache[i] = getPageBreaks(i)
-    setBreaksCache(cache)
+    setupColumns(cardEl, p)
+    chapterPageCountsRef.current = {}
+    prevChapterRef.current = ch  // prevent re-render effect from double-rendering
 
-    // Try to find the page that contains the saved word
-    let targetChapter = curChapterRef.current
-    let targetPage    = curPageRef.current
-
-    if (savedWord) {
-      // Search from current chapter forward, then backward
-      outer: for (let chOffset = 0; chOffset < chaptersRef.current.length; chOffset++) {
-        const ci = (targetChapter + chOffset) % chaptersRef.current.length
-        const ch = chaptersRef.current[ci]
-        const src = ch._expanded || ch.blocks
-        const breaks = cache[ci]
-        if (!breaks) continue
-        for (let pi = 0; pi < breaks.length; pi++) {
-          const start = breaks[pi]
-          const end   = breaks[pi + 1] ?? src.length
-          const pageBlocks = src.slice(start, end)
-          const hasWord = pageBlocks.some(b =>
-            b?.text?.toLowerCase().includes(savedWord.toLowerCase())
-          )
-          if (hasWord) {
-            targetChapter = ci
-            targetPage    = pi
-            break outer
-          }
-        }
-      }
-    }
-
-    setCurChapter(targetChapter)
-    setCurPage(targetPage)
-    renderPage(cardEl, chaptersRef.current, targetChapter, targetPage, p.twoPage, false)
+    renderChapterContent(chaptersRef.current[ch].blocks, pg)
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const count = measurePageCount()
+      chapterPageCountsRef.current[ch] = count
+      setPageCount(count)
+      const clampedPg = Math.min(pg, Math.max(0, count - 1))
+      trimContainerWidth(count)
+      showPage(clampedPg, false)
+      revealContent()
+      if (clampedPg !== pg) { setCurPage(clampedPg); saveProgress(ch, clampedPg) }
+      requestAnimationFrame(() => applyHighlightsToCard(cardEl, bookIdRef.current, ch))
+    }))
   }
   handleRebuildRef.current = handleRebuild
 
   // ── Page jump ─────────────────────────────────────────────────────────────
   function handlePageJump(val) {
     const target = parseInt(val, 10)
-    const total  = getTotalPages()
+    const total  = getTotalPages(chapterPageCountsRef.current, chaptersRef.current.length)
     setPageInput(null)
     if (isNaN(target) || target < 1 || target > total) return
     let remaining = target - 1
     for (let i = 0; i < chaptersRef.current.length; i++) {
-      const chPgs = breaksCache[i]?.length || 1
+      const chPgs = chapterPageCountsRef.current[i] || 1
       if (remaining < chPgs) { jumpToChapter(i, remaining); return }
       remaining -= chPgs
     }
@@ -554,6 +601,8 @@ export default function ReaderView() {
   // ── Highlight state ────────────────────────────────────────────────────────
   const highlightsRef = useRef({}) // { [bookId]: [{ id, chapterIdx, text }] }
   const bookIdRef = useRef(null)
+  const wordMenuRef = useRef(null)
+  const defPopupRef = useRef(null)
 
   // Load/save highlights from localStorage
   useEffect(() => {
@@ -592,6 +641,26 @@ export default function ReaderView() {
   const [wordMenu,       setWordMenu]       = useState(null) // { word, sentence, x, y }
   const [defPopup,       setDefPopup]       = useState(null) // { word, mode:'define'|'translate', x, y, content, loading }
   const [translateLang,  setTranslateLang]  = useState('es') // target language for translation
+
+  // Clamp word-menu to viewport after it renders
+  useLayoutEffect(() => {
+    if (!wordMenu || !wordMenuRef.current) return
+    const el = wordMenuRef.current
+    const w = el.offsetWidth, h = el.offsetHeight
+    const centerX = Math.max(w / 2 + 8, Math.min(wordMenu.x, window.innerWidth - w / 2 - 8))
+    el.style.left = centerX + 'px'
+    el.style.top  = Math.max(60, Math.min(wordMenu.y - 64, window.innerHeight - h - 8)) + 'px'
+  }, [wordMenu])
+
+  // Clamp def-popup to viewport after it renders
+  useLayoutEffect(() => {
+    if (!defPopup || !defPopupRef.current) return
+    const el = defPopupRef.current
+    const w = el.offsetWidth, h = el.offsetHeight
+    const centerX = Math.max(w / 2 + 8, Math.min(defPopup.x, window.innerWidth - w / 2 - 8))
+    el.style.left = centerX + 'px'
+    el.style.top  = Math.max(60, Math.min(defPopup.y + 8, window.innerHeight - h - 8)) + 'px'
+  }, [defPopup])
 
   // Available LibreTranslate target languages
   const LIBRE_LANGS = [
@@ -861,11 +930,11 @@ export default function ReaderView() {
   }, [defPopup])
 
   // ── Derived state ─────────────────────────────────────────────────────────
-  const chapterBreaks  = getPageBreaks(curChapter)
-  const totalInChapter = chapterBreaks.length || 1
-  const totalPages     = getTotalPages()
-  const globalPage     = getGlobalPage(curChapter, curPage)
-  const pct            = totalPages > 1 ? (globalPage / (totalPages - 1)) * 100 : 0
+  const totalInChapter = pageCount
+  const totalPages     = getTotalPages(chapterPageCountsRef.current, chapters.length)
+  let globalPage = curPage
+  for (let _i = 0; _i < curChapter; _i++) globalPage += chapterPageCountsRef.current[_i] || 1
+  const pct = totalPages > 1 ? (globalPage / (totalPages - 1)) * 100 : 0
   const atStart        = curChapter === 0 && curPage === 0
   const atEnd          = curChapter >= chapters.length - 1 && curPage >= totalInChapter - 1
   const pagesLeft      = totalInChapter - curPage - 1
@@ -1059,7 +1128,7 @@ export default function ReaderView() {
           </button>
           {dropdownOpen && (
             <ChapterDropdown chapters={chapters} currentChapter={curChapter}
-              breaksCache={breaksCache} onJump={jumpToChapter} onClose={() => setDropdownOpen(false)} />
+              chapterPageCounts={chapterPageCountsRef.current} onJump={jumpToChapter} onClose={() => setDropdownOpen(false)} />
           )}
         </div>
 
@@ -1176,7 +1245,7 @@ export default function ReaderView() {
 
       {/* ── Word context menu — horizontal pill ── */}
       {wordMenu && (
-        <div className="word-menu" style={{ top: wordMenu.y - 64, left: wordMenu.x }} onClick={e => e.stopPropagation()}>
+        <div ref={wordMenuRef} className="word-menu" style={{ top: wordMenu.y - 64, left: wordMenu.x }} onClick={e => e.stopPropagation()}>
           <button className="word-menu-item" onClick={() => {
             const word = wordMenu.word
             const x = wordMenu.x, y = wordMenu.y
@@ -1311,7 +1380,7 @@ export default function ReaderView() {
 
       {/* ── Definition / Translate popup ── */}
       {defPopup && (
-        <div className="def-popup" style={{ top: defPopup.y + 8, left: defPopup.x }} onClick={e => e.stopPropagation()}>
+        <div ref={defPopupRef} className="def-popup" style={{ top: defPopup.y + 8, left: defPopup.x }} onClick={e => e.stopPropagation()}>
           <button className="def-popup-close" onClick={() => setDefPopup(null)}>×</button>
 
           {/* Header row — word + mode badge */}

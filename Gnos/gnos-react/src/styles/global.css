@@ -710,6 +710,13 @@ button { font-family: inherit; }
 .progress-bar { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accentSecondary)); border-radius: 2px; transition: width 0.3s; width: 0%; }
 #chapter-progress-info { display: none; }
 
+/* Inline EPUB images */
+.epub-inline-img {
+  max-width: 100%; height: auto;
+  display: block; margin: 12px auto;
+  border-radius: 4px;
+}
+
 /* PDF page images in reader */
 .pdf-fill-page { padding: 0 !important; overflow: hidden !important; }
 .pdf-fill-page .pdf-page-img {

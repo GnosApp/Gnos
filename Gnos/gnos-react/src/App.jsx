@@ -1,5 +1,5 @@
 import { listen } from '@tauri-apps/api/event'
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback, lazy, Suspense } from 'react'
 import useAppStore from '@/store/useAppStore'
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link'
 import { readFile } from '@tauri-apps/plugin-fs'
@@ -9,14 +9,15 @@ import { PaneContext } from '@/lib/PaneContext'
 import LibraryView     from '@/views/LibraryView'
 import ReaderView      from '@/views/ReaderView'
 import AudioPlayerView from '@/views/AudioPlayerView'
-import NotebookView    from '@/views/NotebookView'
 import PdfView         from '@/views/PdfView'
-import SketchbookView  from '@/views/SketchbookView'
 import SideNav         from '@/components/SideNav'
-import FlashcardView   from '@/views/FlashcardView'
 import GraphView       from '@/views/GraphView'
 import CalendarView    from '@/views/CalendarView'
-import KanbanView     from '@/views/KanbanView'
+
+const NotebookView   = lazy(() => import('@/views/NotebookView'))
+const SketchbookView = lazy(() => import('@/views/SketchbookView'))
+const FlashcardView  = lazy(() => import('@/views/FlashcardView'))
+const KanbanView     = lazy(() => import('@/views/KanbanView'))
 
 const VIEW_LABELS = {
   library: 'Library', reader: 'Reading', 'audio-player': 'Listening',
@@ -46,17 +47,19 @@ export const TITLEBAR_H = 34
 
 // ── ViewPanel ─────────────────────────────────────────────────────────────────
 function ViewPanel({ view }) {
-  if (view === 'library')      return <LibraryView />
-  if (view === 'reader')       return <ReaderView />
-  if (view === 'audio-player') return <AudioPlayerView />
-  if (view === 'notebook')     return <NotebookView />
-  if (view === 'pdf')          return <PdfView />
-  if (view === 'sketchbook')   return <SketchbookView />
-  if (view === 'flashcard')    return <FlashcardView />
-  if (view === 'graph')        return <GraphView />
-  if (view === 'calendar')     return <CalendarView />
-  if (view === 'kanban')       return <KanbanView />
-  return null
+  let content = null
+  if (view === 'library')      content = <LibraryView />
+  else if (view === 'reader')       content = <ReaderView />
+  else if (view === 'audio-player') content = <AudioPlayerView />
+  else if (view === 'notebook')     content = <NotebookView />
+  else if (view === 'pdf')          content = <PdfView />
+  else if (view === 'sketchbook')   content = <SketchbookView />
+  else if (view === 'flashcard')    content = <FlashcardView />
+  else if (view === 'graph')        content = <GraphView />
+  else if (view === 'calendar')     content = <CalendarView />
+  else if (view === 'kanban')       content = <KanbanView />
+  if (!content) return null
+  return <Suspense fallback={null}>{content}</Suspense>
 }
 
 // ── TabPane ───────────────────────────────────────────────────────────────────

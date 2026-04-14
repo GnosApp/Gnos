@@ -36,11 +36,18 @@ import { listen } from '@tauri-apps/api/event'
 // ─── Tauri convertFileSrc cache (loaded once, used synchronously in widgets) ───
 let _convertFileSrc = null
 let _invoke = null
+let _dialogOpen = null
 ;(async () => {
   try {
     const { convertFileSrc, invoke } = await import('@tauri-apps/api/core')
     _convertFileSrc = convertFileSrc
     _invoke = invoke
+  } catch { /* non-Tauri env — ignore */ }
+})()
+;(async () => {
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    _dialogOpen = open
   } catch { /* non-Tauri env — ignore */ }
 })()
 
@@ -49,26 +56,6 @@ function makeId(prefix = 'id') {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
 }
 
-// ─── PDF Export helper ────────────────────────────────────────────────────────
-const _PDF_CSS = `@page{margin:1in .8in}body{font-family:Georgia,'Times New Roman',serif;font-size:14px;line-height:1.7;color:#222;max-width:700px;margin:0 auto;padding:20px 0}h1{font-size:1.8em;font-weight:600;margin:1.2em 0 .5em}h2{font-size:1.5em;font-weight:600;margin:1.1em 0 .4em}h3{font-size:1.25em;font-weight:600;margin:1em 0 .35em}h4,h5,h6{font-weight:600;margin:.9em 0 .3em}p{margin:0 0 .75em}blockquote{border-left:3px solid #ccc;margin:.8em 0;padding:8px 14px;color:#555;font-style:italic}pre{background:#f5f5f5;border:1px solid #ddd;border-radius:6px;padding:12px 14px;overflow-x:auto;margin:.8em 0;font-size:.87em}code{font-family:SF Mono,Menlo,Consolas,monospace;font-size:.87em}table{border-collapse:collapse;width:100%;margin:.8em 0;font-size:.93em}th,td{border:1px solid #ccc;padding:6px 10px}th{background:#f5f5f5;font-weight:600}ul,ol{margin:0 0 .75em;padding-left:1.6em}li{margin-bottom:.25em}img{max-width:100%;height:auto}hr{border:none;border-top:1px solid #ccc;margin:1.5em 0}.nb-callout{border-left:3px solid #4a90d9;background:#f0f6ff;padding:10px 14px;border-radius:0 6px 6px 0;margin:.8em 0}.nb-task-item{list-style:none;margin-left:-1.2em}.nb-task-item input[type=checkbox]{margin-right:6px}mark{background:#fff3b0;padding:1px 3px;border-radius:2px}`
-
-function exportNotebookPdf(html, title = 'Notebook', onStatus) {
-  const esc = s => String(s).replace(/</g,'&lt;')
-  if (onStatus) onStatus('preparing')
-  const win = window.open('', '_blank')
-  if (!win) { if (onStatus) onStatus(null); return }
-  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>${_PDF_CSS}</style></head><body>`)
-  if (title) win.document.write(`<h1 style="margin-top:0">${esc(title)}</h1>`)
-  win.document.write(html)
-  win.document.write('</body></html>')
-  win.document.close()
-  if (onStatus) onStatus('printing')
-  setTimeout(() => {
-    win.print()
-    win.close()
-    setTimeout(() => { if (onStatus) onStatus(null) }, 300)
-  }, 500)
-}
 
 // ─── CodeMirror lazy bundle ───────────────────────────────────────────────────
 let _cmP = null
@@ -600,7 +587,7 @@ function makeHighlight(cm) {
     { tag: tags.processingInstruction, color: 'var(--textDim)', opacity: '0.6' },
     { tag: tags.keyword, color: '#d2a8ff' },
     { tag: tags.string,  color: '#a5d6ff' },
-    { tag: tags.number,  color: '#f0a868' },
+    { tag: tags.number,  fontWeight: '600' },
     { tag: tags.operator, color: 'var(--textDim)' },
   ])
 }
@@ -1143,7 +1130,80 @@ function makeMathCalcPlugin(cm) {
     return s
   }
 
-  function evalExpr(expr) {
+  // ─── Variable name registry ───────────────────────────────────────────────
+  // Stable mapping from lowercase display name → internal math.js-safe token.
+  // Each editor instance gets its own registry via closure.
+  const _nameToToken = new Map()
+  let _tokenCtr = 0
+  function getVarToken(name) {
+    const key = name.toLowerCase()
+    if (!_nameToToken.has(key)) _nameToToken.set(key, `_mv${_tokenCtr++}`)
+    return _nameToToken.get(key)
+  }
+
+  // ─── Document scope scan ──────────────────────────────────────────────────
+  // Scans all lines top-to-bottom for "Name: expression" patterns.
+  // Returns { varDefs, scope } where scope maps token → numeric value.
+  function buildDocScope(state) {
+    const varDefs = []  // [{ name, token, value, lineFrom, lineEnd, nameFrom, nameEnd, colonFrom, rhsFrom }]
+    const scope   = {}
+    for (let ln = 1; ln <= state.doc.lines; ln++) {
+      const line = state.doc.line(ln)
+      const m    = line.text.match(/^(.+?):\s*(.+)$/)
+      if (!m) continue
+      const name   = m[1].trim()
+      const valStr = m[2].trim()
+      // Skip markdown artifacts (headings, lists, blockquotes, URLs, code fences…)
+      if (!name || /^[-*#>|`\\]/.test(name) || /[:/\\]/.test(name)) continue
+      const token       = getVarToken(name)
+      const substituted = applyVarSubstitution(valStr, varDefs)
+      let value = null
+      if (mathLib) {
+        try {
+          const r = mathLib.evaluate(substituted, { ...scope })
+          if (r !== undefined && r !== null && typeof r !== 'function') {
+            const n = typeof r === 'number' ? r : parseFloat(String(r))
+            if (!isNaN(n)) value = n
+          }
+        } catch { /* non-numeric def — still register for autocomplete/deco */ }
+      }
+      // Compute exact character positions for decorations
+      const nameFrom  = line.from + m[1].search(/\S/)   // skip any leading spaces
+      const nameEnd   = nameFrom + name.length
+      const colonFrom = line.from + m[1].length          // position of the ':'
+      const rhsFrom   = line.from + m[0].length - m[2].length  // start of RHS text
+      varDefs.push({ name, token, value, lineFrom: line.from, lineEnd: line.to, nameFrom, nameEnd, colonFrom, rhsFrom })
+      if (value !== null) scope[token] = value
+    }
+    return { varDefs, scope }
+  }
+
+  // ─── Variable substitution ────────────────────────────────────────────────
+  // Replaces multi-word variable names (and "per X" sugar) with internal tokens.
+  function applyVarSubstitution(expr, varDefs) {
+    let result = expr
+    // "0.25 per mile" → "0.25 * _mv1"
+    result = result.replace(/\bper\s+([a-zA-Z][a-zA-Z0-9 ]*)/g, (_, unit) => {
+      const match = varDefs.find(v => v.name.toLowerCase() === unit.trim().toLowerCase() && v.value !== null)
+      return match ? `* ${match.token}` : `/ ${unit.trim()}`
+    })
+    // Replace variable names longest-first to avoid partial matches
+    const sorted = [...varDefs].sort((a, b) => b.name.length - a.name.length)
+    for (const { name, token } of sorted) {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      result = result.replace(new RegExp(`(?<![_a-zA-Z0-9])${escaped}(?![_a-zA-Z0-9])`, 'gi'), token)
+    }
+    return result
+  }
+
+  // ─── Scope state field ───────────────────────────────────────────────────
+  // Caches the document scope; rebuilt only on doc changes, not cursor moves.
+  const docScopeField = cm.state.StateField.define({
+    create: state => buildDocScope(state),
+    update: (val, tr) => tr.docChanged ? buildDocScope(tr.state) : val,
+  })
+
+  function evalExpr(expr, scope = {}) {
     // Strip thousands-separator commas (e.g. 1,000 → 1000, 1,000,000 → 1000000)
     expr = expr.replace(/\b(\d{1,3}(?:,\d{3})+)\b/g, m => m.replace(/,/g, ''))
 
@@ -1164,14 +1224,14 @@ function makeMathCalcPlugin(cm) {
     // Try math.js (also handles unit conversions like "5 km to miles")
     if (mathLib) {
       try {
-        const result = mathLib.evaluate(expr)
+        const result = mathLib.evaluate(expr, { ...scope })
         if (result === undefined || result === null || typeof result === 'function') return null
         return String(typeof result === 'object' && result.toString ? result.toString() : result)
       } catch { /* try natural language variant */ }
       // Try the natural language converted expression
       if (naturalExpr !== expr) {
         try {
-          const result = mathLib.evaluate(naturalExpr)
+          const result = mathLib.evaluate(naturalExpr, { ...scope })
           if (result !== undefined && result !== null && typeof result !== 'function') {
             return String(typeof result === 'object' && result.toString ? result.toString() : result)
           }
@@ -1200,35 +1260,47 @@ function makeMathCalcPlugin(cm) {
       const col = cur.head - line.from
       const textBefore = line.text.slice(0, col)
 
+      // Read cached scope (rebuilt by docScopeField only on doc changes)
+      const { varDefs, scope } = state.field(docScopeField)
+
       // Support =:.N precision syntax: "2*32.12321 =:.2" rounds to 2 decimals
       const precMatch = textBefore.match(/^(.*?)([^=\n]+)=:\.(\d+)\s*$/)
       const plainMatch = textBefore.match(/^(.*?)([^=\n]+)=\s*$/)
       const match = precMatch || plainMatch
       if (!match) { this.deco = Decoration.none; this._hint = null; return }
       const precision = precMatch ? parseInt(precMatch[3]) : null
-      let expr = match[2].trim()
-      // Strip list prefixes
-      expr = expr.replace(/^(?:[-*+]|\d+\.)\s+/, '')
-      // Strip markdown formatting
-      expr = expr.replace(/\*{2,}|[_~`]+/g, '')
-      // Isolate math from surrounding prose:
-      // Remove everything before the last occurrence of a math-starting character
-      // Math expressions start with digits, parens, minus, or known functions
-      const mathStart = expr.match(/((?:(?:sin|cos|tan|log|ln|sqrt|abs|ceil|floor|round|exp|pow|FV|PV|PMT|NPV|integral|solve|factor|expand)\s*\(|[-+]?\s*[\d(]).*$)/i)
-      if (mathStart) expr = mathStart[1].trim()
-      else {
-        // Try to find any part that looks like math (has operators and numbers)
-        const mathPart = expr.match(/([\d(][\d\s+\-*/^().,%]*[\d)])\s*$/)
-        if (mathPart) expr = mathPart[1].trim()
-      }
-      // If result is empty or still has long prose, skip
-      if (!expr || /^[a-zA-Z]{4,}$/.test(expr)) { this.deco = Decoration.none; this._hint = null; return }
-      // Require at least one math operator or function call to avoid suggesting results for plain words/numbers
-      if (!/[+\-*/^%()]/.test(expr) && !/\b(sin|cos|tan|log|ln|sqrt|abs|ceil|floor|round|exp|pow|FV|PV|PMT|NPV)\s*\(/i.test(expr) && !/\bto\b/i.test(expr)) {
-        this.deco = Decoration.none; this._hint = null; return
+      let rawExpr = match[2].trim()
+
+      // Strip "Name: " prefix from variable definition lines so the RHS is evaluated.
+      // e.g. "Catering price: Friends * Food price =" → evaluate "Friends * Food price"
+      const colonM = rawExpr.match(/^[^:]+:\s*(.+)$/)
+      if (colonM) rawExpr = colonM[1].trim()
+
+      // Strip list prefixes and markdown formatting
+      rawExpr = rawExpr.replace(/^(?:[-*+]|\d+\.)\s+/, '')
+      rawExpr = rawExpr.replace(/\*{2,}|[_~`]+/g, '')
+
+      // Substitute variable names → tokens
+      let expr = applyVarSubstitution(rawExpr, varDefs)
+
+      // Check if this expression references any defined variables
+      const hasVarRef = varDefs.some(v => v.value !== null && expr.includes(v.token))
+
+      if (!hasVarRef) {
+        // Original math isolation logic for plain numeric expressions
+        const mathStart = expr.match(/((?:(?:sin|cos|tan|log|ln|sqrt|abs|ceil|floor|round|exp|pow|FV|PV|PMT|NPV|integral|solve|factor|expand)\s*\(|[-+]?\s*[\d(]).*$)/i)
+        if (mathStart) expr = mathStart[1].trim()
+        else {
+          const mathPart = expr.match(/([\d(][\d\s+\-*/^().,%]*[\d)])\s*$/)
+          if (mathPart) expr = mathPart[1].trim()
+        }
+        if (!expr || /^[a-zA-Z]{4,}$/.test(expr)) { this.deco = Decoration.none; this._hint = null; return }
+        if (!/[+\-*/^%()]/.test(expr) && !/\b(sin|cos|tan|log|ln|sqrt|abs|ceil|floor|round|exp|pow|FV|PV|PMT|NPV)\s*\(/i.test(expr) && !/\bto\b/i.test(expr)) {
+          this.deco = Decoration.none; this._hint = null; return
+        }
       }
 
-      let result = evalExpr(expr)
+      let result = evalExpr(expr, scope)
       if (!result) { this.deco = Decoration.none; this._hint = null; return }
 
       // Apply precision rounding if =:.N was used
@@ -1248,6 +1320,181 @@ function makeMathCalcPlugin(cm) {
     get decorations() { return this.deco }
   }, { decorations: v => v.decorations })
 
+  // ─── Variable definition decorator ───────────────────────────────────────
+  // Colors: name (pastel orange), colon (dim orange), var refs everywhere (blue).
+  const varDecoPlugin = ViewPlugin.fromClass(class {
+    constructor(view) { this.deco = Decoration.none; this._rebuild(view) }
+    update(upd) { if (upd.docChanged) this._rebuild(upd.view) }
+    _rebuild(view) {
+      const { varDefs } = view.state.field(docScopeField)
+      if (!varDefs.length) { this.deco = Decoration.none; return }
+      const liveVars = varDefs.filter(v => v.value !== null).sort((a, b) => b.name.length - a.name.length)
+
+      // Track which lines are definition lines so we skip them in the ref scan below
+      const defLineFroms = new Set(varDefs.map(v => v.lineFrom))
+
+      // Helper: scan a text segment for variable name references, push into ranges[]
+      function addRefs(ranges, basePos, text) {
+        if (!liveVars.length) return
+        const covered = []
+        for (const { name } of liveVars) {
+          const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          const re = new RegExp(`(?<![_a-zA-Z0-9])${escaped}(?![_a-zA-Z0-9])`, 'gi')
+          let hit
+          while ((hit = re.exec(text)) !== null) {
+            const from = basePos + hit.index
+            const to   = from + name.length
+            if (covered.some(r => from < r.to && to > r.from)) continue
+            covered.push({ from, to })
+            ranges.push({ from, to, cls: 'cm-math-ref' })
+          }
+        }
+      }
+
+      // Collect all ranges then sort — RangeSetBuilder requires ascending order
+      const ranges = []
+
+      // 1. Definition lines: name, colon, RHS references
+      for (const { nameFrom, nameEnd, colonFrom, rhsFrom, lineEnd, value } of varDefs) {
+        ranges.push({ from: nameFrom, to: nameEnd, cls: value !== null ? 'cm-math-var cm-math-var-live' : 'cm-math-var' })
+        ranges.push({ from: colonFrom, to: colonFrom + 1, cls: 'cm-math-colon' })
+        if (rhsFrom < lineEnd)
+          addRefs(ranges, rhsFrom, view.state.doc.sliceString(rhsFrom, lineEnd))
+      }
+
+      // 2. Non-definition lines: highlight any variable references on lines that
+      //    look like expressions (contain = or math operators)
+      for (let ln = 1; ln <= view.state.doc.lines; ln++) {
+        const line = view.state.doc.line(ln)
+        if (defLineFroms.has(line.from)) continue  // already handled
+        const text = line.text
+        if (!text.includes('=') && !/[+\-*/^%]/.test(text)) continue
+        addRefs(ranges, line.from, text)
+      }
+
+      ranges.sort((a, b) => a.from - b.from || a.to - b.to)
+      const builder = new cm.state.RangeSetBuilder()
+      for (const { from, to, cls } of ranges) builder.add(from, to, Decoration.mark({ class: cls }))
+      this.deco = builder.finish()
+    }
+    get decorations() { return this.deco }
+  }, { decorations: v => v.deco })
+
+  // ─── Variable autocomplete ────────────────────────────────────────────────
+  // Triggers on lines containing ":" or "=" and offers defined variable names.
+  function varCompleteSource(context) {
+    const line     = context.state.doc.lineAt(context.pos)
+    const lineText = line.text
+    // Only activate on expression/definition lines
+    if (!lineText.includes(':') && !lineText.includes('=')) return null
+    const { varDefs } = buildDocScope(context.state)
+    const liveVars = varDefs.filter(v => v.value !== null)
+    if (!liveVars.length) return null
+    const word = context.matchBefore(/[a-zA-Z][a-zA-Z0-9 ]{1,40}/)
+    if (!word || (word.from === word.to && !context.explicit)) return null
+    const typed = word.text.toLowerCase().trimEnd()
+    if (typed.length < 2) return null
+    const options = liveVars
+      .filter(v => v.name.toLowerCase().startsWith(typed) && v.name.toLowerCase() !== typed)
+      .map(v => ({ label: v.name, detail: `= ${v.value}`, type: 'variable', apply: v.name }))
+    if (!options.length) return null
+    return { from: word.from, options, validFor: /^[a-zA-Z][a-zA-Z0-9 ]*$/ }
+  }
+
+  const varAutocompletion = cm.autocomplete.autocompletion({
+    override: [varCompleteSource],
+    icons: false,
+    closeOnBlur: true,
+  })
+
+  // ─── Update animation ────────────────────────────────────────────────────
+  // Tracks which line numbers currently have a live-update animation playing.
+  const varUpdateEffect    = cm.state.StateEffect.define()
+  const varUpdateField     = cm.state.StateField.define({
+    create: () => new Set(),
+    update: (val, tr) => {
+      for (const e of tr.effects) if (e.is(varUpdateEffect)) return new Set(e.value)
+      return val
+    },
+  })
+
+  // Decorates updated result numbers with the shimmer animation class.
+  const varResultDecoPlugin = ViewPlugin.fromClass(class {
+    constructor(view) { this.deco = Decoration.none }
+    update(upd) {
+      const updatedLines = upd.state.field(varUpdateField)
+      if (!updatedLines.size) { this.deco = Decoration.none; return }
+      const builder = new cm.state.RangeSetBuilder()
+      const sorted = [...updatedLines].sort((a, b) => a - b)
+      for (const ln of sorted) {
+        if (ln > upd.state.doc.lines) continue
+        const line = upd.state.doc.line(ln)
+        const m = line.text.match(/^(.*?\S)(\s*=\s*)(-?\d+(?:\.\d+)?)/)
+        if (!m) continue
+        const numFrom = line.from + m[1].length + m[2].length
+        builder.add(numFrom, numFrom + m[3].length, Decoration.mark({ class: 'cm-math-live-updated' }))
+      }
+      this.deco = builder.finish()
+    }
+    get decorations() { return this.deco }
+  }, { decorations: v => v.deco })
+
+  // ─── Live result updater ─────────────────────────────────────────────────
+  // When a variable value changes, auto-updates any Tab-accepted results in the doc.
+  const liveResultAnnotation = cm.state.Annotation.define()
+
+  const liveResultPlugin = ViewPlugin.fromClass(class {
+    constructor() { this._clearTimer = null }
+    update(upd) {
+      if (!upd.docChanged) return
+      if (upd.transactions.some(tr => tr.annotation(liveResultAnnotation))) return
+      if (!mathLib) return
+      const { varDefs, scope } = upd.state.field(docScopeField)
+      if (!varDefs.length) return
+      const curLine = upd.state.doc.lineAt(upd.state.selection.main.head).number
+      const changes = []
+      const updatedLineNums = []
+      for (let ln = 1; ln <= upd.state.doc.lines; ln++) {
+        if (ln === curLine) continue  // skip line being typed on
+        const line = upd.state.doc.line(ln)
+        // Match lines ending with "= <number>" — a previously accepted ghost result
+        const m = line.text.match(/^(.*?\S)(\s*=\s*)(-?\d+(?:\.\d+)?)(\s*)$/)
+        if (!m) continue
+        let rawExpr = m[1].trim()
+        const colonM = rawExpr.match(/^[^:]+:\s*(.+)$/)
+        if (colonM) rawExpr = colonM[1].trim()
+        rawExpr = rawExpr.replace(/^(?:[-*+]|\d+\.)\s+/, '').replace(/\*{2,}|[_~`]+/g, '')
+        const expr = applyVarSubstitution(rawExpr, varDefs)
+        if (!varDefs.some(v => v.value !== null && expr.includes(v.token))) continue
+        const result = evalExpr(expr, scope)
+        if (!result) continue
+        const newNum    = parseFloat(result)
+        const storedNum = parseFloat(m[3])
+        if (isNaN(newNum) || isNaN(storedNum) || Math.abs(newNum - storedNum) < 1e-10) continue
+        const numFrom = line.from + m[1].length + m[2].length
+        changes.push({ from: numFrom, to: numFrom + m[3].length, insert: result })
+        updatedLineNums.push(ln)
+      }
+      if (!changes.length) return
+      const view = upd.view
+      // Defer dispatch to avoid mutating state inside an update cycle
+      setTimeout(() => {
+        try {
+          view.dispatch({
+            changes,
+            annotations: liveResultAnnotation.of(true),
+            effects: [varUpdateEffect.of(new Set(updatedLineNums))],
+          })
+          // Guard: cancel any pending clear so rapid updates don't retrigger the animation
+          clearTimeout(this._clearTimer)
+          this._clearTimer = setTimeout(() => {
+            try { view.dispatch({ effects: [varUpdateEffect.of(new Set())] }) } catch {}
+          }, 1800)  // matches animation duration + buffer
+        } catch { /* view destroyed */ }
+      }, 0)
+    }
+  })
+
   const mathKeymap = cm.view.keymap.of([{
     key: 'Tab',
     run: view => {
@@ -1263,7 +1510,37 @@ function makeMathCalcPlugin(cm) {
     },
   }])
 
-  return [mathPlugin, mathKeymap]
+  // ─── Prose number decorator ───────────────────────────────────────────────
+  // Applies uniform tabular-nums + slightly heavier weight to all digit sequences
+  // in editor text (the highlight style only fires inside code contexts).
+  const _numRE   = /(?<![_a-zA-Z#])\d+(?:[.,]\d+)*/g
+  const _numMark = Decoration.mark({ class: 'cm-nb-num' })
+  const numberDecoPlugin = ViewPlugin.fromClass(class {
+    constructor(view) { this.deco = this._build(view) }
+    update(upd) { if (upd.docChanged || upd.viewportChanged) this.deco = this._build(upd.view) }
+    _build(view) {
+      const builder = new cm.state.RangeSetBuilder()
+      for (const { from, to } of view.visibleRanges) {
+        let pos = from
+        while (pos <= to) {
+          const line = view.state.doc.lineAt(pos)
+          const end  = Math.min(line.to, to)
+          _numRE.lastIndex = 0
+          const text = line.text.slice(pos - line.from, end - line.from)
+          let m
+          while ((m = _numRE.exec(text)) !== null) {
+            const s = pos + m.index
+            try { builder.add(s, s + m[0].length, _numMark) } catch {}
+          }
+          pos = line.to + 1
+        }
+      }
+      return builder.finish()
+    }
+    get decorations() { return this.deco }
+  }, { decorations: v => v.deco })
+
+  return [docScopeField, varUpdateField, mathPlugin, varDecoPlugin, varResultDecoPlugin, numberDecoPlugin, liveResultPlugin, mathKeymap, varAutocompletion]
 }
 
 // ─── /table slash command ────────────────────────────────────────────────────
@@ -2091,7 +2368,7 @@ class HabitsWidget {
           dates.forEach(d => {
             const k = widget._dk(d), lbl = document.createElement('div')
             lbl.className = 'cm-habits-day-lbl' + (k === todayKey ? ' cm-habits-today-lbl' : '')
-            lbl.textContent = k === todayKey ? '•' : (d.getDay() === 1 || d.getDate() === 1 ? String(d.getDate()) : '')
+            lbl.textContent = k === todayKey ? '•' : String(d.getDate())
             lbl.title = k
             dateRow.appendChild(lbl)
           })
@@ -2978,9 +3255,12 @@ class TableWidget {
       menu.appendChild(el)
     }
 
-    menu.style.left = e.clientX + 'px'
-    menu.style.top  = e.clientY + 'px'
     document.body.appendChild(menu)
+    const mw = menu.offsetWidth, mh = menu.offsetHeight
+    const safeX = Math.max(8, Math.min(e.clientX, window.innerWidth - mw - 8))
+    const safeY = Math.max(60, Math.min(e.clientY, window.innerHeight - mh - 8))
+    menu.style.left = safeX + 'px'
+    menu.style.top  = safeY + 'px'
     const dismiss = ev => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('mousedown', dismiss) } }
     setTimeout(() => document.addEventListener('mousedown', dismiss), 0)
   }
@@ -3479,6 +3759,319 @@ class CalendarWidget {
   coordsAt() { return null }
 }
 
+// ─── Inline link widgets (/linkf, /linkw, /linkv) ────────────────────────────
+
+// SVG icon strings keyed by category
+const _LINK_ICONS = {
+  image:  `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="2" width="14" height="12" rx="1.5"/><circle cx="5.5" cy="6.5" r="1.5"/><path d="M1.5 12l3.5-3 3 3 2.5-2 4 3.5"/></svg>`,
+  audio:  `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3L5 6.5H2.5a1 1 0 00-1 1v1a1 1 0 001 1H5L9 13V3z"/><path d="M12 5.5c.9.8 1.5 1.9 1.5 2.5S12.9 9.7 12 10.5"/></svg>`,
+  video:  `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3.5" width="10" height="9" rx="1.5"/><path d="M11 6.5l4-2v7l-4-2"/></svg>`,
+  pdf:    `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 1H3a1 1 0 00-1 1v12a1 1 0 001 1h10a1 1 0 001-1V6L9.5 1z"/><path d="M9.5 1v5H14.5"/><path d="M5 10.5h2a1 1 0 010 2H5V9h2a1 1 0 010 2"/></svg>`,
+  doc:    `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 1H3a1 1 0 00-1 1v12a1 1 0 001 1h10a1 1 0 001-1V6L9.5 1z"/><path d="M9.5 1v5H14.5"/><path d="M5 8.5h6M5 11h6M5 13.5h4"/></svg>`,
+  sheet:  `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="1"/><path d="M2 6h12M2 10h12M7 2v12"/></svg>`,
+  archive:`<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="5" width="14" height="9" rx="1"/><path d="M1 5l2-4h10l2 4"/><path d="M6 9h4"/></svg>`,
+  code:   `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4L1 8l4 4M11 4l4 4-4 4M9.5 2l-3 12"/></svg>`,
+  text:   `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h10M8 3v10M5 13h6"/></svg>`,
+  config: `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.2 3.2l1.4 1.4M11.4 11.4l1.4 1.4M3.2 12.8l1.4-1.4M11.4 4.6l1.4-1.4"/></svg>`,
+  file:   `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 1H3a1 1 0 00-1 1v12a1 1 0 001 1h10a1 1 0 001-1V6L9.5 1z"/><path d="M9.5 1v5H14.5"/></svg>`,
+}
+
+function _fileLinkIcon(ext) {
+  const e = (ext || '').toLowerCase()
+  if (['jpg','jpeg','png','gif','webp','svg','bmp','ico','avif','tiff'].includes(e)) return _LINK_ICONS.image
+  if (['mp3','wav','ogg','flac','aac','m4a','opus'].includes(e))                     return _LINK_ICONS.audio
+  if (['mp4','mov','avi','mkv','webm','flv','wmv','m4v'].includes(e))               return _LINK_ICONS.video
+  if (e === 'pdf')                                                                   return _LINK_ICONS.pdf
+  if (['doc','docx','rtf'].includes(e))                                              return _LINK_ICONS.doc
+  if (['xls','xlsx','csv'].includes(e))                                              return _LINK_ICONS.sheet
+  if (['zip','gz','tar','rar','7z'].includes(e))                                     return _LINK_ICONS.archive
+  if (['js','ts','jsx','tsx','py','rb','go','rs','java','c','cpp','h','css','html'].includes(e)) return _LINK_ICONS.code
+  if (['md','txt'].includes(e))                                                      return _LINK_ICONS.text
+  if (['json','yaml','yml','xml','toml'].includes(e))                                return _LINK_ICONS.config
+  return _LINK_ICONS.file
+}
+
+// SVG icon for the web link widget
+const _GLOBE_ICON = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="7"/><path d="M8 1c-2 2-3 4.5-3 7s1 5 3 7M8 1c2 2 3 4.5 3 7s-1 5-3 7"/><path d="M1 8h14"/></svg>`
+const _OPEN_ICON  = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3H3a1 1 0 00-1 1v9a1 1 0 001 1h9a1 1 0 001-1V9"/><path d="M10 2h4v4"/><path d="M14 2L8 8"/></svg>`
+
+class FileLinkWidget {
+  constructor(path, name) { this.path = path; this.name = name }
+  toDOM() {
+    const ext = (this.path || '').split('.').pop()
+    const wrap = document.createElement('span')
+    wrap.className = 'cm-linkf-badge'
+    wrap.dataset.linkfPath = this.path
+    wrap.title = this.path
+
+    const iconEl = document.createElement('span')
+    iconEl.className = 'cm-linkf-icon'
+    iconEl.innerHTML = _fileLinkIcon(ext)
+
+    const nameEl = document.createElement('span')
+    nameEl.className = 'cm-linkf-name'
+    nameEl.textContent = this.name || this.path.split(/[/\\]/).pop() || this.path
+
+    wrap.appendChild(iconEl)
+    wrap.appendChild(nameEl)
+    return wrap
+  }
+  eq(o) { return o instanceof FileLinkWidget && o.path === this.path && o.name === this.name }
+  compare(o) { return this.eq(o) }
+  destroy() {}
+  ignoreEvent() { return false }
+  coordsAt() { return null }
+}
+
+let _webviewCounter = 0
+
+class WebLinkWidget {
+  constructor(url, title) {
+    this.url = url
+    this.title = title
+    this._label = `gnos-wv-${++_webviewCounter}`
+    this._wv = null
+    this._cleanup = null
+  }
+
+  toDOM() {
+    const urlObj = (() => { try { return new URL(this.url) } catch { return null } })()
+    const domain = urlObj?.hostname || this.url
+
+    const wrap = document.createElement('div')
+    wrap.className = 'cm-linkw-wrap'
+
+    // ── Header bar (single line) ────────────────────────────
+    const header = document.createElement('div')
+    header.className = 'cm-linkw-header'
+
+    const iconEl = document.createElement('span')
+    iconEl.className = 'cm-linkw-glob'
+    iconEl.innerHTML = _GLOBE_ICON
+
+    const titleEl = document.createElement('span')
+    titleEl.className = 'cm-linkw-title'
+    titleEl.textContent = this.title || domain
+
+    const domainEl = document.createElement('span')
+    domainEl.className = 'cm-linkw-url'
+    domainEl.textContent = this.title ? ` — ${domain}` : ''
+
+    const info = document.createElement('div')
+    info.className = 'cm-linkw-info'
+    info.appendChild(titleEl); info.appendChild(domainEl)
+
+    const openBtn = document.createElement('button')
+    openBtn.className = 'cm-linkw-open-btn'
+    openBtn.dataset.linkwUrl = this.url
+    openBtn.dataset.linkwTitle = this.title || domain
+    openBtn.title = 'Open in new window'
+    openBtn.innerHTML = _OPEN_ICON + ' Open'
+
+    header.appendChild(iconEl); header.appendChild(info); header.appendChild(openBtn)
+
+    // ── Native webview area (lazy — thumbnail preview until clicked) ───────
+    const viewArea = document.createElement('div')
+    viewArea.className = 'cm-linkw-view-area'
+
+    const loadOverlay = document.createElement('div')
+    loadOverlay.className = 'cm-linkw-load-overlay'
+
+    // Thumbnail — src set once fetch_og_image resolves
+    const thumbImg = document.createElement('img')
+    thumbImg.className = 'cm-linkw-thumb'
+    thumbImg.alt = ''
+    thumbImg.onerror = () => { thumbImg.style.display = 'none' }
+
+    // Favicon badge pinned bottom-left, always visible as fallback
+    const faviconBadge = document.createElement('div')
+    faviconBadge.className = 'cm-linkw-favicon-badge'
+    const faviconImg = document.createElement('img')
+    faviconImg.src = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=32`
+    faviconImg.alt = ''
+    faviconImg.onerror = () => { faviconBadge.style.display = 'none' }
+    faviconBadge.appendChild(faviconImg)
+
+    loadOverlay.appendChild(thumbImg)
+    loadOverlay.appendChild(faviconBadge)
+    viewArea.appendChild(loadOverlay)
+
+    // Fetch og:image via Rust (bypasses CORS)
+    if (_invoke) {
+      _invoke('fetch_og_image', { url: this.url }).then(ogUrl => {
+        if (ogUrl && loadOverlay.isConnected) thumbImg.src = ogUrl
+      }).catch(() => {})
+    }
+
+    loadOverlay.addEventListener('mousedown', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+    })
+    loadOverlay.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      loadOverlay.remove()
+      this._mountWebview(viewArea)
+    }, { once: true })
+
+    wrap.appendChild(header)
+    wrap.appendChild(viewArea)
+
+    return wrap
+  }
+
+  _mountWebview(viewArea) {
+    const url = this.url
+    const label = this._label
+    let attempts = 0
+
+    const getHeaderBottom = () => {
+      const hdr = document.querySelector('.nb-header') || document.querySelector('.gnos-header')
+      return hdr ? Math.ceil(hdr.getBoundingClientRect().bottom) : 0
+    }
+
+    const clampedBounds = (r) => {
+      const minY = getHeaderBottom()
+      const rawTop = Math.round(r.top)
+      const clampedTop = Math.max(rawTop, minY)
+      const clampedHeight = Math.max(60, Math.round(r.height) - (clampedTop - rawTop))
+      return { x: Math.round(r.left), y: clampedTop, width: Math.max(100, Math.round(r.width)), height: clampedHeight }
+    }
+
+    const tryCreate = async () => {
+      if (!viewArea.isConnected) {
+        if (++attempts < 40) requestAnimationFrame(tryCreate)
+        return
+      }
+      if (!_invoke) {
+        // Not in a Tauri context — the card header with Open button is the fallback
+        return
+      }
+      const rect = viewArea.getBoundingClientRect()
+      try {
+        await _invoke('create_inline_webview', { label, url, ...clampedBounds(rect) })
+        this._created = true
+      } catch (err) {
+        console.warn('[linkw] embedded webview failed:', err)
+        return
+      }
+
+      let rafId = null
+      const reposition = () => {
+        if (!viewArea.isConnected || !this._created) return
+        const r = viewArea.getBoundingClientRect()
+        _invoke('reposition_inline_webview', { label, ...clampedBounds(r) }).catch(() => {})
+      }
+      const scheduleRepos = () => {
+        if (rafId) return
+        rafId = requestAnimationFrame(() => { rafId = null; reposition() })
+      }
+
+      document.addEventListener('scroll', scheduleRepos, { capture: true, passive: true })
+      window.addEventListener('resize', scheduleRepos, { passive: true })
+
+      this._cleanup = () => {
+        document.removeEventListener('scroll', scheduleRepos, { capture: true })
+        window.removeEventListener('resize', scheduleRepos)
+        if (rafId) { cancelAnimationFrame(rafId); rafId = null }
+      }
+    }
+    requestAnimationFrame(tryCreate)
+  }
+
+  eq(o) { return o instanceof WebLinkWidget && o.url === this.url && o.title === this.title }
+  compare(o) { return this.eq(o) }
+  get estimatedHeight() { return 500 }
+
+  destroy() {
+    if (this._cleanup) { this._cleanup(); this._cleanup = null }
+    if (this._created && _invoke) {
+      _invoke('close_inline_webview', { label: this._label }).catch(() => {})
+      this._created = false
+    }
+  }
+
+  ignoreEvent() { return false }
+  coordsAt() { return null }
+}
+
+class VideoLinkWidget {
+  constructor(src, title) { this.src = src; this.title = title }
+  toDOM() {
+    const wrap = document.createElement('div')
+    wrap.className = 'cm-linkv-wrap'
+
+    // ── Single-line header ──────────────────────────────────
+    const header = document.createElement('div')
+    header.className = 'cm-linkv-header'
+
+    const iconEl = document.createElement('span')
+    iconEl.className = 'cm-linkv-icon'
+    iconEl.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>'
+
+    const titleText = (() => {
+      if (this.title) return this.title
+      const parts = this.src.split(/[\\/]/)
+      return parts[parts.length - 1] || this.src
+    })()
+
+    const titleEl = document.createElement('span')
+    titleEl.className = 'cm-linkv-title'
+    titleEl.textContent = titleText
+
+    header.appendChild(iconEl)
+    header.appendChild(titleEl)
+    wrap.appendChild(header)
+
+    // ── Video element ───────────────────────────────────────
+    const video = document.createElement('video')
+    video.className = 'cm-linkv-video'
+    video.controls = true
+    video.preload = 'metadata'
+    let resolvedSrc = this.src
+    if (_convertFileSrc && !this.src.startsWith('http') && !this.src.startsWith('blob:')) {
+      try { resolvedSrc = _convertFileSrc(this.src) } catch { /**/ }
+    }
+    video.src = resolvedSrc
+
+    // Seek to first frame once metadata is loaded so it shows as a thumbnail
+    video.addEventListener('loadedmetadata', () => {
+      video.currentTime = 0.001
+    }, { once: true })
+
+    wrap.appendChild(video)
+
+    return wrap
+  }
+  eq(o) { return o instanceof VideoLinkWidget && o.src === this.src && o.title === this.title }
+  compare(o) { return this.eq(o) }
+  get estimatedHeight() { return 220 }
+  destroy() {}
+  ignoreEvent() { return false }
+  coordsAt() { return null }
+}
+
+// ─── /linkf, /linkw, /linkv — Enter key notifies React to open picker/modal ───
+// onPickRef is a React ref whose .current is set to a callback each render.
+// Calling native dialogs from inside CM keymaps can crash the app on macOS —
+// so we just signal React and let the effect/JSX handle the actual dialog.
+function makeLinkCommands(cm, onPickRef) {
+  const { Prec } = cm.state
+  return Prec.high(cm.view.keymap.of([{
+    key: 'Enter',
+    run: (view) => {
+      const { state } = view
+      const line = state.doc.lineAt(state.selection.main.head)
+      const txt = line.text.trim()
+      const onPick = typeof onPickRef === 'function' ? onPickRef : onPickRef?.current
+      if (txt === '/linkf') { onPick?.({ type: 'file',  lineFrom: line.from, lineTo: line.to }); return true }
+      if (txt === '/linkw') { onPick?.({ type: 'web',   lineFrom: line.from, lineTo: line.to }); return true }
+      if (txt === '/linkv') { onPick?.({ type: 'video', lineFrom: line.from, lineTo: line.to }); return true }
+      return false
+    },
+  }]))
+}
+
 // ─── Live preview plugin ──────────────────────────────────────────────────────
 function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [], flashcardDecks = [], notebookDir = null, isPreview = false) {
   const { ViewPlugin, Decoration, WidgetType } = cm.view
@@ -3486,7 +4079,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
   const { syntaxTree } = cm.language
 
   // Patch widget classes to extend WidgetType so CM6 properly handles them
-  for (const Cls of [HRWidget, CheckboxWidget, ImgWidget, ListMarkerWidget, MathWidget, WikiWidget, LinkWidget, TableWidget, HabitsWidget, TaskBlockWidget, SupWidget, SubWidget, TimerWidget, CalendarWidget, TimeRefWidget, FnRefWidget, DueDateWidget, TagWidget, QuestionWidget]) {
+  for (const Cls of [HRWidget, CheckboxWidget, ImgWidget, ListMarkerWidget, MathWidget, WikiWidget, LinkWidget, TableWidget, HabitsWidget, TaskBlockWidget, SupWidget, SubWidget, TimerWidget, CalendarWidget, TimeRefWidget, FnRefWidget, DueDateWidget, TagWidget, QuestionWidget, FileLinkWidget, WebLinkWidget, VideoLinkWidget]) {
     if (!(Cls.prototype instanceof WidgetType)) {
       Object.setPrototypeOf(Cls.prototype, WidgetType.prototype)
     }
@@ -4159,6 +4752,51 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
       }
     } catch { /**/ }
 
+    // ── /linkf file badge ────────────────────────────────────────────────────
+    try {
+      const linkfRe = /^\/linkf:(.+)$/gm
+      let lf
+      while ((lf = linkfRe.exec(fullDoc)) !== null) {
+        const lfLine = doc.lineAt(lf.index)
+        const lfFrom = lfLine.from, lfTo = lfLine.to
+        if (inCur(lfFrom, lfTo)) continue
+        const parts = lf[1].split('|')
+        const path = parts[0].trim()
+        const name = parts[1]?.trim() || path.split(/[/\\]/).pop() || path
+        inlines.push({ from: lfFrom, to: lfTo, deco: Decoration.replace({ widget: new FileLinkWidget(path, name) }) })
+      }
+    } catch { /**/ }
+
+    // ── /linkw web viewer ────────────────────────────────────────────────────
+    try {
+      const linkwRe = /^\/linkw:(.+)$/gm
+      let lw
+      while ((lw = linkwRe.exec(fullDoc)) !== null) {
+        const lwLine = doc.lineAt(lw.index)
+        const lwFrom = lwLine.from, lwTo = lwLine.to
+        if (inCur(lwFrom, lwTo)) continue
+        const parts = lw[1].split('|')
+        const url = parts[0].trim()
+        const title = parts[1]?.trim() || ''
+        inlines.push({ from: lwFrom, to: lwTo, deco: Decoration.replace({ widget: new WebLinkWidget(url, title) }) })
+      }
+    } catch { /**/ }
+
+    // ── /linkv video player ──────────────────────────────────────────────────
+    try {
+      const linkvRe = /^\/linkv:(.+)$/gm
+      let lv
+      while ((lv = linkvRe.exec(fullDoc)) !== null) {
+        const lvLine = doc.lineAt(lv.index)
+        const lvFrom = lvLine.from, lvTo = lvLine.to
+        if (inCur(lvFrom, lvTo)) continue
+        const parts = lv[1].split('|')
+        const src = parts[0].trim()
+        const title = parts[1]?.trim() || ''
+        inlines.push({ from: lvFrom, to: lvTo, deco: Decoration.replace({ widget: new VideoLinkWidget(src, title) }) })
+      }
+    } catch { /**/ }
+
     // ── Predictive formatting from opening syntax ─────────────────────────
     // When the cursor is on a line with unclosed formatting tokens,
     // apply the formatting class from the opening token to the cursor position
@@ -4437,10 +5075,41 @@ function makeCheckboxHandler(cm) {
   })
 }
 
-// ─── Hyperlink click handler (live mode) — opens URLs in default browser ─────
+// ─── Hyperlink + file/web/video link click handler ───────────────────────────
 function makeLinkHandler(cm) {
   return cm.view.EditorView.domEventHandlers({
+    mousedown(e) {
+      // Prevent CM from claiming cursor-placement on these widgets
+      if (e.target.closest('.cm-linkv-wrap') || e.target.closest('.cm-linkw-wrap') || e.target.closest('.cm-linkf-badge')) {
+        e.preventDefault()
+        return true
+      }
+      return false
+    },
     click(e, view) {
+      // /linkf — open file with default app
+      const badge = e.target.closest('.cm-linkf-badge')
+      if (badge) {
+        const path = badge.dataset.linkfPath
+        if (path && _invoke) {
+          _invoke('open_in_finder', { path }).catch(console.warn)
+        }
+        e.preventDefault(); return true
+      }
+
+      // /linkw — open in the user's native browser (safe, sandboxed)
+      const wOpen = e.target.closest('.cm-linkw-open-btn')
+      if (wOpen) {
+        e.preventDefault()
+        const url = wOpen.dataset.linkwUrl
+        if (url) {
+          import('@tauri-apps/api/core').then(({ invoke }) => {
+            invoke('plugin:shell|open', { path: url }).catch(() => window.open(url, '_blank'))
+          }).catch(() => window.open(url, '_blank'))
+        }
+        return true
+      }
+
       // Handle clicks on .cm-lv-lnk inline decorations (when cursor is on the link)
       const el = e.target.closest('.cm-lv-lnk')
       if (!el) return false
@@ -4897,16 +5566,25 @@ export default function NotebookView() {
   const [content,   setContent]  = useState('')
   const [noteTitle, setTitle]    = useState('')
   const [loaded,    setLoaded]   = useState(false)
+  const [coverImage,  setCoverImage]  = useState(null)
+  const [coverPos,    setCoverPos]    = useState({ x: 50, y: 50 })
+  const [coverScale,  setCoverScale]  = useState(1)   // zoom factor ≥ 1
+  const coverDragRef = useRef(null)
+  const [coverPicker, setCoverPicker] = useState(null)
+  const pickerImgRef = useRef(null)
+  const [linkPicker, setLinkPicker] = useState(null)   // { type:'file'|'web'|'video', lineFrom, lineTo }
+  const [linkWebUrl, setLinkWebUrl]  = useState('')
+  const linkPickRef  = useRef(null)
   const [, setSaving]            = useState(false)
   const [findQ,     setFindQ]    = useState('')
   const [findCount, setFindCount]= useState(0)
   const [findCurD,  setFindCurD] = useState(0)
   const [selectionWC, setSelectionWC] = useState(0)
   const [editModal, setEditModal]= useState(false)
-  const [pdfStatus, setPdfStatus] = useState(null) // null | 'preparing' | 'printing'
 
-  const editorRef  = useRef(null)
-  const cmRef      = useRef(null)
+  const editorRef     = useRef(null)
+  const cmRef         = useRef(null)
+  const coverInputRef = useRef(null)
   const cmMods     = useRef(null)
   const saveTimer  = useRef(null)
   const saveVisT   = useRef(null)
@@ -4985,6 +5663,18 @@ export default function NotebookView() {
       if (hm) { title = hm[1]; text = text.slice(hm[0].length) }
       titleRef.current = title; setTitle(title)
       contentRef.current = text; setContent(text)
+      // Restore cover image if one was saved with this notebook
+      const savedCover = nb?.coverImage || null
+      if (savedCover && _convertFileSrc && folderPath) {
+        try {
+          const absPath = savedCover.startsWith('./') ? folderPath + '/' + savedCover.slice(2) : savedCover
+          setCoverImage(_convertFileSrc(absPath))
+        } catch { setCoverImage(null) }
+      } else {
+        setCoverImage(null)
+      }
+      setCoverPos(nb?.coverPos || { x: 50, y: 50 })
+      setCoverScale(nb?.coverScale ?? 1)
       setLoaded(true)
       loadedFor.current = notebookId
     })
@@ -5024,7 +5714,8 @@ export default function NotebookView() {
       createAndOpenItem(title, 'notebook')
     }
   }, [setView, paneTabId]) // eslint-disable-line react-hooks/exhaustive-deps
-  wikiNavRef.current = handleWikiNav
+  wikiNavRef.current  = handleWikiNav
+  linkPickRef.current = info => setLinkPicker(info)
 
   function createAndOpenItem(title, kind) {
     const s = useAppStore.getState()
@@ -5129,8 +5820,9 @@ export default function NotebookView() {
         ...makeWikiDropdownPlugin(cm, notebooks, library, sketchbooks, flashcardDecks, setWikiDrop),
         searchExt({ top: false }),
         makeFormatKeys(cm),
-        // /table slash command — inserts markdown table template (must be before smartEnter)
+        // /table, /linkf, /linkw, /linkv slash commands (must be before smartEnter)
         makeTableCommand(cm),
+        makeLinkCommands(cm, linkPickRef),
         makeSmartEnter(cm),
         // Pair auto-wrap via input handler
         makePairInputHandler(cm),
@@ -5375,6 +6067,76 @@ export default function NotebookView() {
     clearTimeout(saveTimer.current)
     doSave(contentRef.current, titleRef.current)
   }, [doSave])
+
+  // ── /linkf and /linkv — open Tauri dialog from React effect (NOT from CM handler) ──
+  useEffect(() => {
+    if (!linkPicker || linkPicker.type === 'web') return
+    if (!_dialogOpen) { setLinkPicker(null); return }
+    const isVideo = linkPicker.type === 'video'
+    const opts = isVideo
+      ? { multiple: false, filters: [{ name: 'Video', extensions: ['mp4','mov','avi','mkv','webm','flv','wmv','m4v'] }] }
+      : { multiple: false }
+    _dialogOpen(opts)
+      .then(path => {
+        if (path && cmRef.current) {
+          const p = String(path)
+          const name = p.split(/[/\\]/).pop() || p
+          const prefix = isVideo ? 'linkv' : 'linkf'
+          cmRef.current.dispatch({
+            changes: { from: linkPicker.lineFrom, to: linkPicker.lineTo, insert: `/${prefix}:${p}|${name}` },
+          })
+        }
+      })
+      .catch(console.warn)
+      .finally(() => setLinkPicker(null))
+  }, [linkPicker]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Cover picker ──────────────────────────────────────────────────────────
+  const cancelPicker = useCallback(() => {
+    setCoverPicker(p => {
+      if (p?.objectUrl && !p.isEdit) URL.revokeObjectURL(p.objectUrl)
+      return null
+    })
+  }, [])
+
+  const openPickerForEdit = useCallback(() => {
+    if (!coverImage) return
+    setCoverPicker({
+      objectUrl: coverImage,
+      file: null,
+      isEdit: true,
+      pos: { ...coverPos },
+      scale: coverScale,
+    })
+  }, [coverImage, coverPos, coverScale])
+
+  const applyPicker = useCallback(async () => {
+    const picker = coverPicker
+    if (!picker) return
+    const { file, objectUrl, isEdit, pos, scale } = picker
+    const newScale = Math.max(1, scale ?? 1)
+    try {
+      if (!isEdit) {
+        const buf = await file.arrayBuffer()
+        const ext = file.name.split('.').pop() || 'jpg'
+        const relPath = await saveNotebookImage(notebookId, `cover.${ext}`, new Uint8Array(buf))
+        if (relPath && _convertFileSrc && notebookDirRef.current) {
+          const absPath = relPath.startsWith('./') ? notebookDirRef.current + '/' + relPath.slice(2) : relPath
+          setCoverImage(_convertFileSrc(absPath) + `?v=${Date.now()}`)
+        }
+        updateNotebook(notebookId, { coverImage: relPath, coverPos: pos, coverScale: newScale })
+      } else {
+        updateNotebook(notebookId, { coverPos: pos, coverScale: newScale })
+      }
+      setCoverPos(pos)
+      setCoverScale(newScale)
+      useAppStore.getState().persistNotebooks?.()
+    } catch (err) {
+      console.error('[NotebookView] cover apply failed:', err)
+    }
+    if (!isEdit) URL.revokeObjectURL(objectUrl)
+    setCoverPicker(null)
+  }, [coverPicker, notebookId, updateNotebook])
 
   // ── Ctrl+F ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -6567,7 +7329,471 @@ export default function NotebookView() {
       pointer-events: none;
       user-select: none;
     }
+    /* ── Uniform number styling ──────────────────────────── */
+    .cm-nb-num {
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.015em;
+    }
+    /* ── Math variable names ─────────────────────────────── */
+    .cm-math-var {
+      color: #e8a87c;
+      font-weight: 500;
+    }
+    .cm-math-var-live {
+      color: #f0a060;
+    }
+    .cm-math-colon {
+      color: #e8a87c;
+      opacity: 0.45;
+    }
+    /* Blue complement to orange — drawn from the app's existing accent hue */
+    .cm-math-ref {
+      color: #79b8ff;
+      font-weight: 500;
+    }
+    /* Bold ghost text result */
+    .cm-math-ghost {
+      font-weight: 700;
+    }
+    /* Gradient shimmer sweep when a live result auto-updates */
+    @keyframes mathResultShimmer {
+      0%   { background-position: -200% center; }
+      100% { background-position: 200% center; }
+    }
+    .cm-math-live-updated {
+      background: linear-gradient(
+        90deg,
+        #f0a060 0%,
+        #ffd4a0 30%,
+        #fff3e0 50%,
+        #ffd4a0 70%,
+        #f0a060 100%
+      );
+      background-size: 400% auto;
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: mathResultShimmer 1.4s ease-in-out;
+      animation-iteration-count: 1;
+      animation-fill-mode: none;
+    }
     mark.nb-fhl-a { background:rgba(56,139,253,.5); outline:2px solid var(--accent); }
+
+    /* ── Cover banner ─────────────────────────────────── */
+    .nb-cover-banner {
+      position: relative;
+      width: 100%;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+    .nb-cover-img {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      display: block;
+      user-select: none;
+    }
+    .nb-cover-img-draggable { cursor: grab; }
+    .nb-cover-img-draggable:active { cursor: grabbing; }
+    .nb-cover-actions {
+      position: absolute;
+      bottom: 10px; right: 14px;
+      display: flex; gap: 6px;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .nb-cover-banner:hover .nb-cover-actions { opacity: 1; }
+    .nb-cover-action-btn {
+      background: rgba(15,15,15,0.6);
+      border: none;
+      color: #fff;
+      font-size: 11.5px;
+      border-radius: 5px;
+      padding: 4px 10px;
+      cursor: pointer;
+      font-family: inherit;
+      backdrop-filter: blur(4px);
+      transition: background 0.12s;
+    }
+    .nb-cover-action-btn:hover { background: rgba(15,15,15,0.82); }
+
+    /* ── Cover image picker modal ─────────────────────── */
+    .nb-cover-picker-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.65);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .nb-cover-picker-panel {
+      background: var(--surface);
+      border-radius: 12px;
+      padding: 20px;
+      width: 600px;
+      max-width: 92vw;
+      max-height: 88vh;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.55);
+    }
+    .nb-cover-picker-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nb-cover-picker-header > span:first-child { font-weight: 600; font-size: 14px; color: var(--text); }
+    .nb-cover-picker-hint { font-size: 12px; color: var(--textDim); }
+    .nb-cover-picker-stage {
+      position: relative;
+      overflow: hidden;
+      border-radius: 8px;
+      cursor: grab;
+      user-select: none;
+      width: 100%;
+      min-height: 120px;
+      background: #000;
+      flex-shrink: 0;
+    }
+    .nb-cover-picker-stage:active { cursor: grabbing; }
+    .nb-cover-picker-img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      pointer-events: none;
+    }
+    .nb-cpick-dim {
+      position: absolute;
+      left: 0; right: 0;
+      background: rgba(0,0,0,0.55);
+      pointer-events: none;
+    }
+    .nb-cpick-vp {
+      position: absolute;
+      box-shadow: 0 0 0 2px rgba(255,255,255,0.8) inset;
+    }
+    /* north/south resize handles (horizontal pill) */
+    .nb-cpick-resize-n,
+    .nb-cpick-resize-s {
+      position: absolute;
+      left: 0; right: 0;
+      height: 12px;
+      cursor: ns-resize;
+      display: flex;
+      justify-content: center;
+    }
+    .nb-cpick-resize-n { top: 0; align-items: flex-start; padding-top: 3px; }
+    .nb-cpick-resize-s { bottom: 0; align-items: flex-end; padding-bottom: 3px; }
+    .nb-cpick-resize-n::after,
+    .nb-cpick-resize-s::after {
+      content: '';
+      width: 36px; height: 3px;
+      border-radius: 2px;
+      background: rgba(255,255,255,0.75);
+      display: block;
+    }
+    /* west/east resize handles (vertical pill) */
+    .nb-cpick-resize-w,
+    .nb-cpick-resize-e {
+      position: absolute;
+      top: 0; bottom: 0;
+      width: 12px;
+      cursor: ew-resize;
+      display: flex;
+      align-items: center;
+    }
+    .nb-cpick-resize-w { left: 0; justify-content: flex-start; padding-left: 3px; }
+    .nb-cpick-resize-e { right: 0; justify-content: flex-end; padding-right: 3px; }
+    .nb-cpick-resize-w::after,
+    .nb-cpick-resize-e::after {
+      content: '';
+      width: 3px; height: 36px;
+      border-radius: 2px;
+      background: rgba(255,255,255,0.75);
+      display: block;
+    }
+    .nb-cpick-zoom {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .nb-cpick-zoom-btn {
+      width: 26px; height: 26px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: none;
+      color: var(--text);
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      transition: background 0.1s;
+    }
+    .nb-cpick-zoom-btn:hover { background: var(--surfaceAlt); }
+    .nb-cpick-zoom-slider {
+      flex: 1;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .nb-cover-picker-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .nb-cover-picker-cancel {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--textDim);
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+    }
+    .nb-cover-picker-cancel:hover { background: var(--surfaceAlt); color: var(--text); }
+    .nb-cover-picker-apply {
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      border-radius: 6px;
+      padding: 6px 18px;
+      font-size: 13px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: opacity 0.12s;
+    }
+    .nb-cover-picker-apply:hover { opacity: 0.88; }
+
+    /* ── /linkw URL input modal ────────────────────────── */
+    .nb-linkw-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.55);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .nb-linkw-modal {
+      background: var(--surface);
+      border-radius: 10px;
+      padding: 18px 20px 14px;
+      width: 420px;
+      max-width: 92vw;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+    .nb-linkw-modal-title { font-weight: 600; font-size: 14px; color: var(--text); }
+    .nb-linkw-modal-input {
+      width: 100%;
+      box-sizing: border-box;
+      background: var(--surfaceAlt, #252525);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 13px;
+      color: var(--text);
+      font-family: inherit;
+      outline: none;
+    }
+    .nb-linkw-modal-input:focus { border-color: var(--accent); }
+    .nb-linkw-modal-hint { font-size: 11px; color: var(--textDim); }
+
+    /* ── /linkf file badge ─────────────────────────────── */
+    .cm-linkf-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 9px 2px 6px;
+      border-radius: 5px;
+      background: var(--surfaceAlt, #252525);
+      border: 1px solid var(--border);
+      font-size: 13px;
+      cursor: pointer;
+      vertical-align: middle;
+      max-width: 340px;
+      transition: background 0.12s, border-color 0.12s;
+      white-space: nowrap;
+      overflow: hidden;
+      line-height: 1.6;
+    }
+    .cm-linkf-badge:hover { background: var(--accentDim, rgba(100,149,237,0.14)); border-color: var(--accent); }
+    .cm-linkf-icon { display: inline-flex; align-items: center; flex-shrink: 0; color: var(--textDim); }
+    .cm-linkf-name { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ── /linkw web viewer (embedded native webview) ───── */
+    .cm-linkw-wrap {
+      display: block;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 4px 0;
+      background: var(--surfaceAlt, #252525);
+      width: 100%;
+    }
+    .cm-linkw-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 10px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surfaceAlt, #252525);
+      height: 32px;
+      box-sizing: border-box;
+    }
+    .cm-linkw-glob { display: inline-flex; align-items: center; flex-shrink: 0; color: var(--textDim); }
+    .cm-linkw-info {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: baseline;
+      gap: 0;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+    .cm-linkw-title {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex-shrink: 1;
+      min-width: 0;
+    }
+    .cm-linkw-url {
+      font-size: 11px;
+      color: var(--textDim);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .cm-linkw-open-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      border-radius: 5px;
+      padding: 4px 9px;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: opacity 0.12s;
+      white-space: nowrap;
+    }
+    .cm-linkw-open-btn:hover { opacity: 0.82; }
+    .cm-linkw-view-area {
+      width: 100%;
+      height: 460px;
+      background: var(--surfaceAlt, #252525);
+      display: block;
+      position: relative;
+    }
+    .cm-linkw-load-overlay {
+      position: absolute;
+      inset: 0;
+      cursor: pointer;
+      overflow: hidden;
+      background: var(--surfaceAlt, #252525);
+    }
+    .cm-linkw-thumb {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: top center;
+      display: block;
+    }
+    .cm-linkw-favicon-badge {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      background: rgba(0,0,0,0.55);
+      border-radius: 6px;
+      padding: 4px;
+      display: flex;
+      align-items: center;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    .cm-linkw-favicon-badge img { width: 20px; height: 20px; display: block; }
+
+    /* ── /linkv video player ────────────────────────────── */
+    .cm-linkv-wrap {
+      display: block;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 4px 0;
+      background: #000;
+    }
+    .cm-linkv-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surfaceAlt, #252525);
+      height: 26px;
+      box-sizing: border-box;
+    }
+    .cm-linkv-icon { display: inline-flex; align-items: center; flex-shrink: 0; color: var(--textDim); }
+    .cm-linkv-title {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      min-width: 0;
+    }
+    .cm-linkv-video {
+      display: block;
+      width: 100%;
+      max-height: 340px;
+      background: #000;
+    }
+
+    /* ── Title meta row (Add cover hint) ──────────────── */
+    .nb-title-area { }
+    .nb-title-meta-row {
+      height: 22px;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .nb-title-area:hover .nb-title-meta-row { opacity: 1; }
+    .nb-title-meta-btn {
+      display: inline-flex;
+      align-items: center;
+      background: none;
+      border: none;
+      color: var(--textDim);
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      border-radius: 4px;
+      padding: 2px 6px;
+      opacity: 0.7;
+      transition: opacity 0.12s, background 0.12s;
+    }
+    .nb-title-meta-btn:hover { opacity: 1; background: var(--surfaceAlt); }
 
     /* ── Progress bar / misc ───────────────────────────── */
     .nb2-fb { background:none; border:none; color:var(--textDim); cursor:pointer; border-radius:5px; padding:3px 7px; font-size:11px; font-family:inherit; transition:background .1s,color .1s; }
@@ -6724,14 +7950,6 @@ export default function NotebookView() {
         {/* Far right: view mode + settings */}
         <div style={{ display:'flex', alignItems:'center', gap:6, flex:'0 0 auto' }}>
           <ViewModeBtn viewMode={viewMode} setViewMode={switchMode} />
-          <button onClick={() => exportNotebookPdf(previewHtml, noteTitle || notebook?.title, setPdfStatus)} title="Export as PDF" disabled={!!pdfStatus}
-            style={{ background:'none', border:'1px solid var(--border)', borderRadius:6, color:'var(--textDim)', cursor:'pointer', width:30, height:30, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-              <path d="M4 1h5l4 4v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M9 1v4h4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M8 8v4M6 10l2 2 2-2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
           <button onClick={() => setEditModal(true)} title="Notebook settings"
             style={{ background:'none', border:'1px solid var(--border)', borderRadius:6, color:'var(--textDim)', cursor:'pointer', width:30, height:30, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
@@ -6749,22 +7967,110 @@ export default function NotebookView() {
         </div>
       ) : (
         <div style={{ flex:1, overflow:'hidden', display:'flex', flexDirection:'column', position:'relative', background:'var(--readerBg,var(--bg))' }}>
-          {/* Title — static in preview, editable input in live/source */}
-          <div className="nb-content-wrap" style={{ maxWidth:780, margin:'0 auto', width:'100%', padding:'24px 48px 0', boxSizing:'border-box' }}>
-            {viewMode === 'preview' ? (
-              noteTitle && (
-                <div style={{ fontFamily:'Georgia,serif', fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2 }}>
-                  {noteTitle}
-                </div>
-              )
-            ) : (
-              <input value={noteTitle}
-                onChange={e => { const t=e.target.value; setTitle(t); titleRef.current=t; scheduleSave(contentRef.current) }}
-                placeholder="Title…"
-                style={{ width:'100%', background:'none', border:'none', outline:'none', fontFamily:'Georgia,serif', fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2, padding:0, caretColor:'var(--accent)' }}
-                onKeyDown={e => { if(e.key==='Enter'){e.preventDefault();cmRef.current?.focus()} }}
+          {/* Hidden file input for cover image — lives outside the hover area */}
+          <input
+            ref={coverInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display:'none' }}
+            onChange={e => {
+              const file = e.target.files?.[0]
+              e.target.value = ''
+              if (!file || !notebookId) return
+              const objectUrl = URL.createObjectURL(file)
+              setCoverPicker({ objectUrl, file, pos: { x: 50, y: 50 }, scale: 1 })
+            }}
+          />
+
+          {/* ── Cover banner (full-width, Notion-style) ── */}
+          {coverImage ? (
+            <div className="nb-cover-banner" style={{ height: 220 }}>
+              <img
+                src={coverImage}
+                alt="cover"
+                className={`nb-cover-img${viewMode !== 'preview' ? ' nb-cover-img-draggable' : ''}`}
+                style={{
+                  transform: `scale(${coverScale})`,
+                  transformOrigin: `${coverPos.x}% ${coverPos.y}%`,
+                }}
+                draggable={false}
+                onMouseDown={viewMode !== 'preview' ? e => {
+                  e.preventDefault()
+                  coverDragRef.current = { startX: e.clientX, startY: e.clientY, px: coverPos.x, py: coverPos.y }
+                  const banner = e.currentTarget.parentElement
+                  const bW = banner.offsetWidth, bH = banner.offsetHeight
+                  // overflow in each axis created by the scale factor
+                  const overflowX = bW * (coverScale - 1)
+                  const overflowY = bH * (coverScale - 1)
+                  const onMove = ev => {
+                    const d = coverDragRef.current
+                    if (!d) return
+                    const dx = overflowX > 0 ? (ev.clientX - d.startX) / overflowX * 100 : 0
+                    const dy = overflowY > 0 ? (ev.clientY - d.startY) / overflowY * 100 : 0
+                    setCoverPos({ x: Math.max(0, Math.min(100, d.px - dx)), y: Math.max(0, Math.min(100, d.py - dy)) })
+                  }
+                  const onUp = () => {
+                    window.removeEventListener('mousemove', onMove)
+                    window.removeEventListener('mouseup', onUp)
+                    coverDragRef.current = null
+                    setCoverPos(p => {
+                      updateNotebook(notebookId, { coverPos: p })
+                      useAppStore.getState().persistNotebooks?.()
+                      return p
+                    })
+                  }
+                  window.addEventListener('mousemove', onMove)
+                  window.addEventListener('mouseup', onUp)
+                } : undefined}
               />
-            )}
+              {viewMode !== 'preview' && (
+                <div className="nb-cover-actions">
+                  <button className="nb-cover-action-btn" onClick={openPickerForEdit}>Edit</button>
+                  <button className="nb-cover-action-btn" onClick={() => coverInputRef.current?.click()}>Change</button>
+                  <button className="nb-cover-action-btn" onClick={() => {
+                    setCoverImage(null)
+                    setCoverPos({ x: 50, y: 50 })
+                    updateNotebook(notebookId, { coverImage: null, coverPos: null })
+                    useAppStore.getState().persistNotebooks?.()
+                  }}>Remove</button>
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {/* ── Title area ── */}
+          <div className={`nb-title-area${viewMode === 'preview' ? ' nb-title-area-preview' : ''}`}>
+            <div className="nb-content-wrap" style={{ maxWidth:780, margin:'0 auto', width:'100%', padding:`${coverImage ? 16 : 24}px 48px 0`, boxSizing:'border-box' }}>
+              {/* "Add cover" hint — only in edit mode, revealed on hover via CSS */}
+              {viewMode !== 'preview' && (
+                <div className="nb-title-meta-row">
+                  {!coverImage && (
+                    <button className="nb-title-meta-btn" onClick={() => coverInputRef.current?.click()}>
+                      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ marginRight:5, flexShrink:0 }}>
+                        <rect x="1" y="3" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.4"/>
+                        <circle cx="5.5" cy="7" r="1.5" stroke="currentColor" strokeWidth="1.2"/>
+                        <path d="M1.5 11.5l3.5-3 3 3 2.5-2.5 4 4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                      Add cover
+                    </button>
+                  )}
+                </div>
+              )}
+              {viewMode === 'preview' ? (
+                noteTitle && (
+                  <div style={{ fontFamily:'Georgia,serif', fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2 }}>
+                    {noteTitle}
+                  </div>
+                )
+              ) : (
+                <input value={noteTitle}
+                  onChange={e => { const t=e.target.value; setTitle(t); titleRef.current=t; scheduleSave(contentRef.current) }}
+                  placeholder="Title…"
+                  style={{ width:'100%', background:'none', border:'none', outline:'none', fontFamily:'Georgia,serif', fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2, padding:0, caretColor:'var(--accent)' }}
+                  onKeyDown={e => { if(e.key==='Enter'){e.preventDefault();cmRef.current?.focus()} }}
+                />
+              )}
+            </div>
           </div>
           {/* Divider — hidden in preview */}
           {viewMode !== 'preview' && (
@@ -6845,22 +8151,105 @@ export default function NotebookView() {
 
       {editModal && <NotebookSettingsPanel notebook={notebook} notebooks={notebooks} onClose={() => setEditModal(false)} />}
 
-      {/* PDF export progress overlay */}
-      {pdfStatus && (
-        <div style={{ position:'fixed', bottom:28, left:'50%', transform:'translateX(-50%)', zIndex:99999,
-          background:'var(--surface)', border:'1px solid var(--border)', borderRadius:12,
-          padding:'12px 20px', boxShadow:'0 8px 32px rgba(0,0,0,0.45)',
-          display:'flex', alignItems:'center', gap:12, minWidth:220 }}>
-          <div style={{ width:140, height:4, background:'var(--borderSubtle)', borderRadius:2, overflow:'hidden', flex:'0 0 140px' }}>
-            <div style={{
-              height:'100%', borderRadius:2, background:'var(--accent)',
-              width: pdfStatus === 'preparing' ? '45%' : '90%',
-              transition:'width 0.5s ease',
-            }} />
+      {/* ── /linkw URL input modal ──────────────────────────────────────────── */}
+      {linkPicker?.type === 'web' && (
+        <div className="nb-linkw-modal-backdrop" onMouseDown={e => {
+          if (e.target === e.currentTarget) { setLinkPicker(null); setLinkWebUrl('') }
+        }}>
+          <form className="nb-linkw-modal" onSubmit={e => {
+            e.preventDefault()
+            const url = linkWebUrl.trim()
+            if (url && cmRef.current) {
+              const insertText = `/linkw:${url}\n`
+              cmRef.current.dispatch({
+                changes: { from: linkPicker.lineFrom, to: linkPicker.lineTo, insert: insertText },
+                selection: { anchor: linkPicker.lineFrom + insertText.length },
+              })
+            }
+            setLinkPicker(null); setLinkWebUrl('')
+          }}>
+            <div className="nb-linkw-modal-title">Embed webpage</div>
+            <input
+              autoFocus
+              className="nb-linkw-modal-input"
+              type="url"
+              placeholder="https://example.com"
+              value={linkWebUrl}
+              onChange={e => setLinkWebUrl(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Escape') { e.preventDefault(); setLinkPicker(null); setLinkWebUrl('') }
+              }}
+            />
+            <div className="nb-linkw-modal-hint">Press Enter to embed · Esc to cancel</div>
+          </form>
+        </div>
+      )}
+
+      {/* ── Cover image picker ──────────────────────────────────────────────── */}
+      {coverPicker && (
+        <div className="nb-cover-picker-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) cancelPicker() }}>
+          <div className="nb-cover-picker-panel">
+            <div className="nb-cover-picker-header">
+              <span>Position cover image</span>
+              <span className="nb-cover-picker-hint">Drag to reposition · Use slider to zoom</span>
+            </div>
+
+            {/* Thumbnail preview — image zooms and pans within the fixed frame */}
+            <div
+              className="nb-cover-picker-stage"
+              style={{ aspectRatio: `${Math.round((window.innerWidth || 1200) / 220 * 100) / 100}` }}
+              onMouseDown={e => {
+                e.preventDefault()
+                const startX = e.clientX, startY = e.clientY
+                const snap = { ...coverPicker.pos }
+                const sc = Math.max(1, coverPicker.scale ?? 1)
+                const el = e.currentTarget
+                const sW = el.offsetWidth, sH = el.offsetHeight
+                const overflowX = sW * (sc - 1)
+                const overflowY = sH * (sc - 1)
+                const onMove = ev => {
+                  const dx = ev.clientX - startX, dy = ev.clientY - startY
+                  const newX = overflowX > 0 ? Math.max(0, Math.min(100, snap.x - dx / overflowX * 100)) : 50
+                  const newY = overflowY > 0 ? Math.max(0, Math.min(100, snap.y - dy / overflowY * 100)) : 50
+                  setCoverPicker(p => p ? { ...p, pos: { x: newX, y: newY } } : p)
+                }
+                const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+                window.addEventListener('mousemove', onMove)
+                window.addEventListener('mouseup', onUp)
+              }}
+            >
+              <img
+                src={coverPicker.objectUrl}
+                className="nb-cover-picker-img"
+                draggable={false}
+                style={{
+                  transform: `scale(${Math.max(1, coverPicker.scale ?? 1)})`,
+                  transformOrigin: `${coverPicker.pos.x}% ${coverPicker.pos.y}%`,
+                }}
+              />
+            </div>
+
+            {/* Zoom controls */}
+            <div className="nb-cpick-zoom">
+              <button className="nb-cpick-zoom-btn" onClick={() => {
+                setCoverPicker(p => p ? { ...p, scale: Math.max(1, (p.scale ?? 1) / 1.2) } : p)
+              }} title="Zoom out">−</button>
+              <input
+                type="range" min={1} max={4} step={0.01}
+                value={Math.max(1, coverPicker.scale ?? 1)}
+                className="nb-cpick-zoom-slider"
+                onChange={e => setCoverPicker(p => p ? { ...p, scale: parseFloat(e.target.value) } : p)}
+              />
+              <button className="nb-cpick-zoom-btn" onClick={() => {
+                setCoverPicker(p => p ? { ...p, scale: Math.min(4, (p.scale ?? 1) * 1.2) } : p)
+              }} title="Zoom in">+</button>
+            </div>
+
+            <div className="nb-cover-picker-footer">
+              <button className="nb-cover-picker-cancel" onClick={cancelPicker}>Cancel</button>
+              <button className="nb-cover-picker-apply" onClick={applyPicker}>Apply</button>
+            </div>
           </div>
-          <span style={{ fontSize:12, color:'var(--textDim)', whiteSpace:'nowrap' }}>
-            {pdfStatus === 'preparing' ? 'Preparing PDF…' : 'Opening print dialog…'}
-          </span>
         </div>
       )}
     </div>
