@@ -30,6 +30,9 @@
     "dialog:allow-open",
     "shell:allow-open",
     "core:window:allow-start-dragging",
-    "core:webview:allow-create-webview"
+    "core:webview:allow-create-webview",
+    "updater:default",
+    "updater:allow-check",
+    "updater:allow-download-and-install"
   ]
 }

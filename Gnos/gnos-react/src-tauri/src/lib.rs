@@ -3,6 +3,7 @@ use std::process::Command;
 use tauri::menu::{MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::Emitter;
 use tauri::Manager;
+use tauri_plugin_updater::UpdaterExt;
 
 fn set_app_icon(window: &tauri::WebviewWindow, theme: tauri::Theme) {
     let icon_bytes: &[u8] = match theme {
@@ -256,6 +257,53 @@ fn resolve_url(base: &str, img_url: &str) -> String {
     img_url.to_string()
 }
 
+// ── Updater ───────────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct UpdateInfo {
+    version: String,
+    current_version: String,
+    body: Option<String>,
+}
+
+#[tauri::command]
+async fn check_for_updates(app: tauri::AppHandle) -> Result<Option<UpdateInfo>, String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(update) => Ok(Some(UpdateInfo {
+            version: update.version.clone(),
+            current_version: update.current_version.clone(),
+            body: update.body.clone(),
+        })),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+async fn download_and_install_update(app: tauri::AppHandle) -> Result<(), String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    if let Some(update) = updater.check().await.map_err(|e| e.to_string())? {
+        let handle = app.clone();
+        update
+            .download_and_install(
+                move |chunk_length, content_length| {
+                    let _ = handle.emit(
+                        "update-download-progress",
+                        serde_json::json!({
+                            "chunk": chunk_length,
+                            "total": content_length,
+                        }),
+                    );
+                },
+                || {},
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        app.restart();
+    }
+    Ok(())
+}
+
 /// Open a folder in the system file manager (Finder on macOS, Explorer on Windows, etc.)
 #[tauri::command]
 async fn open_in_finder(path: String) -> Result<(), String> {
@@ -295,6 +343,7 @@ async fn piper_check(app: tauri::AppHandle) -> Result<bool, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
+    .plugin(tauri_plugin_updater::Builder::new().build())
     .plugin(tauri_plugin_fs::init())
     .plugin(tauri_plugin_deep_link::init())
     .plugin(tauri_plugin_dialog::init())
@@ -390,6 +439,8 @@ pub fn run() {
       reposition_inline_webview,
       close_inline_webview,
       fetch_og_image,
+      check_for_updates,
+      download_and_install_update,
     ])
     .on_menu_event(|app, event| {
       let id = event.id().as_ref();

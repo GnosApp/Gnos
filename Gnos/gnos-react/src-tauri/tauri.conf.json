@@ -31,6 +31,14 @@
       }
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVGM0VGNUZFREREODBBQjgKUldTNEN0amQvdlUrNzdNM2o0dTM0VGZtVTB5V2RTakJyUDBNNmJGUit3MVdoay9HaUtoMUtDR2EK",
+      "endpoints": [
+        "https://github.com/GnosApp/Gnos/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

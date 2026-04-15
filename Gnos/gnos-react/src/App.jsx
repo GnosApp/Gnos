@@ -5,6 +5,7 @@ import { onOpenUrl } from '@tauri-apps/plugin-deep-link'
 import { readFile } from '@tauri-apps/plugin-fs'
 import OnboardingView from '@/views/OnboardingView'
 
+import UpdateChecker from '@/components/UpdateChecker'
 import { PaneContext } from '@/lib/PaneContext'
 import LibraryView     from '@/views/LibraryView'
 import ReaderView      from '@/views/ReaderView'
@@ -816,6 +817,8 @@ export default function App() {
           switchTab={switchTab}
         />
       )}
+
+      <UpdateChecker />
     </div>
   )
 }
