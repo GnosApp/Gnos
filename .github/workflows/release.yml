@@ -44,6 +44,12 @@ jobs:
           source "$HOME/.cargo/env"
           npm run tauri -- build
 
+      - name: Get tag message
+        id: tag_message
+        run: |
+          MSG=$(git tag -l --format='%(contents)' ${{ github.ref_name }})
+          echo "NOTES=$MSG" >> $GITHUB_OUTPUT
+
       - name: Generate latest.json
         run: |
           node -e "
@@ -51,9 +57,10 @@ jobs:
             const sig = fs.readFileSync('src-tauri/target/release/bundle/macos/Gnos.app.tar.gz.sig', 'utf8').trim();
             const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
             const tag = process.env.GITHUB_REF_NAME;
+            const notes = process.env.RELEASE_NOTES || 'No changelog provided.';
             const json = {
               version: conf.version,
-              notes: 'See the release page for details.',
+              notes,
               pub_date: new Date().toISOString(),
               platforms: {
                 'darwin-aarch64': {
@@ -63,8 +70,9 @@ jobs:
               },
             };
             fs.writeFileSync('latest.json', JSON.stringify(json, null, 2));
-            console.log('Generated latest.json:', JSON.stringify(json, null, 2));
           "
+        env:
+          RELEASE_NOTES: ${{ steps.tag_message.outputs.NOTES }}
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
