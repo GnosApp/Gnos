@@ -1,7 +1,7 @@
 {
   "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Gnos",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.gnos.dev",
   "build": {
     "frontendDist": "../dist",
@@ -16,6 +16,8 @@
         "title": " ",
         "width": 1200,
         "height": 800,
+        "minWidth": 760,
+        "minHeight": 520,
         "resizable": true,
         "fullscreen": false,
         "decorations": true,
