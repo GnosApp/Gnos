@@ -20,8 +20,8 @@ function Toggle({ on, onClick }) {
   )
 }
 
-function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose }) {
-  const { fontSize, lineSpacing, fontFamily, justifyText, tapToTurn, twoPage, highlightWords, underlineLine, pageTransition } = prefs
+function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose, piperVoices = [] }) {
+  const { fontSize, lineSpacing, fontFamily, justifyText, tapToTurn, twoPage, highlightWords, underlineLine, pageTransition, fontWeight, ttsRate } = prefs
   return (
     <div className="settings-panel" style={{ display: 'block' }} onClick={e => e.stopPropagation()}>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14,paddingBottom:12,borderBottom:'1px solid var(--borderSubtle)'}}>
@@ -58,6 +58,10 @@ function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose }) {
           <option value="'Palatino Linotype', serif">Palatino</option>
           <option value="system-ui, sans-serif">System UI</option>
         </select>
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: 10 }}>
+        <div style={{ fontSize: 12, fontWeight: 500 }}>Bold text</div>
+        <Toggle on={fontWeight === 700} onClick={() => { onPrefChange('fontWeight', fontWeight === 700 ? 400 : 700); setTimeout(onRebuild, 20) }} />
       </label>
 
       <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--borderSubtle)' }}>
@@ -105,6 +109,158 @@ function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose }) {
           </label>
         ))}
       </div>
+
+      <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--borderSubtle)' }}>
+        <div className="section-label">TEXT-TO-SPEECH</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <span style={{ fontSize: 12, fontWeight: 500 }}>Speed</span>
+          <span style={{ fontSize: 12, color: 'var(--textDim)', minWidth: 32, textAlign: 'right' }}>{(ttsRate ?? 1.0).toFixed(1)}×</span>
+        </div>
+        <input type="range" min="0.5" max="2.0" step="0.1" value={ttsRate ?? 1.0}
+          onChange={e => onPrefChange('ttsRate', +e.target.value)}
+          style={{ width: '100%', accentColor: 'var(--accent)', marginBottom: 12 }} />
+        {piperVoices.length > 0 && (
+          <label style={{ display: 'block', fontSize: 12, marginBottom: 12 }}>
+            <div style={{ marginBottom: 5 }}>Piper voice</div>
+            <select value={prefs.piperVoice || ''} onChange={e => onPrefChange('piperVoice', e.target.value)}>
+              <option value="">Web Speech (default)</option>
+              {piperVoices.map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </label>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── ReviewPanel ───────────────────────────────────────────────────────────────
+
+const HL_COLORS = {
+  yellow: { bg: 'rgba(255,210,0,0.65)', text: '#1a1200' },
+  green:  { bg: 'rgba(72,199,116,0.55)', text: '#0a2e14' },
+  pink:   { bg: 'rgba(255,105,180,0.5)', text: '#3a0020' },
+  blue:   { bg: 'rgba(79,195,247,0.5)', text: '#001e30' },
+  purple: { bg: 'rgba(179,136,255,0.5)', text: '#1a0035' },
+}
+const HL_COLOR_KEYS = Object.keys(HL_COLORS)
+
+function ReviewPanel({ highlights, bookmarks, chapters, onJump, onClose, onDeleteHighlight, onDeleteBookmark, onSaveNote }) {
+  const [tab, setTab] = useState('highlights')
+  const [editingNoteId, setEditingNoteId] = useState(null)
+  const [noteText, setNoteText] = useState('')
+
+  // Group highlights by chapter index
+  const grouped = {}
+  for (const hl of highlights) {
+    if (!grouped[hl.chapterIdx]) grouped[hl.chapterIdx] = []
+    grouped[hl.chapterIdx].push(hl)
+  }
+  const sortedChapterIdxs = Object.keys(grouped).map(Number).sort((a, b) => a - b)
+
+  const tabStyle = (active) => ({
+    flex: 1, padding: '6px 0', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+    border: 'none', background: 'none', borderBottom: `2px solid ${active ? 'var(--accent)' : 'transparent'}`,
+    color: active ? 'var(--accent)' : 'var(--textDim)', transition: 'all 0.1s', fontFamily: 'inherit',
+  })
+
+  return (
+    <div className="settings-panel" style={{ display: 'block', width: 300 }} onClick={e => e.stopPropagation()}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid var(--borderSubtle)' }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Review</span>
+        <button onClick={onClose} title="Close" style={{ width: 24, height: 24, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surfaceAlt)', color: 'var(--textDim)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(248,81,73,0.12)'; e.currentTarget.style.color = '#f85149' }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'var(--surfaceAlt)'; e.currentTarget.style.color = 'var(--textDim)' }}>
+          <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+        </button>
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display: 'flex', marginBottom: 12, borderBottom: '1px solid var(--borderSubtle)' }}>
+        <button style={tabStyle(tab === 'highlights')} onClick={() => setTab('highlights')}>Highlights</button>
+        <button style={tabStyle(tab === 'bookmarks')} onClick={() => setTab('bookmarks')}>Bookmarks</button>
+      </div>
+
+      {tab === 'highlights' && (
+        <div style={{ maxHeight: 'calc(100vh - 220px)', overflowY: 'auto' }}>
+          {highlights.length === 0 && (
+            <div style={{ fontSize: 12, color: 'var(--textDim)', textAlign: 'center', padding: '20px 0' }}>No highlights yet</div>
+          )}
+          {sortedChapterIdxs.map(chIdx => (
+            <div key={chIdx} style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--textDim)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+                {chapters[chIdx]?.title || `Chapter ${chIdx}`}
+              </div>
+              {grouped[chIdx].map(hl => (
+                <div key={hl.id} style={{ marginBottom: 8, borderRadius: 6, border: '1px solid var(--borderSubtle)', overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, padding: '7px 8px', cursor: 'pointer', background: 'var(--surfaceAlt)' }}
+                    onClick={() => { onJump(hl.chapterIdx, 0); onClose() }}>
+                    <div style={{ width: 10, height: 10, borderRadius: 2, flexShrink: 0, marginTop: 2,
+                      background: HL_COLORS[hl.color || 'yellow']?.bg || HL_COLORS.yellow.bg }} />
+                    <span style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.4, flex: 1 }}>
+                      {(hl.text || '').slice(0, 80)}{(hl.text || '').length > 80 ? '…' : ''}
+                    </span>
+                    <button onClick={e => { e.stopPropagation(); onDeleteHighlight(hl.id) }}
+                      style={{ background: 'none', border: 'none', color: 'var(--textDim)', cursor: 'pointer', padding: '0 2px', flexShrink: 0 }}
+                      title="Delete">
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                        <path d="M3 4h10M5 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1M6 7v5M10 7v5M4 4l.7 9h6.6L12 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </button>
+                  </div>
+                  {hl.note && editingNoteId !== hl.id && (
+                    <div style={{ fontSize: 11, color: 'var(--textDim)', padding: '4px 8px 6px', fontStyle: 'italic', lineHeight: 1.4 }}
+                      onClick={() => { setEditingNoteId(hl.id); setNoteText(hl.note || '') }}>
+                      {hl.note}
+                    </div>
+                  )}
+                  {editingNoteId === hl.id ? (
+                    <input autoFocus value={noteText}
+                      onChange={e => setNoteText(e.target.value)}
+                      onBlur={() => { onSaveNote(hl.id, noteText); setEditingNoteId(null) }}
+                      onKeyDown={e => { if (e.key === 'Enter') { onSaveNote(hl.id, noteText); setEditingNoteId(null) } if (e.key === 'Escape') setEditingNoteId(null) }}
+                      style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg)', border: 'none', borderTop: '1px solid var(--borderSubtle)', color: 'var(--text)', fontSize: 11, padding: '5px 8px', fontFamily: 'inherit', outline: 'none' }}
+                      placeholder="Add a note…" />
+                  ) : !hl.note ? (
+                    <button onClick={() => { setEditingNoteId(hl.id); setNoteText('') }}
+                      style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderTop: '1px solid var(--borderSubtle)', color: 'var(--textDim)', cursor: 'pointer', fontSize: 10, padding: '4px 8px', fontFamily: 'inherit' }}>
+                      + note
+                    </button>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tab === 'bookmarks' && (
+        <div style={{ maxHeight: 'calc(100vh - 220px)', overflowY: 'auto' }}>
+          {bookmarks.length === 0 && (
+            <div style={{ fontSize: 12, color: 'var(--textDim)', textAlign: 'center', padding: '20px 0' }}>No bookmarks yet</div>
+          )}
+          {bookmarks.map(bm => (
+            <div key={bm.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 6px', borderRadius: 6, cursor: 'pointer', marginBottom: 4 }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--hover)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'none'}
+              onClick={() => { onJump(bm.chapterIdx, bm.page); onClose() }}>
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="var(--accent)" style={{ flexShrink: 0 }}>
+                <path d="M3 2h10a1 1 0 0 1 1 1v11l-6-3.5L2 14V3a1 1 0 0 1 1-1z"/>
+              </svg>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, color: 'var(--text)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bm.label}</div>
+                <div style={{ fontSize: 10, color: 'var(--textDim)' }}>{chapters[bm.chapterIdx]?.title || `Chapter ${bm.chapterIdx}`} · p.{bm.page + 1}</div>
+              </div>
+              <button onClick={e => { e.stopPropagation(); onDeleteBookmark(bm.id) }}
+                style={{ background: 'none', border: 'none', color: 'var(--textDim)', cursor: 'pointer', padding: '0 2px', flexShrink: 0 }}
+                title="Delete">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                  <path d="M3 4h10M5 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1M6 7v5M10 7v5M4 4l.7 9h6.6L12 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -229,6 +385,9 @@ export default function ReaderView() {
     themeKey:        s.themeKey,
     customThemes:    s.customThemes,
     pageTransition:  s.pageTransition ?? 'slide',
+    fontWeight:      s.fontWeight ?? 400,
+    ttsRate:         s.ttsRate ?? 1.0,
+    piperVoice:      s.piperVoice ?? '',
   }))
 
   const cardRef = useRef(null)
@@ -430,11 +589,11 @@ export default function ReaderView() {
 
   // ── Close panels on outside click ────────────────────────────────────────
   useEffect(() => {
-    if (!settingsOpen && !dropdownOpen) return
-    const handler = () => { setSettingsOpen(false); setDropdownOpen(false) }
+    if (!settingsOpen && !dropdownOpen && !reviewOpen) return
+    const handler = () => { setSettingsOpen(false); setDropdownOpen(false); setReviewOpen(false) }
     document.addEventListener('click', handler)
     return () => document.removeEventListener('click', handler)
-  }, [settingsOpen, dropdownOpen])
+  }, [settingsOpen, dropdownOpen, reviewOpen])
 
   // ── Nav helpers ───────────────────────────────────────────────────────────
   // Use store.getState() to avoid stale closure issues with Zustand async actions
@@ -597,14 +756,23 @@ export default function ReaderView() {
   const ttsSentencesRef = useRef([])
   const ttsSentIdxRef   = useRef(0)
   const ttsActiveWordRef = useRef(null) // currently highlighted .col-word el
+  const piperAudioRef   = useRef(null)  // current piper Audio element
 
-  // ── Highlight state ────────────────────────────────────────────────────────
-  const highlightsRef = useRef({}) // { [bookId]: [{ id, chapterIdx, text }] }
+  // ── Highlight / bookmark state ─────────────────────────────────────────────
+  const highlightsRef = useRef({}) // { [bookId]: [{ id, chapterIdx, text, color, note }] }
+  const bookmarksRef  = useRef({}) // { [bookId]: [{ id, chapterIdx, page, label, createdAt }] }
   const bookIdRef = useRef(null)
   const wordMenuRef = useRef(null)
   const defPopupRef = useRef(null)
 
-  // Load/save highlights from localStorage
+  const [highlightVersion, setHighlightVersion] = useState(0)
+  const [bookmarkVersion,  setBookmarkVersion]  = useState(0)
+  const [reviewOpen, setReviewOpen] = useState(false)
+  const [wordMenuColorPick, setWordMenuColorPick] = useState(false)
+  const [toast, setToast] = useState(null)
+  const [piperVoices, setPiperVoices] = useState([])
+
+  // Load/save highlights + bookmarks from localStorage
   useEffect(() => {
     if (!activeBook?.id) return
     bookIdRef.current = activeBook.id
@@ -612,10 +780,54 @@ export default function ReaderView() {
       const stored = JSON.parse(localStorage.getItem('gnos_highlights') || '{}')
       highlightsRef.current = stored
     } catch { highlightsRef.current = {} }
+    try {
+      const stored = JSON.parse(localStorage.getItem('gnos_bookmarks') || '{}')
+      bookmarksRef.current = stored
+    } catch { bookmarksRef.current = {} }
+    setBookmarkVersion(v => v + 1)
+    setHighlightVersion(v => v + 1)
   }, [activeBook?.id])
+
+  // Load piper voices once on mount
+  useEffect(() => {
+    if (typeof window.__TAURI_INTERNALS__ === 'undefined') return
+    import('@tauri-apps/api/core').then(({ invoke }) => {
+      invoke('piper_list_voices').then(v => setPiperVoices(v || [])).catch(() => {})
+    })
+  }, [])
 
   function saveHighlights() {
     try { localStorage.setItem('gnos_highlights', JSON.stringify(highlightsRef.current)) } catch { /* */ }
+  }
+
+  function saveBookmarks() {
+    try { localStorage.setItem('gnos_bookmarks', JSON.stringify(bookmarksRef.current)) } catch { /* */ }
+  }
+
+  function isCurrentPageBookmarked() {
+    const bookId = bookIdRef.current
+    if (!bookId) return null
+    return (bookmarksRef.current[bookId] || []).find(
+      b => b.chapterIdx === curChapterRef.current && b.page === curPageRef.current
+    ) || null
+  }
+
+  function toggleBookmark() {
+    const bookId = bookIdRef.current
+    if (!bookId) return
+    const existing = isCurrentPageBookmarked()
+    if (existing) {
+      bookmarksRef.current[bookId] = (bookmarksRef.current[bookId] || []).filter(b => b.id !== existing.id)
+    } else {
+      const chIdx = curChapterRef.current
+      const pg = curPageRef.current
+      const chTitle = chaptersRef.current[chIdx]?.title === '_cover_' ? 'Cover' : (chaptersRef.current[chIdx]?.title || `Chapter ${chIdx}`)
+      const label = `${chTitle} p.${pg + 1}`
+      if (!bookmarksRef.current[bookId]) bookmarksRef.current[bookId] = []
+      bookmarksRef.current[bookId].push({ id: `bm_${Date.now()}`, chapterIdx: chIdx, page: pg, label, createdAt: Date.now() })
+    }
+    saveBookmarks()
+    setBookmarkVersion(v => v + 1)
   }
 
   function applyHighlightsToCard(cardEl, bookId, chapterIdx) {
@@ -630,11 +842,49 @@ export default function ReaderView() {
         const slice = wordSpans.slice(i, i + words.length)
         const sliceClean = slice.map(s => (s.dataset.word || s.textContent).toLowerCase().replace(/[^a-z0-9'\u2019]/g, ''))
         if (sliceClean.join(' ') === cleanWords.join(' ')) {
-          slice.forEach(s => { s.classList.add('reader-hl'); s.dataset.hlId = hl.id })
+          const color = hl.color || 'yellow'
+          slice.forEach(s => {
+            s.classList.add('reader-hl', `hl-${color}`)
+            s.dataset.hlId = hl.id
+            s.dataset.hlColor = color
+          })
           break
         }
       }
     }
+  }
+
+  function saveHighlightNote(hlId, note) {
+    const bookId = bookIdRef.current
+    if (!bookId) return
+    const hls = highlightsRef.current[bookId] || []
+    const idx = hls.findIndex(h => h.id === hlId)
+    if (idx < 0) return
+    hls[idx] = { ...hls[idx], note }
+    highlightsRef.current[bookId] = hls
+    saveHighlights()
+    setHighlightVersion(v => v + 1)
+  }
+
+  function changeHighlightColor(hlId, color) {
+    const bookId = bookIdRef.current
+    if (!bookId) return
+    const hls = highlightsRef.current[bookId] || []
+    const idx = hls.findIndex(h => h.id === hlId)
+    if (idx < 0) return
+    hls[idx] = { ...hls[idx], color }
+    highlightsRef.current[bookId] = hls
+    saveHighlights()
+    // Re-apply visuals on card
+    const card = cardRef.current
+    if (card) {
+      card.querySelectorAll(`[data-hl-id="${hlId}"]`).forEach(el => {
+        HL_COLOR_KEYS.forEach(c => el.classList.remove(`hl-${c}`))
+        el.classList.add(`hl-${color}`)
+        el.dataset.hlColor = color
+      })
+    }
+    setHighlightVersion(v => v + 1)
   }
 
   // ── Word context menu state ────────────────────────────────────────────────
@@ -683,7 +933,28 @@ export default function ReaderView() {
     }
   }
 
+  async function ttsSpeakSentenceWithPiper(sentence, onEnd) {
+    try {
+      const { invoke, convertFileSrc } = await import('@tauri-apps/api/core')
+      const wavPath = await invoke('piper_speak', {
+        text: sentence,
+        voice: prefsRef.current.piperVoice,
+        speed: prefsRef.current.ttsRate ?? 1.0,
+      })
+      const audio = new Audio(convertFileSrc(wavPath))
+      piperAudioRef.current = audio
+      audio.onended = () => { piperAudioRef.current = null; onEnd() }
+      audio.onerror = () => { piperAudioRef.current = null; onEnd() }
+      await audio.play()
+    } catch (err) {
+      console.error('[Piper]', err)
+      onEnd()
+    }
+  }
+
   function ttsSpeakSentence(sentence, onEnd) {
+    const usePiper = !!(prefsRef.current.piperVoice)
+    if (usePiper) { ttsSpeakSentenceWithPiper(sentence, onEnd); return }
     window.speechSynthesis.cancel()
     ttsClearWordHighlight()
     // Build ordered list of word spans for this sentence to match by position
@@ -704,7 +975,7 @@ export default function ReaderView() {
       }
     }
     const utt = new SpeechSynthesisUtterance(sentence)
-    utt.rate = 1
+    utt.rate = prefsRef.current.ttsRate ?? 1.0
     utt.onend = () => { ttsClearWordHighlight(); spanIdx = 0; onEnd() }
     utt.onboundary = (e) => {
       if (e.name !== 'word') return
@@ -797,6 +1068,7 @@ export default function ReaderView() {
 
   function ttsStop() {
     window.speechSynthesis.cancel()
+    if (piperAudioRef.current) { piperAudioRef.current.pause(); piperAudioRef.current = null }
     ttsClearWordHighlight()
     setTtsActive(false)
     setTtsSentence('')
@@ -807,6 +1079,11 @@ export default function ReaderView() {
   }
 
   function ttsTogglePause() {
+    if (piperAudioRef.current) {
+      if (ttsPaused) { piperAudioRef.current.play(); setTtsPaused(false) }
+      else { piperAudioRef.current.pause(); setTtsPaused(true) }
+      return
+    }
     if (ttsPaused) {
       window.speechSynthesis.resume()
       setTtsPaused(false)
@@ -1088,18 +1365,58 @@ export default function ReaderView() {
           color: #f85149; border-color: rgba(248,81,73,0.4);
         }
 
+        /* ── Reader font weight ──────────────────────────────────────────── */
+        .page-content { font-weight: var(--reader-font-weight, 400); }
+
         /* ── Reader text highlights ──────────────────────────────────────── */
         .col-word.reader-hl {
-          background: rgba(255, 210, 0, 0.65);
-          /* Extend right to fill the inter-word space gap, close left gap */
-          box-shadow: 5px 0 0 rgba(255, 210, 0, 0.65), -1px 0 0 rgba(255, 210, 0, 0.65);
           border-radius: 1px;
           cursor: pointer;
-          color: #1a1200;
         }
-        .col-word.reader-hl:hover {
-          background: rgba(255, 210, 0, 0.85);
-          box-shadow: 5px 0 0 rgba(255, 210, 0, 0.85), -1px 0 0 rgba(255, 210, 0, 0.85);
+        .col-word.reader-hl.hl-yellow {
+          background: rgba(255,210,0,0.65); color: #1a1200;
+          box-shadow: 5px 0 0 rgba(255,210,0,0.65), -1px 0 0 rgba(255,210,0,0.65);
+        }
+        .col-word.reader-hl.hl-yellow:hover {
+          background: rgba(255,210,0,0.85);
+          box-shadow: 5px 0 0 rgba(255,210,0,0.85), -1px 0 0 rgba(255,210,0,0.85);
+        }
+        .col-word.reader-hl.hl-green {
+          background: rgba(72,199,116,0.55); color: #0a2e14;
+          box-shadow: 5px 0 0 rgba(72,199,116,0.55), -1px 0 0 rgba(72,199,116,0.55);
+        }
+        .col-word.reader-hl.hl-green:hover { background: rgba(72,199,116,0.75); box-shadow: 5px 0 0 rgba(72,199,116,0.75),-1px 0 0 rgba(72,199,116,0.75); }
+        .col-word.reader-hl.hl-pink {
+          background: rgba(255,105,180,0.5); color: #3a0020;
+          box-shadow: 5px 0 0 rgba(255,105,180,0.5), -1px 0 0 rgba(255,105,180,0.5);
+        }
+        .col-word.reader-hl.hl-pink:hover { background: rgba(255,105,180,0.7); box-shadow: 5px 0 0 rgba(255,105,180,0.7),-1px 0 0 rgba(255,105,180,0.7); }
+        .col-word.reader-hl.hl-blue {
+          background: rgba(79,195,247,0.5); color: #001e30;
+          box-shadow: 5px 0 0 rgba(79,195,247,0.5), -1px 0 0 rgba(79,195,247,0.5);
+        }
+        .col-word.reader-hl.hl-blue:hover { background: rgba(79,195,247,0.7); box-shadow: 5px 0 0 rgba(79,195,247,0.7),-1px 0 0 rgba(79,195,247,0.7); }
+        .col-word.reader-hl.hl-purple {
+          background: rgba(179,136,255,0.5); color: #1a0035;
+          box-shadow: 5px 0 0 rgba(179,136,255,0.5), -1px 0 0 rgba(179,136,255,0.5);
+        }
+        .col-word.reader-hl.hl-purple:hover { background: rgba(179,136,255,0.7); box-shadow: 5px 0 0 rgba(179,136,255,0.7),-1px 0 0 rgba(179,136,255,0.7); }
+
+        /* ── Highlight color swatch row ───────────────────────────────────── */
+        .hl-swatch-row { display: flex; align-items: center; gap: 6px; padding: 6px 10px; }
+        .hl-swatch { width: 18px; height: 18px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; transition: transform 0.1s, border-color 0.1s; flex-shrink: 0; }
+        .hl-swatch:hover { transform: scale(1.2); }
+        .hl-swatch.selected { border-color: var(--text); transform: scale(1.15); }
+
+        /* ── Toast ────────────────────────────────────────────────────────── */
+        .reader-toast {
+          position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+          background: var(--surface); border: 1px solid var(--border);
+          color: var(--text); font-size: 12px; font-weight: 600;
+          padding: 7px 16px; border-radius: 8px;
+          box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+          z-index: 9999; pointer-events: none;
+          animation: word-menu-in 0.12s ease;
         }
 
         /* ── TTS word highlight ───────────────────────────────────────────── */
@@ -1133,6 +1450,25 @@ export default function ReaderView() {
         </div>
 
         <div className="reader-actions">
+          {/* Bookmark */}
+          <button className="btn-reader-icon" title={isCurrentPageBookmarked() ? 'Remove bookmark' : 'Bookmark this page'}
+            onClick={toggleBookmark}>
+            {isCurrentPageBookmarked()
+              ? <svg width="13" height="13" viewBox="0 0 16 16" fill="var(--accent)"><path d="M3 2h10a1 1 0 0 1 1 1v11l-6-3.5L2 14V3a1 1 0 0 1 1-1z"/></svg>
+              : <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M3 2h10a1 1 0 0 1 1 1v11l-6-3.5L2 14V3a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/></svg>
+            }
+          </button>
+          {/* Review panel */}
+          <button className="btn-reader-icon" title="Review highlights & bookmarks"
+            onClick={e => { e.stopPropagation(); setReviewOpen(o => !o); setSettingsOpen(false); setDropdownOpen(false) }}
+            style={reviewOpen ? { color: 'var(--accent)' } : undefined}>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <line x1="3" y1="4" x2="13" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+              <line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+              <line x1="3" y1="12" x2="9" y2="12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+            </svg>
+          </button>
+          {/* TTS */}
           <button className="btn-reader-icon" title="Read aloud (TTS)"
             onClick={() => ttsActive ? ttsStop() : ttsStart(null)}
             style={ttsActive ? { color: 'var(--accent)' } : undefined}>
@@ -1143,7 +1479,7 @@ export default function ReaderView() {
             </svg>
           </button>
           <button className="btn-reader-icon" title="Reader settings"
-            onClick={e => { e.stopPropagation(); setSettingsOpen(o => !o); setDropdownOpen(false) }}>
+            onClick={e => { e.stopPropagation(); setSettingsOpen(o => !o); setDropdownOpen(false); setReviewOpen(false) }}>
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
               <circle cx="8" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.4"/>
               <path d="M8 1.5v1.2M8 13.3v1.2M1.5 8h1.2M13.3 8h1.2M3.4 3.4l.85.85M11.75 11.75l.85.85M12.6 3.4l-.85.85M4.25 11.75l-.85.85"
@@ -1155,9 +1491,41 @@ export default function ReaderView() {
 
       {/* Settings panel */}
       {settingsOpen && (
-        <SettingsPanel prefs={prefs}
+        <SettingsPanel prefs={prefs} piperVoices={piperVoices}
           onPrefChange={handlePrefChange} onRebuild={handleRebuild} onClose={() => setSettingsOpen(false)} />
       )}
+
+      {/* Review panel */}
+      {reviewOpen && (() => {
+        const bookId = bookIdRef.current
+        const hls = bookId ? (highlightsRef.current[bookId] || []) : []
+        const bms = bookId ? (bookmarksRef.current[bookId] || []) : []
+        return (
+          <ReviewPanel
+            highlights={hls} bookmarks={bms} chapters={chapters}
+            onJump={jumpToChapter} onClose={() => setReviewOpen(false)}
+            onDeleteHighlight={hlId => {
+              const bId = bookIdRef.current
+              if (!bId) return
+              highlightsRef.current[bId] = (highlightsRef.current[bId] || []).filter(h => h.id !== hlId)
+              saveHighlights()
+              cardRef.current?.querySelectorAll(`[data-hl-id="${hlId}"]`).forEach(el => {
+                el.classList.remove('reader-hl', ...HL_COLOR_KEYS.map(c => `hl-${c}`))
+                delete el.dataset.hlId; delete el.dataset.hlColor
+              })
+              setHighlightVersion(v => v + 1)
+            }}
+            onDeleteBookmark={bmId => {
+              const bId = bookIdRef.current
+              if (!bId) return
+              bookmarksRef.current[bId] = (bookmarksRef.current[bId] || []).filter(b => b.id !== bmId)
+              saveBookmarks()
+              setBookmarkVersion(v => v + 1)
+            }}
+            onSaveNote={saveHighlightNote}
+          />
+        )
+      })()}
 
       {/* Tap zones — left zone shifts right when sidebar is open */}
       {prefs.tapToTurn && !loading && (
@@ -1183,6 +1551,7 @@ export default function ReaderView() {
       {/* Main card area */}
       <main className="reader-main" style={{ position: 'relative' }}>
         <div ref={cardRef} className="reader-card"
+          style={{ '--reader-font-weight': prefs.fontWeight ?? 400 }}
           onClick={handleCardClick}
           onContextMenu={handleCardContextMenu}
         />
@@ -1246,6 +1615,93 @@ export default function ReaderView() {
       {/* ── Word context menu — horizontal pill ── */}
       {wordMenu && (
         <div ref={wordMenuRef} className="word-menu" style={{ top: wordMenu.y - 64, left: wordMenu.x }} onClick={e => e.stopPropagation()}>
+          {/* Color picker row — shown for existing highlights always, and for new highlights after clicking Highlight */}
+          {(wordMenuColorPick || wordMenu.hlId) && (
+            <>
+              <div className="hl-swatch-row">
+                {HL_COLOR_KEYS.map(color => {
+                  const currentColor = wordMenu.hlId
+                    ? (highlightsRef.current[bookIdRef.current]?.find(h => h.id === wordMenu.hlId)?.color || 'yellow')
+                    : 'yellow'
+                  return (
+                    <button key={color} className={`hl-swatch${(!wordMenu.hlId && wordMenuColorPick ? 'yellow' : currentColor) === color ? ' selected' : ''}`}
+                      style={{ background: HL_COLORS[color]?.bg }}
+                      title={color}
+                      onClick={() => {
+                        const bookId = bookIdRef.current
+                        if (wordMenu.hlId) {
+                          // Change existing highlight color
+                          changeHighlightColor(wordMenu.hlId, color)
+                        } else {
+                          // Create new highlight with chosen color
+                          if (!bookId || !wordMenu.hlText) { setWordMenu(null); return }
+                          const hl = { id: `hl_${Date.now()}`, chapterIdx: wordMenu.hlChapterIdx ?? curChapterRef.current, text: wordMenu.hlText, color, note: '' }
+                          if (!highlightsRef.current[bookId]) highlightsRef.current[bookId] = []
+                          highlightsRef.current[bookId].push(hl)
+                          saveHighlights()
+                          setHighlightVersion(v => v + 1)
+                          requestAnimationFrame(() => applyHighlightsToCard(cardRef.current, bookId, hl.chapterIdx))
+                        }
+                        setWordMenuColorPick(false)
+                        setWordMenu(null)
+                      }} />
+                  )
+                })}
+              </div>
+              {wordMenu.hlId && (
+                <>
+                  <div className="word-menu-sep" />
+                  <button className="word-menu-item" onClick={() => {
+                    const bookId = bookIdRef.current
+                    const hl = (highlightsRef.current[bookId] || []).find(h => h.id === wordMenu.hlId)
+                    const text = hl ? `${hl.text} — ${activeBook?.title || ''}, ${chapters[hl.chapterIdx]?.title || ''}` : ''
+                    if (navigator.share) {
+                      navigator.share({ text }).catch(() => {})
+                    } else {
+                      navigator.clipboard.writeText(text).then(() => { setToast('Copied!'); setTimeout(() => setToast(null), 1500) }).catch(() => {})
+                    }
+                    setWordMenu(null)
+                  }}>
+                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                      <circle cx="12" cy="3" r="1.8" stroke="currentColor" strokeWidth="1.3"/>
+                      <circle cx="12" cy="13" r="1.8" stroke="currentColor" strokeWidth="1.3"/>
+                      <circle cx="3" cy="8" r="1.8" stroke="currentColor" strokeWidth="1.3"/>
+                      <line x1="4.7" y1="7" x2="10.3" y2="4" stroke="currentColor" strokeWidth="1.3"/>
+                      <line x1="4.7" y1="9" x2="10.3" y2="12" stroke="currentColor" strokeWidth="1.3"/>
+                    </svg>
+                    Share
+                  </button>
+                  <div className="word-menu-sep" />
+                  <button className="word-menu-item" style={{ color: '#f85149' }} onClick={() => {
+                    const bookId = bookIdRef.current
+                    if (bookId && wordMenu.hlId) {
+                      highlightsRef.current[bookId] = (highlightsRef.current[bookId] || []).filter(h => h.id !== wordMenu.hlId)
+                      saveHighlights()
+                      setHighlightVersion(v => v + 1)
+                      cardRef.current?.querySelectorAll(`[data-hl-id="${wordMenu.hlId}"]`).forEach(el => {
+                        el.classList.remove('reader-hl', ...HL_COLOR_KEYS.map(c => `hl-${c}`))
+                        delete el.dataset.hlId; delete el.dataset.hlColor
+                      })
+                    }
+                    setWordMenu(null)
+                  }}>
+                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M1 1l14 14M15 1L1 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                    Remove
+                  </button>
+                </>
+              )}
+              {!wordMenu.hlId && (
+                <>
+                  <div className="word-menu-sep" />
+                  <button className="word-menu-item" onClick={() => { setWordMenuColorPick(false); setWordMenu(null) }}>Cancel</button>
+                </>
+              )}
+            </>
+          )}
+
+          {/* Main items — hidden when color picker is active */}
+          {!wordMenuColorPick && !wordMenu.hlId && (
+            <>
           <button className="word-menu-item" onClick={() => {
             const word = wordMenu.word
             const x = wordMenu.x, y = wordMenu.y
@@ -1344,39 +1800,40 @@ export default function ReaderView() {
             Play
           </button>
           <div className="word-menu-sep" />
-          {wordMenu.hlId ? (
-            <button className="word-menu-item" style={{ color: '#f85149' }} onClick={() => {
-              const bookId = bookIdRef.current
-              if (bookId && wordMenu.hlId) {
-                highlightsRef.current[bookId] = (highlightsRef.current[bookId] || []).filter(h => h.id !== wordMenu.hlId)
-                saveHighlights()
-                cardRef.current?.querySelectorAll(`[data-hl-id="${wordMenu.hlId}"]`).forEach(el => { el.classList.remove('reader-hl'); delete el.dataset.hlId })
-              }
-              setWordMenu(null)
-            }}>
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M1 1l14 14M15 1L1 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-              Remove highlight
-            </button>
-          ) : (
-            <button className="word-menu-item" onClick={() => {
-              const bookId = bookIdRef.current
-              if (!bookId || !wordMenu.hlText) { setWordMenu(null); return }
-              const hl = { id: `hl_${Date.now()}`, chapterIdx: wordMenu.hlChapterIdx ?? curChapterRef.current, text: wordMenu.hlText }
-              if (!highlightsRef.current[bookId]) highlightsRef.current[bookId] = []
-              highlightsRef.current[bookId].push(hl)
-              saveHighlights()
-              requestAnimationFrame(() => applyHighlightsToCard(cardRef.current, bookId, hl.chapterIdx))
-              setWordMenu(null)
-            }}>
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                <rect x="2" y="5" width="12" height="7" rx="1" fill="rgba(255,210,0,0.5)" stroke="currentColor" strokeWidth="1.3"/>
-                <path d="M5 5V3.5a3 3 0 0 1 6 0V5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-              </svg>
-              Highlight
-            </button>
+          {/* Copy quote */}
+          <button className="word-menu-item" onClick={() => {
+            const sentence = wordMenu.sentence || wordMenu.word
+            const book = activeBook
+            const ch = chapters[curChapterRef.current]
+            const text = `${sentence} — ${book?.title || ''}, ${ch?.title || ''}`
+            navigator.clipboard.writeText(text).then(() => {
+              setToast('Copied!')
+              setTimeout(() => setToast(null), 1500)
+            }).catch(() => {})
+            setWordMenu(null)
+          }}>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <rect x="5" y="3" width="9" height="11" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+              <path d="M3 13H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+            </svg>
+            Copy quote
+          </button>
+          <div className="word-menu-sep" />
+          {/* Highlight button → triggers color picker */}
+          <button className="word-menu-item" onClick={() => setWordMenuColorPick(true)}>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <rect x="2" y="5" width="12" height="7" rx="1" fill="rgba(255,210,0,0.5)" stroke="currentColor" strokeWidth="1.3"/>
+              <path d="M5 5V3.5a3 3 0 0 1 6 0V5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+            </svg>
+            Highlight
+          </button>
+            </>
           )}
         </div>
       )}
+
+      {/* Toast */}
+      {toast && <div className="reader-toast">{toast}</div>}
 
       {/* ── Definition / Translate popup ── */}
       {defPopup && (
