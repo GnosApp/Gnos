@@ -1,7 +1,7 @@
 {
   "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Gnos",
-  "version": "New Updates\u001b",
+  "version": "0.2.0",
   "identifier": "com.gnos.dev",
   "build": {
     "frontendDist": "../dist",
