@@ -1,7 +1,7 @@
 {
   "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Gnos",
-  "version": "0.1.1",
+  "version": "Gnos — Release Notes",
   "identifier": "com.gnos.dev",
   "build": {
     "frontendDist": "../dist",
@@ -47,6 +47,9 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "resources": {
+      "piper/": "piper/"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
