@@ -1,5 +1,55 @@
 # UI Changes — July 2026 pass
 
+## A12. Eleventh pass — remove the inline "=" ghost
+
+`notebookEditor.js`: deleted the whole ghost-hint subsystem — `MathGhostWidget`, the `mathPlugin` ViewPlugin that computed the dim inline suggestion after a typed "=", and the `mathKeymap` Tab-to-insert handler. Typing "=" (or "=:.N" for a rounding-precision override) no longer inserts anything into the document or shows dim inline text next to the cursor; the answer only ever appears as the bold right-column result (already built in A10), which now renders unconditionally (dropped the "suppress while ghost is active" check in `mathResultsPlugin`).
+
+`"=:.N"` precision is preserved but now handled in `buildDocScope` instead of the (removed) ghost logic: new `stripTrailingEquals()` extracts the precision digits before evaluating, `applyPrecisionToDisplay()` rounds the leading numeric part of the result (keeping any unit/currency suffix) before it reaches the right column. Aggregates (`prev`/`sum`/`average`) still use the unrounded raw value — only the displayed digits for that specific line are rounded.
+
+**Bug fix along the way:** the existing "Label: expr" colon-split (for lines like `Utilities: 8% of Rent`) was misreading the colon inside `=:.N` as a label separator — `2*32.12321 =:.2` was being mangled to just `.2` before evaluation. Fixed by excluding `=` from the label character class (`/^[^:=]+:\s*(.+)$/`), so a colon that's part of `=:.N` no longer triggers the label split.
+
+**Revert:** restore `MathGhostWidget` + `mathPlugin` + `mathKeymap` from git history, re-add the ghost-suppression check in `mathResultsPlugin`, and revert `stripTrailingEquals`/`applyPrecisionToDisplay` back to the old plain regex-strip (which discarded precision).
+
+**Verify:** `eslint` shows the same 3 pre-existing errors (none new), `npm run build` green. Confirmed live in browser preview: no `.cm-math-ghost` element ever renders; `=:.2`/`=:.1` correctly round the right-column value (`64.25`, `20`) while `sum` downstream still uses the unrounded values.
+
+## A11. Tenth pass — Switzer replaces Author
+
+Swapped the "Author" sans (Fontshare) for "Switzer" (Fontshare) everywhere it was used as the prose/UI-body font — cleaner, more neutral neo-grotesque. Same CDN, one-line swap: `index.html`'s Fontshare link now pulls `switzer@400,500,600,700` instead of `author@400,500,600,700`. Every `'Author'` font-family reference across `global.css`, `NotebookView.jsx`, `ProfileWindowView.jsx`, `FlashcardView.jsx`, `SettingsWindowView.jsx`, `QuickNoteView.jsx` renamed to `'Switzer'` (including the unquoted `'Author, Satoshi, sans-serif'` list variants in NotebookView's CodeMirror highlight styles). Satoshi (UI chrome) and Lora (logo/book covers) untouched.
+
+**Revert:** `perl -pi -e "s/'Switzer'/'Author'/g"` across the same six files, restore `author@400,500,600,700` in `index.html`'s Fontshare link.
+
+**Verify:** `eslint` shows zero new errors from this change (pre-existing NotebookView.jsx lint debt unaffected). `npm run build` green. Confirmed live in browser preview — `document.fonts` shows Switzer loaded, notebook editor's computed font-family resolves to `Switzer, Satoshi, sans-serif`.
+
+## A10. Ninth pass — result text style, Quick Note tab, drag-to-resize
+
+- **Math result display**: right-column results were a bordered/filled pill; now plain bold accent-colored text (`.cm-math-result` in `notebookEditor.js` — removed background/border/radius/padding, kept click-to-copy with an opacity flash instead of an inverted background). Revert: restore the earlier `mathResultTheme` block (background/border/radius/padding + inverted `-copied` state).
+- **Quick Note settings moved to its own tab**: was a group crammed into General; now a dedicated sidebar section (`SettingsWindowView.jsx`, id `quicknote`) with its own icon, split into "Quick Note" (shortcut, save location), "Appearance" (fan peek toggle), and "Window size" groups.
+- **Drag-to-resize preview**: the window-size control is now a scaled-down "example window" (`QuickNoteSizePreview`, ~0.26x scale, max 900×1000) with a corner grip handle — drag it to resize, snapped to 10px, with live dimension label. Steppers underneath still allow exact width/height entry. Drag only commits (persists + resizes the real popup via `setQuickNoteSize`) on release; the box itself updates live during the drag. Revert: restore the two-Stepper-only Row that used to sit in the General tab.
+- **Verify:** `eslint` + `npm run build` clean. Math-result styling confirmed live via browser preview (screenshot). Quick Note tab/resize preview are Tauri-window-only UI — not browser-previewable (see A9's note); reviewed by code read only.
+
+## A9. Eighth pass — quick note resizing + lighter shadow
+
+- **Resizable, persisted window size**: Settings → General → Quick Note → "Window size" (width/height steppers, 280–900 / 240–1000px). Dragging the popup's edges by hand also persists (debounced `onResized` listener). New Rust command `quick_note_set_size(width, height, show)` (`src-tauri/src/lib.rs`) resizes the live window and optionally reveals it; new pref `quickNoteSize` (`{ width, height }`), added to `persistPreferences()`'s whitelist.
+  - The quicknote window now builds `.visible(false)` and stays hidden until the frontend reads the saved size and calls `quick_note_set_size(..., show: true)` — otherwise it would flash at the 400×540 default before snapping to the saved size on every launch. Wrapped in try/finally so a prefs-read failure can never leave it stuck invisible.
+  - QuickNoteView writes the drag-resized size straight to the prefs file (`loadPreferences()` + `savePreferences()`), not through the store's `persistPreferences()` — the quicknote window's Zustand store only carries local state, never the full prefs blob, so going through the store would have clobbered every other setting with defaults.
+  - **Revert:** drop the `quickNoteSize` Row + `setQuickNoteSize` in `SettingsWindowView.jsx`; remove the `onResized` effect + boot's size/show logic in `QuickNoteView.jsx`; remove `quick_note_set_size` + `.visible(false)` in `lib.rs` (restore plain `.build()` reveal); drop `quickNoteSize` from `persistPreferences()`.
+- **Shadow**: `.qn-card`'s box-shadow was `0 16px 44px rgba(0,0,0,.5)` — with the native macOS window shadow already off (see A-prior note in `lib.rs`), that CSS shadow was the only one left, and at that size/opacity it drew a visible dark halo floating over the desktop behind the transparent window. Tightened to `0 4px 14px rgba(0,0,0,.28), 0 1px 3px rgba(0,0,0,.2)` — reads as a thin card edge instead. Revert: restore the old box-shadow value in `QuickNoteView.jsx`'s `QN_CSS`.
+- **Verify:** `cargo check` + `eslint` both clean. The quicknote/settings windows are Tauri-only (gated by window label in `main.jsx`) with no browser-preview route, so live visual confirmation needs a real `tauri dev` launch — not verified in-browser.
+
+## A8. Seventh pass — numi-style notebook calculator
+
+All in `src/lib/notebookEditor.js` (shared by NotebookView + QuickNoteView). Still opt-in via `/math` … `/math end` zones.
+
+- **Right-column result chips**: every evaluable line in a `/math` zone shows its result as a pill pinned to the right edge (accent-tinted, tabular numbers, click to copy). Styled via CM `baseTheme` inside the plugin — no view CSS was touched. Chip hides while the ghost `=` hint is active on that line. Revert: remove `mathResultsPlugin` + `mathResultTheme` from the return array in `makeMathCalcPlugin`.
+- **Aggregates**: `prev`, `sum`/`total`, `average`/`avg`/`mean` reference earlier line results (sum/average over the contiguous run above; blank lines and headings reset the run; unit-aware via mathjs `add`).
+- **Natural language**: word numbers ("twenty five times four", "3 million"), `5k`/`2M`/`1bn` magnitudes, percent grammar ("20% of 80", "200 + 10%", "25% off 80", "increase X by 15%", "30 as % of 120"), "half of / double / squared / square root of", `x` as multiply, "in" as conversion ("100 usd in eur").
+- **Offline currency**: ~34 currencies + BTC/ETH as mathjs units with a **static approximate rate snapshot** (`FX_PER_USD` table, mid-2026) — no network, ever. `$`/`€`/`£`/`¥`/`₹`/`₩` symbols map to units. Update the table to refresh rates.
+- **CSS units**: `px`/`pt`/`em` at 96 ppi (`pt` overrides mathjs's pint alias; `pint` still works).
+- **Timezones**: "time in tokyo", "9am in london" via `Intl` + a bundled city→IANA map (offline).
+- **Chip display formatting**: thousands separators + FP-noise trimming (display only; Tab-inserted ghost results stay plain/parseable).
+
+**Revert:** `git checkout` `src/lib/notebookEditor.js` (whole subsystem lives in this one file).
+
 ## A7. Sixth pass — typography, speed, premium controls
 
 - **Typography**: notebook headings/body/title dropped the Erode/Georgia serif for **Author** (soft humanist sans, already loaded from Fontshare); flashcard faces and `--font-prose` likewise. Book covers keep their serif (bookish on purpose). Revert: swap `'Author', 'Satoshi', sans-serif` back to `'Erode', Georgia, serif` in NotebookView + delete item 11 in the global block.

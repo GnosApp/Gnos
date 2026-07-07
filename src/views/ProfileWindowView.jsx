@@ -72,7 +72,7 @@ const PW_CSS = `
   .pw-root {
     height: 100vh; display: flex; flex-direction: column; overflow: hidden;
     background: var(--bg); color: var(--text);
-    font-family: 'Satoshi', 'Author', -apple-system, system-ui, sans-serif;
+    font-family: 'Satoshi', 'Switzer', -apple-system, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
   .pw-drag { height: 40px; flex-shrink: 0; }

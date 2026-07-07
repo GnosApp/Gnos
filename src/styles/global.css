@@ -28,11 +28,11 @@ body {
   --addBookText: #8b949e;
   --tagBg: #21262d;
 
-  --font-ui: 'Satoshi', 'Author', system-ui, -apple-system, sans-serif;
+  --font-ui: 'Satoshi', 'Switzer', system-ui, -apple-system, sans-serif;
   --font-logo: 'Lora', Georgia, serif;
   --font-title: 'Clash Display', 'Satoshi', system-ui, sans-serif;
   --font-sub: 'Satoshi', system-ui, sans-serif;
-  --font-body: 'Satoshi', 'Author', system-ui, -apple-system, sans-serif;
+  --font-body: 'Satoshi', 'Switzer', system-ui, -apple-system, sans-serif;
   --font-prose: 'Lora', Georgia, serif;
   --font-serif: 'Lora', Georgia, serif;
 
@@ -3321,7 +3321,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* 11. Typography — softer academic sans; prose no longer serif */
 :root {
-  --font-prose: 'Author', 'Satoshi', system-ui, sans-serif;
+  --font-prose: 'Switzer', 'Satoshi', system-ui, sans-serif;
 }
 
 /* 12. Unified controls — the ONLY toggle/slider/select styling.

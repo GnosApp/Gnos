@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import useAppStore from '@/store/useAppStore'
 import { loadArchivePointer, loadPreferences, loadLibrary, getPluginsDir } from '@/lib/storage'
 import { applyTheme, BUILT_IN_THEMES } from '@/lib/themes'
@@ -24,6 +24,7 @@ const SECTIONS = [
   { id: 'appearance', label: 'Appearance', icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.2" stroke="currentColor" strokeWidth="1.4"/><path d="M8 1.8v12.4A6.2 6.2 0 0 0 8 1.8z" fill="currentColor" opacity="0.5"/></svg> },
   { id: 'reader',     label: 'Reader',     icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M2 3.5A1.5 1.5 0 0 1 3.5 2H8v12H3.5A1.5 1.5 0 0 1 2 12.5v-9zM14 3.5A1.5 1.5 0 0 0 12.5 2H8v12h4.5a1.5 1.5 0 0 0 1.5-1.5v-9z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/></svg> },
   { id: 'notebook',   label: 'Notebook',   icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><rect x="2.5" y="1.5" width="11" height="13" rx="1.5" stroke="currentColor" strokeWidth="1.3"/><line x1="5.5" y1="5" x2="10.5" y2="5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="5.5" y1="8" x2="10.5" y2="8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="5.5" y1="11" x2="8.5" y2="11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg> },
+  { id: 'quicknote',  label: 'Quick Note', icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><rect x="2.5" y="2.5" width="11" height="11" rx="2.5" stroke="currentColor" strokeWidth="1.3"/><line x1="5" y1="6" x2="11" y2="6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="5" y1="9" x2="9" y2="9" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg> },
   { id: 'audio',      label: 'Audio',      icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M2.5 6h2.5L8.5 2.5v11L5 10H2.5V6z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/><path d="M11 5c.9.8 1.4 1.8 1.4 3s-.5 2.2-1.4 3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg> },
   { id: 'calendar',   label: 'Calendar',   icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.3"/><line x1="5" y1="1.5" x2="5" y2="4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/><line x1="11" y1="1.5" x2="11" y2="4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/><line x1="2" y1="6.5" x2="14" y2="6.5" stroke="currentColor" strokeWidth="1.3"/></svg> },
   { id: 'archive',    label: 'Archive',    icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.6l1.8 1.8h5.6a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-8z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/></svg> },
@@ -57,6 +58,77 @@ function Stepper({ value, onChange, min, max, step = 1, suffix = '' }) {
       <button onClick={() => onChange(Math.max(min, +(value - step).toFixed(2)))}>−</button>
       <span>{value}{suffix}</span>
       <button onClick={() => onChange(Math.min(max, +(value + step).toFixed(2)))}>+</button>
+    </div>
+  )
+}
+
+// ── Quick Note size preview ────────────────────────────────────────────────
+// A scaled-down "example window" the size lives in — drag its corner handle
+// to resize (snapped to 10px), or use the steppers below for exact values.
+// Drag updates the preview live; the real popup + prefs only commit on release
+// (and on every stepper click) via onCommit.
+const QN_MIN = { width: 280, height: 240 }
+const QN_MAX = { width: 900, height: 1000 }
+const QN_PREVIEW_SCALE = 0.26
+
+function QuickNoteSizePreview({ width, height, onCommit }) {
+  const [draft, setDraft] = useState(null) // { width, height } while actively dragging — visual only
+  const dragState = useRef(null)
+  const draftRef = useRef(null)
+  const onCommitRef = useRef(onCommit)
+  useEffect(() => { onCommitRef.current = onCommit }, [onCommit])
+
+  const w = draft?.width ?? width
+  const h = draft?.height ?? height
+
+  // Attached once — reads live values via refs instead of re-subscribing on
+  // every pointermove (which fires dozens of times per second while dragging).
+  useEffect(() => {
+    function onMove(e) {
+      const d = dragState.current
+      if (!d) return
+      const nw = Math.min(QN_MAX.width, Math.max(QN_MIN.width, Math.round((d.startW + (e.clientX - d.startX) / QN_PREVIEW_SCALE) / 10) * 10))
+      const nh = Math.min(QN_MAX.height, Math.max(QN_MIN.height, Math.round((d.startH + (e.clientY - d.startY) / QN_PREVIEW_SCALE) / 10) * 10))
+      draftRef.current = { width: nw, height: nh }
+      setDraft(draftRef.current)
+    }
+    function onUp() {
+      if (dragState.current && draftRef.current) onCommitRef.current(draftRef.current)
+      dragState.current = null
+      draftRef.current = null
+      setDraft(null)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+  }, [])
+
+  function onHandleDown(e) {
+    e.preventDefault()
+    dragState.current = { startX: e.clientX, startY: e.clientY, startW: width, startH: height }
+    draftRef.current = { width, height }
+    setDraft(draftRef.current)
+  }
+
+  return (
+    <div className="sw-qn-preview">
+      <div className="sw-qn-preview-stage">
+        <div className="sw-qn-preview-box" style={{ width: w * QN_PREVIEW_SCALE, height: h * QN_PREVIEW_SCALE }}>
+          <span className="sw-qn-preview-dims">{w} × {h}</span>
+          <div className="sw-qn-preview-handle" onPointerDown={onHandleDown} title="Drag to resize">
+            <svg width="9" height="9" viewBox="0 0 9 9" fill="none">
+              <path d="M8 1v3M8 8H5M8 8L1 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+      <div className="sw-qn-preview-steppers">
+        <Stepper value={w} min={QN_MIN.width} max={QN_MAX.width} step={10} suffix="w" onChange={width => onCommit({ width, height: h })} />
+        <Stepper value={h} min={QN_MIN.height} max={QN_MAX.height} step={10} suffix="h" onChange={height => onCommit({ width: w, height })} />
+      </div>
     </div>
   )
 }
@@ -114,6 +186,14 @@ export default function SettingsWindowView() {
     }
     load()
   }, [section])
+
+  function setQuickNoteSize(patch) {
+    const next = { width: 400, height: 540, ...(s.quickNoteSize || {}), ...patch }
+    pref('quickNoteSize', next)
+    import('@tauri-apps/api/core').then(({ invoke }) =>
+      invoke('quick_note_set_size', { width: next.width, height: next.height, show: false })
+    ).catch(() => {}) // not in tauri, or popup isn't open — command no-ops either way
+  }
 
   async function pickQuickNoteDir() {
     try {
@@ -193,19 +273,39 @@ export default function SettingsWindowView() {
                 <Toggle on={s.openOnCreate !== false} onChange={() => pref('openOnCreate', s.openOnCreate === false)} />
               </Row>
             </Group>
+          </>
+        )}
+
+        {section === 'quicknote' && (
+          <>
             <Group title="Quick Note">
               <Row label="Summon shortcut" desc="Works anywhere, even when Gnos is in the background">
                 <span className="sw-kbd">⌥ N</span>
               </Row>
-              <Row label="Save location" desc={s.quickNoteDir || 'Archive (saved as notebooks)'}>
+              <Row label="Save location" desc={s.quickNoteDir || 'Archive (saved as notebooks)'} last>
                 <div style={{ display: 'flex', gap: 6 }}>
                   <button className="sw-btn" onClick={pickQuickNoteDir}>Choose Folder…</button>
                   {s.quickNoteDir && <button className="sw-btn" onClick={() => pref('quickNoteDir', '')}>Use Archive</button>}
                 </div>
               </Row>
+            </Group>
+            <Group title="Appearance">
               <Row label="Show fanned card peek" desc="Stacked cards peeking behind the active note" last>
                 <Toggle on={s.quickNoteFanEnabled !== false} onChange={() => pref('quickNoteFanEnabled', s.quickNoteFanEnabled === false)} />
               </Row>
+            </Group>
+            <Group title="Window size">
+              <div className="sw-qn-size-block">
+                <div className="sw-row-text">
+                  <div className="sw-row-label">Drag the corner to resize</div>
+                  <div className="sw-row-desc">Snaps to 10px. Also updates automatically when you drag the popup's own edges.</div>
+                </div>
+                <QuickNoteSizePreview
+                  width={s.quickNoteSize?.width ?? 400}
+                  height={s.quickNoteSize?.height ?? 540}
+                  onCommit={setQuickNoteSize}
+                />
+              </div>
             </Group>
           </>
         )}
@@ -391,7 +491,7 @@ const SW_CSS = `
   .sw-root {
     display: flex; height: 100vh; overflow: hidden; position: relative;
     background: var(--bg); color: var(--text);
-    font-family: 'Satoshi', 'Author', -apple-system, system-ui, sans-serif;
+    font-family: 'Satoshi', 'Switzer', -apple-system, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
   .sw-drag { position: absolute; top: 0; left: 0; right: 0; height: 34px; z-index: 10; }
@@ -470,6 +570,34 @@ const SW_CSS = `
     border-left: 1px solid var(--borderSubtle); border-right: 1px solid var(--borderSubtle);
     line-height: 26px;
   }
+  .sw-qn-size-block {
+    display: flex; flex-direction: column; gap: 14px;
+    padding: 14px;
+  }
+  .sw-qn-preview { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  .sw-qn-preview-stage {
+    width: 100%; height: 270px; display: flex; align-items: center; justify-content: center;
+    background: var(--surfaceAlt); border: 1px dashed var(--border); border-radius: 10px;
+  }
+  .sw-qn-preview-box {
+    position: relative; box-sizing: border-box;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.2);
+    display: flex; align-items: center; justify-content: center;
+    transition: background .12s;
+  }
+  .sw-qn-preview-dims {
+    font-size: 12px; font-weight: 600; color: var(--textDim);
+    font-variant-numeric: tabular-nums; user-select: none;
+  }
+  .sw-qn-preview-handle {
+    position: absolute; right: -1px; bottom: -1px;
+    width: 18px; height: 18px; border-radius: 0 0 10px 0;
+    background: var(--accent); color: var(--bg, #fff);
+    display: flex; align-items: flex-end; justify-content: flex-end; padding: 3px;
+    cursor: nwse-resize; touch-action: none;
+  }
+  .sw-qn-preview-steppers { display: flex; gap: 10px; }
   .sw-theme-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
     gap: 10px; padding: 12px;

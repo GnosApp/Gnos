@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import useAppStore from '@/store/useAppStore'
-import { loadArchivePointer, loadPreferences, saveQuickNoteAsNotebook, saveQuickNoteToDir, loadQuickNoteNotebooks, loadNotebookContent, loadQuickNotesFromDir, deleteQuickNote } from '@/lib/storage'
+import { loadArchivePointer, loadPreferences, savePreferences, saveQuickNoteAsNotebook, saveQuickNoteToDir, loadQuickNoteNotebooks, loadNotebookContent, loadQuickNotesFromDir, deleteQuickNote } from '@/lib/storage'
 import { applyTheme } from '@/lib/themes'
 import { makeId } from '@/lib/utils'
 import { makeMathCalcPlugin } from '@/lib/notebookEditor'
 
 // ─────────────────────────────────────────────────────────────────────────────
-// QuickNoteView — chromeless antinote-style scratch popup. Lives in its own
+// QuickNoteView — chromeless scratch popup. Lives in its own
 // frameless always-on-top Tauri window (label "quicknote"), summoned by ⌥N.
 // Markdown renders inline (CodeMirror syntax styling). First line = title.
 // Scroll past the top of the newest note → new note (when it has text);
@@ -18,6 +18,9 @@ import { makeMathCalcPlugin } from '@/lib/notebookEditor'
 const AUTOSAVE_MS = 900
 const SCROLL_THRESHOLD = 130   // accumulated wheel delta before flipping notes
 const SCROLL_COOLDOWN = 450    // ms between flips
+const DEFAULT_SIZE = { width: 400, height: 540 }
+const MIN_SIZE = { width: 280, height: 240 }
+const RESIZE_SAVE_MS = 500
 
 function titleFromText(text) {
   const first = (text.split('\n').find(l => l.trim()) || '').trim()
@@ -90,6 +93,7 @@ export default function QuickNoteView() {
   const dirRef = useRef('')
   const saveTimer = useRef(null)
   const posTimer = useRef(null)
+  const resizeSaveTimer = useRef(null)
   const wheelAcc = useRef(0)
   const lastFlip = useRef(0)
 
@@ -107,14 +111,36 @@ export default function QuickNoteView() {
   useEffect(() => {
     let disposed = false
     async function boot() {
+      // The window starts hidden (Rust side) so this resize-to-saved-size can
+      // happen off-screen instead of visibly snapping from the 400x540 default.
+      // Runs in a finally so a prefs-read failure can never leave the popup
+      // stuck invisible.
+      let size = DEFAULT_SIZE
+      let prefs = null
       try {
         const archivePath = await loadArchivePointer()
         if (archivePath) useAppStore.setState({ archivePath })
-        const prefs = await loadPreferences()
+        prefs = await loadPreferences()
         if (disposed) return
         applyTheme(prefs?.themeKey || 'dark', prefs?.customThemes || {})
         setQuickNoteDir(prefs?.quickNoteDir || '')
         setFanEnabled(prefs?.quickNoteFanEnabled !== false)
+        const saved = prefs?.quickNoteSize
+        if (saved?.width && saved?.height) {
+          size = {
+            width: Math.max(MIN_SIZE.width, Math.round(saved.width)),
+            height: Math.max(MIN_SIZE.height, Math.round(saved.height)),
+          }
+        }
+      } catch (e) { console.warn('[QuickNote] boot (prefs) failed:', e) }
+      finally {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core')
+          await invoke('quick_note_set_size', { width: size.width, height: size.height, show: true })
+        } catch { /* not in tauri (browser dev) */ }
+      }
+      if (disposed) return
+      try {
         // Reload saved quick notes so scrolling reaches them after a restart.
         if (!prefs?.quickNoteDir) {
           // Archive mode: notes live as quickNote notebooks. loadQuickNoteNotebooks
@@ -139,7 +165,7 @@ export default function QuickNoteView() {
           stackRef.current = [stackRef.current[0], ...olds]
           setStackView({ idx: idxRef.current, len: stackRef.current.length })
         }
-      } catch (e) { console.warn('[QuickNote] boot failed:', e) }
+      } catch (e) { console.warn('[QuickNote] boot (notes) failed:', e) }
     }
     boot()
     document.documentElement.style.background = 'transparent'
@@ -183,7 +209,7 @@ export default function QuickNoteView() {
         '&': { height: '100%', background: 'transparent', fontSize: '15px' },
         '&.cm-focused': { outline: 'none' },
         '.cm-scroller': {
-          fontFamily: "'Satoshi', 'Author', -apple-system, system-ui, sans-serif",
+          fontFamily: "'Satoshi', 'Switzer', -apple-system, system-ui, sans-serif",
           lineHeight: '1.65', overflow: 'auto',
         },
         '.cm-content': { padding: '0 16px 14px 16px', caretColor: 'var(--accent, #388bfd)' },
@@ -362,6 +388,37 @@ export default function QuickNoteView() {
     return () => window.removeEventListener('wheel', onWheel)
   }, [goToIndex, newNote])
 
+  // Persist the window size whenever the user drags an edge, so a manual
+  // resize sticks across sessions too (not just the Settings steppers).
+  // Reads + rewrites the prefs file directly rather than going through the
+  // store's persistPreferences() — this window's store instance never loads
+  // the full prefs blob (only local state), so that would clobber every
+  // other setting with defaults.
+  useEffect(() => {
+    let unlisten = null
+    ;(async () => {
+      try {
+        const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow')
+        const win = getCurrentWebviewWindow()
+        unlisten = await win.onResized(() => {
+          clearTimeout(resizeSaveTimer.current)
+          resizeSaveTimer.current = setTimeout(async () => {
+            try {
+              const [size, factor] = await Promise.all([win.innerSize(), win.scaleFactor()])
+              const logical = size.toLogical(factor)
+              const width = Math.round(logical.width)
+              const height = Math.round(logical.height)
+              if (width < 100 || height < 100) return // minimize/teardown noise
+              const prefs = (await loadPreferences()) || {}
+              await savePreferences({ ...prefs, quickNoteSize: { width, height } })
+            } catch { /* ignore */ }
+          }, RESIZE_SAVE_MS)
+        })
+      } catch { /* not in tauri */ }
+    })()
+    return () => { if (unlisten) unlisten(); clearTimeout(resizeSaveTimer.current) }
+  }, [])
+
   // Re-focus + re-read prefs each time the window is summoned
   useEffect(() => {
     let unlisten = null
@@ -504,7 +561,7 @@ const QN_CSS = `
   .qn-root {
     height: 100vh; box-sizing: border-box; position: relative;
     background: transparent; color: var(--text, #eee);
-    font-family: 'Satoshi', 'Author', -apple-system, system-ui, sans-serif;
+    font-family: 'Satoshi', 'Switzer', -apple-system, system-ui, sans-serif;
   }
   .qn-root *:focus, .qn-root *:focus-visible { outline: none !important; }
   .qn-drag { height: 16px; flex-shrink: 0; cursor: default; }
@@ -517,7 +574,11 @@ const QN_CSS = `
     display: flex; flex-direction: column;
     background: var(--surface, #1c1c1e);
     border-radius: 14px; overflow: hidden;
-    box-shadow: 0 16px 44px rgba(0,0,0,.5);
+    /* Was 0 16px 44px rgba(0,0,0,.5) — that heavy a blur/offset drew a visible
+       dark halo floating over the desktop behind the transparent window (the
+       native OS shadow is already off; this is the only shadow left). Tighter
+       + lighter reads as a thin card edge instead of a shadow hanging in air. */
+    box-shadow: 0 4px 14px rgba(0,0,0,.28), 0 1px 3px rgba(0,0,0,.2);
   }
   /* Fanned card — opaque and a touch lighter than the front card, inset a little
      more top+bottom so it stays within the front card's vertical bounds (never pokes

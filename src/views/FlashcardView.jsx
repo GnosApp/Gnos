@@ -103,7 +103,7 @@ const FLASHCARD_CSS = `
     padding: 24px; border-radius: 16px;
     font-size: 18px; font-weight: 500; text-align: center;
     line-height: 1.5; word-break: break-word;
-    font-family: 'Author', 'Satoshi', sans-serif;
+    font-family: 'Switzer', 'Satoshi', sans-serif;
     box-shadow: 0 4px 20px rgba(0,0,0,0.15);
     border: 1px solid var(--border);
   }
@@ -1035,7 +1035,7 @@ export default function FlashcardView() {
                     <div className="fc-card-label">Front</div>
                     <textarea className="fc-card-input" placeholder="Front (question)..."
                       value={card.front} onChange={e => updateCard(card.id, { front: e.target.value })}
-                      style={{ background: 'transparent', border: 'none', textAlign: 'center', fontSize: 18, fontWeight: 500, resize: 'none', minHeight: 80, fontFamily: "'Author', 'Satoshi', sans-serif" }} />
+                      style={{ background: 'transparent', border: 'none', textAlign: 'center', fontSize: 18, fontWeight: 500, resize: 'none', minHeight: 80, fontFamily: "'Switzer', 'Satoshi', sans-serif" }} />
                     {card.imageUrl && (
                       <div style={{ position: 'relative', display: 'inline-block' }}>
                         <img src={card.imageUrl} alt="" style={{ maxWidth: '80%', maxHeight: 120, borderRadius: 8, objectFit: 'contain' }} />
@@ -1063,7 +1063,7 @@ export default function FlashcardView() {
                     <div className="fc-card-label">Back</div>
                     <textarea className="fc-card-input" placeholder="Back (answer)..."
                       value={card.back} onChange={e => updateCard(card.id, { back: e.target.value })}
-                      style={{ background: 'transparent', border: 'none', textAlign: 'center', fontSize: 18, fontWeight: 500, resize: 'none', minHeight: 80, fontFamily: "'Author', 'Satoshi', sans-serif" }} />
+                      style={{ background: 'transparent', border: 'none', textAlign: 'center', fontSize: 18, fontWeight: 500, resize: 'none', minHeight: 80, fontFamily: "'Switzer', 'Satoshi', sans-serif" }} />
                     {card.backImageUrl && (
                       <div style={{ position: 'relative', display: 'inline-block' }}>
                         <img src={card.backImageUrl} alt="" style={{ maxWidth: '80%', maxHeight: 120, borderRadius: 8, objectFit: 'contain' }} />

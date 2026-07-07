@@ -696,6 +696,7 @@ const useAppStore = create((set, get) => ({
       activeCollectionId: s.activeCollectionId,
       quickNoteDir: s.quickNoteDir,
       quickNoteFanEnabled: s.quickNoteFanEnabled,
+      quickNoteSize: s.quickNoteSize,
       sidebarPinned: s.sidebarPinned,
       titlebarLayout: s.titlebarLayout,
     })

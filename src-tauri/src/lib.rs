@@ -336,7 +336,11 @@ fn toggle_quick_note(app: &tauri::AppHandle) {
     .always_on_top(true)
     .skip_taskbar(true)
     .visible_on_all_workspaces(true)
-    .accept_first_mouse(true);
+    .accept_first_mouse(true)
+    // Stay hidden until the frontend reads the saved size pref and resizes
+    // (JS calls quick_note_set_size, then shows it) — avoids a visible snap
+    // from the 400x540 default to the user's chosen size on first summon.
+    .visible(false);
     match builder.build() {
         Ok(w) => {
             let _ = w.set_focus();
@@ -348,6 +352,22 @@ fn toggle_quick_note(app: &tauri::AppHandle) {
 #[tauri::command]
 async fn quick_note_toggle(app: tauri::AppHandle) {
     toggle_quick_note(&app);
+}
+
+/// Resize (and reveal) the quick note window. Used by the popup on boot to
+/// restore its saved size before becoming visible, and by Settings to apply
+/// a size change live while the popup is open.
+#[tauri::command]
+async fn quick_note_set_size(app: tauri::AppHandle, width: f64, height: f64, show: bool) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("quicknote") {
+        win.set_size(tauri::LogicalSize::new(width, height))
+            .map_err(|e| e.to_string())?;
+        if show {
+            win.show().map_err(|e| e.to_string())?;
+            let _ = win.set_focus();
+        }
+    }
+    Ok(())
 }
 
 /// Dedicated macOS-style settings window (label "settings").
@@ -769,6 +789,7 @@ pub fn run() {
       copy_file_bytes,
       open_in_finder,
       quick_note_toggle,
+      quick_note_set_size,
       open_settings_window,
       open_profile_window,
       create_inline_webview,
