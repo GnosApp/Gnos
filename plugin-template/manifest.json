@@ -1,0 +1,9 @@
+{
+  "id": "com.yourname.my-plugin",
+  "name": "My Plugin",
+  "version": "1.0.0",
+  "minAppVersion": "0.1.0",
+  "description": "A short description of what your plugin does.",
+  "author": "Your Name",
+  "main": "index.js"
+}

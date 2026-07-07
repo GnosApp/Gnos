@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import useAppStore from '@/store/useAppStore'
+import { useIsActiveTab } from '@/lib/useIsActiveTab'
 import { loadAudioChapter, loadSingleAudioData, addReadingMinutes } from '@/lib/storage'
 import { generateCoverColor } from '@/lib/utils'
-import { GnosNavButton } from '@/components/SideNav'
+import QuickAccess from '@/components/QuickAccess'
+import { Slider } from '@/components/Controls'
 import { TITLEBAR_H } from '@/App'
 import { getGlobalAudio } from '@/lib/globalAudio'
 
@@ -18,6 +20,7 @@ const fmt = (s) => {
 
 export default function AudioPlayerView() {
   const book    = useAppStore(s => s.activeAudioBook)
+  const isActive = useIsActiveTab()
 
   const audioRef    = useRef(getGlobalAudio())
   const chapCacheRef = useRef({})
@@ -44,6 +47,12 @@ export default function AudioPlayerView() {
   // ── Load chapter ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (!book) return
+    // Revoke any Blob URLs created for the previous book to free memory
+    for (const src of Object.values(chapCacheRef.current)) {
+      if (typeof src === 'string' && src.startsWith('blob:')) {
+        try { URL.revokeObjectURL(src) } catch { /* ignore */ }
+      }
+    }
     chapCacheRef.current = {}
     const startIdx = book.currentChapter || 0
     setChapIdx(startIdx)
@@ -77,9 +86,9 @@ export default function AudioPlayerView() {
           src = book.audioChapters[idx].dataUrl
           cache[idx] = src
         }
-        // Try to upgrade to the persisted version
+        // Try to upgrade to the persisted version (binary file or legacy data URL)
         try {
-          const stored = await loadAudioChapter(book.id, idx)
+          const stored = await loadAudioChapter(book, idx)
           if (stored) {
             const raw = stored.value ?? stored
             let storedSrc = ''
@@ -107,9 +116,9 @@ export default function AudioPlayerView() {
           src = book.audioDataUrl
           cache[0] = src
         }
-        // Try to upgrade from storage
+        // Try to upgrade from storage (binary file or legacy data URL)
         try {
-          const stored = await loadSingleAudioData(book.id)
+          const stored = await loadSingleAudioData(book)
           if (stored) {
             const raw = stored.value ?? stored
             let storedSrc = ''
@@ -145,7 +154,7 @@ export default function AudioPlayerView() {
       setTimeout(async () => {
         if (!cache[idx + 1]) {
           try {
-            const s = await loadAudioChapter(book.id, idx + 1)
+            const s = await loadAudioChapter(book, idx + 1)
             if (s) {
               const val = s.value ?? s
               cache[idx + 1] = val instanceof Blob ? URL.createObjectURL(val) : val
@@ -295,18 +304,16 @@ export default function AudioPlayerView() {
     track.addEventListener('pointerup', onUp)
   }
 
-  function onVolChange(e) {
-    const v = parseFloat(e.target.value)
+  function onVolChange(v) {
     setVolume(v)
     if (audioRef.current) audioRef.current.volume = v
   }
 
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
   useEffect(() => {
-    const handler = (e) => {
-      // Only fire when the audio player is the active view
-      if (useAppStore.getState().view !== 'audio-player') return
+    if (!isActive) return
 
+    const handler = (e) => {
       // Don't steal keys from any text input or contenteditable (e.g. CodeMirror)
       const el = document.activeElement
       const tag = el?.tagName
@@ -328,7 +335,7 @@ export default function AudioPlayerView() {
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []) // togglePlay and skipBy close over refs — intentionally stable
+  }, [isActive]) // isActive + togglePlay/skipBy close over refs — intentionally stable
 
   // ── Listening timer — credits minutes while audio is playing ───────────────
   useEffect(() => {
@@ -349,6 +356,13 @@ export default function AudioPlayerView() {
     document.addEventListener('mousedown', h)
     return () => document.removeEventListener('mousedown', h)
   }, [showSettings])
+
+  // Native "Page Settings…" menu → toggle the audio settings panel
+  useEffect(() => {
+    const h = (e) => { if (e.detail?.cmd === 'settings') setShowSettings(s => !s) }
+    window.addEventListener('gnos:audio-cmd', h)
+    return () => window.removeEventListener('gnos:audio-cmd', h)
+  }, [])
   const [c1, c2] = generateCoverColor(book?.title || '')
   const hasCover = !!book?.coverDataUrl
 
@@ -364,142 +378,103 @@ export default function AudioPlayerView() {
   return (
     <div className="view active" style={{ padding: 0, display: 'flex', flexDirection: 'column' }}>
 
-      {/* ── Top header bar ── */}
-      <header style={{
-        display: 'flex', alignItems: 'center', gap: 10, padding: '0 14px',
-        height: 48, flexShrink: 0,
-        background: 'var(--headerBg, var(--surface))',
-        borderBottom: '1px solid var(--border)',
-        zIndex: 20,
-      }}>
-        <GnosNavButton />
-        <div style={{ width: 1, height: 18, background: 'var(--border)', flexShrink: 0 }} />
-
-        {/* Centered title */}
-        <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' }}>
-          <span style={{
-            fontSize: 13, fontWeight: 600, color: 'var(--text)',
-            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-            maxWidth: '60%',
-          }}>
-            {book.title || 'Audiobook'}
-          </span>
-          {book.author && (
-            <span style={{ fontSize: 12, color: 'var(--textDim)', marginLeft: 8, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '30%' }}>
-              — {book.author}
-            </span>
-          )}
-        </div>
-
-        {/* Settings button + dropdown */}
-        <div className="ap-settings-area" style={{ position: 'relative', flexShrink: 0 }}>
+      {/* ── Header replaced by title bar: chapters + settings in quick access ── */}
+      <QuickAccess>
         <button
+          className={`gnos-settings-btn${chapOpen ? ' active' : ''}`}
+          title={chapOpen ? 'Hide chapters' : 'Show chapters'}
+          onClick={() => setChapOpen(o => !o)}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <line x1="3" y1="4" x2="13" y2="4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+            <line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+            <line x1="3" y1="12" x2="10" y2="12" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+          </svg>
+        </button>
+        <div className="ap-settings-area" style={{ position: 'relative', flexShrink: 0, display: 'flex' }}>
+        <button
+          className={`gnos-settings-btn${showSettings ? ' active' : ''}`}
           title="Playback settings"
           onClick={() => setShowSettings(s => !s)}
-          style={{
-            width: 30, height: 30, borderRadius: 7,
-            border: showSettings ? '1px solid var(--accent)' : '1px solid var(--border)',
-            background: showSettings ? 'rgba(56,139,253,.1)' : 'var(--surface)',
-            color: showSettings ? 'var(--accent)' : 'var(--textDim)',
-            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            transition: 'all 0.12s',
-            flexShrink: 0,
-          }}
         >
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-            <circle cx="8" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.4"/>
-            <path d="M8 1.5v1.2M8 13.3v1.2M1.5 8h1.2M13.3 8h1.2M3.4 3.4l.85.85M11.75 11.75l.85.85M12.6 3.4l-.85.85M4.25 11.75l-.85.85" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M2 6.5h2l2.5-3v9L4 9.5H2v-3z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/>
+            <path d="M9.5 5.5c.9.7 1.5 1.6 1.5 2.5s-.6 1.8-1.5 2.5M11.7 3.7c1.5 1.2 2.3 2.7 2.3 4.3s-.8 3.1-2.3 4.3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
           </svg>
         </button>
 
         {/* Settings dropdown */}
         {showSettings && (
           <div style={{
-            position: 'absolute', top: 38, right: 0,
-            background: 'var(--surface)', border: '1px solid var(--border)',
-            borderRadius: 12, padding: 14, minWidth: 220,
-            boxShadow: '0 12px 40px rgba(0,0,0,0.45)',
-            zIndex: 100,
+            position: 'absolute', top: 34, right: 0,
+            background: 'var(--surface)', border: '1px solid var(--borderSubtle)',
+            borderRadius: 12, padding: 16, minWidth: 280,
+            boxShadow: '0 0 0 1px rgba(0,0,0,0.04), 0 12px 32px rgba(0,0,0,0.35)',
+            zIndex: 10002,
           }}>
-            <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.07em', color: 'var(--textDim)', opacity: .6, marginBottom: 10 }}>Playback Speed</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--textDim)', opacity: .65, marginBottom: 8 }}>Playback Speed</div>
+            {/* Segmented control — one row, joined */}
+            <div style={{ display: 'flex', background: 'var(--surfaceAlt)', border: '1px solid var(--borderSubtle)', borderRadius: 8, padding: 2, marginBottom: 16 }}>
               {SPEEDS.map(s => (
                 <button key={s} onClick={() => { speedRef.current = s; setSpeed(s); if (audioRef.current) audioRef.current.playbackRate = s; }}
                   style={{
-                    padding: '4px 10px', borderRadius: 6, fontSize: 12, fontWeight: 500,
-                    border: '1px solid var(--border)',
-                    background: speed === s ? 'var(--accent)' : 'var(--surfaceAlt)',
-                    color: speed === s ? '#fff' : 'var(--text)',
-                    cursor: 'pointer', transition: 'all .1s',
+                    flex: 1, padding: '5px 0', borderRadius: 6, fontSize: 11, fontWeight: 600,
+                    border: 'none',
+                    background: speed === s ? 'var(--accent)' : 'transparent',
+                    color: speed === s ? '#fff' : 'var(--textDim)',
+                    cursor: 'pointer', transition: 'background .12s, color .12s', fontFamily: 'inherit',
+                    fontVariantNumeric: 'tabular-nums',
                   }}>
                   {s}×
                 </button>
               ))}
             </div>
-            <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.07em', color: 'var(--textDim)', opacity: .6, marginBottom: 8 }}>Volume</div>
-            <input type="range" min="0" max="1" step="0.02"
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--textDim)', opacity: .65, marginBottom: 10 }}>Volume</div>
+            <Slider min={0} max={1} step={0.02}
               value={volume} onChange={onVolChange}
-              style={{ width: '100%', accentColor: 'var(--accent)', marginBottom: 14 }} />
+              style={{ width: '100%', marginBottom: 18 }} />
 
-            <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.07em', color: 'var(--textDim)', opacity: .6, marginBottom: 8 }}>Sleep Timer</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--textDim)', opacity: .65, marginBottom: 8 }}>Sleep Timer</div>
+            <div style={{ display: 'flex', background: 'var(--surfaceAlt)', border: '1px solid var(--borderSubtle)', borderRadius: 8, padding: 2 }}>
               {[15, 30, 45, 60, 90].map(m => (
                 <button key={m} onClick={() => {
                   if (window._gnosSleepTimer) clearTimeout(window._gnosSleepTimer)
                   window._gnosSleepTimer = setTimeout(() => { if (audioRef.current) audioRef.current.pause() }, m * 60000)
                   setShowSettings(false)
                 }} style={{
-                  padding: '4px 10px', borderRadius: 6, fontSize: 12, fontWeight: 500,
-                  border: '1px solid var(--border)', background: 'var(--surfaceAlt)',
-                  color: 'var(--text)', cursor: 'pointer', transition: 'all .1s',
-                }}>
+                  flex: 1, padding: '5px 0', borderRadius: 6, fontSize: 11, fontWeight: 600,
+                  border: 'none', background: 'transparent',
+                  color: 'var(--text)', cursor: 'pointer', transition: 'background .12s', fontFamily: 'inherit',
+                  fontVariantNumeric: 'tabular-nums',
+                }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'var(--hover)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
                   {m}m
                 </button>
               ))}
               <button onClick={() => { if (window._gnosSleepTimer) { clearTimeout(window._gnosSleepTimer); window._gnosSleepTimer = null } }} style={{
-                padding: '4px 10px', borderRadius: 6, fontSize: 12, fontWeight: 500,
-                border: '1px solid var(--border)', background: 'var(--surfaceAlt)',
-                color: 'var(--textDim)', cursor: 'pointer',
-              }}>Off</button>
+                flex: 1, padding: '5px 0', borderRadius: 6, fontSize: 11, fontWeight: 600,
+                border: 'none', background: 'transparent',
+                color: 'var(--textDim)', cursor: 'pointer', fontFamily: 'inherit',
+              }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--hover)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+              >Off</button>
             </div>
           </div>
         )}
         </div>
-      </header>
+      </QuickAccess>
 
       <div className="ap-layout" style={{ flex: 1, overflow: 'hidden' }}>
 
-        {/* ── Floating open-chapters button (only when closed) ── */}
-        {!chapOpen && (
-          <button
-            onClick={() => setChapOpen(true)}
-            title="Open chapters"
-            style={{
-              position: 'fixed', left: 12, top: TITLEBAR_H + 58,
-              zIndex: 1200, padding: '7px 12px 7px 10px', borderRadius: 9,
-              border: '1px solid var(--border)', background: 'var(--surface)',
-              color: 'var(--textDim)', cursor: 'pointer', fontFamily: 'inherit',
-              fontSize: 12, fontWeight: 600,
-              boxShadow: '0 2px 12px rgba(0,0,0,0.3)',
-              display: 'flex', alignItems: 'center', gap: 7,
-            }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'var(--surfaceAlt)'; e.currentTarget.style.color = 'var(--text)' }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'var(--surface)'; e.currentTarget.style.color = 'var(--textDim)' }}
-          >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <line x1="3" y1="4" x2="13" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-              <line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-              <line x1="3" y1="12" x2="10" y2="12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-            </svg>
-            <span style={{ letterSpacing: '0.01em' }}>Chapters</span>
-          </button>
-        )}
-        {/* ── Chapters sidebar — close button lives inside the header ── */}
+        {/* ── Chapters sidebar — toggled from the quick-access strip ── */}
         {chapOpen && (
           <aside style={{
-            position: 'fixed', left: 0, top: TITLEBAR_H + 48, bottom: 0, width: 270, zIndex: 1100,
-            background: 'var(--surface)', borderRight: '1px solid var(--border)',
-            boxShadow: '6px 0 24px rgba(0,0,0,0.35)', display: 'flex', flexDirection: 'column',
+            position: 'fixed', left: 0, top: TITLEBAR_H, bottom: 0, width: 270, zIndex: 1100,
+            background: 'var(--surface)', borderRight: '1px solid var(--borderSubtle)',
+            display: 'flex', flexDirection: 'column',
             animation: 'ap-slide-in 0.2s ease',
           }}>
             {/* Integrated header row */}

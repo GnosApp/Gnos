@@ -22,3 +22,12 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Piper TTS — downloaded at build time by scripts/download-piper.js
+src-tauri/piper/piper
+src-tauri/piper/piper.exe
+src-tauri/piper/models/*.onnx
+src-tauri/piper/models/*.onnx.json
+
+# Local Claude Code agent settings
+.claude/

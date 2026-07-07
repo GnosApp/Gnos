@@ -6,7 +6,9 @@ import { generateCoverColor, makeId } from '@/lib/utils'
 import { importBooks, importAudioFile, importAudioFolder } from '@/lib/bookImport'
 import { loadReadingLog, loadNotebookContent, resetBaseDir, saveCalendarEvents, loadKanbanBoards, saveKanbanBoards } from '@/lib/storage'
 import Toast from '@/components/ui/Toast'
-import { GnosNavButton, UniversalSettingsModal } from '@/components/SideNav'
+import { UniversalSettingsModal } from '@/components/SideNav'
+import { useIsMobile } from '@/lib/useIsMobile'
+import ProfileContent from '@/components/ProfileContent'
 
 const SearchIcon = () => (
   <svg className="search-icon" width="13" height="13" viewBox="0 0 16 16" fill="none">
@@ -35,19 +37,6 @@ const PlusIcon = () => (
     <line x1="1.5" y1="7" x2="12.5" y2="7" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
   </svg>
 )
-const SettingsIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-    <circle cx="8" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.4"/>
-    <path d="M8 1.5v1.2M8 13.3v1.2M1.5 8h1.2M13.3 8h1.2M3.4 3.4l.85.85M11.75 11.75l.85.85M12.6 3.4l-.85.85M4.25 11.75l-.85.85" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-  </svg>
-)
-const ProfileIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-    <circle cx="8" cy="5.5" r="2.5" stroke="currentColor" strokeWidth="1.5"/>
-    <path d="M2.5 13c0-2.485 2.462-4.5 5.5-4.5s5.5 2.015 5.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-  </svg>
-)
-
 const TABS = [
   { id: 'library',    label: 'Library' },
   { id: 'books',      label: 'Books' },
@@ -64,13 +53,33 @@ function BookCard({ book, onOpen, onMenu }) {
   return (
     <div className="book-card-container">
       <div className="book-cover" style={{ '--c1': c1, '--c2': c2, background: `linear-gradient(135deg, ${c1}, ${c2})` }} onClick={() => onOpen(book)}>
-        {book.coverDataUrl ? <img src={book.coverDataUrl} alt={book.title} draggable="false" /> : (
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '14px 12px', gap: 6 }}>
-            <div className="cover-title">{book.title}</div>
-            {book.author && <div className="cover-author">{book.author}</div>}
-          </div>
+        {book.coverDataUrl ? (
+          <>
+            <img src={book.coverDataUrl} alt={book.title} draggable="false" />
+            <div className="cover-badge">{fmt}</div>
+          </>
+        ) : (
+          <>
+            {/* Left spine — darker shade of the gradient start color */}
+            <div style={{ position:'absolute', left:0, top:0, bottom:0, width:8,
+              background:'rgba(0,0,0,0.22)', zIndex:1 }} />
+            {/* Title + author — top section, matches NotebookCard layout */}
+            <div style={{ position:'relative', padding:'14px 12px 0 16px', flex:1, zIndex:2, display:'flex', flexDirection:'column' }}>
+              <div style={{ fontSize:13, fontWeight:800, color:'#fff', lineHeight:1.25, letterSpacing:'0.025em', wordBreak:'break-word', overflow:'hidden', display:'-webkit-box', WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>{book.title}</div>
+              {book.author && <div style={{ fontSize:10, color:'rgba(255,255,255,0.65)', marginTop:6, fontWeight:400, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{book.author}</div>}
+            </div>
+            {/* Bottom — format badge + ruled line accent */}
+            <div style={{ position:'relative', padding:'0 12px 14px 16px', display:'flex', flexDirection:'column', gap:7, zIndex:2 }}>
+              <div style={{ height:1, background:'rgba(255,255,255,0.28)', borderRadius:1 }} />
+              <div style={{
+                fontSize:8, fontWeight:800, letterSpacing:'.1em', textTransform:'uppercase',
+                color:'rgba(255,255,255,0.75)', alignSelf:'flex-start',
+                background:'rgba(0,0,0,0.18)', borderRadius:4, padding:'2px 6px 3px',
+                border:'1px solid rgba(255,255,255,0.18)',
+              }}>{fmt}</div>
+            </div>
+          </>
         )}
-        <div className="cover-badge">{fmt}</div>
       </div>
       {pct > 0 && <div className="meta-prog-row" style={{ marginTop: 4, padding: '0 2px' }}><div className="meta-prog-track"><div className="meta-prog-fill" style={{ width: `${pct}%` }} /></div><span className="meta-prog-pct">{pct}%</span></div>}
       <div className="book-meta">
@@ -97,7 +106,7 @@ function AudiobookCard({ book, onOpen, onMenu }) {
           : (
             <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '0 12px' }}>
               <div style={{ opacity: 0.55 }}><MusicIcon /></div>
-              <div style={{ fontSize:13, fontWeight:800, color:'#fff', lineHeight:1.25, textAlign:'center', wordBreak:'break-word', overflow:'hidden', display:'-webkit-box', WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>{book.title}</div>
+              <div style={{ fontSize:13, fontWeight:800, color:'#fff', lineHeight:1.25, letterSpacing:'0.025em', textAlign:'center', wordBreak:'break-word', overflow:'hidden', display:'-webkit-box', WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>{book.title}</div>
               {book.author && <div className="cover-author">{book.author}</div>}
             </div>
           )}
@@ -187,7 +196,7 @@ function ContextMenu({ x, y, items, onClose }) {
   )
 }
 
-function AddPopup({ onClose, onOpenNebuli, onAddBook, onAddAudio, onNewNotebook, onNewSketchbook, onNewCollection, onNewFlashcardDeck }) {
+export function AddPopup({ onClose, onOpenNebuli, onAddBook, onAddAudio, onNewNotebook, onNewSketchbook, onNewCollection, onNewFlashcardDeck, asSheet = false }) {
   const ref = useRef()
   useEffect(() => {
     const h = e => { if (ref.current && !ref.current.contains(e.target)) onClose() }
@@ -195,7 +204,7 @@ function AddPopup({ onClose, onOpenNebuli, onAddBook, onAddAudio, onNewNotebook,
     return () => document.removeEventListener('mousedown', h)
   }, [onClose])
   return (
-    <div ref={ref} className="add-choice-popup" style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0 }}>
+    <div ref={ref} className="add-choice-popup" style={asSheet ? { position: 'relative' } : { position: 'absolute', top: 'calc(100% + 6px)', right: 0 }}>
       <div className="add-choice-header">Add to Library</div>
       <button className="add-choice-btn" onClick={() => { onOpenNebuli?.(); onClose() }}>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
@@ -285,49 +294,37 @@ function AddPopup({ onClose, onOpenNebuli, onAddBook, onAddAudio, onNewNotebook,
   )
 }
 
-function StreakFooter() {
-  const [streakDays, setStreakDays] = useState(0)
-  const [weekActivity, setWeekActivity] = useState([false, false, false, false, false, false, false])
-  const flashcardDecks = useAppStore(s => s.flashcardDecks)
-
-  useEffect(() => {
-    (async () => {
-      const log = await loadReadingLog().catch(() => ({})) || {}
-      const today = new Date()
-      const week = []
-      const startOfWeek = new Date(today)
-      startOfWeek.setDate(today.getDate() - ((today.getDay() + 6) % 7))
-      for (let i = 0; i < 7; i++) {
-        const d = new Date(startOfWeek)
-        d.setDate(startOfWeek.getDate() + i)
-        const key = d.toISOString().slice(0, 10)
-        week.push(!!log[key])
-      }
-      let streak = 0
-      for (let i = 0; i < 365; i++) {
-        const d = new Date(today)
-        d.setDate(today.getDate() - i)
-        const key = d.toISOString().slice(0, 10)
-        if (log[key]) streak++
-        else if (i > 0) break
-      }
-      const maxFcStreak = flashcardDecks.reduce((max, d) => Math.max(max, d.streak || 0), 0)
-      setStreakDays(Math.max(streak, maxFcStreak))
-      setWeekActivity(week)
-    })()
-  }, [flashcardDecks])
-
-  const days = ['M','T','W','T','F','S','S']
+function StreakFooter({ streakDays = 0, weekActivity = [false,false,false,false,false,false,false], todayMinutes = 0 }) {
+  // weekActivity[6] = today (rightmost), weekActivity[0] = 6 days ago
+  const todayPct = Math.min(todayMinutes / 30, 1)
   return (
     <div className="library-footer">
       <div className="streak-section">
         <span className="streak-label">STREAK</span>
         <div className="streak-dots">
-          {days.map((d, i) => (
-            <div key={i} className={`streak-dot${weekActivity[i] ? ' filled' : ''}`} title={d} />
-          ))}
+          {weekActivity.map((active, i) => {
+            const isToday = i === 6
+            const dotStyle = isToday
+              ? {
+                  background: active
+                    ? 'var(--accent)'
+                    : todayPct > 0
+                      ? `conic-gradient(var(--accent) 0deg ${Math.round(todayPct * 360)}deg, var(--surfaceAlt) ${Math.round(todayPct * 360)}deg)`
+                      : 'var(--surfaceAlt)',
+                  boxShadow: '0 0 6px 1px color-mix(in srgb, var(--accent) 45%, transparent)',
+                  transition: 'background 0.3s',
+                }
+              : undefined
+            return (
+              <div
+                key={i}
+                className={`streak-dot${active ? ' filled' : ''}`}
+                style={dotStyle}
+              />
+            )
+          })}
         </div>
-        <span className="streak-count">{streakDays} day{streakDays !== 1 ? 's' : ''}</span>
+        <span className="streak-count">{streakDays}d</span>
       </div>
     </div>
   )
@@ -421,6 +418,17 @@ function EditAudiobookModal({ book, onSave, onClose }) {
   const [author, setAuthor] = useState(book.author || '')
   const COLORS = ['#2d1b69','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#6b3fa0','#0f4c75']
   const [color,  setColor]  = useState(book.coverColor || COLORS[0])
+  const [coverDataUrl, setCoverDataUrl] = useState(book.coverDataUrl || null)
+  const coverInputRef = useRef(null)
+
+  function handleCoverFile(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = ev => setCoverDataUrl(ev.target.result)
+    reader.readAsDataURL(file)
+    e.target.value = ''
+  }
 
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center' }}
@@ -441,6 +449,27 @@ function EditAudiobookModal({ book, onSave, onClose }) {
             style={{ width:'100%', background:'var(--bg)', border:'1px solid var(--border)', color:'var(--text)',
               borderRadius:7, padding:'7px 10px', fontSize:13, outline:'none', boxSizing:'border-box' }} />
         </div>
+        <div style={{ marginBottom:16 }}>
+          <div style={{ fontSize:11, color:'var(--textDim)', marginBottom:8, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.06em' }}>Cover Image</div>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            {coverDataUrl && (
+              <img src={coverDataUrl} alt="Cover" style={{ width:36, height:50, objectFit:'cover', borderRadius:4, border:'1px solid var(--border)', flexShrink:0 }} />
+            )}
+            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+              <button onClick={() => coverInputRef.current?.click()}
+                style={{ background:'var(--surfaceAlt)', border:'1px solid var(--border)', color:'var(--text)', borderRadius:7, padding:'5px 12px', fontSize:12, cursor:'pointer', fontFamily:'inherit' }}>
+                {coverDataUrl ? 'Change Image' : 'Upload Image'}
+              </button>
+              {coverDataUrl && (
+                <button onClick={() => setCoverDataUrl(null)}
+                  style={{ background:'none', border:'1px solid var(--border)', color:'var(--textDim)', borderRadius:7, padding:'5px 12px', fontSize:12, cursor:'pointer', fontFamily:'inherit' }}>
+                  Remove Image
+                </button>
+              )}
+            </div>
+          </div>
+          <input ref={coverInputRef} type="file" accept="image/*" style={{ display:'none' }} onChange={handleCoverFile} />
+        </div>
         <div style={{ marginBottom:20 }}>
           <div style={{ fontSize:11, color:'var(--textDim)', marginBottom:8, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.06em' }}>Cover Color</div>
           <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
@@ -455,7 +484,7 @@ function EditAudiobookModal({ book, onSave, onClose }) {
         <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
           <button onClick={onClose} style={{ background:'none', border:'1px solid var(--border)', color:'var(--textMuted)',
             borderRadius:7, padding:'7px 16px', fontSize:13, cursor:'pointer' }}>Cancel</button>
-          <button onClick={() => onSave({ title: title.trim() || book.title, author: author.trim(), coverColor: color })}
+          <button onClick={() => onSave({ title: title.trim() || book.title, author: author.trim(), coverColor: color, coverDataUrl: coverDataUrl ?? null })}
             style={{ background:'var(--accent)', border:'none', color:'#fff',
               borderRadius:7, padding:'7px 16px', fontSize:13, cursor:'pointer', fontWeight:600 }}>Save</button>
         </div>
@@ -466,7 +495,7 @@ function EditAudiobookModal({ book, onSave, onClose }) {
 
 // ── Graph Modal ────────────────────────────────────────────────────────────────
 
-function SearchDropdown({ query, library, notebooks, sketchbooks, onOpenBook, onOpenAudio, onOpenNotebook, onOpenSketchbook, onClose, onDevCommand, onOpenGraph, onOpenCalendar, onOpenKanban, onReset }) {
+export function SearchDropdown({ query, library, notebooks, sketchbooks, onOpenBook, onOpenAudio, onOpenNotebook, onOpenSketchbook, onClose, onDevCommand, onOpenGraph, onOpenCalendar, onOpenKanban, onReset }) {
   const q = query.trim().toLowerCase()
   if (!q) return null
 
@@ -557,8 +586,8 @@ function SearchDropdown({ query, library, notebooks, sketchbooks, onOpenBook, on
     const todayStr = now.toDateString()
     const nbItem = (n, sub) => (
       <button key={n.id} className="search-drop-item" onClick={() => { onOpenNotebook(n); onClose() }}>
-        <div className="search-drop-cover" style={{ background: n.coverColor || '#2d1b69' }}>
-          <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.5)', fontWeight: 600 }}>NOTE</span>
+        <div className="search-drop-cover" style={{ background: n.coverColor || '#2d1b69', boxShadow: '0 1px 6px rgba(0,0,0,0.4)' }}>
+          {n.coverDataUrl && <img src={n.coverDataUrl} alt="" style={{ width:'100%',height:'100%',objectFit:'cover',borderRadius:4 }} />}
         </div>
         <div className="search-drop-info">
           <div className="search-drop-title">{n.title}</div>
@@ -650,11 +679,17 @@ function SearchDropdown({ query, library, notebooks, sketchbooks, onOpenBook, on
             else onOpenBook(item)
             onClose()
           }}>
-            <div className="search-drop-cover" style={{ background: isSb ? (item.coverColor || `linear-gradient(135deg,${c1},${c2})`) : `linear-gradient(135deg,${c1},${c2})` }}>
+            {/* Cover — solid color for notebooks/sketchbooks, gradient for books/audio, matching sidenav MiniCover */}
+            <div className="search-drop-cover" style={{
+              background: (isNb || isSb)
+                ? (item.coverColor || (isNb ? '#2d1b69' : '#0d5eaf'))
+                : `linear-gradient(135deg,${c1},${c2})`,
+              boxShadow: '0 1px 6px rgba(0,0,0,0.4)',
+            }}>
               {item.coverDataUrl
                 ? <img src={item.coverDataUrl} alt="" style={{ width:'100%',height:'100%',objectFit:'cover',borderRadius:4 }} />
-                : <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.5)', fontWeight: 600 }}>
-                    {isAudio ? 'AUDIO' : isNb ? 'NOTE' : isSb ? 'SKETCH' : 'BOOK'}
+                : <span style={{ fontSize: 8, color: 'rgba(255,255,255,0.45)', fontWeight: 700 }}>
+                    {isAudio ? '♪' : ''}
                   </span>
               }
             </div>
@@ -664,7 +699,17 @@ function SearchDropdown({ query, library, notebooks, sketchbooks, onOpenBook, on
               {isNb && <div className="search-drop-sub">{item.wordCount || 0} words</div>}
               {ocrSnippet && <div className="search-drop-sub" style={{ fontStyle:'italic', opacity:0.75 }}>{ocrSnippet}</div>}
             </div>
-            <div className="search-drop-badge">{isAudio ? '♪' : isNb ? '📝' : isSb ? '✏️' : '📖'}</div>
+            <div className="search-drop-badge">
+              {isAudio ? (
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 6h3l3.5-4.5v13L6 10H3V6z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/><path d="M11 5c.8.7 1.3 1.6 1.3 3s-.5 2.3-1.3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+              ) : isNb ? (
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="12" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.4"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>
+              ) : isSb ? (
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M2 14l4-4 7-7a1.5 1.5 0 0 1 2 2L8 12 2 14z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/></svg>
+              ) : (
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 14V3a1.5 1.5 0 0 1 1.5-1.5h9V14H4.5A1.5 1.5 0 0 1 3 12.5v0A1.5 1.5 0 0 1 4.5 11H13.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              )}
+            </div>
           </button>
         )
       })}
@@ -708,32 +753,43 @@ function NotebookCard({ nb, onOpen, onMenu }) {
       onContextMenu={e => { e.preventDefault(); onMenu(e, nb) }}>
       {/* Cover — same fixed size as book covers */}
       <div className="book-cover" style={{ background: color, padding: 0, justifyContent: 'flex-start', alignItems: 'stretch' }}>
-        {/* Left spine shadow */}
-        <div style={{ position:'absolute', left:0, top:0, bottom:0, width:8,
-          background:'rgba(0,0,0,0.18)', zIndex:1 }} />
+        {nb.coverDataUrl ? (
+          <>
+            <div style={{ position:'absolute', inset:0, borderRadius:'inherit', overflow:'hidden' }}>
+              <img src={nb.coverDataUrl} alt="" draggable="false" style={{ width:'100%', height:'100%', objectFit:'cover' }} />
+            </div>
+            <div style={{ position:'absolute', inset:0, borderRadius:'inherit', border:'1px solid var(--border)', pointerEvents:'none', zIndex:2 }} />
+          </>
+        ) : (
+          <>
+            {/* Left spine shadow */}
+            <div style={{ position:'absolute', left:0, top:0, bottom:0, width:8,
+              background:'rgba(0,0,0,0.18)', zIndex:1 }} />
 
-        {/* Title + date — top section */}
-        <div style={{ position:'relative', padding:'14px 12px 0 16px', flex:1, zIndex:2 }}>
-          <div style={{ fontSize:13, fontWeight:800, color:'#fff', lineHeight:1.25, wordBreak:'break-word', overflow:'hidden', display:'-webkit-box', WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>{nb.title}</div>
-          {dateStr && <div style={{ fontSize:10, color:'rgba(255,255,255,0.6)', marginTop:7, fontWeight:400 }}>{dateStr}</div>}
-        </div>
+            {/* Title + date — top section */}
+            <div style={{ position:'relative', padding:'14px 12px 0 16px', flex:1, zIndex:2 }}>
+              <div style={{ fontSize:13, fontWeight:800, color:'#fff', lineHeight:1.25, letterSpacing:'0.025em', wordBreak:'break-word', overflow:'hidden', display:'-webkit-box', WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>{nb.title}</div>
+              {dateStr && <div style={{ fontSize:10, color:'rgba(255,255,255,0.6)', marginTop:7, fontWeight:400 }}>{dateStr}</div>}
+            </div>
 
-        {/* Bottom area — due date badge replaces ruled lines when present */}
-        <div style={{ position:'relative', padding:'0 12px 16px 16px', display:'flex', flexDirection:'column', gap:8, zIndex:2 }}>
-          {dueBadge ? (
-            <div style={{
-              fontSize:9, fontWeight:700, letterSpacing:'.04em',
-              padding:'2px 7px 3px', borderRadius:5, display:'inline-flex', alignSelf:'flex-start',
-              background: dueBadge.state === 'overdue' ? 'rgba(220,40,40,0.22)' : dueBadge.state === 'today' ? 'rgba(230,120,0,0.22)' : 'rgba(70,100,255,0.20)',
-              color: dueBadge.state === 'overdue' ? '#ffd0d0' : dueBadge.state === 'today' ? '#ffe8b0' : '#dce8ff',
-              border: `1px solid ${dueBadge.state === 'overdue' ? 'rgba(220,40,40,0.45)' : dueBadge.state === 'today' ? 'rgba(230,120,0,0.45)' : 'rgba(70,100,255,0.40)'}`,
-            }}>{dueBadge.text}</div>
-          ) : (
-            [...Array(2)].map((_,i) => (
-              <div key={i} style={{ height:1, background:'rgba(255,255,255,0.32)', borderRadius:1 }} />
-            ))
-          )}
-        </div>
+            {/* Bottom area — due date badge replaces ruled lines when present */}
+            <div style={{ position:'relative', padding:'0 12px 16px 16px', display:'flex', flexDirection:'column', gap:8, zIndex:2 }}>
+              {dueBadge ? (
+                <div style={{
+                  fontSize:9, fontWeight:700, letterSpacing:'.04em',
+                  padding:'2px 7px 3px', borderRadius:5, display:'inline-flex', alignSelf:'flex-start',
+                  background: dueBadge.state === 'overdue' ? 'rgba(220,40,40,0.22)' : dueBadge.state === 'today' ? 'rgba(230,120,0,0.22)' : 'rgba(70,100,255,0.20)',
+                  color: dueBadge.state === 'overdue' ? '#ffd0d0' : dueBadge.state === 'today' ? '#ffe8b0' : '#dce8ff',
+                  border: `1px solid ${dueBadge.state === 'overdue' ? 'rgba(220,40,40,0.45)' : dueBadge.state === 'today' ? 'rgba(230,120,0,0.45)' : 'rgba(70,100,255,0.40)'}`,
+                }}>{dueBadge.text}</div>
+              ) : (
+                [...Array(2)].map((_,i) => (
+                  <div key={i} style={{ height:1, background:'rgba(255,255,255,0.32)', borderRadius:1 }} />
+                ))
+              )}
+            </div>
+          </>
+        )}
       </div>
       {/* Meta */}
       <div className="book-meta">
@@ -753,7 +809,7 @@ function NotebookCard({ nb, onOpen, onMenu }) {
 // SketchbookCard — whiteboard/sketch cover design
 // ─────────────────────────────────────────────────────────────────────────────
 function SketchbookCard({ sb, onOpen, onMenu }) {
-  const color = sb.coverColor || '#0d5eaf'
+  const color = sb.gnos_canvasBg || sb.coverColor || '#0d5eaf'
   const dateStr = sb.updatedAt || sb.createdAt
     ? new Date(sb.updatedAt || sb.createdAt).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })
     : ''
@@ -786,7 +842,7 @@ function SketchbookCard({ sb, onOpen, onMenu }) {
 
             {/* Title + date */}
             <div style={{ position:'relative', padding:'14px 12px 0 16px', flex:1, zIndex:2 }}>
-              <div style={{ fontSize:13, fontWeight:800, color:'#fff', lineHeight:1.25, wordBreak:'break-word', overflow:'hidden', display:'-webkit-box', WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>{sb.title}</div>
+              <div style={{ fontSize:13, fontWeight:800, color:'#fff', lineHeight:1.25, letterSpacing:'0.025em', wordBreak:'break-word', overflow:'hidden', display:'-webkit-box', WebkitLineClamp:4, WebkitBoxOrient:'vertical' }}>{sb.title}</div>
               {dateStr && <div style={{ fontSize:10, color:'rgba(255,255,255,0.6)', marginTop:7, fontWeight:400 }}>{dateStr}</div>}
             </div>
 
@@ -944,10 +1000,22 @@ function EditBookMetaModal({ book, onSave, onClose }) {
   )
 }
 
-function EditNotebookModal({ nb, onSave, onClose }) {
+function EditNotebookModal({ nb, onSave, onClose, hideColor = false }) {
   const [title, setTitle] = useState(nb.title || '')
   const COLORS = ['#2d1b69','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#6b3fa0','#2e7d32','#c0392b','#00838f']
   const [color, setColor] = useState(nb.coverColor || COLORS[0])
+  const [coverDataUrl, setCoverDataUrl] = useState(nb.coverDataUrl || null)
+  const coverInputRef = useRef(null)
+
+  function handleCoverFile(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = ev => setCoverDataUrl(ev.target.result)
+    reader.readAsDataURL(file)
+    e.target.value = ''
+  }
+
   return (
     <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:10000,display:'flex',alignItems:'center',justifyContent:'center'}}
       onClick={onClose}>
@@ -959,33 +1027,47 @@ function EditNotebookModal({ nb, onSave, onClose }) {
           <input value={title} onChange={e=>setTitle(e.target.value)}
             style={{width:'100%',background:'var(--bg)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:7,padding:'7px 10px',fontSize:13,outline:'none',boxSizing:'border-box'}} />
         </div>
-        <div style={{marginBottom:20}}>
-          <div style={{fontSize:11,color:'var(--textDim)',marginBottom:8,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em'}}>Cover Color</div>
-          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-            {COLORS.map(c=>(
-              <button key={c} onClick={()=>setColor(c)} style={{
-                width:28,height:28,borderRadius:6,background:c,
-                border:c===color?'2px solid var(--accent)':'2px solid transparent',
-                cursor:'pointer',outline:c===color?'2px solid var(--accent)':'none',outlineOffset:1
-              }}/>
-            ))}
+        <div style={{marginBottom:16}}>
+          <div style={{fontSize:11,color:'var(--textDim)',marginBottom:8,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em'}}>Cover Image</div>
+          <div style={{display:'flex',alignItems:'center',gap:10}}>
+            {coverDataUrl && (
+              <img src={coverDataUrl} alt="Cover" style={{width:36,height:50,objectFit:'cover',borderRadius:4,border:'1px solid var(--border)',flexShrink:0}} />
+            )}
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              <button onClick={() => coverInputRef.current?.click()}
+                style={{background:'var(--surfaceAlt)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:7,padding:'5px 12px',fontSize:12,cursor:'pointer',fontFamily:'inherit'}}>
+                {coverDataUrl ? 'Change Image' : 'Upload Image'}
+              </button>
+              {coverDataUrl && (
+                <button onClick={() => setCoverDataUrl(null)}
+                  style={{background:'none',border:'1px solid var(--border)',color:'var(--textDim)',borderRadius:7,padding:'5px 12px',fontSize:12,cursor:'pointer',fontFamily:'inherit'}}>
+                  Remove Image
+                </button>
+              )}
+            </div>
           </div>
+          <input ref={coverInputRef} type="file" accept="image/*" style={{display:'none'}} onChange={handleCoverFile} />
         </div>
+        {!hideColor && (
+          <div style={{marginBottom:20}}>
+            <div style={{fontSize:11,color:'var(--textDim)',marginBottom:8,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.06em'}}>Cover Color</div>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+              {COLORS.map(c=>(
+                <button key={c} onClick={()=>setColor(c)} style={{
+                  width:28,height:28,borderRadius:6,background:c,
+                  border:c===color?'2px solid var(--accent)':'2px solid transparent',
+                  cursor:'pointer',outline:c===color?'2px solid var(--accent)':'none',outlineOffset:1
+                }}/>
+              ))}
+            </div>
+          </div>
+        )}
         <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
           <button onClick={onClose} style={{background:'none',border:'1px solid var(--border)',color:'var(--textDim)',borderRadius:7,padding:'7px 16px',fontSize:13,cursor:'pointer'}}>Cancel</button>
-          <button onClick={()=>onSave({title:title.trim()||nb.title,coverColor:color})}
+          <button onClick={()=>onSave({title:title.trim()||nb.title,coverColor:color,coverDataUrl:coverDataUrl??null})}
             style={{background:'var(--accent)',border:'none',color:'#fff',borderRadius:7,padding:'7px 16px',fontSize:13,cursor:'pointer',fontWeight:600}}>Save</button>
         </div>
       </div>
-    </div>
-  )
-}
-
-function ProfileStatCard({ value, label }) {
-  return (
-    <div style={{ textAlign:'center', padding:'10px 6px' }}>
-      <div style={{ fontSize:28, fontWeight:800, color:'var(--text)', lineHeight:1, letterSpacing:'-0.02em', fontVariantNumeric:'tabular-nums' }}>{value}</div>
-      <div style={{ fontSize:10, color:'var(--textDim)', marginTop:5, textTransform:'uppercase', letterSpacing:'0.08em', fontWeight:600, opacity:0.7 }}>{label}</div>
     </div>
   )
 }
@@ -1447,8 +1529,84 @@ export function FullCalendar({ notebookEvents = {}, fullHeight = false }) {
   const [selectedDay,  setSelectedDay]  = useState(null) // kept for potential future use
   const [editingEvent, setEditingEvent] = useState(null) // {event, isNew}
   const [showMonthPicker, setShowMonthPicker] = useState(false)
+  const [icsImporting,    setIcsImporting]    = useState(false)
+  const [icsResult,       setIcsResult]       = useState(null) // { added, skipped }
+  const icsInputRef = useRef(null)
 
   const persist = async (evts) => { setCalendarEventsStore(evts); await saveCalendarEvents(evts) }
+
+  // ── .ics import ──────────────────────────────────────────────────────────────
+  function parseIcs(text) {
+    const evts = []
+    const blocks = text.split(/BEGIN:VEVENT/i).slice(1)
+    for (const block of blocks) {
+      try {
+        const end = block.indexOf('END:VEVENT')
+        const body = end > -1 ? block.slice(0, end) : block
+        const get = key => {
+          // Handle folded lines (RFC 5545: continuation lines start with space/tab)
+          const unfolded = body.replace(/\r?\n[ \t]/g, '')
+          const m = unfolded.match(new RegExp(`^${key}(?:;[^:]*)?:(.*)$`, 'mi'))
+          return m ? m[1].trim() : null
+        }
+        const summary = get('SUMMARY')?.replace(/\\,/g,',').replace(/\\n/g,' ').replace(/\\;/g,';') || 'Untitled'
+        const dtstart = get('DTSTART') || ''
+        const dtend   = get('DTEND') || ''
+
+        // Parse DTSTART — DATE (YYYYMMDD) or DATETIME (YYYYMMDDTHHmmssZ)
+        const parseIcsDate = (s) => {
+          if (!s) return null
+          const d = s.replace(/[TZ]/g,'')
+          if (d.length >= 8) {
+            const y=d.slice(0,4), mo=d.slice(4,6), day=d.slice(6,8)
+            const h=d.slice(8,10)||'00', min=d.slice(10,12)||'00'
+            return { dateKey:`${y}-${mo}-${day}`, time:`${h}:${min}`, isAllDay: s.length===8 }
+          }
+          return null
+        }
+        const start = parseIcsDate(dtstart)
+        if (!start) continue
+
+        const startObj = parseIcsDate(dtend)
+        const color = '#388bfd'
+        evts.push({
+          id: makeEvtId(),
+          title: summary,
+          date: start.dateKey,
+          startTime: start.isAllDay ? null : start.time,
+          endTime: startObj && !startObj.isAllDay ? startObj.time : null,
+          allDay: start.isAllDay,
+          color,
+          source: 'ics',
+          createdAt: new Date().toISOString(),
+        })
+      } catch { /* skip malformed blocks */ }
+    }
+    return evts
+  }
+
+  const handleIcsFile = async (file) => {
+    if (!file) return
+    setIcsImporting(true)
+    setIcsResult(null)
+    try {
+      const text = await file.text()
+      const parsed = parseIcs(text)
+      if (!parsed.length) { setIcsResult({ added: 0, skipped: 0 }); setIcsImporting(false); return }
+      // Deduplicate against existing events by title + date
+      const existing = new Set(events.map(e => `${e.title}|${e.date}`))
+      const fresh = parsed.filter(e => !existing.has(`${e.title}|${e.date}`))
+      const skipped = parsed.length - fresh.length
+      if (fresh.length) await persist([...events, ...fresh])
+      setIcsResult({ added: fresh.length, skipped })
+      setTimeout(() => setIcsResult(null), 4000)
+    } catch (err) {
+      console.warn('[Gnos] .ics import failed:', err)
+      setIcsResult({ error: true })
+      setTimeout(() => setIcsResult(null), 3000)
+    }
+    setIcsImporting(false)
+  }
 
   const allEventsForDate = (dateKey) => {
     const appEvts = eventsForDateKey(dateKey, events)
@@ -1715,6 +1873,11 @@ export function FullCalendar({ notebookEvents = {}, fullHeight = false }) {
     <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:10,padding:12,marginBottom:fullHeight?0:8,
       position:'relative',overflow:'hidden',
       ...(fullHeight?{flex:1,display:'flex',flexDirection:'column',minHeight:0}:{})}}>
+
+      {/* Hidden .ics file input */}
+      <input ref={icsInputRef} type="file" accept=".ics,text/calendar" style={{display:'none'}}
+        onChange={e=>{ const f=e.target.files?.[0]; e.target.value=''; if(f) handleIcsFile(f) }} />
+
       {/* Toolbar */}
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10,flexWrap:'wrap',gap:6,flexShrink:0}}>
         <div style={{display:'flex',alignItems:'center',gap:4}}>
@@ -1728,6 +1891,34 @@ export function FullCalendar({ notebookEvents = {}, fullHeight = false }) {
           </button>
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
+          {/* .ics import result toast */}
+          {icsResult && (
+            <div style={{fontSize:11,fontWeight:600,color:icsResult.error?'#ef5350':'var(--text)',
+              background:icsResult.error?'rgba(239,83,80,0.1)':'var(--surfaceAlt)',
+              border:`1px solid ${icsResult.error?'rgba(239,83,80,0.3)':'var(--border)'}`,
+              borderRadius:7,padding:'0 10px',height:28,display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap'}}>
+              {icsResult.error ? '⚠ Import failed'
+                : icsResult.added === 0 ? '✓ No new events'
+                : `✓ ${icsResult.added} event${icsResult.added!==1?'s':''} imported${icsResult.skipped?` · ${icsResult.skipped} skipped`:''}`}
+            </div>
+          )}
+          {/* Import Calendar (.ics) button */}
+          <button
+            onClick={()=>icsInputRef.current?.click()}
+            disabled={icsImporting}
+            title="Import calendar events from a .ics file (iCalendar — exported from Apple Calendar, Google Calendar, Outlook, etc.)"
+            style={{height:28,padding:'0 10px',borderRadius:7,border:'1px solid var(--border)',background:'var(--surfaceAlt)',
+              color:'var(--textDim)',fontSize:11,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',gap:5,
+              opacity:icsImporting?0.5:1,transition:'background 0.12s,color 0.12s,border-color 0.12s'}}
+            onMouseEnter={e=>{if(!icsImporting){e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--text)'}}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--textDim)'}}>
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
+              <rect x="2" y="3" width="12" height="11" rx="2" stroke="currentColor" strokeWidth="1.4"/>
+              <path d="M5 1v3M11 1v3M2 7h12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+              <path d="M8 10v2.5M6.5 11.5L8 13l1.5-1.5" stroke="var(--accent)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            {icsImporting ? 'Importing…' : 'Import .ics'}
+          </button>
           <button onClick={()=>setEditingEvent({event:{date:todayKey},isNew:true})}
             style={{height:28,padding:'0 12px',borderRadius:7,border:'none',background:'var(--accent)',color:'#fff',fontSize:11,fontWeight:700,cursor:'pointer'}}>
             + Event
@@ -2155,22 +2346,20 @@ export function KanbanBoard() {
 
 // ── ProfileModal ──────────────────────────────────────────────────────────────
 function ProfileModal({ onClose }) {
+  const isMobile = useIsMobile()
+  const paneTabId          = useContext(PaneContext)
   const library            = useAppStore(s => s.library)
   const notebooks          = useAppStore(s => s.notebooks)
   const username           = useAppStore(s => s.username)
   const navigate           = useAppStore(s => s.navigate)
   const storeCalendarEvents = useAppStore(s => s.calendarEvents)
 
-  const [log,          setLog]          = useState({})
   const [profileTab,   setProfileTab]   = useState('stats')
-  const [reviewPeriod, setReviewPeriod] = useState('week')
   const [todoLists,    setTodoLists]    = useState([])
   const [todosLoaded,  setTodosLoaded]  = useState(false)
   const [calendarEvents, setCalendarEvents] = useState({})
   const [habitBlocks,  setHabitBlocks]  = useState([])
   const [habitsLoaded, setHabitsLoaded] = useState(false)
-
-  useEffect(() => { loadReadingLog().then(setLog).catch(() => setLog({})) }, [])
 
   useEffect(() => {
     if (profileTab !== 'habits' || habitsLoaded) return
@@ -2257,113 +2446,43 @@ function ProfileModal({ onClose }) {
 
   const today = new Date().toISOString().slice(0, 10)
 
-  const { totalMinutes, avgDaily, todayMins, streak, booksFinished, heatmapDays } = useMemo(() => {
-    const total = Object.values(log).reduce((a, b) => a + b, 0)
-    const days  = Object.keys(log).length
-    const tMins = Math.round(log[today] || 0)
-    let s = 0
-    for (let i = 0; i < 365; i++) {
-      const d = new Date(); d.setDate(d.getDate() - i)
-      const k = d.toISOString().slice(0, 10)
-      if ((log[k] || 0) >= 1) s++; else break
-    }
-    const finished = library.filter(b => (b.currentChapter || 0) >= Math.max((b.totalChapters || 1) - 1, 1)).length
-    const heat = []
-    for (let i = 83; i >= 0; i--) {
-      const d = new Date(); d.setDate(d.getDate() - i)
-      const k = d.toISOString().slice(0, 10)
-      const m = log[k] || 0
-      const level = m === 0 ? 0 : m < 10 ? 1 : m < 30 ? 2 : m < 60 ? 3 : 4
-      heat.push({ k, m, level })
-    }
-    return { totalMinutes: total, avgDaily: days > 0 ? total / days : 0, todayMins: tMins, streak: s, booksFinished: finished, heatmapDays: heat }
-  }, [log, library, today])
-
-  const topBooks = useMemo(() =>
-    library.map(b => ({ ...b, chaptersRead: b.currentChapter || 0 })).sort((a,b)=>b.chaptersRead-a.chaptersRead).slice(0,5),
-    [library]
-  )
-
-  const reviewStats = useMemo(() => {
-    const days = reviewPeriod==='week'?7:reviewPeriod==='month'?30:365
-    const dateKeys = []
-    for (let i=days-1;i>=0;i--) { const d=new Date();d.setDate(d.getDate()-i);dateKeys.push(d.toISOString().slice(0,10)) }
-    const minutes = dateKeys.reduce((s,k)=>s+(log[k]||0),0)
-    const daysActive = dateKeys.filter(k=>(log[k]||0)>=1).length
-    const notesCreated = notebooks.filter(n=>{ const d=n.createdAt?.slice(0,10); return d&&d>=dateKeys[0]&&d<=dateKeys[dateKeys.length-1] }).length
-    let streak2=0; for(let i=dateKeys.length-1;i>=0;i--){if((log[dateKeys[i]]||0)>=1)streak2++;else break}
-    const booksFinishedInPeriod = library.filter(b=>{ const f=(b.currentChapter||0)>=Math.max((b.totalChapters||1)-1,1); return f&&b.updatedAt&&b.updatedAt.slice(0,10)>=dateKeys[0] }).length
-    const bars = dateKeys.map(k=>({k,m:Math.round(log[k]||0)}))
-    const maxM = Math.max(...bars.map(b=>b.m),1)
-    return { minutes:Math.round(minutes),daysActive,notesCreated,streak:streak2,booksFinishedInPeriod,bars,maxM }
-  }, [log,notebooks,library,reviewPeriod])
-
   const title = username ? `${username} — Profile` : 'Reading Profile'
-  const heatAlpha = ['0','0.22','0.45','0.7','1']
   const TABS = [['stats','Stats'],['review','Review'],['calendar','Calendar'],['habits','Habits']]
 
   return (
-    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:2000,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={onClose}>
-      <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:14,
-        width: 700, maxWidth:'calc(100vw - 32px)', maxHeight:'calc(100vh - 48px)',
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:2000,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={isMobile ? undefined : onClose}>
+      <div style={{background:'var(--surface)',border:'1px solid var(--border)',
+        borderRadius: isMobile ? 0 : 14,
+        width: isMobile ? '100vw' : 700,
+        maxWidth: isMobile ? '100%' : 'calc(100vw - 32px)',
+        height: isMobile ? '100vh' : undefined,
+        maxHeight: isMobile ? '100%' : 'calc(100vh - 48px)',
         display:'flex',flexDirection:'column',boxShadow:'0 20px 60px rgba(0,0,0,0.6)',transition:'width 0.25s ease'}} onClick={e=>e.stopPropagation()}>
         {/* Header */}
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 20px 12px',borderBottom:'1px solid var(--borderSubtle)',flexShrink:0}}>
-          <div style={{display:'flex',alignItems:'center',gap:10}}>
-            <span style={{fontSize:13,fontWeight:700,color:'var(--text)',letterSpacing:'-0.01em'}}>{title}</span>
-            <div style={{display:'flex',gap:2,background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:8,padding:3,boxShadow:'inset 0 1px 2px rgba(0,0,0,0.15)'}}>
-              {TABS.map(([t,l])=>(
-                <button key={t} onClick={()=>setProfileTab(t)} style={{
-                  height:22,padding:'0 10px',fontSize:11,fontWeight:600,borderRadius:5,border:'none',cursor:'pointer',fontFamily:'inherit',
-                  background:profileTab===t?'var(--accent)':'none',color:profileTab===t?'#fff':'var(--textDim)',transition:'all 0.15s',
-                }}>{l}</button>
-              ))}
+        {isMobile ? null : (
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 20px 12px',borderBottom:'1px solid var(--borderSubtle)',flexShrink:0}}>
+            <div style={{display:'flex',alignItems:'center',gap:10}}>
+              <span style={{fontSize:13,fontWeight:700,color:'var(--text)',letterSpacing:'-0.01em'}}>{title}</span>
+              <div style={{display:'flex',gap:2,background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:8,padding:3,boxShadow:'inset 0 1px 2px rgba(0,0,0,0.15)'}}>
+                {TABS.map(([t,l])=>(
+                  <button key={t} onClick={()=>setProfileTab(t)} style={{
+                    height:22,padding:'0 10px',fontSize:11,fontWeight:600,borderRadius:5,border:'none',cursor:'pointer',fontFamily:'inherit',
+                    background:profileTab===t?'var(--accent)':'none',color:profileTab===t?'#fff':'var(--textDim)',transition:'all 0.15s',
+                  }}>{l}</button>
+                ))}
+              </div>
             </div>
+            <button onClick={onClose} style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}}
+              onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}}
+              onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}>
+              <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+            </button>
           </div>
-          <button onClick={onClose} style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}}
-            onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}}
-            onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}>
-            <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-          </button>
-        </div>
+        )}
 
-        <div style={{overflowY:'auto',padding:'16px 20px 24px',flex:1}}>
-          {/* ── Review tab ── */}
-          {profileTab==='review'&&(
-            <div>
-              <div style={{display:'inline-flex',alignItems:'center',marginBottom:20,background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:9,padding:3,boxShadow:'inset 0 1px 2px rgba(0,0,0,0.15)'}}>
-                {[['week','Week'],['month','Month'],['year','Year']].map(([p,l])=>(
-                  <button key={p} onClick={()=>setReviewPeriod(p)} style={{height:24,padding:'0 12px',fontSize:11,fontWeight:600,borderRadius:6,border:'none',cursor:'pointer',fontFamily:'inherit',background:reviewPeriod===p?'var(--accent)':'none',color:reviewPeriod===p?'#fff':'var(--textDim)',transition:'all 0.15s'}}>{l}</button>
-                ))}
-              </div>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:0,marginBottom:8,borderBottom:'1px solid var(--borderSubtle)',paddingBottom:8}}>
-                <ProfileStatCard value={reviewStats.minutes} label="Min Studied"/>
-                <ProfileStatCard value={reviewStats.daysActive} label="Days Active"/>
-                <ProfileStatCard value={reviewStats.streak} label="Streak"/>
-                <ProfileStatCard value={reviewStats.notesCreated} label="Notes Created"/>
-                <ProfileStatCard value={reviewStats.booksFinishedInPeriod} label="Books Finished"/>
-                <ProfileStatCard value={`${Math.round(reviewStats.minutes/60*10)/10}h`} label="Hours"/>
-              </div>
-              <div style={{fontSize:11,fontWeight:700,color:'var(--textDim)',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:10}}>
-                Daily Activity — {reviewPeriod==='week'?'Last 7 Days':reviewPeriod==='month'?'Last 30 Days':'Last 365 Days'}
-              </div>
-              <div style={{position:'relative',display:'flex',alignItems:'flex-end',gap:reviewPeriod==='year'?1:3,height:120,marginBottom:16}}>
-                {reviewStats.bars.map((bar,i)=>(
-                  <div key={i} title={`${bar.k}: ${bar.m} min`} style={{flex:1,minWidth:0,display:'flex',flexDirection:'column',justifyContent:'flex-end'}}>
-                    <div style={{height:bar.m===0?2:Math.max(4,Math.round((bar.m/reviewStats.maxM)*116)),borderRadius:2,background:bar.m===0?'var(--surfaceAlt)':'var(--accent)',opacity:bar.m===0?0.4:1,transition:'height 0.2s'}}/>
-                  </div>
-                ))}
-                {(()=>{
-                  const vals=reviewStats.bars.map(b=>b.m); const n=vals.length; if(n<2)return null
-                  const sX=vals.reduce((s,_,i)=>s+i,0),sY=vals.reduce((s,v)=>s+v,0),sXY=vals.reduce((s,v,i)=>s+i*v,0),sX2=vals.reduce((s,_,i)=>s+i*i,0)
-                  const den=n*sX2-sX*sX,slope=den?(n*sXY-sX*sY)/den:0,intercept=(sY-slope*sX)/n
-                  const pts=vals.map((_,i)=>`${(i/(n-1))*100},${120-(Math.min(Math.max(slope*i+intercept,0),reviewStats.maxM)/reviewStats.maxM)*116}`).join(' ')
-                  return (<svg viewBox="0 0 100 120" preserveAspectRatio="none" style={{position:'absolute',top:0,left:0,width:'100%',height:'100%',pointerEvents:'none',overflow:'visible'}}><polyline points={pts} fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeOpacity="0.55" strokeDasharray="4 3" vectorEffect="non-scaling-stroke"/></svg>)
-                })()}
-              </div>
-              {reviewPeriod!=='year'&&(<div style={{display:'flex',justifyContent:'space-between',fontSize:9,color:'var(--textDim)',opacity:0.6,marginBottom:4}}><span>{reviewStats.bars[0]?.k.slice(5)}</span><span>{reviewStats.bars[reviewStats.bars.length-1]?.k.slice(5)}</span></div>)}
-            </div>
-          )}
+        <div style={{overflowY:'auto',padding: isMobile ? '16px 20px 120px' : '16px 20px 24px',flex:1}}>
+          {/* ── Review tab (shared) ── */}
+          {profileTab==='review'&&(<ProfileContent tab="review" library={library} notebooks={notebooks}/>)}
 
           {/* ── Calendar tab ── */}
           {profileTab==='calendar'&&(
@@ -2403,10 +2522,32 @@ function ProfileModal({ onClose }) {
                 return (
                   <div key={bi} style={{marginBottom:16,padding:'12px 14px',borderRadius:10,background:'var(--surface)',border:'1px solid var(--borderSubtle)'}}>
                     <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
-                      <div>
+                      <div style={{flex:1,minWidth:0}}>
                         <div style={{fontSize:13,fontWeight:700,color:'var(--text)'}}>{block.title || 'Habits'}</div>
                         <div style={{fontSize:10,color:'var(--textDim)',marginTop:2}}>{block.notebookTitle}</div>
                       </div>
+                      <button
+                        title="Open notebook"
+                        onClick={() => {
+                          const nb = useAppStore.getState().notebooks.find(n => n.id === block.notebookId)
+                          if (!nb) return
+                          if (paneTabId) {
+                            useAppStore.getState().setActiveNotebook(nb)
+                            useAppStore.getState().updateTab(paneTabId, { view: 'notebook', activeNotebook: nb })
+                            useAppStore.getState().setView('notebook')
+                          } else {
+                            navigate({ view: 'notebook', activeNotebook: nb })
+                          }
+                          onClose()
+                        }}
+                        style={{width:26,height:26,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,marginRight:8,transition:'border-color 0.1s,color 0.1s'}}
+                        onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)'}}
+                        onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--textDim)'}}
+                      >
+                        <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                          <path d="M2 6h8M6 2l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      </button>
                       <div style={{textAlign:'right'}}>
                         <div style={{fontSize:20,fontWeight:800,color:'var(--accent)',lineHeight:1}}>{todayDone}/{totalHabits}</div>
                         <div style={{fontSize:10,color:'var(--textDim)',marginTop:1}}>today</div>
@@ -2452,57 +2593,31 @@ function ProfileModal({ onClose }) {
             </div>
           )}
 
-          {/* ── Stats tab ── */}
-          {profileTab==='stats'&&(<>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(3, 1fr)',gap:0,marginBottom:8,borderBottom:'1px solid var(--borderSubtle)',paddingBottom:8}}>
-              <ProfileStatCard value={streak}                                   label="Day Streak"/>
-              <ProfileStatCard value={Math.round(avgDaily)}                     label="Avg Min/Day"/>
-              <ProfileStatCard value={todayMins}                                label="Today (min)"/>
-              <ProfileStatCard value={booksFinished}                            label="Finished"/>
-              <ProfileStatCard value={Math.round(totalMinutes)}                 label="Total Min"/>
-              <ProfileStatCard value={`${Math.round(totalMinutes/60*10)/10}h`} label="Total Hours"/>
-            </div>
-            <div style={{fontSize:10,fontWeight:700,color:'var(--textDim)',textTransform:'uppercase',letterSpacing:'0.09em',marginBottom:8,marginTop:4,opacity:0.6}}>Activity — Last 12 Weeks</div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(12,1fr)',gridTemplateRows:'repeat(7,1fr)',gridAutoFlow:'column',gap:3,marginBottom:10}}>
-              {heatmapDays.map((d,i)=>(
-                <div key={i} title={`${d.k}: ${Math.round(d.m)} min`} style={{height:10,borderRadius:2,background:d.level===0?'var(--surfaceAlt)':`color-mix(in srgb, var(--accent) ${Math.round(parseFloat(heatAlpha[d.level])*100)}%, transparent)`,border:d.level===0?'1px solid var(--borderSubtle)':'none'}}/>
-              ))}
-            </div>
-            {/* Heatmap legend */}
-            <div style={{display:'flex',alignItems:'center',justifyContent:'flex-end',gap:4,marginTop:4,marginBottom:6}}>
-              <span style={{fontSize:9,color:'var(--textDim)',opacity:0.6}}>Less</span>
-              {[0,1,2,3,4].map(l=>(
-                <div key={l} style={{width:10,height:10,borderRadius:2,
-                  background:l===0?'var(--surfaceAlt)':`color-mix(in srgb, var(--accent) ${Math.round(parseFloat(heatAlpha[l])*100)}%, transparent)`,
-                  border:l===0?'1px solid var(--borderSubtle)':'none'}}/>
-              ))}
-              <span style={{fontSize:9,color:'var(--textDim)',opacity:0.6}}>More</span>
-            </div>
-            {topBooks.length > 0 && (<>
-              <div style={{fontSize:10,fontWeight:700,color:'var(--textDim)',textTransform:'uppercase',letterSpacing:'0.09em',marginBottom:10,marginTop:4,opacity:0.6}}>Top Books by Progress</div>
-              {topBooks.map((b,i)=>{
-                const progressPct = b.totalChapters > 1 ? Math.round(((b.currentChapter||0)/(b.totalChapters-1))*100) : 0
-                return (
-                  <div key={b.id} style={{display:'flex',alignItems:'center',gap:10,padding:'6px 0',borderTop:i>0?'1px solid var(--borderSubtle)':'none'}}>
-                    <div style={{width:24,height:24,borderRadius:4,background:b.coverDataUrl?'none':'var(--surfaceAlt)',flexShrink:0,overflow:'hidden'}}>
-                      {b.coverDataUrl?<img src={b.coverDataUrl} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>:<div style={{width:'100%',height:'100%',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'var(--textDim)'}}>{i+1}</div>}
-                    </div>
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:12,fontWeight:600,color:'var(--text)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.title}</div>
-                      <div style={{fontSize:10,color:'var(--textDim)'}}>{b.author||'Unknown'}</div>
-                    </div>
-                    <div style={{width:60,flexShrink:0}}>
-                      <div style={{height:4,background:'var(--surfaceAlt)',borderRadius:2,overflow:'hidden'}}>
-                        <div style={{height:'100%',width:`${progressPct}%`,background:'var(--accent)',borderRadius:2}}/>
-                      </div>
-                      <div style={{fontSize:9,color:'var(--textDim)',textAlign:'right',marginTop:2}}>{progressPct}%</div>
-                    </div>
-                  </div>
-                )
-              })}
-            </>)}
-          </>)}
+          {/* ── Stats tab (shared) ── */}
+          {profileTab==='stats'&&(<ProfileContent tab="stats" library={library} notebooks={notebooks}/>)}
         </div>
+
+        {/* Mobile tab bar — fixed above bottom nav */}
+        {isMobile && (
+          <div style={{
+            position:'fixed', bottom:65, left:'50%', transform:'translateX(-50%)',
+            width:'80vw', zIndex:9002,
+            display:'flex', gap:2,
+            background:'var(--surfaceAlt)', border:'1px solid var(--border)',
+            borderRadius:12, padding:3,
+            boxShadow:'0 4px 16px rgba(0,0,0,0.2)',
+          }}>
+            {TABS.map(([t,l])=>(
+              <button key={t} onClick={()=>setProfileTab(t)} style={{
+                flex:1, height:30, fontSize:11, fontWeight:600,
+                borderRadius:9, border:'none', cursor:'pointer', fontFamily:'inherit',
+                background:profileTab===t?'var(--accent)':'none',
+                color:profileTab===t?'#fff':'var(--textDim)',
+                transition:'all 0.15s',
+              }}>{l}</button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -2561,6 +2676,7 @@ function OnboardingViewDev({ onClose }) {
 }
 
 export default function LibraryView() {
+  const isMobile  = useIsMobile()
   const library   = useAppStore(s => s.library)
   const notebooks = useAppStore(s => s.notebooks)
   const sketchbooks = useAppStore(s => s.sketchbooks)
@@ -2585,12 +2701,14 @@ export default function LibraryView() {
   const persistNotebooks = useAppStore(s => s.persistNotebooks)
   const addSketchbook    = useAppStore(s => s.addSketchbook)
   const persistSketchbooks = useAppStore(s => s.persistSketchbooks)
-  const collections      = useAppStore(s => s.collections)
-  const addCollection    = useAppStore(s => s.addCollection)
-  const removeCollection = useAppStore(s => s.removeCollection)
-  const updateCollection = useAppStore(s => s.updateCollection)
-  const addToCollection  = useAppStore(s => s.addToCollection)
-  const persistCollections = useAppStore(s => s.persistCollections)
+  const collections          = useAppStore(s => s.collections)
+  const addCollection        = useAppStore(s => s.addCollection)
+  const removeCollection     = useAppStore(s => s.removeCollection)
+  const updateCollection     = useAppStore(s => s.updateCollection)
+  const addToCollection      = useAppStore(s => s.addToCollection)
+  const persistCollections   = useAppStore(s => s.persistCollections)
+  const activeCollectionId   = useAppStore(s => s.activeCollectionId)
+  const setActiveCollectionId = useAppStore(s => s.setActiveCollectionId)
   const flashcardDecks        = useAppStore(s => s.flashcardDecks)
   const addDeck               = useAppStore(s => s.addDeck)
   const removeDeck            = useAppStore(s => s.removeDeck)
@@ -2605,6 +2723,10 @@ export default function LibraryView() {
   const unifiedLibraryOrder   = useAppStore(s => s.unifiedLibraryOrder)
   const setUnifiedLibraryOrder = useAppStore(s => s.setUnifiedLibraryOrder)
   const openOnCreate          = useAppStore(s => s.openOnCreate)
+
+  // Streak data (hoisted from StreakFooter so mobile header can use it)
+  const [streakDays,    setStreakDays]    = useState(0)
+  const [weekActivity,  setWeekActivity] = useState([false,false,false,false,false,false,false])
 
   const [search,     setSearch]     = useState('')
   const [addOpen,    setAddOpen]    = useState(false)
@@ -2627,18 +2749,108 @@ export default function LibraryView() {
   const [activeCollection, setActiveCollection] = useState(null)
   const [editColId, setEditColId] = useState(null)
   const [editColName, setEditColName] = useState('')
+  const [editColDesc, setEditColDesc] = useState(null) // null = not editing
+  const [editColGoal, setEditColGoal] = useState(null) // null = not editing
+  const [smartFilterOpen, setSmartFilterOpen] = useState(null) // collectionId
+  const [smartFilterField, setSmartFilterField] = useState('format')
+  const [smartFilterValue, setSmartFilterValue] = useState('')
 
-  const [searchFocused, setSearchFocused] = useState(false)
+  const [typeFilter, setTypeFilter] = useState('all') // all | book | audio | notebook | sketchbook | flashcard
+
+  // Commands from the native View menu and the titlebar controls
+  useEffect(() => {
+    function onCmd(e) {
+      const { cmd, value } = e.detail || {}
+      if (cmd === 'type-filter') {
+        setTypeFilter(value || 'all')
+        if (useAppStore.getState().activeLibTab === 'collections') setActiveLibTab('library')
+      }
+      if (cmd === 'import-books') fileInputRef.current?.click()
+      if (cmd === 'import-audio') audioInputRef.current?.click()
+      if (cmd === 'open-add') setAddOpen(true)
+      if (cmd === 'open-profile') setProfileOpen(true)
+    }
+    window.addEventListener('gnos:lib-cmd', onCmd)
+    // Titlebar "+" created an item but "Open on create" is off — highlight it in the grid
+    function onItemCreated(e) {
+      const id = e.detail?.id
+      if (!id) return
+      setNewlyCreatedId(id)
+      setTimeout(() => setNewlyCreatedId(null), 2200)
+    }
+    window.addEventListener('gnos:item-created', onItemCreated)
+    return () => {
+      window.removeEventListener('gnos:lib-cmd', onCmd)
+      window.removeEventListener('gnos:item-created', onItemCreated)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  const [selectedIds, setSelectedIds] = useState(new Set()) // multi-select
+  const [lastSelectedId, setLastSelectedId] = useState(null) // shift-range anchor
+  const [bulkColPicker, setBulkColPicker] = useState(false)
   const nbSubFilter = useAppStore(s => s.libSubFilter)
   const setNbSubFilter = useAppStore(s => s.setLibSubFilter)
   const [bookFormatFilter, setBookFormatFilter] = useState('all')
-  const searchRef = useRef()
 
   const fileInputRef   = useRef()
   const audioInputRef  = useRef()
 
   const books      = library.filter(b => b.type !== 'audio')
   const audiobooks = library.filter(b => b.type === 'audio')
+
+  const [todayMinutes, setTodayMinutes] = useState(0)
+
+  // Load streak data (used by both desktop StreakFooter and mobile header)
+  useEffect(() => {
+    (async () => {
+      const log = await loadReadingLog().catch(() => ({})) || {}
+      const today = new Date()
+      const todayKey = today.toISOString().slice(0, 10)
+      // Last 7 days rolling window — index 0 = 6 days ago, index 6 = today
+      const last7 = []
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(today)
+        d.setDate(today.getDate() - i)
+        last7.push(!!log[d.toISOString().slice(0, 10)])
+      }
+      let streak = 0
+      for (let i = 0; i < 365; i++) {
+        const d = new Date(today)
+        d.setDate(today.getDate() - i)
+        if (log[d.toISOString().slice(0, 10)]) streak++
+        else if (i > 0) break
+      }
+      const maxFcStreak = flashcardDecks.reduce((max, d) => Math.max(max, d.streak || 0), 0)
+      setStreakDays(Math.max(streak, maxFcStreak))
+      setWeekActivity(last7)
+      setTodayMinutes(Math.round(log[todayKey] || 0))
+    })()
+  }, [flashcardDecks])
+
+  // Mobile: handle events from bottom nav bar
+  useEffect(() => {
+    if (!isMobile) return
+    const onAdd = () => setAddOpen(true)
+    const onProfile = () => setProfileOpen(true)
+    const onProfileClose = () => setProfileOpen(false)
+    const onSearchQuery = (e) => setSearch(e.detail || '')
+    window.addEventListener('gnos:mobile-add', onAdd)
+    window.addEventListener('gnos:mobile-profile', onProfile)
+    window.addEventListener('gnos:mobile-profile-close', onProfileClose)
+    window.addEventListener('gnos:mobile-search-query', onSearchQuery)
+    return () => {
+      window.removeEventListener('gnos:mobile-add', onAdd)
+      window.removeEventListener('gnos:mobile-profile', onProfile)
+      window.removeEventListener('gnos:mobile-profile-close', onProfileClose)
+      window.removeEventListener('gnos:mobile-search-query', onSearchQuery)
+    }
+  }, [isMobile])
+
+  // Broadcast profile open/close state so the bottom nav can swap profile ↔ back button
+  useEffect(() => {
+    if (!isMobile) return
+    window.dispatchEvent(new CustomEvent('gnos:mobile-profile-state', { detail: { open: profileOpen } }))
+  }, [profileOpen, isMobile])
 
   // Pointer-based drag (HTML5 drag API doesn't fire reliably in Tauri/WebKit)
   useEffect(() => {
@@ -2668,7 +2880,7 @@ export default function LibraryView() {
       }
       setGhostPos({ x: e.clientX, y: e.clientY })
       const { item, col } = getTargets(e.clientX, e.clientY)
-      if (col) {
+      if (col && !(d.type === 'collection' && col.dataset.collectionId === d.id)) {
         dropRef.current = { item: null, col: col.dataset.collectionId }
         setDropId(col.dataset.collectionId)
       } else if (item && item.dataset.dragItem !== d.id) {
@@ -2688,11 +2900,30 @@ export default function LibraryView() {
       setDraggingId(null); setDropId(null); setGhostPos(null)
       if (!d.dragging || !drop) return
       const store = useAppStore.getState()
-      if (drop.col && d.id) {
-        store.addToCollection?.(drop.col, d.id)
+      if (d.type === 'collection') {
+        // Dragging a collection onto another collection nests it (cycle-guarded in store)
+        if (drop.col && drop.col !== d.id) {
+          store.moveCollection?.(d.id, drop.col)
+          store.persistCollections?.()
+        }
+      } else if (drop.col && d.id) {
+        if (d.fromCol && d.fromCol !== drop.col) {
+          // Dragged out of a collection onto another — move, don't copy
+          store.removeFromCollection?.(d.fromCol, d.id)
+        }
+        if (d.fromCol !== drop.col) {
+          store.addToCollection?.(drop.col, d.id)
+        }
         store.persistCollections?.()
       } else if (drop.item && drop.item !== d.id) {
         const toId = drop.item
+
+        if (d.fromCol) {
+          // Reorder within the collection detail view
+          store.reorderCollectionItems?.(d.fromCol, d.id, toId)
+          store.persistCollections?.()
+          return
+        }
         const isMainLib = store.activeLibTab === 'library'
 
         if (isMainLib) {
@@ -2767,7 +2998,17 @@ export default function LibraryView() {
     }
     window.addEventListener('open-file', handler)
     window.addEventListener('gnos:edit-item', editHandler)
-    return () => { window.removeEventListener('open-file', handler); window.removeEventListener('gnos:edit-item', editHandler) }
+    const keyHandler = (e) => {
+      if (e.key === 'Escape') { setSelectedIds(new Set()); setLastSelectedId(null); setBulkColPicker(false) }
+    }
+    window.addEventListener('open-file', handler)
+    window.addEventListener('gnos:edit-item', editHandler)
+    window.addEventListener('keydown', keyHandler)
+    return () => {
+      window.removeEventListener('open-file', handler)
+      window.removeEventListener('gnos:edit-item', editHandler)
+      window.removeEventListener('keydown', keyHandler)
+    }
   }, [addBook, persistLibrary])
 
   async function handleBookFiles(e) {
@@ -3001,12 +3242,51 @@ export default function LibraryView() {
     ]})
   }
 
-  function renderAll() {
-    const lib = library
-    const nbs = notebooks
-    const sbs = sketchbooks
-    const fds = flashcardDecks
-    if (!lib.length && !nbs.length && !sbs.length && !fds.length) return (
+  function renderAll(tfOverride, colIdOverride) {
+    const tf    = tfOverride    ?? typeFilter
+    const colId = colIdOverride ?? activeCollectionId
+
+    // Build collection-filtered id set
+    let colIds = null
+    if (colId) {
+      const col = collections.find(c => c.id === colId)
+      if (col) {
+        const smartIds = col.filter ? (() => {
+          const { field, value } = col.filter
+          const v = (value || '').toLowerCase()
+          const ids = []
+          library.forEach(b => {
+            if (field === 'format' && v === 'audio' && b.type === 'audio') ids.push(b.id)
+            else if (field === 'format' && (b.format || '').toLowerCase() === v) ids.push(b.id)
+            else if (field === 'author' && (b.author || '').toLowerCase().includes(v)) ids.push(b.id)
+            else if (field === 'type' && (b.type === v || (v === 'book' && b.type !== 'audio'))) ids.push(b.id)
+          })
+          if (field === 'type' && v === 'notebook') notebooks.forEach(n => ids.push(n.id))
+          if (field === 'type' && v === 'sketchbook') sketchbooks.forEach(s => ids.push(s.id))
+          if (field === 'type' && v === 'flashcard') flashcardDecks.forEach(d => ids.push(d.id))
+          return ids
+        })() : []
+        colIds = new Set([...col.items, ...smartIds])
+      }
+    }
+
+    const lib = colIds ? library.filter(b => colIds.has(b.id)) : library
+    const nbs = colIds ? notebooks.filter(n => colIds.has(n.id)) : notebooks
+    const sbs = colIds ? sketchbooks.filter(s => colIds.has(s.id)) : sketchbooks
+    const fds = colIds ? flashcardDecks.filter(d => colIds.has(d.id)) : flashcardDecks
+
+    // Apply type filter
+    const showBooks   = tf === 'all' || tf === 'book'
+    const showAudio   = tf === 'all' || tf === 'audio'
+    const showNb      = tf === 'all' || tf === 'notebook'
+    const showSb      = tf === 'all' || tf === 'sketchbook'
+    const showFd      = tf === 'all' || tf === 'flashcard'
+    const filtLib     = lib.filter(b => b.type === 'audio' ? showAudio : showBooks)
+    const filtNbs     = showNb ? nbs : []
+    const filtSbs     = showSb ? sbs : []
+    const filtFds     = showFd ? fds : []
+
+    if (!filtLib.length && !filtNbs.length && !filtSbs.length && !filtFds.length) return (
       <div className="lib-empty-state" style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10}}>
         <button className="lib-empty-plus" onClick={() => fileInputRef.current?.click()}>
           <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
@@ -3026,10 +3306,10 @@ export default function LibraryView() {
 
     // Build a flat list of all items, then sort by unifiedLibraryOrder if set
     const allEntries = [
-      ...lib.map(b => ({ item: b, _type: b.type === 'audio' ? 'audio' : 'book' })),
-      ...nbs.map(n => ({ item: n, _type: 'nb', _kind: 'notebook' })),
-      ...sbs.map(s => ({ item: s, _type: 'nb', _kind: 'sketchbook' })),
-      ...fds.map(d => ({ item: d, _type: 'nb', _kind: 'flashcard' })),
+      ...filtLib.map(b => ({ item: b, _type: b.type === 'audio' ? 'audio' : 'book' })),
+      ...filtNbs.map(n => ({ item: n, _type: 'nb', _kind: 'notebook' })),
+      ...filtSbs.map(s => ({ item: s, _type: 'nb', _kind: 'sketchbook' })),
+      ...filtFds.map(d => ({ item: d, _type: 'nb', _kind: 'flashcard' })),
     ]
     let ordered
     if (unifiedLibraryOrder.length) {
@@ -3041,29 +3321,69 @@ export default function LibraryView() {
       ordered = allEntries
     }
 
+    const orderedIds = ordered.map(e => e.item.id)
+
     return ordered.map(({ item, _type, _kind }) => {
       const dragType = _type
       const nbKind   = _kind
+      const isSelected = selectedIds.has(item.id)
+      const hasSelection = selectedIds.size > 0
+
+      function handleCardPointerDown(e) {
+        if (e.button !== 0) return
+        if (e.shiftKey || e.metaKey || e.ctrlKey) {
+          e.preventDefault()
+          e.stopPropagation()
+          if (e.shiftKey && lastSelectedId && orderedIds.includes(lastSelectedId)) {
+            const a = orderedIds.indexOf(lastSelectedId)
+            const b = orderedIds.indexOf(item.id)
+            const [lo, hi] = a < b ? [a, b] : [b, a]
+            const range = new Set(orderedIds.slice(lo, hi + 1))
+            setSelectedIds(prev => { const next = new Set(prev); range.forEach(id => next.add(id)); return next })
+          } else {
+            setSelectedIds(prev => {
+              const next = new Set(prev)
+              if (next.has(item.id)) next.delete(item.id); else next.add(item.id)
+              return next
+            })
+            setLastSelectedId(item.id)
+          }
+        } else if (hasSelection && e.target.closest('.book-cover')) {
+          // selection active + clicked cover → toggle
+          e.preventDefault()
+          e.stopPropagation()
+          setSelectedIds(prev => {
+            const next = new Set(prev)
+            if (next.has(item.id)) next.delete(item.id); else next.add(item.id)
+            return next
+          })
+          setLastSelectedId(item.id)
+        } else if (!hasSelection && e.target.closest('.book-cover, .notebook-cover, .audiobook-album-card')) {
+          dragRef.current = { idx: 0, type: dragType, id: item.id, title: item.title, nbKind, startX: e.clientX, startY: e.clientY, dragging: false }
+        }
+      }
+
       return (
         <div key={item.id}
           data-drag-item={item.id} data-drag-type={dragType}
-          onPointerDown={e => { if (e.button !== 0) return; e.preventDefault(); dragRef.current = { idx: 0, type: dragType, id: item.id, title: item.title, nbKind, startX: e.clientX, startY: e.clientY, dragging: false } }}
+          onPointerDown={handleCardPointerDown}
+          className={isSelected ? 'lib-card-selected' : undefined}
           style={dragStyle(item.id)}>
-          {_type === 'audio'       && <AudiobookCard book={item} onOpen={openAudio} onMenu={showAudioMenu} />}
-          {_type === 'book'        && <BookCard book={item} onOpen={openBook} onMenu={showBookMenu} />}
-          {_kind === 'notebook'    && <NotebookCard nb={item} onOpen={openNotebook} onMenu={showNbMenu} />}
-          {_kind === 'sketchbook'  && <SketchbookCard sb={item} onOpen={openSketchbook} onMenu={showSbMenu} />}
-          {_kind === 'flashcard'   && <FlashcardDeckCard deck={item} onOpen={openFlashcardDeck} onMenu={showDeckMenu} />}
+          {_type === 'audio'       && <AudiobookCard book={item} onOpen={hasSelection ? () => {} : openAudio} onMenu={showAudioMenu} />}
+          {_type === 'book'        && <BookCard book={item} onOpen={hasSelection ? () => {} : openBook} onMenu={showBookMenu} />}
+          {_kind === 'notebook'    && <NotebookCard nb={item} onOpen={hasSelection ? () => {} : openNotebook} onMenu={showNbMenu} />}
+          {_kind === 'sketchbook'  && <SketchbookCard sb={item} onOpen={hasSelection ? () => {} : openSketchbook} onMenu={showSbMenu} />}
+          {_kind === 'flashcard'   && <FlashcardDeckCard deck={item} onOpen={hasSelection ? () => {} : openFlashcardDeck} onMenu={showDeckMenu} />}
         </div>
       )
     })
   }
 
   function renderTab() {
-    if (activeTab === 'library') {
+    if (activeTab === 'library' || activeTab === 'books' || activeTab === 'audiobooks' || activeTab === 'notebooks') {
       return (
         <div className="lib-tab-inner">
-          <div className="library-grid" style={{gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))"}}>{renderAll()}</div>
+          <div className="library-grid" style={isMobile ? {gridTemplateColumns:'repeat(3,1fr)',gap:'10px'} : {gridTemplateColumns:'repeat(auto-fill,minmax(110px,1fr))'}}>{renderAll()}</div>
         </div>
       )
     }
@@ -3098,7 +3418,7 @@ export default function LibraryView() {
                 }}>{f.label}</button>
             ))}
           </div>
-          <div className="library-grid" style={{gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))"}}>
+          <div className="library-grid" style={isMobile ? {gridTemplateColumns:'repeat(3,1fr)',gap:'10px'} : {gridTemplateColumns:'repeat(auto-fill,minmax(110px,1fr))'}}>
             {visibleBooks.length ? visibleBooks.map((b, i) => (
               <div key={b.id}
                 data-drag-item={b.id} data-drag-type="book"
@@ -3136,7 +3456,7 @@ export default function LibraryView() {
     if (activeTab === 'audiobooks') {
       return (
         <div className="lib-tab-inner">
-          <div className="library-grid" style={{gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))"}}>
+          <div className="library-grid" style={isMobile ? {gridTemplateColumns:'repeat(3,1fr)',gap:'10px'} : {gridTemplateColumns:'repeat(auto-fill,minmax(110px,1fr))'}}>
             {audiobooks.length ? audiobooks.map((b, i) => (
               <div key={b.id}
                 data-drag-item={b.id} data-drag-type="audio"
@@ -3188,7 +3508,7 @@ export default function LibraryView() {
                 }}>{f.label}</button>
             ))}
           </div>
-          <div className="library-grid" style={{gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))"}}>
+          <div className="library-grid" style={isMobile ? {gridTemplateColumns:'repeat(3,1fr)',gap:'10px'} : {gridTemplateColumns:'repeat(auto-fill,minmax(110px,1fr))'}}>
             {combined.length ? combined.map((item, i) => (
               <div key={item.id}
                 data-drag-item={item.id} data-drag-type="nb"
@@ -3230,28 +3550,198 @@ export default function LibraryView() {
       if (activeCollection) {
         const col = collections.find(c => c.id === activeCollection)
         if (!col) { setActiveCollection(null); return null }
+        const detailSmartIds = col.filter ? (() => {
+          const { field, value } = col.filter
+          const v = (value || '').toLowerCase()
+          const ids = []
+          library.forEach(b => {
+            if (field === 'format' && v === 'audio' && b.type === 'audio') ids.push(b.id)
+            else if (field === 'format' && (b.format || '').toLowerCase() === v) ids.push(b.id)
+            else if (field === 'author' && (b.author || '').toLowerCase().includes(v)) ids.push(b.id)
+            else if (field === 'type' && (b.type === v || (v === 'book' && b.type !== 'audio'))) ids.push(b.id)
+          })
+          if (field === 'type' && v === 'notebook') notebooks.forEach(n => ids.push(n.id))
+          if (field === 'type' && v === 'sketchbook') sketchbooks.forEach(s => ids.push(s.id))
+          if (field === 'type' && v === 'flashcard') flashcardDecks.forEach(d => ids.push(d.id))
+          return ids
+        })() : []
+        const allDetailIds = [...new Set([...col.items, ...detailSmartIds])]
+        // Sort by col.items order so manual drag-reordering persists; smart-filter items follow
+        const detailOrderIdx = new Map(allDetailIds.map((id, i) => [id, i]))
         const colItems = [
-          ...library.filter(i => col.items.includes(i.id)),
-          ...notebooks.filter(n => col.items.includes(n.id)).map(n => ({ ...n, _isNotebook: true })),
-          ...sketchbooks.filter(s => col.items.includes(s.id)).map(s => ({ ...s, _isSketchbook: true })),
-          ...flashcardDecks.filter(d => col.items.includes(d.id)).map(d => ({ ...d, _isDeck: true })),
-        ]
+          ...library.filter(i => allDetailIds.includes(i.id)),
+          ...notebooks.filter(n => allDetailIds.includes(n.id)).map(n => ({ ...n, _isNotebook: true })),
+          ...sketchbooks.filter(s => allDetailIds.includes(s.id)).map(s => ({ ...s, _isSketchbook: true })),
+          ...flashcardDecks.filter(d => allDetailIds.includes(d.id)).map(d => ({ ...d, _isDeck: true })),
+        ].sort((a, b) => detailOrderIdx.get(a.id) - detailOrderIdx.get(b.id))
         return (
           <div className="lib-tab-inner">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-              <button onClick={() => setActiveCollection(null)} style={{ padding: '4px 10px', fontSize: 11, border: '1px solid var(--border)', background: 'none', color: 'var(--textDim)', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit' }}>&larr; Back</button>
-              {col.color && <span style={{ width: 14, height: 14, borderRadius: 4, background: col.color }} />}
-              <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{col.name}</span>
-              <span style={{ fontSize: 11, color: 'var(--textDim)' }}>{colItems.length} items</span>
-            </div>
-            <div className="library-grid" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(110px,1fr))' }}>
-              {colItems.map(item =>
-                item._isDeck ? <FlashcardDeckCard key={item.id} deck={item} onOpen={openFlashcardDeck} onMenu={showDeckMenu} />
-                : item._isSketchbook ? <SketchbookCard key={item.id} sb={item} onOpen={openSketchbook} onMenu={showSbMenu} />
-                : item._isNotebook ? <NotebookCard key={item.id} nb={item} onOpen={openNotebook} onMenu={showNbMenu} />
-                : item.type === 'audio' ? <AudiobookCard key={item.id} book={item} onOpen={openAudio} onMenu={showAudioMenu} />
-                : <BookCard key={item.id} book={item} onOpen={openBook} onMenu={showBookMenu} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <button onClick={() => { setActiveCollection(col.parentId || null) }} style={{ padding: '4px 10px', fontSize: 11, border: '1px solid var(--border)', background: 'none', color: 'var(--textDim)', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>&larr; Back</button>
+              {col.color && <span style={{ width: 14, height: 14, borderRadius: 4, background: col.color, flexShrink: 0 }} />}
+              {col.emoji && <span style={{ fontSize: 15, flexShrink: 0, lineHeight: 1 }}>{col.emoji}</span>}
+              {editColId === col.id ? (
+                <input
+                  autoFocus
+                  value={editColName}
+                  onChange={e => setEditColName(e.target.value)}
+                  onBlur={() => { if (editColName.trim()) { updateCollection(col.id, { name: editColName.trim() }); persistCollections() } setEditColId(null) }}
+                  onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditColId(null) }}
+                  style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', background: 'none', border: '1px solid var(--accent)', borderRadius: 5, padding: '2px 6px', outline: 'none', fontFamily: 'inherit', minWidth: 0 }}
+                />
+              ) : (
+                <span title="Click to rename" onClick={() => { setEditColId(col.id); setEditColName(col.name) }} style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', cursor: 'text' }}>{col.name}</span>
               )}
+              <span style={{ fontSize: 11, color: 'var(--textDim)' }}>{colItems.length} item{colItems.length !== 1 ? 's' : ''}</span>
+              {col.filter && (
+                <span
+                  title={`Smart filter: ${col.filter.field} = "${col.filter.value}" — click to edit`}
+                  onClick={() => { setSmartFilterOpen(col.id); setSmartFilterField(col.filter.field); setSmartFilterValue(col.filter.value) }}
+                  style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--accent)', border: '1px solid var(--accent)44', borderRadius: 4, padding: '2px 6px', flexShrink: 0, cursor: 'pointer' }}
+                >⚡ Smart</span>
+              )}
+              <span style={{ flex: 1 }} />
+              {/* All collection settings live behind one menu */}
+              <button onClick={e => {
+                e.stopPropagation()
+                setMenu({ x: e.clientX, y: e.clientY, items: [
+                  { label: 'Rename', action: () => { setEditColId(col.id); setEditColName(col.name) } },
+                  { label: col.description ? 'Edit Description' : 'Add Description', action: () => setEditColDesc(col.description || '') },
+                  { label: col.goal ? 'Edit Reading Goal' : 'Set Reading Goal', action: () => setEditColGoal(col.goal || '') },
+                  { label: col.filter ? 'Edit Smart Filter' : 'Add Smart Filter', action: () => { setSmartFilterOpen(col.id); setSmartFilterField(col.filter?.field || 'format'); setSmartFilterValue(col.filter?.value || '') } },
+                  ...(col.goal ? [{ label: 'Remove Reading Goal', action: () => { updateCollection(col.id, { goal: undefined }); persistCollections() } }] : []),
+                  ...(col.filter ? [{ label: 'Remove Smart Filter', action: () => { updateCollection(col.id, { filter: undefined }); persistCollections() } }] : []),
+                  { label: 'Delete Collection', danger: true, action: () => { removeCollection(col.id); persistCollections(); setActiveCollection(col.parentId || null) } },
+                ]})
+              }} style={{ width: 26, height: 26, borderRadius: 7, border: '1px solid var(--border)', background: 'none', color: 'var(--textDim)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/></svg>
+              </button>
+            </div>
+
+            {/* Description — only visible when set; add via ⋯ menu */}
+            {editColDesc !== null ? (
+              <textarea
+                autoFocus
+                value={editColDesc}
+                onChange={e => setEditColDesc(e.target.value)}
+                onBlur={() => { updateCollection(col.id, { description: editColDesc.trim() || undefined }); persistCollections(); setEditColDesc(null) }}
+                onKeyDown={e => { if (e.key === 'Escape') setEditColDesc(null) }}
+                placeholder="Add a description…"
+                style={{ width: '100%', fontSize: 12, color: 'var(--text)', background: 'var(--surfaceAlt)', border: '1px solid var(--accent)', borderRadius: 6, padding: '6px 8px', outline: 'none', fontFamily: 'inherit', resize: 'vertical', minHeight: 52, boxSizing: 'border-box', marginBottom: 8 }}
+              />
+            ) : col.description ? (
+              <div
+                onClick={() => setEditColDesc(col.description || '')}
+                title="Click to edit"
+                style={{ fontSize: 12, color: 'var(--textDim)', cursor: 'text', padding: '2px 0', marginBottom: 8, lineHeight: 1.5 }}
+              >
+                {col.description}
+              </div>
+            ) : null}
+
+            {/* Reading goal — only visible when set; add via ⋯ menu */}
+            {(editColGoal !== null || col.goal) && (() => {
+              const started = colItems.filter(item =>
+                item.type === 'audio' ? (item.listenProgress || 0) > 0
+                : !item._isNotebook && !item._isSketchbook && !item._isDeck ? (item.currentChapter || 0) > 0 || (item.currentPage || 0) > 0
+                : false
+              ).length
+              const pct = colItems.length > 0 ? Math.round((started / colItems.length) * 100) : 0
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                  {editColGoal !== null ? (
+                    <input
+                      autoFocus
+                      value={editColGoal}
+                      onChange={e => setEditColGoal(e.target.value)}
+                      onBlur={() => { updateCollection(col.id, { goal: editColGoal.trim() || undefined }); persistCollections(); setEditColGoal(null) }}
+                      onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditColGoal(null) }}
+                      placeholder="e.g. Finish these by June"
+                      style={{ fontSize: 11, color: 'var(--text)', background: 'none', border: 'none', borderBottom: '1px dashed var(--accent)', outline: 'none', fontFamily: 'inherit', flex: 1, padding: '2px 0' }}
+                    />
+                  ) : (
+                    <span onClick={() => setEditColGoal(col.goal || '')} title="Click to edit" style={{ fontSize: 11, color: 'var(--textDim)', cursor: 'text', flex: 1 }}>{col.goal}</span>
+                  )}
+                  {colItems.length > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+                      <div style={{ width: 70, height: 4, background: 'var(--border)', borderRadius: 2 }}>
+                        <div style={{ height: '100%', width: `${pct}%`, background: col.color || 'var(--accent)', borderRadius: 2, transition: 'width 0.3s' }} />
+                      </div>
+                      <span style={{ fontSize: 10, color: 'var(--textDim)', minWidth: 26 }}>{pct}%</span>
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+
+            {/* Smart filter editor — opened from ⋯ menu or the Smart chip */}
+            {smartFilterOpen === col.id && (
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 10, padding: '8px 10px', background: 'var(--surfaceAlt)', borderRadius: 8, border: '1px solid var(--border)', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11, color: 'var(--textDim)', flexShrink: 0 }}>Auto-include items where</span>
+                <select value={smartFilterField} onChange={e => setSmartFilterField(e.target.value)} style={{ fontSize: 11, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', padding: '2px 6px', fontFamily: 'inherit', cursor: 'pointer' }}>
+                  <option value="format">Format (epub/pdf/txt/audio)</option>
+                  <option value="author">Author contains</option>
+                  <option value="type">Type (book/notebook/audio/sketchbook/flashcard)</option>
+                </select>
+                <input
+                  value={smartFilterValue}
+                  onChange={e => setSmartFilterValue(e.target.value)}
+                  placeholder={smartFilterField === 'format' ? 'epub' : smartFilterField === 'author' ? 'author name' : 'book'}
+                  style={{ fontSize: 11, flex: 1, minWidth: 80, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', padding: '3px 7px', fontFamily: 'inherit', outline: 'none' }}
+                />
+                <button onClick={() => { updateCollection(col.id, { filter: smartFilterValue.trim() ? { field: smartFilterField, value: smartFilterValue.trim() } : undefined }); persistCollections(); setSmartFilterOpen(null) }} style={{ fontSize: 11, fontWeight: 600, background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 5, padding: '3px 10px', cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>Apply</button>
+                <button onClick={() => setSmartFilterOpen(null)} style={{ fontSize: 11, background: 'none', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--textDim)', padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>Cancel</button>
+              </div>
+            )}
+
+            {/* Sub-collections */}
+            {(() => {
+              const subCols = collections.filter(c => c.parentId === col.id)
+              if (!subCols.length) return null
+              return (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--textDim)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 6 }}>Sub-collections</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {subCols.map(sc => (
+                      <button key={sc.id} data-collection-id={sc.id} onClick={() => setActiveCollection(sc.id)} style={{ fontSize: 11, fontWeight: 600, padding: '4px 10px', borderRadius: 7, border: dropId === sc.id ? '1px dashed var(--accent)' : `1px solid ${sc.color || 'var(--border)'}`, background: dropId === sc.id ? 'var(--accent)18' : 'none', color: sc.color || 'var(--text)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5 }}>
+                        {sc.color && <span style={{ width: 7, height: 7, borderRadius: 2, background: sc.color, display: 'inline-block', flexShrink: 0 }} />}
+                        {sc.name}
+                        <span style={{ color: 'var(--textDim)', fontWeight: 400 }}>({sc.items.length})</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
+
+            <div className="library-grid" style={isMobile ? {gridTemplateColumns:'repeat(3,1fr)',gap:'10px'} : { gridTemplateColumns: 'repeat(auto-fill,minmax(110px,1fr))' }}>
+              {colItems.map(item => {
+                const dragType = item._isNotebook || item._isSketchbook || item._isDeck ? 'nb' : item.type === 'audio' ? 'audio' : 'book'
+                const nbKind = item._isNotebook ? 'notebook' : item._isSketchbook ? 'sketchbook' : item._isDeck ? 'flashcard' : undefined
+                return (
+                  <div key={item.id}
+                    data-drag-item={item.id} data-drag-type={dragType}
+                    onPointerDown={e => {
+                      if (e.button !== 0) return
+                      if (!e.target.closest('.book-cover, .notebook-cover, .audiobook-album-card')) return
+                      dragRef.current = { idx: 0, type: dragType, id: item.id, title: item.title, nbKind, fromCol: col.id, startX: e.clientX, startY: e.clientY, dragging: false }
+                    }}
+                    style={{
+                      opacity: draggingId === item.id ? 0.35 : 1,
+                      outline: dropId === item.id ? '2px solid var(--accent)' : 'none',
+                      boxShadow: dropId === item.id ? '0 0 0 5px rgba(56,139,253,0.18)' : 'none',
+                      outlineOffset: 2, borderRadius: 10, cursor: 'grab', userSelect: 'none',
+                      transform: dropId === item.id ? 'scale(0.95)' : 'scale(1)',
+                      transition: 'transform 0.12s, box-shadow 0.12s, opacity 0.12s',
+                    }}>
+                    {item._isDeck ? <FlashcardDeckCard deck={item} onOpen={openFlashcardDeck} onMenu={showDeckMenu} />
+                    : item._isSketchbook ? <SketchbookCard sb={item} onOpen={openSketchbook} onMenu={showSbMenu} />
+                    : item._isNotebook ? <NotebookCard nb={item} onOpen={openNotebook} onMenu={showNbMenu} />
+                    : item.type === 'audio' ? <AudiobookCard book={item} onOpen={openAudio} onMenu={showAudioMenu} />
+                    : <BookCard book={item} onOpen={openBook} onMenu={showBookMenu} />}
+                  </div>
+                )
+              })}
             </div>
             {!colItems.length && (
               <div style={{ textAlign: 'center', padding: 40, color: 'var(--textDim)', fontSize: 13 }}>
@@ -3265,33 +3755,107 @@ export default function LibraryView() {
       return (
         <div className="lib-tab-inner">
           {collections.length > 0 && (
-            <div className="library-grid" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(140px,1fr))', gap: 14 }}>
-              {collections.map(col => {
-                const colItems = [...library, ...notebooks.map(n => ({ ...n, _isNotebook: true })), ...sketchbooks.map(s => ({ ...s, _isSketchbook: true })), ...flashcardDecks.map(d => ({ ...d, _isDeck: true }))].filter(i => col.items.includes(i.id))
+            <div className="library-grid" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 14 }}>
+              {collections.filter(col => !col.parentId).map(col => {
+                const smartIds = col.filter ? (() => {
+                  const { field, value } = col.filter
+                  const v = (value || '').toLowerCase()
+                  const ids = []
+                  library.forEach(b => {
+                    if (field === 'format' && v === 'audio' && b.type === 'audio') ids.push(b.id)
+                    else if (field === 'format' && (b.format || '').toLowerCase() === v) ids.push(b.id)
+                    else if (field === 'author' && (b.author || '').toLowerCase().includes(v)) ids.push(b.id)
+                    else if (field === 'type' && (b.type === v || (v === 'book' && b.type !== 'audio'))) ids.push(b.id)
+                  })
+                  if (field === 'type' && v === 'notebook') notebooks.forEach(n => ids.push(n.id))
+                  if (field === 'type' && v === 'sketchbook') sketchbooks.forEach(s => ids.push(s.id))
+                  if (field === 'type' && v === 'flashcard') flashcardDecks.forEach(d => ids.push(d.id))
+                  return ids
+                })() : []
+                const allColIds = [...new Set([...col.items, ...smartIds])]
+                const colItems = [...library, ...notebooks.map(n => ({ ...n, _isNotebook: true })), ...sketchbooks.map(s => ({ ...s, _isSketchbook: true })), ...flashcardDecks.map(d => ({ ...d, _isDeck: true }))].filter(i => allColIds.includes(i.id))
                 const COLLECTION_COLORS = ['#388bfd', '#e05c7a', '#4a7c3f', '#e8922a', '#8250df', '#f0883e', '#56d4dd']
+                const subCount = collections.filter(c => c.parentId === col.id).length
+                const openColMenu = (e) => setMenu({ x: e.clientX, y: e.clientY, items: [
+                  { label: 'Rename', icon: '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>', action: () => {
+                    setEditColId(col.id); setEditColName(col.name)
+                  }},
+                  { label: 'Change Color', icon: '<circle cx="8" cy="8" r="5" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2" fill="currentColor"/>',
+                    submenu: COLLECTION_COLORS.map(c => ({
+                      label: c,
+                      action: () => { updateCollection(col.id, { color: c }); persistCollections() },
+                    })),
+                  },
+                  { label: 'Move into…', icon: '<path d="M2 10V4a1 1 0 0 1 1-1h5l2 2h4a1 1 0 0 1 1 1v4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><rect x="2" y="9" width="12" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/>',
+                    submenu: [
+                      { label: '— None (top level)', action: () => { updateCollection(col.id, { parentId: null }); persistCollections() } },
+                      ...collections.filter(c => c.id !== col.id && !c.parentId).map(c => ({
+                        label: c.name,
+                        action: () => { updateCollection(col.id, { parentId: c.id }); persistCollections() },
+                      })),
+                    ],
+                  },
+                  { label: 'Delete Collection', icon: '<polyline points="3,6 5,6 13,6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 6V4H5v2M14 6l-.867 9.143A1.5 1.5 0 0 1 11.64 16.5H4.36A1.5 1.5 0 0 1 2.867 15.143L2 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>', danger: true, action: () => { removeCollection(col.id); persistCollections() } },
+                ]})
                 return (
                   <div key={col.id}
                     data-collection-id={col.id}
-                    style={{
-                      background: dropId === col.id ? 'var(--accent)10' : 'var(--surfaceAlt)',
-                      border: dropId === col.id ? '2px dashed var(--accent)' : '1px solid var(--border)', borderRadius: 10,
-                      borderTop: dropId === col.id ? '2px dashed var(--accent)' : (col.color ? `3px solid ${col.color}` : '1px solid var(--border)'),
-                      padding: 14, cursor: 'pointer', transition: 'border-color 0.12s, box-shadow 0.12s, background 0.12s',
-                      display: 'flex', flexDirection: 'column', gap: 8, minHeight: 120, position: 'relative',
+                    onPointerDown={e => {
+                      if (e.button !== 0) return
+                      if (e.target.closest('input, button')) return
+                      dragRef.current = { idx: 0, type: 'collection', id: col.id, title: col.name, startX: e.clientX, startY: e.clientY, dragging: false }
                     }}
                     onClick={() => setActiveCollection(col.id)}
-                    onMouseEnter={e => { if (!col.color && dropId !== col.id) e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.boxShadow = '0 4px 16px rgba(0,0,0,0.2)' }}
-                    onMouseLeave={e => { if (!col.color && dropId !== col.id) e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.boxShadow = 'none' }}
+                    onContextMenu={e => { e.preventDefault(); e.stopPropagation(); openColMenu(e) }}
+                    onMouseEnter={e => { const b = e.currentTarget.querySelector('[data-col-menu]'); if (b) b.style.opacity = '1' }}
+                    onMouseLeave={e => { const b = e.currentTarget.querySelector('[data-col-menu]'); if (b) b.style.opacity = '0' }}
+                    style={{ cursor: 'pointer', userSelect: 'none', opacity: draggingId === col.id ? 0.35 : 1, transition: 'opacity 0.12s' }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ opacity: 0.65 }}>
-                          {/* Closed storage box with lid and label window */}
-                          <rect x="3" y="11" width="18" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
-                          <path d="M2 11h20V8a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v3z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
-                          <rect x="8" y="14" width="8" height="4" rx="0.8" stroke="currentColor" strokeWidth="1.1"/>
-                        </svg>
-                      </span>
+                    {/* Cover — 4-up mosaic, landscape filing-cabinet proportion */}
+                    <div style={{
+                      position: 'relative', aspectRatio: '4 / 3', width: '100%', borderRadius: 10, overflow: 'hidden',
+                      display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr', gap: 1,
+                      background: 'var(--surfaceAlt)', boxSizing: 'border-box',
+                      outline: dropId === col.id ? '2px dashed var(--accent)' : '1px solid var(--border)',
+                      outlineOffset: -1,
+                      boxShadow: dropId === col.id ? '0 0 0 5px rgba(56,139,253,0.18)' : '0 2px 10px rgba(0,0,0,0.14)',
+                      transform: dropId === col.id ? 'scale(0.96)' : 'scale(1)',
+                      transition: 'transform 0.12s, box-shadow 0.12s',
+                    }}>
+                      {colItems.length > 0 ? [0,1,2,3].map(i => {
+                        // inner corners only — outer corners flush to container edge (clipped by overflow:hidden)
+                        // order: top-left top-right bottom-right bottom-left
+                        const cr = ['0 0 4px 0','0 0 0 4px','0 4px 0 0','4px 0 0 0'][i]
+                        const item = colItems[i]
+                        if (!item) return <div key={i} style={{ background: 'var(--surfaceAlt)', borderRadius: cr }} />
+                        const [, c2] = generateCoverColor(item.title)
+                        return item.coverDataUrl
+                          ? <img key={i} src={item.coverDataUrl} alt="" draggable="false" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', borderRadius: cr }} />
+                          : <div key={i} style={{ position: 'relative', background: c2, borderRadius: cr, overflow: 'hidden', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: '4px 5px' }}>
+                              <div style={{ fontSize: 8, fontWeight: 700, color: 'rgba(255,255,255,0.88)', lineHeight: 1.2, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', textShadow: '0 1px 2px rgba(0,0,0,0.3)' }}>{item.title}</div>
+                            </div>
+                      }) : (
+                        <div style={{ gridColumn: '1 / -1', gridRow: '1 / -1', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          {col.emoji
+                            ? <span style={{ fontSize: 30, opacity: 0.7 }}>{col.emoji}</span>
+                            : <svg width="32" height="32" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.35 }}>
+                                <rect x="2" y="3" width="12" height="11" rx="1.5" stroke="var(--textDim)" strokeWidth="1.2"/>
+                                <path d="M2 6h12" stroke="var(--textDim)" strokeWidth="1" opacity="0.5"/>
+                              </svg>}
+                        </div>
+                      )}
+                      {/* ⋯ menu — fades in on hover */}
+                      <button data-col-menu onClick={e => { e.stopPropagation(); openColMenu(e) }} style={{
+                        position: 'absolute', top: 6, right: 6, width: 24, height: 24, borderRadius: 7,
+                        border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--textDim)',
+                        cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        opacity: 0, transition: 'opacity 0.12s',
+                      }}>
+                        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/></svg>
+                      </button>
+                    </div>
+                    {/* Caption — matches book card typography */}
+                    <div style={{ marginTop: 7, padding: '0 2px' }}>
                       {editColId === col.id ? (
                         <input
                           autoFocus
@@ -3306,51 +3870,48 @@ export default function LibraryView() {
                             if (e.key === 'Escape') { setEditColId(null) }
                           }}
                           onClick={e => e.stopPropagation()}
-                          style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', flex: 1, background: 'none', border: '1px solid var(--accent)', borderRadius: 4, padding: '1px 4px', outline: 'none', fontFamily: 'inherit' }}
+                          style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', width: '100%', boxSizing: 'border-box', background: 'none', border: '1px solid var(--accent)', borderRadius: 4, padding: '1px 4px', outline: 'none', fontFamily: 'inherit' }}
                         />
                       ) : (
-                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', flex: 1 }}>{col.name}</span>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', lineHeight: 1.3, display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+                          {col.emoji && <span style={{ fontSize: 12, flexShrink: 0 }}>{col.emoji}</span>}
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.name}</span>
+                        </div>
                       )}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--textDim)' }}>
-                      {colItems.length} item{colItems.length !== 1 ? 's' : ''}
-                    </div>
-                    {colItems.slice(0, 3).map(item => (
-                      <div key={item.id} style={{ fontSize: 11, color: 'var(--textMuted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {item.title}
+                      <div style={{ marginTop: 2, fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--textDim)' }}>
+                        {colItems.length} item{colItems.length !== 1 ? 's' : ''}
+                        {subCount ? ` · ${subCount} sub` : ''}
+                        {col.filter ? ' · Smart' : ''}
                       </div>
-                    ))}
-                    {/* Dots menu button — bottom right */}
-                    <button onClick={e => {
-                      e.stopPropagation()
-                      setMenu({ x: e.clientX, y: e.clientY, items: [
-                        { label: 'Edit Name', icon: '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>', action: () => {
-                          setEditColId(col.id); setEditColName(col.name)
-                        }},
-                        { label: 'Change Color', icon: '<circle cx="8" cy="8" r="5" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2" fill="currentColor"/>',
-                          submenu: COLLECTION_COLORS.map(c => ({
-                            label: c,
-                            action: () => { updateCollection(col.id, { color: c }); persistCollections() },
-                          })),
-                        },
-                        { label: 'Delete Collection', icon: '<polyline points="3,6 5,6 13,6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 6V4H5v2M14 6l-.867 9.143A1.5 1.5 0 0 1 11.64 16.5H4.36A1.5 1.5 0 0 1 2.867 15.143L2 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>', danger: true, action: () => { removeCollection(col.id); persistCollections() } },
-                      ]})
-                    }} style={{
-                      position: 'absolute', bottom: 8, right: 8, width: 24, height: 24, borderRadius: 6,
-                      border: 'none', background: 'none', color: 'var(--textDim)', cursor: 'pointer',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.4,
-                      transition: 'opacity 0.12s, background 0.12s',
-                    }}
-                      onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'var(--surface)' }}
-                      onMouseLeave={e => { e.currentTarget.style.opacity = '0.4'; e.currentTarget.style.background = 'none' }}
-                    >
-                      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                        <circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/>
-                      </svg>
-                    </button>
+                    </div>
                   </div>
                 )
               })}
+              {/* New collection tile */}
+              <div
+                onClick={() => {
+                  const newCol = { id: makeId('col'), name: 'New Collection', items: [], createdAt: new Date().toISOString() }
+                  addCollection(newCol)
+                  persistCollections()
+                  setEditColId(newCol.id)
+                  setEditColName('New Collection')
+                }}
+                style={{ cursor: 'pointer', userSelect: 'none' }}
+                onMouseEnter={e => { const c = e.currentTarget.firstElementChild; c.style.borderColor = 'var(--accent)'; c.style.color = 'var(--accent)' }}
+                onMouseLeave={e => { const c = e.currentTarget.firstElementChild; c.style.borderColor = 'var(--border)'; c.style.color = 'var(--textDim)' }}
+              >
+                <div style={{
+                  aspectRatio: '4 / 3', width: '100%', borderRadius: 10, boxSizing: 'border-box',
+                  border: '1.5px dashed var(--border)', color: 'var(--textDim)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  transition: 'border-color 0.12s, color 0.12s',
+                }}>
+                  <svg width="22" height="22" viewBox="0 0 28 28" fill="none"><line x1="14" y1="6" x2="14" y2="22" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><line x1="6" y1="14" x2="22" y2="14" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+                </div>
+                <div style={{ marginTop: 7, padding: '0 2px', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--textDim)' }}>
+                  New Collection
+                </div>
+              </div>
             </div>
           )}
           {!collections.length && (
@@ -3371,8 +3932,16 @@ export default function LibraryView() {
     }
   }
 
+  function handleViewClick(e) {
+    if (selectedIds.size > 0 && !e.target.closest('.book-cover') && !e.target.closest('.lib-bulk-bar')) {
+      setSelectedIds(new Set())
+      setLastSelectedId(null)
+      setBulkColPicker(false)
+    }
+  }
+
   return (
-    <div className="view active" style={{ flexDirection: 'column' }}>
+    <div className="view active" style={{ flexDirection: 'column' }} onClick={handleViewClick}>
       <style>{`
         .search-dropdown {
           position: absolute; top: calc(100% + 6px); left: 0; right: 0;
@@ -3381,177 +3950,171 @@ export default function LibraryView() {
           box-shadow: 0 12px 32px rgba(0,0,0,0.45); z-index: 9000;
           max-height: 360px; overflow-y: auto;
         }
-        .search-drop-item {
-          display: flex; align-items: center; gap: 10px;
-          width: 100%; padding: 9px 12px; border: none; background: none;
-          color: var(--text); cursor: pointer; text-align: left;
-          transition: background 0.12s;
-        }
-        .search-drop-item:hover { background: var(--hover); }
-        .search-drop-cover {
-          width: 36px; height: 50px; border-radius: 4px; flex-shrink: 0;
-          display: flex; align-items: center; justify-content: center; overflow: hidden;
-        }
-        .search-drop-info { flex: 1; min-width: 0; }
-        .search-drop-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .search-drop-sub { font-size: 11px; color: var(--textDim); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .search-drop-badge { font-size: 14px; flex-shrink: 0; opacity: 0.6; }
+        /* .search-drop-* rules moved to global.css so the titlebar SearchDropdown
+           (mounted outside LibraryView) sizes covers correctly. */
       `}</style>
       {/* Hidden inputs */}
       <input ref={fileInputRef}  type="file" accept=".epub,.epub3,.txt,.md,.pdf,application/epub+zip" className="hidden-input" multiple onChange={handleBookFiles} />
       <input ref={audioInputRef} type="file" accept="audio/*" className="hidden-input" multiple onChange={handleAudioImport} />
 
-      {/* Header */}
-      <header className="app-header">
-        <div className="app-header-top">
-
-          {/* Gnos logo area */}
-          <div className="lib-logo-area">
-            <GnosNavButton />
-          </div>
-
-          {/* Search + Add */}
-          <div className="lib-search-row">
-            <div className="search-bar-wrapper" ref={searchRef} style={{ position: 'relative' }}>
-              <div className="search-bar">
-                <SearchIcon />
-                <input type="text" placeholder="Search library…"
-                  value={search}
-                  onChange={e => setSearch(e.target.value)}
-                  onFocus={() => setSearchFocused(true)}
-                  onBlur={() => setTimeout(() => setSearchFocused(false), 150)} />
-                {search && <span className="search-shortcut" style={{ cursor:'pointer' }} onClick={() => setSearch('')}>✕</span>}
-              </div>
-              {searchFocused && search && (
-                <SearchDropdown
-                  query={search}
-                  library={library}
-                  notebooks={notebooks}
-                  sketchbooks={sketchbooks}
-                  onOpenBook={openBook}
-                  onOpenAudio={openAudio}
-                  onOpenNotebook={openNotebook}
-                  onOpenSketchbook={openSketchbook}
-                  onDevCommand={cmd => { if (cmd === 'onboarding') setDevOnboardingOpen(true) }}
-                  onOpenGraph={() => openNewTab({ view: 'graph' })}
-                  onOpenCalendar={() => navigate({ view: 'calendar' })}
-                  onOpenKanban={() => navigate({ view: 'kanban' })}
-                  onReset={async () => {
-                    setArchivePath('')
-                    setOnboardingComplete(false)
-                    await persistPreferences()
-                    resetBaseDir()
-                  }}
-                  onClose={() => { setSearch(''); setSearchFocused(false) }}
-                />
-              )}
-            </div>
-            <div style={{ position: 'relative', flexShrink: 0 }}>
-              <button className="btn-add-square" onClick={() => setAddOpen(o => !o)} title="Add"><PlusIcon /></button>
-              {addOpen && (
-                <AddPopup
-                  onClose={() => setAddOpen(false)}
-                  onOpenNebuli={() => { openNewTab({ view: 'graph' }); setAddOpen(false) }}
-                  onAddBook={() => fileInputRef.current?.click()}
-                  onAddAudio={() => audioInputRef.current?.click()}
-                  onNewNotebook={() => {
-                    const nb = { id: makeId('nb'), title: 'Untitled', wordCount: 0, createdAt: new Date().toISOString() }
-                    addNotebook(nb); persistNotebooks()
-                    setAddOpen(false)
-                    if (openOnCreate) {
-                      setActiveNotebook(nb)
-                      if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'notebook', activeNotebook: nb })
-                      setView('notebook')
-                    } else {
-                      setNewlyCreatedId(nb.id)
-                      setTimeout(() => setNewlyCreatedId(null), 2200)
-                    }
-                  }}
-                  onNewSketchbook={() => {
-                    const COLORS = ['#2d1b69','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#6b3fa0','#2e7d32']
-                    const sb = { id: makeId('sb'), title: 'Untitled Sketch', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), coverColor: COLORS[Math.floor(sketchbooks.length % COLORS.length)] }
-                    addSketchbook(sb); persistSketchbooks()
-                    setAddOpen(false)
-                    if (openOnCreate) {
-                      setActiveSketchbook(sb)
-                      if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'sketchbook', activeSketchbook: sb })
-                      setView('sketchbook')
-                    } else {
-                      setNewlyCreatedId(sb.id)
-                      setTimeout(() => setNewlyCreatedId(null), 2200)
-                    }
-                  }}
-                  onNewFlashcardDeck={() => {
-                    const COLORS = ['#6b3fa0','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#2e7d32','#c0392b']
-                    const deck = {
-                      id: makeId('deck'), title: 'Untitled Deck', cards: [],
-                      color: COLORS[Math.floor(flashcardDecks.length % COLORS.length)],
-                      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-                    }
-                    addDeck(deck); persistFlashcardDecks()
-                    setAddOpen(false)
-                    if (openOnCreate) {
-                      setActiveFlashcardDeck(deck)
-                      if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'flashcard', activeFlashcardDeck: deck })
-                      setView('flashcard')
-                    } else {
-                      setNewlyCreatedId(deck.id)
-                      setTimeout(() => setNewlyCreatedId(null), 2200)
-                    }
-                  }}
-                  onNewCollection={() => {
-                    const COLLECTION_COLORS = ['#388bfd', '#e05c7a', '#4a7c3f', '#e8922a', '#8250df', '#f0883e', '#56d4dd']
-                    const col = {
-                      id: makeId('col'),
-                      name: 'New Collection',
-                      items: [],
-                      color: COLLECTION_COLORS[collections.length % COLLECTION_COLORS.length],
-                      createdAt: new Date().toISOString(),
-                    }
-                    addCollection(col)
-                    persistCollections()
-                    setActiveLibTab('collections')
-                    if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'library', activeLibTab: 'collections' })
-                    setAddOpen(false)
-                  }}
-                />
-              )}
-            </div>
-          </div>
-
-          {/* Settings + Profile */}
-          <div className="header-right-actions">
-            <button className="btn-icon-round" title="Profile" onClick={() => setProfileOpen(true)}><ProfileIcon /></button>
-            <button className="sidenav-footer-btn" title="Settings" onClick={() => setSettingsOpen(true)}
-              style={{ width: 30, height: 30, borderRadius: 8 }}>
-              <SettingsIcon />
-            </button>
-          </div>
-
-        </div>
-
-        {/* ── Tab bar ───────────────────────────────────────────────────────── */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 0,
-          padding: '0 20px', height: 30,
-          borderBottom: '1px solid var(--borderSubtle)',
-          flexShrink: 0,
+      {/* Bulk selection toolbar */}
+      {selectedIds.size > 0 && (
+        <div className="lib-bulk-bar" style={{
+          position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 9000, display: 'flex', alignItems: 'center', gap: 8,
+          background: 'var(--surface)', border: '1px solid var(--border)',
+          borderRadius: 14, padding: '10px 16px',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+          animation: 'bulk-bar-in 0.18s cubic-bezier(0.34,1.56,0.64,1)',
         }}>
-          {TABS.map(t => (
-            <button key={t.id} onClick={() => setActiveLibTab(t.id)} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              padding: '0 12px', height: 30, border: 'none', background: 'none',
-              fontSize: 11, fontWeight: 500, letterSpacing: '0.04em', textTransform: 'uppercase',
-              color: activeTab === t.id ? 'var(--text)' : 'var(--textDim)',
-              borderBottom: activeTab === t.id ? '2px solid var(--accent)' : '2px solid transparent',
-              marginBottom: -1, cursor: 'pointer', fontFamily: 'inherit',
-              whiteSpace: 'nowrap', transition: 'color 0.12s, border-color 0.12s',
-            }}
-            onMouseEnter={e => { if (activeTab !== t.id) e.currentTarget.style.color = 'var(--text)' }}
-            onMouseLeave={e => { if (activeTab !== t.id) e.currentTarget.style.color = 'var(--textDim)' }}
-            >{t.label}</button>
-          ))}
+          <style>{`@keyframes bulk-bar-in { from { opacity:0; transform: translateX(-50%) translateY(12px); } to { opacity:1; transform: translateX(-50%) translateY(0); } }`}</style>
+          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', minWidth: 60 }}>
+            {selectedIds.size} selected
+          </span>
+          <div style={{ width: 1, height: 20, background: 'var(--border)' }} />
+          {/* Add to collection */}
+          <div style={{ position: 'relative' }}>
+            <button onClick={() => setBulkColPicker(v => !v)} style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              background: 'var(--surfaceAlt)', border: '1px solid var(--border)',
+              borderRadius: 8, padding: '6px 12px', color: 'var(--text)',
+              fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+            }}>
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                <rect x="2" y="7" width="12" height="8" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+                <rect x="1" y="4.5" width="14" height="3" rx="1" stroke="currentColor" strokeWidth="1.2"/>
+              </svg>
+              Add to Collection
+            </button>
+            {bulkColPicker && (
+              <div style={{
+                position: 'absolute', bottom: 'calc(100% + 6px)', left: 0,
+                background: 'var(--surface)', border: '1px solid var(--border)',
+                borderRadius: 10, padding: 4, minWidth: 180,
+                boxShadow: '0 8px 24px rgba(0,0,0,0.4)', zIndex: 100,
+              }}>
+                {(collections || []).map(col => (
+                  <button key={col.id} onClick={() => {
+                    selectedIds.forEach(id => addToCollection(col.id, id))
+                    persistCollections()
+                    setBulkColPicker(false)
+                    setSelectedIds(new Set())
+                    setLastSelectedId(null)
+                    setToast({ message: `Added ${selectedIds.size} item${selectedIds.size > 1 ? 's' : ''} to ${col.name}` })
+                    setTimeout(() => setToast(null), 2500)
+                  }} style={{
+                    display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                    padding: '7px 10px', background: 'none', border: 'none',
+                    color: 'var(--text)', fontSize: 12, fontWeight: 500,
+                    cursor: 'pointer', borderRadius: 7, textAlign: 'left', fontFamily: 'inherit',
+                  }}
+                    onMouseEnter={e => e.currentTarget.style.background='var(--hover)'}
+                    onMouseLeave={e => e.currentTarget.style.background='none'}
+                  >
+                    {col.emoji
+                      ? <span style={{ fontSize: 13 }}>{col.emoji}</span>
+                      : col.color
+                        ? <span style={{ width: 10, height: 10, borderRadius: 3, background: col.color, flexShrink: 0 }} />
+                        : null}
+                    {col.name}
+                  </button>
+                ))}
+                {collections?.length > 0 && <div style={{ height: 1, background: 'var(--borderSubtle)', margin: '4px 8px' }} />}
+                <button onClick={() => {
+                  const count = selectedIds.size
+                  const ids = [...selectedIds]
+                  const newCol = { id: makeId('col'), name: 'New Collection', items: ids, color: '', createdAt: new Date().toISOString() }
+                  addCollection(newCol)
+                  persistCollections()
+                  setBulkColPicker(false)
+                  setSelectedIds(new Set())
+                  setLastSelectedId(null)
+                  setToast({ message: `Created collection with ${count} item${count > 1 ? 's' : ''}` })
+                  setTimeout(() => setToast(null), 2500)
+                }} style={{
+                  display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                  padding: '7px 10px', background: 'none', border: 'none',
+                  color: 'var(--accent)', fontSize: 12, fontWeight: 600,
+                  cursor: 'pointer', borderRadius: 7, textAlign: 'left', fontFamily: 'inherit',
+                }}
+                  onMouseEnter={e => e.currentTarget.style.background='var(--hover)'}
+                  onMouseLeave={e => e.currentTarget.style.background='none'}
+                >
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                    <path d="M6 1v10M1 6h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                  </svg>
+                  New Collection
+                </button>
+              </div>
+            )}
+          </div>
+          {/* Delete */}
+          <button onClick={async () => {
+            const ids = [...selectedIds]
+            for (const id of ids) {
+              if (library.find(b => b.id === id)) removeBook(id)
+              else if (notebooks.find(n => n.id === id)) removeNotebook(id)
+              else if (sketchbooks.find(s => s.id === id)) removeSketchbook(id)
+            }
+            await persistLibrary()
+            await persistNotebooks()
+            setSelectedIds(new Set())
+            setLastSelectedId(null)
+            setToast({ message: `Deleted ${ids.length} item${ids.length > 1 ? 's' : ''}` })
+            setTimeout(() => setToast(null), 2500)
+          }} style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            background: 'rgba(239,83,80,0.1)', border: '1px solid rgba(239,83,80,0.3)',
+            borderRadius: 8, padding: '6px 12px', color: '#ef5350',
+            fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+          }}>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+              <polyline points="3,6 5,6 13,6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+              <path d="M11 6V4H5v2M14 6l-.867 9.143A1.5 1.5 0 0 1 11.64 16.5H4.36A1.5 1.5 0 0 1 2.867 15.143L2 6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            Delete
+          </button>
+          <div style={{ width: 1, height: 20, background: 'var(--border)' }} />
+          <button onClick={() => { setSelectedIds(new Set()); setLastSelectedId(null); setBulkColPicker(false) }} style={{
+            background: 'none', border: 'none', color: 'var(--textDim)', cursor: 'pointer',
+            fontSize: 12, padding: '4px 6px', borderRadius: 6,
+          }}
+            onMouseEnter={e => e.currentTarget.style.color='var(--text)'}
+            onMouseLeave={e => e.currentTarget.style.color='var(--textDim)'}
+          >Esc</button>
         </div>
+      )}
+
+      {/* Header — search/add/profile/settings live in the title bar and native menu bar now. */}
+      <header className="app-header">
+
+        {/* ── Workspace indicator + active filter badge ──
+             Type filters + Manage Collections now live in the native View menu */}
+        {!isMobile && (activeCollectionId || typeFilter !== 'all') && (
+          <div style={{ height: 34, borderBottom: '1px solid var(--borderSubtle)', flexShrink: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 16px', height: '100%', boxSizing: 'border-box' }}>
+              {activeCollectionId && (() => {
+                const col = collections.find(c => c.id === activeCollectionId)
+                if (!col) return null
+                return (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+                    {col.color && <span style={{ width: 8, height: 8, borderRadius: 2, background: col.color, flexShrink: 0 }} />}
+                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', whiteSpace: 'nowrap' }}>{col.name}</span>
+                    <button onClick={() => { setActiveCollectionId(null); setActiveLibTab('library') }} style={{ width: 14, height: 14, borderRadius: 3, border: 'none', background: 'none', color: 'var(--textDim)', cursor: 'pointer', fontSize: 10, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+                  </div>
+                )
+              })()}
+              {typeFilter !== 'all' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--textDim)', whiteSpace: 'nowrap' }}>
+                    Filter: {{ book: 'Books', audio: 'Audio', notebook: 'Notes', sketchbook: 'Sketches', flashcard: 'Cards' }[typeFilter] || typeFilter}
+                  </span>
+                  <button onClick={() => setTypeFilter('all')} style={{ width: 14, height: 14, borderRadius: 3, border: 'none', background: 'none', color: 'var(--textDim)', cursor: 'pointer', fontSize: 10, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
       </header>
 
@@ -3561,12 +4124,30 @@ export default function LibraryView() {
           e.preventDefault()
           setLibMenu({ x: Math.min(e.clientX, window.innerWidth - 200), y: Math.min(e.clientY, window.innerHeight - 160) })
         }}>
+
         <div id="library-content">
           <div className="lib-tab-panel active">{renderTab()}</div>
         </div>
       </main>
 
-      <StreakFooter />
+      {!isMobile && <StreakFooter streakDays={streakDays} weekActivity={weekActivity} todayMinutes={todayMinutes} />}
+
+      {/* Mobile Gnos+streak button — top center, replaces separate gnos title */}
+      {isMobile && (
+        <div className="mobile-streak-float" onClick={() => setProfileOpen(true)} role="button" tabIndex={0}>
+          <span className="mobile-gnos-brand">{profileOpen ? 'Profile' : 'Gnos'}</span>
+          {!profileOpen && (
+            <div className="mobile-streak-row">
+              <div className="mobile-streak-dots">
+                {weekActivity.map((active, i) => (
+                  <div key={i} className={`mobile-streak-dot${active ? ' filled' : ''}`} />
+                ))}
+              </div>
+              <span className="mobile-streak-text">{streakDays} day{streakDays !== 1 ? 's' : ''}</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
       {editNb && (
@@ -3578,7 +4159,7 @@ export default function LibraryView() {
           }} />
       )}
       {editSb && (
-        <EditNotebookModal nb={editSb} onClose={() => setEditSb(null)}
+        <EditNotebookModal nb={editSb} hideColor onClose={() => setEditSb(null)}
           onSave={async (changes) => {
             useAppStore.getState().updateSketchbook(editSb.id, changes)
             await persistSketchbooks()
@@ -3608,21 +4189,119 @@ export default function LibraryView() {
           onAddAudio={() => audioInputRef.current?.click()}
           onNewNotebook={() => {
             const nb = { id: makeId('nb'), title: 'Untitled', wordCount: 0, createdAt: new Date().toISOString() }
-            addNotebook(nb); persistNotebooks(); setActiveNotebook(nb); setView('notebook')
+            addNotebook(nb); persistNotebooks()
+            if (activeCollectionId) { addToCollection(activeCollectionId, nb.id); persistCollections() }
+            setActiveNotebook(nb); setView('notebook')
           }}
           onNewSketchbook={() => {
             const COLORS = ['#2d1b69','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#6b3fa0','#2e7d32']
             const sb = { id: makeId('sb'), title: 'Untitled Sketch', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), coverColor: COLORS[Math.floor(sketchbooks.length % COLORS.length)] }
-            addSketchbook(sb); persistSketchbooks(); setActiveSketchbook(sb); setView('sketchbook')
+            addSketchbook(sb); persistSketchbooks()
+            if (activeCollectionId) { addToCollection(activeCollectionId, sb.id); persistCollections() }
+            setActiveSketchbook(sb); setView('sketchbook')
           }}
           onNewFlashcardDeck={() => {
             const COLORS = ['#6b3fa0','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#2e7d32','#c0392b']
             const deck = { id: makeId('deck'), title: 'Untitled Deck', cards: [], color: COLORS[Math.floor(flashcardDecks.length % COLORS.length)], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
-            addDeck(deck); persistFlashcardDecks(); setActiveFlashcardDeck(deck); setView('flashcard')
+            addDeck(deck); persistFlashcardDecks()
+            if (activeCollectionId) { addToCollection(activeCollectionId, deck.id); persistCollections() }
+            setActiveFlashcardDeck(deck); setView('flashcard')
           }}
-          onNewCollection={() => {}}
+          onNewCollection={() => {
+            const COLLECTION_COLORS = ['#388bfd', '#e05c7a', '#4a7c3f', '#e8922a', '#8250df', '#f0883e', '#56d4dd']
+            const col = { id: makeId('col'), name: 'New Collection', items: [], color: COLLECTION_COLORS[collections.length % COLLECTION_COLORS.length], createdAt: new Date().toISOString() }
+            addCollection(col)
+            persistCollections()
+            setActiveLibTab('collections')
+            if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'library', activeLibTab: 'collections' })
+          }}
         />
       )}
+      {/* Mobile add sheet — triggered by gnos:mobile-add event from bottom nav */}
+      {isMobile && addOpen && (
+        <div
+          style={{ position: 'fixed', inset: 0, zIndex: 9200, background: 'rgba(0,0,0,0.45)' }}
+          onClick={() => setAddOpen(false)}
+        >
+          <div
+            style={{ position: 'absolute', bottom: 72, left: 12, right: 12 }}
+            onClick={e => e.stopPropagation()}
+          >
+            <AddPopup
+              asSheet
+              onClose={() => setAddOpen(false)}
+              onOpenNebuli={() => { openNewTab({ view: 'graph' }); setAddOpen(false) }}
+              onAddBook={() => fileInputRef.current?.click()}
+              onAddAudio={() => audioInputRef.current?.click()}
+              onNewNotebook={() => {
+                const nb = { id: makeId('nb'), title: 'Untitled', wordCount: 0, createdAt: new Date().toISOString() }
+                addNotebook(nb); persistNotebooks()
+                if (activeCollectionId) { addToCollection(activeCollectionId, nb.id); persistCollections() }
+                setAddOpen(false)
+                if (openOnCreate) {
+                  setActiveNotebook(nb)
+                  if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'notebook', activeNotebook: nb })
+                  setView('notebook')
+                }
+              }}
+              onNewSketchbook={() => {
+                const COLORS = ['#2d1b69','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#6b3fa0','#2e7d32']
+                const sb = { id: makeId('sb'), title: 'Untitled Sketch', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), coverColor: COLORS[Math.floor(sketchbooks.length % COLORS.length)] }
+                addSketchbook(sb); persistSketchbooks()
+                if (activeCollectionId) { addToCollection(activeCollectionId, sb.id); persistCollections() }
+                setAddOpen(false)
+                if (openOnCreate) {
+                  setActiveSketchbook(sb)
+                  if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'sketchbook', activeSketchbook: sb })
+                  setView('sketchbook')
+                }
+              }}
+              onNewFlashcardDeck={() => {
+                const COLORS = ['#6b3fa0','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#2e7d32','#c0392b']
+                const deck = { id: makeId('deck'), title: 'Untitled Deck', cards: [], color: COLORS[Math.floor(flashcardDecks.length % COLORS.length)], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+                addDeck(deck); persistFlashcardDecks()
+                if (activeCollectionId) { addToCollection(activeCollectionId, deck.id); persistCollections() }
+                setAddOpen(false)
+                if (openOnCreate) {
+                  setActiveFlashcardDeck(deck)
+                  if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'flashcard', activeFlashcardDeck: deck })
+                  setView('flashcard')
+                }
+              }}
+              onNewCollection={() => {
+                const COLLECTION_COLORS = ['#388bfd', '#e05c7a', '#4a7c3f', '#e8922a', '#8250df', '#f0883e', '#56d4dd']
+                const col = { id: makeId('col'), name: 'New Collection', items: [], color: COLLECTION_COLORS[collections.length % COLLECTION_COLORS.length], createdAt: new Date().toISOString() }
+                addCollection(col); persistCollections(); setActiveLibTab('collections')
+                if (paneTabId) useAppStore.getState().updateTab(paneTabId, { view: 'library', activeLibTab: 'collections' })
+                setAddOpen(false)
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Mobile search results — floats above the bottom nav bar */}
+      {isMobile && search && (
+        <div className="mobile-search-results">
+          <SearchDropdown
+            query={search}
+            library={library}
+            notebooks={notebooks}
+            sketchbooks={sketchbooks}
+            onOpenBook={book => { openBook(book); setSearch(''); window.dispatchEvent(new CustomEvent('gnos:mobile-search-query', { detail: '' })) }}
+            onOpenAudio={book => { openAudio(book); setSearch(''); window.dispatchEvent(new CustomEvent('gnos:mobile-search-query', { detail: '' })) }}
+            onOpenNotebook={nb => { openNotebook(nb); setSearch(''); window.dispatchEvent(new CustomEvent('gnos:mobile-search-query', { detail: '' })) }}
+            onOpenSketchbook={sb => { openSketchbook(sb); setSearch(''); window.dispatchEvent(new CustomEvent('gnos:mobile-search-query', { detail: '' })) }}
+            onDevCommand={cmd => { if (cmd === 'onboarding') setDevOnboardingOpen(true) }}
+            onOpenGraph={() => { openNewTab({ view: 'graph' }); setSearch('') }}
+            onOpenCalendar={() => { navigate({ view: 'calendar' }); setSearch('') }}
+            onOpenKanban={() => { navigate({ view: 'kanban' }); setSearch('') }}
+            onReset={async () => { setArchivePath(''); setOnboardingComplete(false); await persistPreferences(); resetBaseDir() }}
+            onClose={() => { setSearch(''); window.dispatchEvent(new CustomEvent('gnos:mobile-search-query', { detail: '' })) }}
+          />
+        </div>
+      )}
+
       <Toast message={toast?.message} error={toast?.error} />
       {settingsOpen && <UniversalSettingsModal onClose={() => setSettingsOpen(false)} />}
       {profileOpen  && <ProfileModal  onClose={() => setProfileOpen(false)} />}

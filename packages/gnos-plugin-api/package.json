@@ -1,0 +1,13 @@
+{
+  "name": "gnos-plugin-api",
+  "version": "0.1.0",
+  "description": "Type definitions for the Gnos plugin API",
+  "types": "index.d.ts",
+  "files": ["index.d.ts"],
+  "keywords": ["gnos", "plugin", "types"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GnosApp/Gnos"
+  }
+}

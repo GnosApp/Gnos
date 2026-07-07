@@ -1,0 +1,13 @@
+{
+  "id": "piper-tts",
+  "name": "Piper TTS",
+  "version": "1.0.0",
+  "minAppVersion": "0.1.0",
+  "description": "High-quality local neural TTS via the bundled Piper binary.",
+  "bundled": true,
+  "permissions": [
+    "invoke:piper_speak",
+    "invoke:piper_list_voices",
+    "invoke:piper_install_bundled"
+  ]
+}

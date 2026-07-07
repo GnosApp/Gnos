@@ -1,7 +1,7 @@
 {
   "name": "gnos-react",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "npm run tauri -- dev",
-    "tauri:build": "npm run tauri -- build"
+    "tauri:build": "npm run download-piper && npm run tauri -- build",
+    "download-piper": "node scripts/download-piper.js"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",
@@ -22,6 +23,7 @@
     "@codemirror/view": "^6.40.0",
     "@excalidraw/excalidraw": "^0.18.0",
     "@lezer/highlight": "^1.2.3",
+    "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-deep-link": "^2.4.7",
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-fs": "^2.4.5",

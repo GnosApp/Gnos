@@ -304,6 +304,103 @@ async fn download_and_install_update(app: tauri::AppHandle) -> Result<(), String
     Ok(())
 }
 
+// ── Quick Note popup ──────────────────────────────────────────────────────────
+
+/// Toggle the frameless always-on-top quick note window.
+/// Summoned by the global shortcut; also callable from the frontend.
+fn toggle_quick_note(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("quicknote") {
+        if win.is_visible().unwrap_or(false) && win.is_focused().unwrap_or(false) {
+            let _ = win.hide();
+        } else {
+            let _ = win.show();
+            let _ = win.set_focus();
+            let _ = win.emit("quicknote:focus", ());
+        }
+        return;
+    }
+    let builder = tauri::WebviewWindowBuilder::new(
+        app,
+        "quicknote",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Quick Note")
+    .inner_size(400.0, 540.0)
+    .min_inner_size(280.0, 240.0)
+    .decorations(false)
+    .transparent(true)
+    // macOS draws a native rectangular drop shadow around borderless/transparent
+    // windows, following the window bounds (not the rounded .qn-card). It compounded
+    // with the card + fan CSS shadows into a ragged halo — kill it, keep only CSS.
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .visible_on_all_workspaces(true)
+    .accept_first_mouse(true);
+    match builder.build() {
+        Ok(w) => {
+            let _ = w.set_focus();
+        }
+        Err(e) => eprintln!("[Gnos] quick note window failed: {}", e),
+    }
+}
+
+#[tauri::command]
+async fn quick_note_toggle(app: tauri::AppHandle) {
+    toggle_quick_note(&app);
+}
+
+/// Dedicated macOS-style settings window (label "settings").
+/// Overlay title bar so the sidebar runs full height, like System Settings.
+#[tauri::command]
+async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("settings") {
+        win.show().map_err(|e| e.to_string())?;
+        win.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    let builder = tauri::WebviewWindowBuilder::new(
+        &app,
+        "settings",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Settings")
+    .inner_size(780.0, 560.0)
+    .min_inner_size(640.0, 420.0);
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
+    let win = builder.build().map_err(|e| e.to_string())?;
+    let _ = win.set_focus();
+    Ok(())
+}
+
+/// Profile window (label "profile") — stats, streak, reading log.
+#[tauri::command]
+async fn open_profile_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("profile") {
+        win.show().map_err(|e| e.to_string())?;
+        win.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    let builder = tauri::WebviewWindowBuilder::new(
+        &app,
+        "profile",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Profile")
+    .inner_size(560.0, 640.0)
+    .min_inner_size(440.0, 480.0);
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
+    let win = builder.build().map_err(|e| e.to_string())?;
+    let _ = win.set_focus();
+    Ok(())
+}
+
 /// Open a folder in the system file manager (Finder on macOS, Explorer on Windows, etc.)
 #[tauri::command]
 async fn open_in_finder(path: String) -> Result<(), String> {
@@ -328,6 +425,141 @@ async fn copy_file_bytes(source: String) -> Result<Vec<u8>, String> {
     std::fs::read(&source).map_err(|e| format!("Failed to read {}: {}", source, e))
 }
 
+// ── Plugin system ─────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct PluginManifest {
+    id: String,
+    name: String,
+    version: String,
+    #[serde(rename = "minAppVersion", default)]
+    min_app_version: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default = "default_main")]
+    main: String,
+    #[serde(default)]
+    permissions: Vec<String>,
+    #[serde(default)]
+    bundled: bool,
+}
+
+fn default_main() -> String { "index.js".to_string() }
+
+/// List all community plugins found in {archive_path}/plugins/
+/// Returns a list of (manifest, enabled) pairs.
+#[tauri::command]
+async fn plugin_list(plugins_dir: String) -> Result<Vec<PluginManifest>, String> {
+    let dir = std::path::Path::new(&plugins_dir);
+    if !dir.exists() { return Ok(vec![]) }
+    let mut manifests = vec![];
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue }
+        let manifest_path = entry.path().join("manifest.json");
+        if !manifest_path.exists() { continue }
+        match std::fs::read_to_string(&manifest_path) {
+            Ok(raw) => match serde_json::from_str::<PluginManifest>(&raw) {
+                Ok(m) => manifests.push(m),
+                Err(e) => eprintln!("[Gnos] Bad manifest in {:?}: {}", manifest_path, e),
+            },
+            Err(e) => eprintln!("[Gnos] Cannot read manifest {:?}: {}", manifest_path, e),
+        }
+    }
+    Ok(manifests)
+}
+
+/// Read the JS bundle for a community plugin.
+/// plugins_dir is the full path to the plugins/ folder.
+#[tauri::command]
+async fn plugin_load_bundle(plugins_dir: String, plugin_id: String, main_file: String) -> Result<String, String> {
+    let path = std::path::Path::new(&plugins_dir)
+        .join(&plugin_id)
+        .join(&main_file);
+    std::fs::read_to_string(&path)
+        .map_err(|e| format!("Cannot read plugin bundle {:?}: {}", path, e))
+}
+
+/// Create the plugins directory if it doesn't exist.
+#[tauri::command]
+async fn plugin_ensure_dir(plugins_dir: String) -> Result<(), String> {
+    std::fs::create_dir_all(&plugins_dir).map_err(|e| e.to_string())
+}
+
+/// Fetch the community plugin registry JSON from a URL.
+#[tauri::command]
+async fn plugin_fetch_registry(url: String) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("Gnos/0.1")
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let body = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(body)
+}
+
+/// Download and install a community plugin from GitHub release assets.
+/// Creates {plugins_dir}/{plugin_id}/manifest.json and index.js.
+#[tauri::command]
+async fn plugin_install(
+    plugins_dir: String,
+    plugin_id: String,
+    manifest_url: String,
+    bundle_url: String,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .user_agent("Gnos/0.1")
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let plugin_dir = std::path::Path::new(&plugins_dir).join(&plugin_id);
+    std::fs::create_dir_all(&plugin_dir).map_err(|e| e.to_string())?;
+
+    // Download manifest
+    let manifest_bytes = client
+        .get(&manifest_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch manifest: {}", e))?
+        .bytes()
+        .await
+        .map_err(|e| e.to_string())?;
+    std::fs::write(plugin_dir.join("manifest.json"), &manifest_bytes)
+        .map_err(|e| format!("Failed to write manifest: {}", e))?;
+
+    // Download bundle
+    let bundle_bytes = client
+        .get(&bundle_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch bundle: {}", e))?
+        .bytes()
+        .await
+        .map_err(|e| e.to_string())?;
+    std::fs::write(plugin_dir.join("index.js"), &bundle_bytes)
+        .map_err(|e| format!("Failed to write bundle: {}", e))?;
+
+    Ok(())
+}
+
+/// Remove a community plugin's folder from the plugins directory.
+#[tauri::command]
+async fn plugin_uninstall(plugins_dir: String, plugin_id: String) -> Result<(), String> {
+    let plugin_dir = std::path::Path::new(&plugins_dir).join(&plugin_id);
+    if plugin_dir.exists() {
+        std::fs::remove_dir_all(&plugin_dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Check if piper binary is installed
 #[tauri::command]
 async fn piper_check(app: tauri::AppHandle) -> Result<bool, String> {
@@ -340,6 +572,67 @@ async fn piper_check(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(bin.exists())
 }
 
+/// Install bundled piper binary + voices from app resources into app_data_dir/piper/
+/// Skips files that already exist (idempotent). Call on startup.
+#[tauri::command]
+async fn piper_install_bundled(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    use tauri::Manager;
+    let dest_dir = piper_dir(&app);
+    let models_dir = dest_dir.join("models");
+    std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
+
+    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let piper_resources = resource_dir.join("piper");
+
+    if !piper_resources.exists() {
+        return Ok(vec![]); // no bundled resources — silently no-op
+    }
+
+    let mut installed = vec![];
+
+    // Copy binary
+    let bin_src = if cfg!(target_os = "windows") {
+        piper_resources.join("piper.exe")
+    } else {
+        piper_resources.join("piper")
+    };
+    let bin_dst = if cfg!(target_os = "windows") {
+        dest_dir.join("piper.exe")
+    } else {
+        dest_dir.join("piper")
+    };
+    if bin_src.exists() && !bin_dst.exists() {
+        std::fs::copy(&bin_src, &bin_dst).map_err(|e| format!("copy binary: {}", e))?;
+        // Make executable on Unix
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&bin_dst).map_err(|e| e.to_string())?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin_dst, perms).map_err(|e| e.to_string())?;
+        }
+        installed.push("piper".to_string());
+    }
+
+    // Copy model files (.onnx + .onnx.json)
+    let models_src = piper_resources.join("models");
+    if models_src.exists() {
+        for entry in std::fs::read_dir(&models_src).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let dst = models_dir.join(&name);
+            if !dst.exists() {
+                std::fs::copy(entry.path(), &dst).map_err(|e| format!("copy {}: {}", name, e))?;
+                if name.ends_with(".onnx") {
+                    installed.push(name.trim_end_matches(".onnx").to_string());
+                }
+            }
+        }
+    }
+
+    Ok(installed)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -349,6 +642,15 @@ pub fn run() {
     .plugin(tauri_plugin_deep_link::init())
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_shell::init())
+    .plugin(
+      tauri_plugin_global_shortcut::Builder::new()
+        .with_handler(|app, _shortcut, event| {
+          if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+            toggle_quick_note(app);
+          }
+        })
+        .build(),
+    )
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -362,6 +664,9 @@ pub fn run() {
 
       let gnos = SubmenuBuilder::new(handle, "Gnos")
         .item(&tauri::menu::MenuItem::with_id(handle, "about", "About Gnos", true, None::<&str>)?)
+        .item(&PredefinedMenuItem::separator(handle)?)
+        .item(&tauri::menu::MenuItem::with_id(handle, "open_profile", "Profile…", true, None::<&str>)?)
+        .item(&tauri::menu::MenuItem::with_id(handle, "profile_settings", "Settings…", true, Some("CmdOrCtrl+,"))?)
         .build()?;
 
       let books = SubmenuBuilder::new(handle, "Books")
@@ -391,6 +696,18 @@ pub fn run() {
         .item(&tauri::menu::MenuItem::with_id(handle, "tab_audiobooks", "Audiobooks", true, Some("CmdOrCtrl+3"))?)
         .item(&tauri::menu::MenuItem::with_id(handle, "tab_notebooks", "Notebooks", true, Some("CmdOrCtrl+4"))?)
         .item(&tauri::menu::MenuItem::with_id(handle, "tab_collections", "Collections", true, Some("CmdOrCtrl+5"))?)
+        .item(&PredefinedMenuItem::separator(handle)?)
+        .item(&tauri::menu::MenuItem::with_id(handle, "filter_all", "Show Everything", true, Some("CmdOrCtrl+Alt+0"))?)
+        .item(&tauri::menu::MenuItem::with_id(handle, "filter_book", "Show Books", true, Some("CmdOrCtrl+Alt+1"))?)
+        .item(&tauri::menu::MenuItem::with_id(handle, "filter_audio", "Show Audio", true, Some("CmdOrCtrl+Alt+2"))?)
+        .item(&tauri::menu::MenuItem::with_id(handle, "filter_notebook", "Show Notes", true, Some("CmdOrCtrl+Alt+3"))?)
+        .item(&tauri::menu::MenuItem::with_id(handle, "filter_sketchbook", "Show Sketches", true, Some("CmdOrCtrl+Alt+4"))?)
+        .item(&tauri::menu::MenuItem::with_id(handle, "filter_flashcard", "Show Cards", true, Some("CmdOrCtrl+Alt+5"))?)
+        .item(&PredefinedMenuItem::separator(handle)?)
+        .item(&tauri::menu::MenuItem::with_id(handle, "manage_collections", "Manage Collections…", true, Some("CmdOrCtrl+Shift+M"))?)
+        .item(&PredefinedMenuItem::separator(handle)?)
+        .item(&tauri::menu::MenuItem::with_id(handle, "customize_toolbar", "Customize Toolbar…", true, None::<&str>)?)
+        .item(&tauri::menu::MenuItem::with_id(handle, "page_settings", "Page Settings…", true, Some("CmdOrCtrl+Alt+,"))?)
         .build()?;
 
       let window_menu = SubmenuBuilder::new(handle, "Window")
@@ -404,6 +721,14 @@ pub fn run() {
         .build()?;
 
       app.set_menu(menu)?;
+
+      // Quick note summon shortcut — Option+N (Alt+N), works while any app is focused.
+      {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        if let Err(e) = app.global_shortcut().register("Alt+N") {
+          eprintln!("[Gnos] quick note shortcut registration failed: {}", e);
+        }
+      }
 
       let window = app.get_webview_window("main").unwrap();
 
@@ -434,8 +759,18 @@ pub fn run() {
       piper_list_voices,
       piper_speak,
       piper_check,
+      piper_install_bundled,
+      plugin_list,
+      plugin_load_bundle,
+      plugin_ensure_dir,
+      plugin_fetch_registry,
+      plugin_install,
+      plugin_uninstall,
       copy_file_bytes,
       open_in_finder,
+      quick_note_toggle,
+      open_settings_window,
+      open_profile_window,
       create_inline_webview,
       reposition_inline_webview,
       close_inline_webview,

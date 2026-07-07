@@ -1,0 +1,13 @@
+{
+  "name": "my-gnos-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --format=cjs --outfile=index.js --external:gnos-plugin-api",
+    "dev": "esbuild src/index.ts --bundle --format=cjs --outfile=index.js --external:gnos-plugin-api --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.0",
+    "gnos-plugin-api": "^0.1.0"
+  }
+}

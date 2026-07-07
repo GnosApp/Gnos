@@ -3,7 +3,10 @@
   "identifier": "default",
   "description": "enables the default permissions",
   "windows": [
-    "main"
+    "main",
+    "quicknote",
+    "settings",
+    "profile"
   ],
   "permissions": [
     "core:default",
@@ -30,6 +33,9 @@
     "dialog:allow-open",
     "shell:allow-open",
     "core:window:allow-start-dragging",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
     "core:webview:allow-create-webview",
     "updater:default",
     "updater:allow-check",

@@ -1,39 +1,39 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useContext } from 'react'
 import useAppStore, { useAppStoreShallow } from '@/store/useAppStore'
 import { PaneContext } from '@/lib/PaneContext'
-import { loadBookContent, addReadingMinutes } from '@/lib/storage'
-import { GnosNavButton } from '@/components/SideNav'
+import { useIsActiveTab } from '@/lib/useIsActiveTab'
+import { useIsMobile } from '@/lib/useIsMobile'
+import { loadBookContent, addReadingMinutes, loadNotebookContent, saveNotebookContent, getJSON, setJSON } from '@/lib/storage'
+import QuickAccess, { useTitlebarMeta } from '@/components/QuickAccess'
 import { generateCoverColor } from '@/lib/utils'
 import {
-  ensurePageStyle, setupColumns, renderChapterContent, revealContent,
+  ensurePageStyle, setupColumns, renderChapterContent, revealContent, raiseOverlay,
   measurePageCount, showPage, trimContainerWidth, invalidateCache,
-  getTotalPages, setWordWrapEnabled
+  getTotalPages, setWordWrapEnabled, getActivePage,
+  scanAllChapters, cancelScan,
+  cacheCurrentChapter, loadCachedChapter, clearChapterCache,
 } from '@/lib/Paginationengine'
 
 // ── SettingsPanel ─────────────────────────────────────────────────────────────
 
-function Toggle({ on, onClick }) {
-  return (
-    <div className={`toggle-track ${on ? 'on' : 'off'}`} onClick={onClick}>
-      <div className="toggle-thumb" />
-    </div>
-  )
-}
+import { Toggle, Slider, Select } from '@/components/Controls'
 
 function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose, piperVoices = [] }) {
   const { fontSize, lineSpacing, fontFamily, justifyText, tapToTurn, twoPage, highlightWords, underlineLine, pageTransition, fontWeight, ttsRate } = prefs
+  const isMobile = useIsMobile()
   return (
     <div className="settings-panel" style={{ display: 'block' }} onClick={e => e.stopPropagation()}>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14,paddingBottom:12,borderBottom:'1px solid var(--borderSubtle)'}}>
         <span style={{fontSize:13,fontWeight:700,color:'var(--text)'}}>Reader Settings</span>
-        <button onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg></button>
+        <button className="settings-panel-close" onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg></button>
       </div>
       <div className="section-label">DISPLAY</div>
       <div className="reader-slider-row">
         <span className="reader-slider-icon-sm" style={{ fontFamily: 'Georgia, serif', fontWeight: 700 }}>A</span>
-        <input type="range" min="14" max="28" step="1" value={fontSize}
-          onChange={e => onPrefChange('fontSize', +e.target.value)}
-          onMouseUp={onRebuild} onTouchEnd={onRebuild} style={{ flex: 1 }} />
+        <Slider min={14} max={28} step={1} value={fontSize}
+          onChange={v => onPrefChange('fontSize', v)}
+          onCommit={onRebuild}
+          style={{ flex: 1 }} />
         <span className="reader-slider-icon-lg" style={{ fontFamily: 'Georgia, serif', fontWeight: 700 }}>A</span>
       </div>
       <div className="reader-slider-row">
@@ -42,9 +42,10 @@ function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose, piperVoices = 
           <line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
           <line x1="2" y1="12" x2="14" y2="12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
         </svg>
-        <input type="range" min="1.4" max="2.4" step="0.1" value={lineSpacing}
-          onChange={e => onPrefChange('lineSpacing', +e.target.value)}
-          onMouseUp={onRebuild} onTouchEnd={onRebuild} style={{ flex: 1 }} />
+        <Slider min={1.4} max={2.4} step={0.1} value={lineSpacing}
+          onChange={v => onPrefChange('lineSpacing', v)}
+          onCommit={onRebuild}
+          style={{ flex: 1 }} />
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
           <line x1="2" y1="2" x2="14" y2="2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
           <line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
@@ -53,15 +54,22 @@ function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose, piperVoices = 
       </div>
       <label style={{ display: 'block', fontSize: 12, marginBottom: 12 }}>
         <div style={{ marginBottom: 5 }}>Font</div>
-        <select value={fontFamily} onChange={e => { onPrefChange('fontFamily', e.target.value); onRebuild() }}>
+        <Select value={fontFamily} onChange={v => { onPrefChange('fontFamily', v); onRebuild() }}>
           <option value="Georgia, serif">Georgia</option>
           <option value="'Palatino Linotype', serif">Palatino</option>
+          <option value="Baskerville, Georgia, serif">Baskerville</option>
+          <option value="'Times New Roman', serif">Times New Roman</option>
+          <option value="'New York', Georgia, serif">New York</option>
+          <option value="Charter, Georgia, serif">Charter</option>
+          <option value="'American Typewriter', serif">American Typewriter</option>
+          <option value="'Helvetica Neue', Arial, sans-serif">Helvetica Neue</option>
           <option value="system-ui, sans-serif">System UI</option>
-        </select>
+          <option value="'Courier New', monospace">Courier New</option>
+        </Select>
       </label>
       <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: 10 }}>
         <div style={{ fontSize: 12, fontWeight: 500 }}>Bold text</div>
-        <Toggle on={fontWeight === 700} onClick={() => { onPrefChange('fontWeight', fontWeight === 700 ? 400 : 700); setTimeout(onRebuild, 20) }} />
+        <Toggle on={fontWeight === 700} onChange={() => { onPrefChange('fontWeight', fontWeight === 700 ? 400 : 700); setTimeout(onRebuild, 20) }} />
       </label>
 
       <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--borderSubtle)' }}>
@@ -69,11 +77,11 @@ function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose, piperVoices = 
         {[
           { label: 'Tap margins to turn', key: 'tapToTurn',   val: tapToTurn },
           { label: 'Justify text',        key: 'justifyText', val: justifyText !== false, rebuild: true },
-          { label: 'Two-page spread',     key: 'twoPage',     val: twoPage,               rebuild: true },
+          ...(!isMobile ? [{ label: 'Two-page spread', key: 'twoPage', val: twoPage, rebuild: true }] : []),
         ].map(({ label, key, val, rebuild }) => (
           <label key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: 10 }}>
             <div style={{ fontSize: 12, fontWeight: 500 }}>{label}</div>
-            <Toggle on={!!val} onClick={() => { onPrefChange(key, !val); if (rebuild) setTimeout(onRebuild, 20) }} />
+            <Toggle on={!!val} onChange={() => { onPrefChange(key, !val); if (rebuild) setTimeout(onRebuild, 20) }} />
           </label>
         ))}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
@@ -105,7 +113,7 @@ function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose, piperVoices = 
         ].map(({ label, key, val }) => (
           <label key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: 10 }}>
             <div style={{ fontSize: 12, fontWeight: 500 }}>{label}</div>
-            <Toggle on={!!val} onClick={() => { onPrefChange(key, !val); setTimeout(onRebuild, 20) }} />
+            <Toggle on={!!val} onChange={() => { onPrefChange(key, !val); setTimeout(onRebuild, 20) }} />
           </label>
         ))}
       </div>
@@ -116,16 +124,16 @@ function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose, piperVoices = 
           <span style={{ fontSize: 12, fontWeight: 500 }}>Speed</span>
           <span style={{ fontSize: 12, color: 'var(--textDim)', minWidth: 32, textAlign: 'right' }}>{(ttsRate ?? 1.0).toFixed(1)}×</span>
         </div>
-        <input type="range" min="0.5" max="2.0" step="0.1" value={ttsRate ?? 1.0}
-          onChange={e => onPrefChange('ttsRate', +e.target.value)}
-          style={{ width: '100%', accentColor: 'var(--accent)', marginBottom: 12 }} />
+        <Slider min={0.5} max={2.0} step={0.1} value={ttsRate ?? 1.0}
+          onChange={v => onPrefChange('ttsRate', v)}
+          style={{ width: '100%', marginBottom: 12 }} />
         {piperVoices.length > 0 && (
           <label style={{ display: 'block', fontSize: 12, marginBottom: 12 }}>
             <div style={{ marginBottom: 5 }}>Piper voice</div>
-            <select value={prefs.piperVoice || ''} onChange={e => onPrefChange('piperVoice', e.target.value)}>
+            <Select value={prefs.piperVoice || ''} onChange={v => onPrefChange('piperVoice', v)}>
               <option value="">Web Speech (default)</option>
               {piperVoices.map(v => <option key={v} value={v}>{v}</option>)}
-            </select>
+            </Select>
           </label>
         )}
       </div>
@@ -144,10 +152,11 @@ const HL_COLORS = {
 }
 const HL_COLOR_KEYS = Object.keys(HL_COLORS)
 
-function ReviewPanel({ highlights, bookmarks, chapters, onJump, onClose, onDeleteHighlight, onDeleteBookmark, onSaveNote }) {
+function ReviewPanel({ highlights, bookmarks, chapters, onJump, onClose, onDeleteHighlight, onDeleteBookmark, onSaveNote, onSendToNotebook, onExportMarkdown, onToggleBookmark, isBookmarked }) {
   const [tab, setTab] = useState('highlights')
   const [editingNoteId, setEditingNoteId] = useState(null)
   const [noteText, setNoteText] = useState('')
+  const [sending, setSending] = useState(false)
 
   // Group highlights by chapter index
   const grouped = {}
@@ -166,12 +175,23 @@ function ReviewPanel({ highlights, bookmarks, chapters, onJump, onClose, onDelet
   return (
     <div className="settings-panel" style={{ display: 'block', width: 300 }} onClick={e => e.stopPropagation()}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid var(--borderSubtle)' }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Review</span>
-        <button onClick={onClose} title="Close" style={{ width: 24, height: 24, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surfaceAlt)', color: 'var(--textDim)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(248,81,73,0.12)'; e.currentTarget.style.color = '#f85149' }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'var(--surfaceAlt)'; e.currentTarget.style.color = 'var(--textDim)' }}>
-          <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-        </button>
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Bookmarks & Notes</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {onToggleBookmark && (
+            <button onClick={onToggleBookmark} title={isBookmarked ? 'Remove bookmark' : 'Bookmark this page'}
+              style={{ height: 24, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surfaceAlt)', color: isBookmarked ? 'var(--accent)' : 'var(--textDim)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, padding: '0 8px', fontSize: 10.5, fontWeight: 600, fontFamily: 'inherit' }}>
+              {isBookmarked
+                ? <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M3 2h10a1 1 0 0 1 1 1v11l-6-3.5L2 14V3a1 1 0 0 1 1-1z"/></svg>
+                : <svg width="10" height="10" viewBox="0 0 16 16" fill="none"><path d="M3 2h10a1 1 0 0 1 1 1v11l-6-3.5L2 14V3a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/></svg>}
+              {isBookmarked ? 'Bookmarked' : 'Bookmark page'}
+            </button>
+          )}
+          <button onClick={onClose} title="Close" style={{ width: 24, height: 24, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surfaceAlt)', color: 'var(--textDim)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(248,81,73,0.12)'; e.currentTarget.style.color = '#f85149' }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'var(--surfaceAlt)'; e.currentTarget.style.color = 'var(--textDim)' }}>
+            <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -181,7 +201,8 @@ function ReviewPanel({ highlights, bookmarks, chapters, onJump, onClose, onDelet
       </div>
 
       {tab === 'highlights' && (
-        <div style={{ maxHeight: 'calc(100vh - 220px)', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', maxHeight: 'calc(100vh - 180px)' }}>
+        <div style={{ flex: 1, overflowY: 'auto' }}>
           {highlights.length === 0 && (
             <div style={{ fontSize: 12, color: 'var(--textDim)', textAlign: 'center', padding: '20px 0' }}>No highlights yet</div>
           )}
@@ -196,9 +217,14 @@ function ReviewPanel({ highlights, bookmarks, chapters, onJump, onClose, onDelet
                     onClick={() => { onJump(hl.chapterIdx, 0); onClose() }}>
                     <div style={{ width: 10, height: 10, borderRadius: 2, flexShrink: 0, marginTop: 2,
                       background: HL_COLORS[hl.color || 'yellow']?.bg || HL_COLORS.yellow.bg }} />
-                    <span style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.4, flex: 1 }}>
-                      {(hl.text || '').slice(0, 80)}{(hl.text || '').length > 80 ? '…' : ''}
-                    </span>
+                    <div style={{ flex: 1 }}>
+                      <span style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.4 }}>
+                        {(hl.text || '').slice(0, 80)}{(hl.text || '').length > 80 ? '…' : ''}
+                      </span>
+                      {hl.page != null && (
+                        <span style={{ display: 'block', fontSize: 10, color: 'var(--textDim)', marginTop: 2 }}>p. {hl.page + 1}</span>
+                      )}
+                    </div>
                     <button onClick={e => { e.stopPropagation(); onDeleteHighlight(hl.id) }}
                       style={{ background: 'none', border: 'none', color: 'var(--textDim)', cursor: 'pointer', padding: '0 2px', flexShrink: 0 }}
                       title="Delete">
@@ -230,6 +256,28 @@ function ReviewPanel({ highlights, bookmarks, chapters, onJump, onClose, onDelet
               ))}
             </div>
           ))}
+        </div>
+        {/* Send to Notebook / Export footer */}
+        {highlights.length > 0 && (
+          <div style={{ borderTop: '1px solid var(--borderSubtle)', padding: '10px 8px', display: 'flex', gap: 6 }}>
+            <button
+              disabled={sending}
+              onClick={async () => {
+                setSending(true)
+                await onSendToNotebook()
+                setSending(false)
+              }}
+              style={{ flex: 1, fontSize: 11, padding: '6px 0', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--accent)', color: '#fff', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600, opacity: sending ? 0.6 : 1 }}>
+              {sending ? 'Saving…' : 'Send to Notebook'}
+            </button>
+            <button
+              onClick={onExportMarkdown}
+              title="Export highlights as a Markdown file"
+              style={{ flex: 1, fontSize: 11, padding: '6px 0', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--surfaceAlt)', color: 'var(--text)', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600 }}>
+              Export .md
+            </button>
+          </div>
+        )}
         </div>
       )}
 
@@ -267,9 +315,13 @@ function ReviewPanel({ highlights, bookmarks, chapters, onJump, onClose, onDelet
 
 // ── ChapterDropdown ───────────────────────────────────────────────────────────
 
-function ChapterDropdown({ chapters, currentChapter, chapterPageCounts, onJump, onClose }) {
-  const [search, setSearch] = useState('')
+function ChapterDropdown({ chapters, currentChapter, chapterPageCounts, onJump, onClose, externalSearch }) {
+  const [search, setSearch] = useState(externalSearch || '')
   const realChapters = chapters.filter(c => c.title !== '_cover_')
+
+  useEffect(() => {
+    if (externalSearch !== undefined) setSearch(externalSearch)
+  }, [externalSearch])
 
   // Build global page start map
   let globalPageStart = 0
@@ -291,9 +343,23 @@ function ChapterDropdown({ chapters, currentChapter, chapterPageCounts, onJump, 
     <div className="dropdown" style={{ display: 'block' }} onClick={e => e.stopPropagation()}>
       <div className="dropdown-header">
         <div className="drop-title">{bookTitle}</div>
-        <div className="drop-stats">{realChapters.length} chapter(s)</div>
-        <input className="chapter-search-input" placeholder="Search chapters..."
-          value={search} onChange={e => setSearch(e.target.value)} autoFocus />
+        {externalSearch !== undefined ? (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 2 }}>
+              <div className="drop-stats" style={{ margin: 0 }}>Chapter {currentChapter} of {realChapters.length}</div>
+              <div className="drop-stats" style={{ margin: 0 }}>{realChapters.length} chapter{realChapters.length !== 1 ? 's' : ''}</div>
+            </div>
+            <div style={{ height: 3, background: 'var(--borderSubtle)', borderRadius: 2, overflow: 'hidden', marginTop: 6 }}>
+              <div style={{ width: `${Math.min(100, (currentChapter / Math.max(1, realChapters.length)) * 100)}%`, height: '100%', background: 'var(--accent)', borderRadius: 2 }} />
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="drop-stats">{realChapters.length} chapter(s)</div>
+            <input className="chapter-search-input" placeholder="Search chapters..."
+              value={search} onChange={e => setSearch(e.target.value)} autoFocus />
+          </>
+        )}
       </div>
       <div>
         {chapters.map((ch, i) => {
@@ -361,6 +427,8 @@ const BUILT_IN_THEMES = {
 
 export default function ReaderView() {
   const paneTabId          = useContext(PaneContext)
+  const isActive           = useIsActiveTab()
+  const isMobile           = useIsMobile()
   const activeBook         = useAppStore(useCallback(
     s => {
       const tab = paneTabId ? s.tabs.find(t => t.id === paneTabId) : null
@@ -371,6 +439,10 @@ export default function ReaderView() {
   const setPref            = useAppStore(s => s.setPref)
   const persistPreferences = useAppStore(s => s.persistPreferences)
   const sideNavOpen        = useAppStore(s => s.sideNavOpen)
+  const notebooks          = useAppStore(s => s.notebooks)
+  const addNotebook        = useAppStore(s => s.addNotebook)
+  const persistNotebooks   = useAppStore(s => s.persistNotebooks)
+  const tapToTurnLive      = useAppStore(s => s.tapToTurn)
 
   // Read all prefs in one selector so settings panel always stays in sync
   const prefs = useAppStoreShallow(s => ({
@@ -390,7 +462,10 @@ export default function ReaderView() {
     piperVoice:      s.piperVoice ?? '',
   }))
 
-  const cardRef = useRef(null)
+  const cardRef      = useRef(null)
+  const containerRef = useRef(null)
+  const resizeDebounceRef = useRef(null)
+  const lastHeightRef     = useRef(0)
 
   const [chapters,     setChapters]     = useState([])
   const [curChapter,   setCurChapter]   = useState(0)
@@ -398,10 +473,18 @@ export default function ReaderView() {
   const [loading,      setLoading]      = useState(true)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [reviewOpen,   setReviewOpen]   = useState(false)
   const [pageCount,    setPageCount]    = useState(1)  // pages in current chapter
   const [pageInput,    setPageInput]    = useState(null)
 
   const chapterPageCountsRef = useRef({}) // { [chapterIdx]: pageCount }
+  const [scanTick, setScanTick] = useState(0) // incremented when background scan updates a count
+
+  // Rapid-nav scrubber: during bursts of taps only the footer counter updates.
+  // 180ms after the last tap a single showPage() renders the settled page.
+  const lastNavTimeRef   = useRef(0)
+  const rapidNavTimerRef = useRef(null)
+  const persistTimerRef  = useRef(null)
 
   const chaptersRef   = useRef([])
   const curChapterRef = useRef(0)
@@ -414,9 +497,107 @@ export default function ReaderView() {
   curChapterRef.current = curChapter
   curPageRef.current    = curPage
 
+  // Fresh-function ref for mobile event listeners — assigned after all state is declared below
+  const mobileRef = useRef({})
+
+  // ── Mobile: wire up reader commands from bottom nav ──────────────────────────
+  useEffect(() => {
+    const h = e => {
+      const r = mobileRef.current
+      const { cmd } = e.detail
+      if (cmd === 'prev') r.prevPage()
+      if (cmd === 'next') r.nextPage()
+      if (cmd === 'tts-toggle') r.ttsActive ? r.ttsStop() : r.ttsStart(null)
+      if (cmd === 'tts-prev') r.ttsNav?.(-1)
+      if (cmd === 'tts-pause') r.ttsTogglePause?.()
+      if (cmd === 'tts-next') r.ttsNav?.(1)
+      if (cmd === 'settings') r.setSettingsOpen(o => !o)
+      if (cmd === 'chapters') r.setDropdownOpen(o => !o)
+      if (cmd === 'chapters-close') { r.setDropdownOpen(false); r.setChapterSearchExternal('') }
+    }
+    window.addEventListener('gnos:reader-cmd', h)
+    return () => window.removeEventListener('gnos:reader-cmd', h)
+  }, [])
+
+  // ── Mobile: sync chapter search from bottom nav ───────────────────────────────
+  const [chapterSearchExternal, setChapterSearchExternal] = useState('')
+  useEffect(() => {
+    const h = e => {
+      const q = e.detail || ''
+      setChapterSearchExternal(q)
+      if (q) setDropdownOpen(true)
+    }
+    window.addEventListener('gnos:reader-chapter-search', h)
+    return () => window.removeEventListener('gnos:reader-chapter-search', h)
+  }, [])
+
+  // ── Focus mode (double-tap to hide all chrome) ────────────────────────────
+  const [focusMode, setFocusMode] = useState(false)
+  const lastTapRef    = useRef(0)
+  const swipeTouchRef = useRef(null)
+
+  useEffect(() => {
+    document.body.classList.toggle('reader-focus-mode', focusMode)
+    return () => document.body.classList.remove('reader-focus-mode')
+  }, [focusMode])
+
+  useEffect(() => {
+    if (!cardRef.current) return
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        handleRebuildRef.current?.()
+      })
+    })
+  }, [focusMode])
+
+  // Swipe + double-tap (mobile only) — attached after containerRef is set
+  useEffect(() => {
+    if (!isMobile) return
+    const el = containerRef.current
+    if (!el) return
+
+    function onTouchStart(e) {
+      const t = e.touches[0]
+      swipeTouchRef.current = { x: t.clientX, y: t.clientY, time: Date.now() }
+    }
+
+    function onTouchEnd(e) {
+      const start = swipeTouchRef.current
+      if (!start) return
+      swipeTouchRef.current = null
+      const t  = e.changedTouches[0]
+      const dx = t.clientX - start.x
+      const dy = t.clientY - start.y
+      const dt = Date.now() - start.time
+
+      if (Math.abs(dx) < 15 && Math.abs(dy) < 15 && dt < 300) {
+        const now = Date.now()
+        if (now - lastTapRef.current < 400) {
+          lastTapRef.current = 0
+          setFocusMode(m => !m)
+        } else {
+          lastTapRef.current = now
+        }
+        return
+      }
+
+      if (Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 44 && dt < 450) {
+        if (dx < 0) mobileRef.current.nextPage?.()
+        else mobileRef.current.prevPage?.()
+      }
+    }
+
+    el.addEventListener('touchstart', onTouchStart, { passive: true })
+    el.addEventListener('touchend', onTouchEnd, { passive: true })
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchend', onTouchEnd)
+    }
+  }, [isMobile]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Reading timer — tracks minutes spent reading for streak/stats ───────────
   useEffect(() => {
-    if (!activeBook) return
+    if (!activeBook || !isActive) return
     const TICK_MS  = 60_000   // save every 60 s
     const IDLE_MS  = 120_000  // stop counting after 2 min of inactivity
     let lastActive = Date.now()
@@ -443,7 +624,7 @@ export default function ReaderView() {
       // Flush any partial minute on unmount
       if (accumulated >= 0.1) addReadingMinutes(Math.max(1, Math.round(accumulated))).catch(() => {})
     }
-  }, [activeBook])
+  }, [activeBook, isActive])
 
   // ── Load ──────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -451,12 +632,10 @@ export default function ReaderView() {
     let cancelled = false
 
     async function load() {
-      console.log('[Reader] load() start, bookId=', activeBook.id)
       setLoading(true)
       invalidateCache()
 
       const rawChapters = await loadBookContent(activeBook.id)
-      console.log('[Reader] rawChapters=', rawChapters ? `${rawChapters.length} chapters` : 'NULL')
       if (cancelled) return
       if (!rawChapters) { setLoading(false); return }
 
@@ -480,11 +659,9 @@ export default function ReaderView() {
 
       // Give DOM a tick to mount the card, then compute + render
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
-      console.log('[Reader] after rAF, cardRef=', cardRef.current, 'cancelled=', cancelled)
       if (cancelled || !cardRef.current) return
 
       const p = prefsRef.current
-      console.log('[Reader] card dims:', cardRef.current.clientWidth, 'x', cardRef.current.offsetHeight)
       setWordWrapEnabled(p.highlightWords || p.underlineLine)
       ensurePageStyle(p)
       cardRef.current.classList.toggle('two-page', p.twoPage)
@@ -502,16 +679,17 @@ export default function ReaderView() {
       const count = measurePageCount()
       chapterPageCountsRef.current[resumeChapter] = count
       prevChapterRef.current = resumeChapter  // prevent re-render effect from re-rendering
-      console.log('[Reader] pages in ch', resumeChapter, ':', count)
       setPageCount(count)
       trimContainerWidth(count)
+      cacheCurrentChapter(resumeChapter, count)
       showPage(resumePage, false)
       revealContent()
       setLoading(false)
+      startBackgroundScan(resumeChapter)
     }
 
     load()
-    return () => { cancelled = true }
+    return () => { cancelled = true; cancelScan(); clearTimeout(rapidNavTimerRef.current); clearTimeout(persistTimerRef.current) }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBook?.id])
 
@@ -554,6 +732,25 @@ export default function ReaderView() {
     prevChapterRef.current = curChapter
     const chapterAtRender = curChapter
 
+    // Check cache first — if we've already extracted this chapter the render pipeline
+    // is skipped entirely: instant chapter load.
+    const cachedCount = loadCachedChapter(chapterAtRender)
+    if (cachedCount !== null) {
+      const pageAtRender = curPageRef.current
+      chapterPageCountsRef.current[chapterAtRender] = cachedCount
+      setPageCount(cachedCount)
+      showPage(pageAtRender, false)   // strip is restored from cache; translate is instant
+      revealContent()                 // overlay is already transparent, this is a no-op
+      requestAnimationFrame(() => applyHighlightsToCard(cardRef.current, bookIdRef.current, chapterAtRender))
+      return
+    }
+
+    // Cache miss: raise overlay immediately so the in-progress render is hidden.
+    // renderChapterContent() also raises it, but doing it here prevents a flash of
+    // the previous chapter's content during the 20ms debounce window.
+    raiseOverlay()
+
+    // Cache miss — run the full render pipeline.
     // Debounce so rapid chapter-boundary crossings skip intermediate renders
     // and only commit the chapter the user actually lands on.
     clearTimeout(chapterRenderRef.current)
@@ -567,16 +764,19 @@ export default function ReaderView() {
         chapterPageCountsRef.current[chapterAtRender] = count
         setPageCount(count)
         trimContainerWidth(count)
+        cacheCurrentChapter(chapterAtRender, count)
         showPage(pageAtRender, false)
         revealContent()
         applyHighlightsToCard(cardRef.current, bookIdRef.current, chapterAtRender)
+        startBackgroundScan(chapterAtRender)
       }))
-    }, 60)
+    }, 20)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [curChapter])
 
   // ── Keyboard nav ─────────────────────────────────────────────────────────
   useEffect(() => {
+    if (!isActive) return
     const handler = (e) => {
       if (settingsOpen || dropdownOpen || e.target.tagName === 'INPUT') return
       if (e.key === 'ArrowRight' || e.key === 'ArrowDown') nextPage()
@@ -585,14 +785,15 @@ export default function ReaderView() {
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settingsOpen, dropdownOpen])
+  }, [isActive, settingsOpen, dropdownOpen])
 
   // ── Close panels on outside click ────────────────────────────────────────
   useEffect(() => {
     if (!settingsOpen && !dropdownOpen && !reviewOpen) return
     const handler = () => { setSettingsOpen(false); setDropdownOpen(false); setReviewOpen(false) }
-    document.addEventListener('click', handler)
-    return () => document.removeEventListener('click', handler)
+    // Defer to avoid the same tap that opened the panel immediately closing it
+    const t = setTimeout(() => document.addEventListener('click', handler), 0)
+    return () => { clearTimeout(t); document.removeEventListener('click', handler) }
   }, [settingsOpen, dropdownOpen, reviewOpen])
 
   // ── Nav helpers ───────────────────────────────────────────────────────────
@@ -603,7 +804,27 @@ export default function ReaderView() {
     const savedChapter = Math.max(0, chapter - 1)
     const savedPage    = chapter === 0 ? 0 : page
     useAppStore.getState().updateBookProgress(book.id, savedChapter, savedPage)
-    useAppStore.getState().persistLibrary()
+    // Debounce the localStorage write — updateBookProgress keeps state current,
+    // persistLibrary only needs to flush once the user pauses.
+    clearTimeout(persistTimerRef.current)
+    persistTimerRef.current = setTimeout(() => {
+      useAppStore.getState().persistLibrary()
+    }, 500)
+  }
+
+  // Schedules the settle render: 180ms after the last rapid tap, show the page
+  // the user landed on with no animation and save progress.
+  function scheduleSettle() {
+    clearTimeout(rapidNavTimerRef.current)
+    rapidNavTimerRef.current = setTimeout(() => {
+      const ch = curChapterRef.current
+      const pg = curPageRef.current
+      showPage(pg, false)   // instant — no animation after a scrub
+      requestAnimationFrame(() => {
+        saveProgress(ch, pg)
+        applyHighlightsToCard(cardRef.current, bookIdRef.current, ch)
+      })
+    }, 120)
   }
 
   function nextPage() {
@@ -615,17 +836,41 @@ export default function ReaderView() {
     const total = chapterPageCountsRef.current[ch] || 1
     const trans = p.pageTransition || 'slide'
 
+    const now   = Date.now()
+    const rapid = now - lastNavTimeRef.current < 120
+    lastNavTimeRef.current = now
+
     if (pg + step <= total - 1) {
       const np = pg + step
       curPageRef.current = np
-      showPage(np, trans)       // immediate DOM update — no React round-trip
-      setCurPage(np); saveProgress(ch, np)
+      if (!rapid) {
+        showPage(np, trans)
+        requestAnimationFrame(() => {
+          setCurPage(np); saveProgress(ch, np)
+          applyHighlightsToCard(cardRef.current, bookIdRef.current, ch)
+        })
+      } else {
+        // Rapid: update footer counter only — no DOM/layout work at all.
+        // scheduleSettle() will render the final page once the burst stops.
+        setCurPage(np)
+        scheduleSettle()
+      }
     } else if (pg < total - 1) {
       const np = total - 1
       curPageRef.current = np
-      showPage(np, trans)
-      setCurPage(np); saveProgress(ch, np)
+      if (!rapid) {
+        showPage(np, trans)
+        requestAnimationFrame(() => {
+          setCurPage(np); saveProgress(ch, np)
+          applyHighlightsToCard(cardRef.current, bookIdRef.current, ch)
+        })
+      } else {
+        setCurPage(np)
+        scheduleSettle()
+      }
     } else if (ch < chaps.length - 1) {
+      // Chapter boundary: cancel any pending settle and do a full chapter transition.
+      clearTimeout(rapidNavTimerRef.current)
       const nc = ch + 1
       curChapterRef.current = nc; curPageRef.current = 0
       setCurChapter(nc); setCurPage(0); saveProgress(nc, 0)
@@ -639,16 +884,37 @@ export default function ReaderView() {
     const step  = p.twoPage ? 2 : 1
     const trans = p.pageTransition || 'slide'
 
+    const now   = Date.now()
+    const rapid = now - lastNavTimeRef.current < 120
+    lastNavTimeRef.current = now
+
     if (pg >= step) {
       const np = pg - step
       curPageRef.current = np
-      showPage(np, trans)       // immediate DOM update — no React round-trip
-      setCurPage(np); saveProgress(ch, np)
+      if (!rapid) {
+        showPage(np, trans)
+        requestAnimationFrame(() => {
+          setCurPage(np); saveProgress(ch, np)
+          applyHighlightsToCard(cardRef.current, bookIdRef.current, ch)
+        })
+      } else {
+        setCurPage(np)
+        scheduleSettle()
+      }
     } else if (pg > 0) {
       curPageRef.current = 0
-      showPage(0, trans)
-      setCurPage(0); saveProgress(ch, 0)
+      if (!rapid) {
+        showPage(0, trans)
+        requestAnimationFrame(() => {
+          setCurPage(0); saveProgress(ch, 0)
+          applyHighlightsToCard(cardRef.current, bookIdRef.current, ch)
+        })
+      } else {
+        setCurPage(0)
+        scheduleSettle()
+      }
     } else if (ch > 0) {
+      clearTimeout(rapidNavTimerRef.current)
       const nc = ch - 1
       const prevCount = chapterPageCountsRef.current[nc]
       const lastPage  = prevCount != null
@@ -657,6 +923,22 @@ export default function ReaderView() {
       curChapterRef.current = nc; curPageRef.current = lastPage
       setCurChapter(nc); setCurPage(lastPage); saveProgress(nc, lastPage)
     }
+  }
+
+  // ── Background book scan ──────────────────────────────────────────────────
+  // Scans all chapters except the currently-displayed one to populate
+  // chapterPageCountsRef, then triggers a re-render so totalPages updates.
+  function startBackgroundScan(currentChapterIdx) {
+    const chapters = chaptersRef.current
+    if (!chapters.length) return
+    scanAllChapters(chapters, (chIdx, count) => {
+      // Don't overwrite the count for the current chapter — it was just measured
+      // accurately by the full render pipeline and trimContainerWidth.
+      if (chIdx !== currentChapterIdx) {
+        chapterPageCountsRef.current[chIdx] = count
+        setScanTick(t => t + 1)
+      }
+    })
   }
 
   function jumpToChapter(chIdx, pgIdx = 0) {
@@ -682,6 +964,7 @@ export default function ReaderView() {
 
   // ── Cmd/Ctrl + +/- zoom ───────────────────────────────────────────────────
   useEffect(() => {
+    if (!isActive) return
     const handler = (e) => {
       if (!(e.metaKey || e.ctrlKey)) return
       if (e.key !== '+' && e.key !== '=' && e.key !== '-') return
@@ -697,7 +980,7 @@ export default function ReaderView() {
     }
     window.addEventListener('keydown', handler, { capture: true })
     return () => window.removeEventListener('keydown', handler, { capture: true })
-  }, []) // refs only — stable
+  }, [isActive]) // isActive + refs only — stable
 
   function handleRebuild() {
     if (!cardRef.current || chaptersRef.current.length === 0) return
@@ -712,7 +995,8 @@ export default function ReaderView() {
     cardEl.classList.toggle('highlight-words', p.highlightWords)
     cardEl.classList.toggle('underline-line', p.underlineLine)
 
-    invalidateCache()
+    invalidateCache()       // also clears _chapterCache via PaginationEngine
+    clearChapterCache()     // ensure stale layout params don't survive
     setupColumns(cardEl, p)
     chapterPageCountsRef.current = {}
     prevChapterRef.current = ch  // prevent re-render effect from double-rendering
@@ -724,21 +1008,46 @@ export default function ReaderView() {
       setPageCount(count)
       const clampedPg = Math.min(pg, Math.max(0, count - 1))
       trimContainerWidth(count)
+      cacheCurrentChapter(ch, count)
       showPage(clampedPg, false)
       revealContent()
       if (clampedPg !== pg) { setCurPage(clampedPg); saveProgress(ch, clampedPg) }
       requestAnimationFrame(() => applyHighlightsToCard(cardEl, bookIdRef.current, ch))
+      // Scan all other chapters with the new layout settings so totalPages stays accurate.
+      startBackgroundScan(ch)
     }))
   }
   handleRebuildRef.current = handleRebuild
+
+  // ── Auto-rebuild when container height changes (e.g. window resize) ───────
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(entries => {
+      const h = entries[0]?.contentRect?.height ?? 0
+      if (Math.abs(h - lastHeightRef.current) < 2) return // ignore sub-pixel jitter
+      lastHeightRef.current = h
+      clearTimeout(resizeDebounceRef.current)
+      resizeDebounceRef.current = setTimeout(() => {
+        handleRebuildRef.current?.()
+      }, 150)
+    })
+    ro.observe(el)
+    return () => { ro.disconnect(); clearTimeout(resizeDebounceRef.current) }
+  }, []) // refs only — stable
 
   // ── Page jump ─────────────────────────────────────────────────────────────
   function handlePageJump(val) {
     const target = parseInt(val, 10)
     const total  = getTotalPages(chapterPageCountsRef.current, chaptersRef.current.length)
+    const p      = prefsRef.current
+    // target is entered as a display page (spread number in two-page mode).
+    // Convert back to raw column index so chapter lookup works correctly.
+    const dispTotal = p.twoPage ? Math.ceil(total / 2) : total
     setPageInput(null)
-    if (isNaN(target) || target < 1 || target > total) return
-    let remaining = target - 1
+    if (isNaN(target) || target < 1 || target > dispTotal) return
+    const rawTarget = p.twoPage ? (target - 1) * 2 : target - 1
+    let remaining = rawTarget
     for (let i = 0; i < chaptersRef.current.length; i++) {
       const chPgs = chapterPageCountsRef.current[i] || 1
       if (remaining < chPgs) { jumpToChapter(i, remaining); return }
@@ -758,6 +1067,15 @@ export default function ReaderView() {
   const ttsActiveWordRef = useRef(null) // currently highlighted .col-word el
   const piperAudioRef   = useRef(null)  // current piper Audio element
 
+  // Keep mobileRef fresh with latest functions/state (after all state is declared)
+  mobileRef.current = { prevPage, nextPage, ttsActive, ttsStart, ttsStop, ttsTogglePause, ttsNav, setSettingsOpen, setDropdownOpen, setChapterSearchExternal, setFocusMode }
+
+  // Broadcast TTS state to mobile nav
+  useEffect(() => {
+    if (!isMobile) return
+    window.dispatchEvent(new CustomEvent('gnos:reader-state', { detail: { ttsActive, ttsPaused } }))
+  }, [ttsActive, ttsPaused, isMobile])
+
   // ── Highlight / bookmark state ─────────────────────────────────────────────
   const highlightsRef = useRef({}) // { [bookId]: [{ id, chapterIdx, text, color, note }] }
   const bookmarksRef  = useRef({}) // { [bookId]: [{ id, chapterIdx, page, label, createdAt }] }
@@ -765,43 +1083,72 @@ export default function ReaderView() {
   const wordMenuRef = useRef(null)
   const defPopupRef = useRef(null)
 
+  // Bump-only counters: force re-render so the bookmark icon + panels reflect ref changes
   const [highlightVersion, setHighlightVersion] = useState(0)
   const [bookmarkVersion,  setBookmarkVersion]  = useState(0)
-  const [reviewOpen, setReviewOpen] = useState(false)
+  void highlightVersion; void bookmarkVersion
   const [wordMenuColorPick, setWordMenuColorPick] = useState(false)
+  const [pendingHL, setPendingHL] = useState(null) // { id, chapterIdx, text, color, note }
   const [toast, setToast] = useState(null)
   const [piperVoices, setPiperVoices] = useState([])
 
-  // Load/save highlights + bookmarks from localStorage
+  // Load highlights + bookmarks — archive storage is the source of truth,
+  // localStorage is the fallback (web dev mode) and one-time migration source.
   useEffect(() => {
     if (!activeBook?.id) return
     bookIdRef.current = activeBook.id
-    try {
-      const stored = JSON.parse(localStorage.getItem('gnos_highlights') || '{}')
-      highlightsRef.current = stored
-    } catch { highlightsRef.current = {} }
-    try {
-      const stored = JSON.parse(localStorage.getItem('gnos_bookmarks') || '{}')
-      bookmarksRef.current = stored
-    } catch { bookmarksRef.current = {} }
-    setBookmarkVersion(v => v + 1)
-    setHighlightVersion(v => v + 1)
+    let cancelled = false
+
+    const fromLocal = (key) => {
+      try { return JSON.parse(localStorage.getItem(key) || '{}') } catch { return {} }
+    }
+
+    ;(async () => {
+      const [hls, bms] = await Promise.all([
+        getJSON('annotations_highlights', null),
+        getJSON('annotations_bookmarks', null),
+      ])
+      if (cancelled) return
+
+      if (hls !== null) {
+        highlightsRef.current = hls
+      } else {
+        // Archive empty — migrate any existing localStorage data into it
+        highlightsRef.current = fromLocal('gnos_highlights')
+        if (Object.keys(highlightsRef.current).length) setJSON('annotations_highlights', highlightsRef.current)
+      }
+      if (bms !== null) {
+        bookmarksRef.current = bms
+      } else {
+        bookmarksRef.current = fromLocal('gnos_bookmarks')
+        if (Object.keys(bookmarksRef.current).length) setJSON('annotations_bookmarks', bookmarksRef.current)
+      }
+      setBookmarkVersion(v => v + 1)
+      setHighlightVersion(v => v + 1)
+    })()
+
+    return () => { cancelled = true }
   }, [activeBook?.id])
 
-  // Load piper voices once on mount
+  // Load piper voices once on mount — also install bundled binary/voices first
   useEffect(() => {
     if (typeof window.__TAURI_INTERNALS__ === 'undefined') return
     import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke('piper_list_voices').then(v => setPiperVoices(v || [])).catch(() => {})
+      invoke('piper_install_bundled').catch(() => {})
+        .finally(() => {
+          invoke('piper_list_voices').then(v => setPiperVoices(v || [])).catch(() => {})
+        })
     })
   }, [])
 
   function saveHighlights() {
     try { localStorage.setItem('gnos_highlights', JSON.stringify(highlightsRef.current)) } catch { /* */ }
+    setJSON('annotations_highlights', highlightsRef.current).catch(() => {})
   }
 
   function saveBookmarks() {
     try { localStorage.setItem('gnos_bookmarks', JSON.stringify(bookmarksRef.current)) } catch { /* */ }
+    setJSON('annotations_bookmarks', bookmarksRef.current).catch(() => {})
   }
 
   function isCurrentPageBookmarked() {
@@ -866,6 +1213,106 @@ export default function ReaderView() {
     setHighlightVersion(v => v + 1)
   }
 
+  // Build the markdown body for a book's highlights, grouped by chapter.
+  function buildHighlightsMarkdown(book, hls, titleLine) {
+    const grouped = {}
+    for (const hl of hls) {
+      if (!grouped[hl.chapterIdx]) grouped[hl.chapterIdx] = []
+      grouped[hl.chapterIdx].push(hl)
+    }
+    const authorLine = book.author ? `*by ${book.author}*\n\n` : ''
+    let md = `# ${titleLine}\n\n${authorLine}---\n`
+    const sortedIdxs = Object.keys(grouped).map(Number).sort((a, b) => a - b)
+    for (const chIdx of sortedIdxs) {
+      const chTitle = chapters[chIdx]?.title || `Chapter ${chIdx + 1}`
+      md += `\n## ${chTitle}\n\n`
+      for (const hl of grouped[chIdx]) {
+        const pageRef = hl.page != null ? ` *(p. ${hl.page + 1})*` : ''
+        md += `***${hl.text}***${pageRef}\n`
+        if (hl.note?.trim()) md += `\n> ${hl.note.trim()}\n`
+        md += '\n'
+      }
+    }
+    return md
+  }
+
+  async function exportHighlightsMarkdown() {
+    const book   = activeBook
+    const bookId = bookIdRef.current
+    if (!book || !bookId) return
+    const hls = highlightsRef.current[bookId] || []
+    if (hls.length === 0) return
+
+    const md = buildHighlightsMarkdown(book, hls, `${book.title} — Highlights`)
+    const fileName = `${book.title.replace(/[/\\:*?"<>|]/g, '_')} — Highlights.md`
+
+    try {
+      if (typeof window.__TAURI_INTERNALS__ !== 'undefined') {
+        const { save } = await import('@tauri-apps/plugin-dialog')
+        const path = await save({ defaultPath: fileName, filters: [{ name: 'Markdown', extensions: ['md'] }] })
+        if (!path) return
+        const { writeTextFile } = await import('@tauri-apps/plugin-fs')
+        await writeTextFile(path, md)
+      } else {
+        const blob = new Blob([md], { type: 'text/markdown' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url; a.download = fileName; a.click()
+        URL.revokeObjectURL(url)
+      }
+      setToast('Highlights exported')
+      setTimeout(() => setToast(null), 2500)
+    } catch (err) {
+      console.error('[Gnos] exportHighlightsMarkdown failed', err)
+      setToast('Export failed')
+      setTimeout(() => setToast(null), 2000)
+    }
+  }
+
+  async function sendHighlightsToNotebook() {
+    const book   = activeBook
+    const bookId = bookIdRef.current
+    if (!book || !bookId) return
+
+    const hls = highlightsRef.current[bookId] || []
+    if (hls.length === 0) return
+
+    // Find or create a dedicated notebook for this book
+    const nbId    = `book_hl_${bookId}`
+    const nbTitle = `${book.title} — Highlights`
+    let notebook  = notebooks.find(n => n.id === nbId)
+    if (!notebook) {
+      notebook = { id: nbId, title: nbTitle, wordCount: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+      addNotebook(notebook)
+      await persistNotebooks()
+    }
+
+    // Markers so re-send replaces instead of appending
+    const markerStart = `<!-- gnos-highlights:${bookId}:start -->`
+    const markerEnd   = `<!-- gnos-highlights:${bookId}:end -->`
+    const section = `${markerStart}\n${buildHighlightsMarkdown(book, hls, `[[${book.title}]] — Highlights`)}\n${markerEnd}`
+
+    try {
+      const existing = await loadNotebookContent(nbId) || ''
+      let updated
+      if (existing.includes(markerStart)) {
+        const startIdx = existing.indexOf(markerStart)
+        const endIdx   = existing.indexOf(markerEnd)
+        const after    = endIdx >= 0 ? existing.slice(endIdx + markerEnd.length) : ''
+        updated = existing.slice(0, startIdx) + section + after
+      } else {
+        updated = (existing ? existing.trimEnd() + '\n\n' : '') + section
+      }
+      await saveNotebookContent(notebook, updated)
+      setToast(`Saved to "${nbTitle}"`)
+      setTimeout(() => setToast(null), 2500)
+    } catch (err) {
+      console.error('[Gnos] sendHighlightsToNotebook failed', err)
+      setToast('Failed to save')
+      setTimeout(() => setToast(null), 2000)
+    }
+  }
+
   function changeHighlightColor(hlId, color) {
     const bookId = bookIdRef.current
     if (!bookId) return
@@ -926,6 +1373,8 @@ export default function ReaderView() {
     return text.match(/[^.!?…]+[.!?…]+|[^.!?…]+$/g)?.map(s => s.trim()).filter(Boolean) || []
   }
 
+  const ttsSentenceSpansRef = useRef([])
+
   function ttsClearWordHighlight() {
     if (ttsActiveWordRef.current) {
       ttsActiveWordRef.current.classList.remove('tts-word-active')
@@ -952,6 +1401,11 @@ export default function ReaderView() {
     }
   }
 
+  function ttsClearSentenceHighlight() {
+    ttsSentenceSpansRef.current.forEach(s => s.classList.remove('tts-sentence-active'))
+    ttsSentenceSpansRef.current = []
+  }
+
   function ttsSpeakSentence(sentence, onEnd) {
     const usePiper = !!(prefsRef.current.piperVoice)
     if (usePiper) { ttsSpeakSentenceWithPiper(sentence, onEnd); return }
@@ -959,7 +1413,8 @@ export default function ReaderView() {
     ttsClearWordHighlight()
     // Build ordered list of word spans for this sentence to match by position
     const card = cardRef.current
-    const allSpans = card ? Array.from(card.querySelectorAll('.col-word')) : []
+    const ttsPageEl = getActivePage() || card
+    const allSpans = ttsPageEl ? Array.from(ttsPageEl.querySelectorAll('.col-word')) : []
     const sentWords = sentence.trim().replace(/[\u201c\u201d\u2018\u2019]/g, '').split(/\s+/).filter(Boolean)
     let sentenceSpans = []
     let spanIdx = 0
@@ -974,9 +1429,15 @@ export default function ReaderView() {
         }
       }
     }
+    ttsClearSentenceHighlight()
+    if (isMobile && sentenceSpans.length > 0) {
+      sentenceSpans.forEach(s => s.classList.add('tts-sentence-active'))
+      ttsSentenceSpansRef.current = sentenceSpans
+    }
+
     const utt = new SpeechSynthesisUtterance(sentence)
     utt.rate = prefsRef.current.ttsRate ?? 1.0
-    utt.onend = () => { ttsClearWordHighlight(); spanIdx = 0; onEnd() }
+    utt.onend = () => { ttsClearWordHighlight(); ttsClearSentenceHighlight(); spanIdx = 0; onEnd() }
     utt.onboundary = (e) => {
       if (e.name !== 'word') return
       const charIdx = e.charIndex
@@ -1004,11 +1465,11 @@ export default function ReaderView() {
         }
       }
 
-      // Fallback: scan forward from last highlighted position across all spans
+      // Fallback: scan forward from last highlighted position across active page spans
       if (!found) {
-        const card = cardRef.current
-        if (card) {
-          const spans = Array.from(card.querySelectorAll('.col-word'))
+        const fbPageEl = getActivePage() || cardRef.current
+        if (fbPageEl) {
+          const spans = Array.from(fbPageEl.querySelectorAll('.col-word'))
           const startFrom = ttsActiveWordRef._lastIdx ?? 0
           for (let i = startFrom; i < spans.length; i++) {
             const t = (spans[i].dataset.word || spans[i].textContent)
@@ -1036,16 +1497,38 @@ export default function ReaderView() {
   function ttsStart(startText) {
     const card = cardRef.current
     if (!card) return
-    const allText = Array.from(card.querySelectorAll('.page-content p, .page-content h2, .page-content h3'))
+    const activePage = getActivePage() || card
+    const allText = Array.from(activePage.querySelectorAll('p, h2, h3'))
       .map(el => el.textContent.trim()).filter(Boolean).join(' ')
     const sentences = extractSentences(allText)
     if (!sentences.length) return
 
-    // Find closest sentence to clicked text
+    // The strip holds the whole chapter, so without an anchor TTS would start at
+    // the chapter top. Anchor to the first words visible on the current page.
+    if (!startText) {
+      const cardRect = card.getBoundingClientRect()
+      const spans = activePage.querySelectorAll('.col-word')
+      const firstVisible = []
+      for (const s of spans) {
+        const r = s.getBoundingClientRect()
+        if (r.right > cardRect.left + 1 && r.left < cardRect.right) {
+          firstVisible.push(s.textContent.trim())
+          if (firstVisible.length >= 6) break
+        } else if (firstVisible.length) break
+      }
+      if (firstVisible.length) startText = firstVisible.join(' ')
+    }
+
+    // Find closest sentence to the anchor text. Try the full anchor first, then
+    // progressively shorter word prefixes (the anchor may straddle a sentence break).
     let startIdx = 0
     if (startText) {
-      const lower = startText.toLowerCase()
-      startIdx = sentences.findIndex(s => s.toLowerCase().includes(lower))
+      const words = startText.toLowerCase().split(/\s+/).filter(Boolean)
+      for (let n = words.length; n >= 1 && startIdx <= 0; n--) {
+        const probe = words.slice(0, n).join(' ')
+        const found = sentences.findIndex(s => s.toLowerCase().includes(probe))
+        if (found >= 0) { startIdx = found; break }
+      }
       if (startIdx < 0) startIdx = 0
     }
 
@@ -1070,6 +1553,7 @@ export default function ReaderView() {
     window.speechSynthesis.cancel()
     if (piperAudioRef.current) { piperAudioRef.current.pause(); piperAudioRef.current = null }
     ttsClearWordHighlight()
+    ttsClearSentenceHighlight()
     setTtsActive(false)
     setTtsSentence('')
     setTtsPaused(false)
@@ -1102,6 +1586,7 @@ export default function ReaderView() {
     ))
     window.speechSynthesis.cancel()
     ttsClearWordHighlight()
+    ttsClearSentenceHighlight()
     const speakNext = () => {
       const idx = ttsSentIdxRef.current
       if (idx >= ttsSentencesRef.current.length) { ttsStop(); return }
@@ -1193,7 +1678,7 @@ export default function ReaderView() {
   // Close word menu on outside click
   useEffect(() => {
     if (!wordMenu) return
-    const h = () => setWordMenu(null)
+    const h = () => { setWordMenu(null); setWordMenuColorPick(false); setPendingHL(null) }
     document.addEventListener('click', h)
     return () => document.removeEventListener('click', h)
   }, [wordMenu])
@@ -1208,16 +1693,40 @@ export default function ReaderView() {
 
   // ── Derived state ─────────────────────────────────────────────────────────
   const totalInChapter = pageCount
+  // scanTick is read here so that background-scan updates trigger a re-render
+  // and totalPages recomputes from the freshly-updated chapterPageCountsRef.
+  void scanTick
   const totalPages     = getTotalPages(chapterPageCountsRef.current, chapters.length)
   let globalPage = curPage
   for (let _i = 0; _i < curChapter; _i++) globalPage += chapterPageCountsRef.current[_i] || 1
-  const pct = totalPages > 1 ? (globalPage / (totalPages - 1)) * 100 : 0
+
+  // In two-page mode each "page entry" is one CSS column; navigation steps by 2
+  // so the reader sees spreads.  Convert raw column counts to spread counts for
+  // all display values so the footer reads naturally.
+  const navStep        = prefs.twoPage ? 2 : 1
+  const displayPage    = prefs.twoPage ? Math.floor(globalPage  / 2) : globalPage
+  const displayTotal   = prefs.twoPage ? Math.ceil(totalPages   / 2) : totalPages
+  const displayInChap  = prefs.twoPage ? Math.ceil(totalInChapter / 2) : totalInChapter
+
+  const pct = displayTotal > 1 ? (displayPage / (displayTotal - 1)) * 100 : 0
   const atStart        = curChapter === 0 && curPage === 0
-  const atEnd          = curChapter >= chapters.length - 1 && curPage >= totalInChapter - 1
-  const pagesLeft      = totalInChapter - curPage - 1
+  // Disable Next when we are on the last valid spread (can't step navStep forward).
+  const atEnd          = curChapter >= chapters.length - 1 && curPage >= totalInChapter - navStep
+  const pagesLeft      = displayInChap - Math.floor(curPage / navStep) - 1
+  const curPageInChap  = Math.floor(curPage / navStep) + 1
   const isCover        = chapters[curChapter]?.title === '_cover_'
   const chapterTitle   = isCover ? 'Cover' : (chapters[curChapter]?.title || '')
   const [c1, c2]       = activeBook ? generateCoverColor(activeBook.title) : ['#1a1a2e', '#16213e']
+
+  // Chapter dropdown lives inside the title-bar search bar
+  useTitlebarMeta(chapters.length > 0 ? {
+    text: chapterTitle ? chapterTitle.slice(0, 28) : null,
+    dropdown: {
+      items: chapters.map((ch, i) => ({ id: i, label: ch.title === '_cover_' ? 'Cover' : (ch.title || `Chapter ${i + 1}`) })),
+      activeId: curChapter,
+      onSelect: (i) => jumpToChapter(Number(i), 0),
+    },
+  } : null)
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -1408,6 +1917,7 @@ export default function ReaderView() {
         .hl-swatch:hover { transform: scale(1.2); }
         .hl-swatch.selected { border-color: var(--text); transform: scale(1.15); }
 
+
         /* ── Toast ────────────────────────────────────────────────────────── */
         .reader-toast {
           position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
@@ -1425,69 +1935,89 @@ export default function ReaderView() {
           border-radius: 2px;
           outline: none;
         }
+
+        /* ── TTS sentence underline ──────────────────────────────────────── */
+        .col-word.tts-sentence-active {
+          text-decoration: underline;
+          text-decoration-color: rgba(56,139,253,0.55);
+          text-underline-offset: 2px;
+          text-decoration-thickness: 1.5px;
+        }
       `}</style>
 
-      {/* Header */}
-      <header className="reader-header">
-        <div className="reader-header-logo">
-          <GnosNavButton />
-        </div>
-
-        <div className="chapter-nav-wrapper">
-          <button className="btn-chapter" onClick={e => { e.stopPropagation(); setDropdownOpen(o => !o); setSettingsOpen(false) }}>
-            <div className="title-row">
-              <span>{activeBook?.title || ''}</span>
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+      {/* Mobile chapter nav — fixed top center, always-visible floating button */}
+      {isMobile && (
+        <div className="reader-chapter-nav" style={{ position: 'fixed', top: 12, left: 54, right: 54, zIndex: 9001, display: 'flex', flexDirection: 'column', alignItems: 'center', transition: 'opacity 0.25s, transform 0.25s' }}>
+          <button
+            style={{
+              width: '100%', maxWidth: 260,
+              height: 36,
+              border: '1px solid var(--border)', borderRadius: 10,
+              background: 'var(--surface)', padding: '0 9px',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.18)',
+              display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 1,
+              cursor: 'pointer', outline: 'none',
+            }}
+            onClick={e => { e.stopPropagation(); setDropdownOpen(o => !o); setSettingsOpen(false) }}
+          >
+            {/* Row 1: Book title + chevron */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, width: '100%', minWidth: 0 }}>
+              <span style={{ flex: 1, minWidth: 0, fontSize: 11, fontWeight: 700, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {activeBook?.title || ''}
+              </span>
+              <svg width="7" height="7" viewBox="0 0 10 10" fill="none" style={{ flexShrink: 0, opacity: 0.45 }}>
                 <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
             </div>
-            <div className="sub-row">{chapterTitle}</div>
+            {/* Row 2: Chapter · page X/Y · N left */}
+            <div style={{ width: '100%', minWidth: 0, fontSize: 9, color: 'var(--textDim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {[
+                chapterTitle,
+                `page ${curPageInChap}/${displayInChap}`,
+                pagesLeft <= 0 ? 'last page' : `${pagesLeft} left`,
+              ].filter(Boolean).join(' · ')}
+            </div>
+            {/* Row 3: Progress bar */}
+            <div style={{ width: '100%', height: 2, background: 'var(--border)', borderRadius: 1, overflow: 'hidden', marginTop: 1 }}>
+              <div style={{ width: `${pct}%`, height: '100%', background: 'var(--accent)', borderRadius: 1 }} />
+            </div>
           </button>
           {dropdownOpen && (
             <ChapterDropdown chapters={chapters} currentChapter={curChapter}
-              chapterPageCounts={chapterPageCountsRef.current} onJump={jumpToChapter} onClose={() => setDropdownOpen(false)} />
+              chapterPageCounts={chapterPageCountsRef.current} onJump={jumpToChapter}
+              onClose={() => { setDropdownOpen(false); setChapterSearchExternal('') }}
+              externalSearch={chapterSearchExternal} />
           )}
         </div>
+      )}
 
-        <div className="reader-actions">
-          {/* Bookmark */}
-          <button className="btn-reader-icon" title={isCurrentPageBookmarked() ? 'Remove bookmark' : 'Bookmark this page'}
-            onClick={toggleBookmark}>
-            {isCurrentPageBookmarked()
-              ? <svg width="13" height="13" viewBox="0 0 16 16" fill="var(--accent)"><path d="M3 2h10a1 1 0 0 1 1 1v11l-6-3.5L2 14V3a1 1 0 0 1 1-1z"/></svg>
-              : <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M3 2h10a1 1 0 0 1 1 1v11l-6-3.5L2 14V3a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/></svg>
-            }
-          </button>
-          {/* Review panel */}
-          <button className="btn-reader-icon" title="Review highlights & bookmarks"
-            onClick={e => { e.stopPropagation(); setReviewOpen(o => !o); setSettingsOpen(false); setDropdownOpen(false) }}
-            style={reviewOpen ? { color: 'var(--accent)' } : undefined}>
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <line x1="3" y1="4" x2="13" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-              <line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-              <line x1="3" y1="12" x2="9" y2="12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-            </svg>
-          </button>
-          {/* TTS */}
-          <button className="btn-reader-icon" title="Read aloud (TTS)"
-            onClick={() => ttsActive ? ttsStop() : ttsStart(null)}
-            style={ttsActive ? { color: 'var(--accent)' } : undefined}>
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <path d="M2 5.5h3l4-3.5v11L5 9.5H2v-4z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
-              <path d="M11 5c.9.8 1.5 1.8 1.5 3s-.6 2.2-1.5 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-              <path d="M13 3c1.5 1.3 2.5 3 2.5 5s-1 3.7-2.5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-            </svg>
-          </button>
-          <button className="btn-reader-icon" title="Reader settings"
-            onClick={e => { e.stopPropagation(); setSettingsOpen(o => !o); setDropdownOpen(false); setReviewOpen(false) }}>
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.4"/>
-              <path d="M8 1.5v1.2M8 13.3v1.2M1.5 8h1.2M13.3 8h1.2M3.4 3.4l.85.85M11.75 11.75l.85.85M12.6 3.4l-.85.85M4.25 11.75l-.85.85"
-                stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-            </svg>
-          </button>
-        </div>
-      </header>
+      {/* Header replaced by the title bar: chapter dropdown lives in the search
+          bar, actions in the quick-access strip. */}
+      <QuickAccess>
+        {/* Bookmarks & Notes — combined panel (bookmark toggle lives inside) */}
+        <button className={`gnos-settings-btn${reviewOpen ? ' active' : ''}`} title="Bookmarks & notes"
+          onClick={e => { e.stopPropagation(); setReviewOpen(o => !o); setSettingsOpen(false); setDropdownOpen(false) }}>
+          <svg width="14" height="14" viewBox="0 0 16 16" fill={isCurrentPageBookmarked() ? 'currentColor' : 'none'}>
+            <path d="M3 2h10a1 1 0 0 1 1 1v11l-6-3.5L2 14V3a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
+          </svg>
+        </button>
+        {/* TTS playback */}
+        <button className={`gnos-settings-btn${ttsActive ? ' active' : ''}`} title="Read aloud (TTS)"
+          onClick={() => ttsActive ? ttsStop() : ttsStart(null)}>
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path d="M2 5.5h3l4-3.5v11L5 9.5H2v-4z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
+            <path d="M11 5c.9.8 1.5 1.8 1.5 3s-.6 2.2-1.5 3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+          </svg>
+        </button>
+        {/* Reader settings (viewer + audio combined in one panel) — "Aa" text-size icon */}
+        <button className={`gnos-settings-btn${settingsOpen ? ' active' : ''}`} title="Reader settings"
+          onClick={e => { e.stopPropagation(); setSettingsOpen(o => !o); setDropdownOpen(false); setReviewOpen(false) }}>
+          <svg width="17" height="17" viewBox="0 0 20 20" fill="none">
+            <path d="M3 13.5L6.6 5h.9L11 13.5M4 10.5h5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M12.5 9c.5-.6 1.3-1 2.1-1 1.4 0 2.4 1 2.4 2.5v3M17 12.5a2.1 2.1 0 1 1-2.1-2h2.1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
+      </QuickAccess>
 
       {/* Settings panel */}
       {settingsOpen && (
@@ -1503,6 +2033,10 @@ export default function ReaderView() {
         return (
           <ReviewPanel
             highlights={hls} bookmarks={bms} chapters={chapters}
+            onSendToNotebook={sendHighlightsToNotebook}
+            onExportMarkdown={exportHighlightsMarkdown}
+            onToggleBookmark={toggleBookmark}
+            isBookmarked={isCurrentPageBookmarked()}
             onJump={jumpToChapter} onClose={() => setReviewOpen(false)}
             onDeleteHighlight={hlId => {
               const bId = bookIdRef.current
@@ -1528,7 +2062,7 @@ export default function ReaderView() {
       })()}
 
       {/* Tap zones — left zone shifts right when sidebar is open */}
-      {prefs.tapToTurn && !loading && (
+      {tapToTurnLive && !loading && (
         <>
           <div className="tap-zone left" onClick={prevPage}
             style={sideNavOpen ? { left: 238 } : undefined}>
@@ -1549,12 +2083,39 @@ export default function ReaderView() {
       )}
 
       {/* Main card area */}
-      <main className="reader-main" style={{ position: 'relative' }}>
+      <main ref={containerRef} className="reader-main" style={{ position: 'relative' }}>
         <div ref={cardRef} className="reader-card"
           style={{ '--reader-font-weight': prefs.fontWeight ?? 400 }}
           onClick={handleCardClick}
+          onDoubleClick={isMobile ? e => { if (!e.target.closest('button')) setFocusMode(m => !m) } : undefined}
           onContextMenu={handleCardContextMenu}
         />
+        {/* Left margin tap/hover zone — only when tap-to-turn is enabled */}
+        {tapToTurnLive && (
+          <div
+            onClick={prevPage}
+            className="reader-margin-zone reader-margin-zone--left"
+            style={{ position:'absolute', top:0, bottom:0, left:0, width:'12%', zIndex:10,
+              display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer' }}
+          >
+            <svg className="reader-margin-arrow" width="20" height="36" viewBox="0 0 20 36" fill="none">
+              <path d="M14 4L4 18l10 14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </div>
+        )}
+        {/* Right margin tap/hover zone — only when tap-to-turn is enabled */}
+        {tapToTurnLive && (
+          <div
+            onClick={nextPage}
+            className="reader-margin-zone reader-margin-zone--right"
+            style={{ position:'absolute', top:0, bottom:0, right:0, width:'12%', zIndex:10,
+              display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer' }}
+          >
+            <svg className="reader-margin-arrow" width="20" height="36" viewBox="0 0 20 36" fill="none">
+              <path d="M6 4l10 14-10 14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </div>
+        )}
 
         {loading && (
           <div style={{
@@ -1585,21 +2146,21 @@ export default function ReaderView() {
           <span className="page-indicator">
             {'Page '}
             {pageInput !== null
-              ? <input type="number" min={1} max={totalPages} value={pageInput}
+              ? <input type="number" min={1} max={displayTotal} value={pageInput}
                   autoFocus
-                  style={{ width: Math.max(36, String(totalPages).length * 10 + 16), background: 'transparent', border: 'none', borderBottom: '1px solid var(--textDim)', color: 'var(--text)', fontSize: 'inherit', fontFamily: 'inherit', textAlign: 'center', padding: '0 2px', outline: 'none' }}
+                  style={{ width: Math.max(36, String(displayTotal).length * 10 + 16), background: 'transparent', border: 'none', borderBottom: '1px solid var(--textDim)', color: 'var(--text)', fontSize: 'inherit', fontFamily: 'inherit', textAlign: 'center', padding: '0 2px', outline: 'none' }}
                   onChange={e => setPageInput(e.target.value)}
                   onBlur={e => handlePageJump(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') handlePageJump(e.target.value); if (e.key === 'Escape') setPageInput(null) }}
                   onClick={e => e.target.select()} />
-              : <span style={{ cursor: 'pointer' }} onClick={() => setPageInput(globalPage + 1)}>
-                  {globalPage + 1}
+              : <span style={{ cursor: 'pointer' }} onClick={() => setPageInput(displayPage + 1)}>
+                  {displayPage + 1}
                 </span>
             }
-            {` of ${totalPages} · ${Math.round(pct)}%`}
+            {` of ${displayTotal} · ${Math.round(pct)}%`}
             {!isCover && (pagesLeft <= 0
               ? ' · last page'
-              : pagesLeft === (prefs.twoPage ? 2 : 1)
+              : pagesLeft === 1
                 ? ' · 1 pg left'
                 : ` · ${pagesLeft} pgs left`
             )}
@@ -1612,11 +2173,101 @@ export default function ReaderView() {
         </div>
       </footer>
 
+      {/* Focus mode floating footer — thin overlay with nav + info + progress */}
+      {focusMode && (
+        <div style={{
+          position: 'fixed',
+          bottom: 'max(28px, calc(env(safe-area-inset-bottom, 0px) + 16px))',
+          left: '50%', transform: 'translateX(-50%)',
+          zIndex: 9003,
+          width: isMobile ? '88vw' : 'min(560px, 80vw)',
+          background: 'var(--surface)',
+          border: '1px solid var(--border)',
+          borderRadius: 12,
+          boxShadow: '0 4px 24px rgba(0,0,0,0.32)',
+          overflow: 'hidden',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'stretch' }}>
+            <div style={{ flex: 1, minWidth: 0, padding: '8px 10px' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {activeBook?.title || ''}
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--textDim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {[chapterTitle, `page ${displayPage + 1}/${displayTotal}`, pagesLeft <= 0 ? 'last page' : `${pagesLeft} left`].filter(Boolean).join(' · ')}
+              </div>
+            </div>
+          </div>
+          <div style={{ height: 2, background: 'var(--border)' }}>
+            <div style={{ width: `${pct}%`, height: '100%', background: 'var(--accent)' }} />
+          </div>
+        </div>
+      )}
+
+      {/* ── Mobile TTS controls bar — floats above bottom nav, direct state access ── */}
+      {isMobile && ttsActive && (
+        <div className="mobile-tts-bar">
+          <button className="mobile-tts-bar-btn" onClick={() => ttsNav(-1)} title="Previous sentence">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <polygon points="19,4 9,12 19,20" fill="currentColor"/>
+              <line x1="5" y1="4" x2="5" y2="20" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
+            </svg>
+          </button>
+          <button className="mobile-tts-bar-btn primary" onClick={ttsTogglePause} title={ttsPaused ? 'Resume' : 'Pause'}>
+            {ttsPaused
+              ? <svg width="15" height="15" viewBox="0 0 12 12" fill="none"><polygon points="2,1 11,6 2,11" fill="currentColor"/></svg>
+              : <svg width="15" height="15" viewBox="0 0 12 12" fill="none"><rect x="2" y="1" width="3" height="10" rx="0.5" fill="currentColor"/><rect x="7" y="1" width="3" height="10" rx="0.5" fill="currentColor"/></svg>
+            }
+          </button>
+          <button className="mobile-tts-bar-btn" onClick={() => ttsNav(1)} title="Next sentence">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <polygon points="5,4 15,12 5,20" fill="currentColor"/>
+              <line x1="19" y1="4" x2="19" y2="20" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+      )}
+
       {/* ── Word context menu — horizontal pill ── */}
       {wordMenu && (
         <div ref={wordMenuRef} className="word-menu" style={{ top: wordMenu.y - 64, left: wordMenu.x }} onClick={e => e.stopPropagation()}>
+          {/* Pending highlight note input — shown after color is picked for a new highlight */}
+          {pendingHL && (() => {
+            const commitHL = (note) => {
+              const bookId = bookIdRef.current
+              const hl = { ...pendingHL, note: note.trim() }
+              if (!highlightsRef.current[bookId]) highlightsRef.current[bookId] = []
+              highlightsRef.current[bookId].push(hl)
+              saveHighlights()
+              setHighlightVersion(v => v + 1)
+              requestAnimationFrame(() => applyHighlightsToCard(cardRef.current, bookId, hl.chapterIdx))
+              setPendingHL(null)
+              setWordMenu(null)
+            }
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', padding: '6px 8px', gap: 6, minWidth: 200 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: HL_COLORS[pendingHL.color]?.bg, flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, color: 'var(--textDim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                    {pendingHL.text.length > 40 ? pendingHL.text.slice(0, 40) + '…' : pendingHL.text}
+                  </span>
+                </div>
+                <textarea
+                  autoFocus
+                  placeholder="Add a note… (optional)"
+                  rows={2}
+                  style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)', fontSize: 11, padding: '4px 6px', fontFamily: 'inherit', outline: 'none', resize: 'none' }}
+                  onChange={e => setPendingHL(p => ({ ...p, note: e.target.value }))}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitHL(pendingHL.note || '') } if (e.key === 'Escape') { setPendingHL(null); setWordMenu(null) } }}
+                />
+                <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                  <button className="word-menu-item" style={{ padding: '2px 10px', fontSize: 11 }} onClick={() => { setPendingHL(null); setWordMenu(null) }}>Cancel</button>
+                  <button className="word-menu-item" style={{ padding: '2px 10px', fontSize: 11, color: 'var(--accent)' }} onClick={() => commitHL(pendingHL.note || '')}>Save</button>
+                </div>
+              </div>
+            )
+          })()}
           {/* Color picker row — shown for existing highlights always, and for new highlights after clicking Highlight */}
-          {(wordMenuColorPick || wordMenu.hlId) && (
+          {!pendingHL && (wordMenuColorPick || wordMenu.hlId) && (
             <>
               <div className="hl-swatch-row">
                 {HL_COLOR_KEYS.map(color => {
@@ -1630,20 +2281,15 @@ export default function ReaderView() {
                       onClick={() => {
                         const bookId = bookIdRef.current
                         if (wordMenu.hlId) {
-                          // Change existing highlight color
                           changeHighlightColor(wordMenu.hlId, color)
+                          setWordMenuColorPick(false)
+                          setWordMenu(null)
                         } else {
-                          // Create new highlight with chosen color
                           if (!bookId || !wordMenu.hlText) { setWordMenu(null); return }
-                          const hl = { id: `hl_${Date.now()}`, chapterIdx: wordMenu.hlChapterIdx ?? curChapterRef.current, text: wordMenu.hlText, color, note: '' }
-                          if (!highlightsRef.current[bookId]) highlightsRef.current[bookId] = []
-                          highlightsRef.current[bookId].push(hl)
-                          saveHighlights()
-                          setHighlightVersion(v => v + 1)
-                          requestAnimationFrame(() => applyHighlightsToCard(cardRef.current, bookId, hl.chapterIdx))
+                          const hl = { id: `hl_${Date.now()}`, chapterIdx: wordMenu.hlChapterIdx ?? curChapterRef.current, page: curPageRef.current, text: wordMenu.hlText, color, note: '' }
+                          setPendingHL(hl)
+                          setWordMenuColorPick(false)
                         }
-                        setWordMenuColorPick(false)
-                        setWordMenu(null)
                       }} />
                   )
                 })}
@@ -1699,8 +2345,8 @@ export default function ReaderView() {
             </>
           )}
 
-          {/* Main items — hidden when color picker is active */}
-          {!wordMenuColorPick && !wordMenu.hlId && (
+          {/* Main items — hidden when color picker or note input is active */}
+          {!pendingHL && !wordMenuColorPick && !wordMenu.hlId && (
             <>
           <button className="word-menu-item" onClick={() => {
             const word = wordMenu.word
@@ -1892,7 +2538,8 @@ export default function ReaderView() {
                   })()
                 }}
                 onClick={e => e.stopPropagation()}
-                style={{ background:'var(--bg)', border:'1px solid var(--border)', borderRadius:5, color:'var(--text)', fontSize:11, fontFamily:'inherit', padding:'2px 6px', cursor:'pointer', outline:'none', flex:1 }}
+                className="gnos-select"
+                style={{ fontSize:11, padding:'2px 24px 2px 6px', flex:1 }}
               >
                 {LIBRE_LANGS.map(l => <option key={l.code} value={l.code}>{l.name}</option>)}
               </select>
@@ -1948,8 +2595,8 @@ export default function ReaderView() {
         </div>
       )}
 
-      {/* ── TTS Player bar ── */}
-      {ttsActive && (
+      {/* ── TTS Player bar — desktop only; mobile uses mobile-tts-bar in App.jsx ── */}
+      {!isMobile && ttsActive && (
         <div className="tts-bar">
           <div className="tts-top-row">
             <div className="tts-controls-row">

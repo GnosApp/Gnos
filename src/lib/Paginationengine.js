@@ -1,24 +1,45 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// PaginationEngine.js — CSS-columns pagination
+// PaginationEngine.js — CSS-columns pagination, single-render strip (D3)
 //
-// Instead of computing page breaks in JS (probe DOM + getBoundingClientRect),
-// content is rendered into a CSS multi-column container and the browser handles
-// all text measurement natively.  Navigation is a CSS translateX — zero JS
-// layout reads after the initial render.
+// Render pipeline per chapter:
+//   1. renderChapterContent()  — innerHTML into _strip (full multi-column)
+//   2. measurePageCount()      — reads last-element rect to count columns
+//   3. trimContainerWidth()    — shrinks _strip to real column count
+//   4. showPage(idx, trans)    — translateX(-idx * (colW+colGap)) on the strip
+//   5. revealContent()         — fades overlay out
+//
+// The chapter is laid out ONCE by the browser's column engine and stays in the
+// DOM. Paging is a transform on the strip inside a clipped wrapper — no
+// per-page cloning, no rect-driven extraction, no boundary splitting.
+// Two-page spread: the wrapper is wide enough to show two columns; the caller
+// advances the page index by 2 and the translate lands on the left column.
+//
+// Background chapter scanning uses a separate hidden container (_scanEl) so it
+// never disturbs the visible strip.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── Module state ─────────────────────────────────────────────────────────────
+// ── Module state ──────────────────────────────────────────────────────────────
 let _pageStyleEl  = null
 let _wrapWords    = false
-let _colW         = 0      // width of one CSS column (= one logical page)
-let _colGap       = 0      // gap between columns (two-page mode only)
+let _colW         = 0       // width of one CSS column (= one logical page)
+let _colGap       = 0       // gap between columns
 let _twoPage      = false
-let _colH         = 0      // column / card height (px)
-let _container    = null   // the multi-column div (scrolls left/right)
-let _wrapper      = null   // overflow:hidden clip div
-let _overlay      = null   // solid cover div — hides content during render without deferring GPU rasterization
-let _lastNavTime  = 0      // timestamp of last showPage call (ms)
-let _fadeTimer    = null   // pending setTimeout id for fade transitions
+let _colH         = 0       // column / viewport height (px)
+let _strip        = null    // the ONE rendered multi-column chapter (visible)
+let _wrapper      = null    // overflow:hidden clip div
+let _overlay      = null    // solid cover — hides render/layout work
+let _scanEl       = null    // hidden measuring container for the background scan
+
+let _lastNavTime  = 0
+let _fadeTimer    = null
+
+// Background chapter scan
+let _scanAbort    = false
+
+// Chapter cache — keyed by chapter index. Stores the rendered HTML + count so
+// revisiting a chapter skips string building and page-count measurement.
+// Cleared on invalidateCache() / handleRebuild (layout params change).
+let _chapterCache = {}   // { [chIdx]: { count, html } }
 
 // ── HTML builders ─────────────────────────────────────────────────────────────
 
@@ -46,7 +67,7 @@ export function blocksToDisplayHTML(blocks) {
     if (b.type === 'subheading') return `<h3>${b.text}</h3>`
     if (_wrapWords) {
       const wrapped = b.text.replace(/(\S+)/g, w => {
-        const clean = w.replace(/[^a-zA-Z'\u2019-]/g, '')
+        const clean = w.replace(/[^a-zA-Z'’-]/g, '')
         return `<span class="col-word" data-word="${clean}">${w}</span>`
       })
       return `<p>${wrapped}</p>`
@@ -55,16 +76,15 @@ export function blocksToDisplayHTML(blocks) {
   }).join('\n')
 }
 
-// ── Typography CSS ─────────────────────────────────────────────────────────────
-// Padding is applied to child elements rather than the container so that it
-// is consistent across every CSS column (= every page).
+// ── Typography CSS ────────────────────────────────────────────────────────────
+// Padding is applied to child elements so it is consistent on every page.
 
 export function buildPageStyles(prefs) {
-  const fs       = prefs.fontSize    || 18
-  const ls       = prefs.lineSpacing || 1.6
-  const ff       = prefs.fontFamily  || 'Georgia, serif'
-  const paraGap  = Math.round(fs * 0.55)
-  const justify  = prefs.justifyText !== false ? 'justify' : 'left'
+  const fs      = prefs.fontSize    || 18
+  const ls      = prefs.lineSpacing || 1.6
+  const ff      = prefs.fontFamily  || 'Georgia, serif'
+  const paraGap = Math.round(fs * 0.55)
+  const justify = prefs.justifyText !== false ? 'justify' : 'left'
 
   return `
     .col-container {
@@ -77,8 +97,8 @@ export function buildPageStyles(prefs) {
       box-sizing: border-box;
     }
     .col-container > * {
-      padding-left: 64px;
-      padding-right: 64px;
+      padding-left: 40px;
+      padding-right: 40px;
       box-sizing: border-box;
     }
     .col-container > img {
@@ -87,13 +107,13 @@ export function buildPageStyles(prefs) {
     }
     .col-container > p:first-child,
     .col-container > h2:first-child,
-    .col-container > h3:first-child { margin-top: 36px; }
+    .col-container > h3:first-child { margin-top: 0; }
     .col-container p {
       margin: 0 0 ${paraGap}px;
       text-align: ${justify};
       hanging-punctuation: first last;
       font-feature-settings: "kern" 1, "liga" 1, "onum" 1;
-      orphans: 3; widows: 3;
+      orphans: 2; widows: 2;
       text-indent: 2em;
     }
     .col-container h2 + p,
@@ -103,12 +123,14 @@ export function buildPageStyles(prefs) {
       font-size: ${Math.round(fs * 1.65)}px;
       font-weight: 700; line-height: 1.2;
       margin: 1.2em 0 0.5em; text-indent: 0;
+      break-before: auto; break-inside: auto; break-after: avoid;
     }
     .col-container h3 {
       font-family: Georgia, serif;
       font-size: ${Math.round(fs * 1.1)}px;
       font-weight: 600; line-height: 1.3;
       margin: 1em 0 0.4em; text-indent: 0;
+      break-before: auto; break-inside: auto; break-after: avoid;
     }
     .col-container .cover-img {
       display: block;
@@ -131,14 +153,18 @@ export function buildPageStyles(prefs) {
       background: rgba(56,139,253,0.22); border-radius: 2px; cursor: default;
     }
     .col-word.reader-hl {
-      background: rgba(255,210,0,0.65);
-      box-shadow: 5px 0 0 rgba(255,210,0,0.65), -1px 0 0 rgba(255,210,0,0.65);
-      border-radius: 1px; cursor: pointer; color: #1a1200;
+      border-radius: 1px; cursor: pointer;
     }
-    .col-word.reader-hl:hover {
-      background: rgba(255,210,0,0.85);
-      box-shadow: 5px 0 0 rgba(255,210,0,0.85), -1px 0 0 rgba(255,210,0,0.85);
-    }
+    .col-word.hl-yellow { background: rgba(255,210,0,0.55); box-shadow: 3px 0 0 rgba(255,210,0,0.55), -1px 0 0 rgba(255,210,0,0.55); color: #1a1200; }
+    .col-word.hl-yellow:hover { background: rgba(255,210,0,0.75); box-shadow: 3px 0 0 rgba(255,210,0,0.75), -1px 0 0 rgba(255,210,0,0.75); }
+    .col-word.hl-green  { background: rgba(72,199,116,0.5);  box-shadow: 3px 0 0 rgba(72,199,116,0.5),  -1px 0 0 rgba(72,199,116,0.5);  color: #0a2e14; }
+    .col-word.hl-green:hover  { background: rgba(72,199,116,0.7);  box-shadow: 3px 0 0 rgba(72,199,116,0.7),  -1px 0 0 rgba(72,199,116,0.7);  }
+    .col-word.hl-pink   { background: rgba(255,105,180,0.45); box-shadow: 3px 0 0 rgba(255,105,180,0.45), -1px 0 0 rgba(255,105,180,0.45); color: #3a0020; }
+    .col-word.hl-pink:hover   { background: rgba(255,105,180,0.65); box-shadow: 3px 0 0 rgba(255,105,180,0.65), -1px 0 0 rgba(255,105,180,0.65); }
+    .col-word.hl-blue   { background: rgba(79,195,247,0.45);  box-shadow: 3px 0 0 rgba(79,195,247,0.45),  -1px 0 0 rgba(79,195,247,0.45);  color: #001e30; }
+    .col-word.hl-blue:hover   { background: rgba(79,195,247,0.65);  box-shadow: 3px 0 0 rgba(79,195,247,0.65),  -1px 0 0 rgba(79,195,247,0.65);  }
+    .col-word.hl-purple { background: rgba(179,136,255,0.45); box-shadow: 3px 0 0 rgba(179,136,255,0.45), -1px 0 0 rgba(179,136,255,0.45); color: #1a0035; }
+    .col-word.hl-purple:hover { background: rgba(179,136,255,0.65); box-shadow: 3px 0 0 rgba(179,136,255,0.65), -1px 0 0 rgba(179,136,255,0.65); }
     .col-word.tts-word-active {
       background: rgba(56,139,253,0.28); border-radius: 2px;
     }
@@ -160,12 +186,29 @@ export function ensurePageStyle(prefs) {
 }
 
 // ── Column setup ──────────────────────────────────────────────────────────────
-// Call once after the card element is mounted (and again when prefs change).
 
-// Top padding applied inside every column so text never starts flush against
-// the header. Reducing column height by this amount keeps content from being
-// clipped at the bottom.
+// Top gap between the header border and the first line of text on every page.
 const COL_TOP_PAD = 20
+
+// Extra pixels subtracted from strip column height vs wrapper height.
+// CSS columns break this many pixels before the wrapper's edge, preventing
+// last-line clipping when content renders fractionally taller.
+const BOTTOM_SAFETY = 4
+
+// Initial strip width in columns, before trimContainerWidth() narrows it.
+const MAX_COLS = 100
+
+function _columnCSS(heightPx, widthPx) {
+  return [
+    `column-width:${_colW}px`,
+    'column-fill:auto',
+    `column-gap:${_colGap}px`,
+    `height:${heightPx}px`,
+    `width:${widthPx}px`,
+    'overflow-y:hidden',
+    'word-break:break-word',
+  ].join(';')
+}
 
 export function setupColumns(cardEl, prefs) {
   if (!cardEl) return
@@ -182,176 +225,229 @@ export function setupColumns(cardEl, prefs) {
   _colH    = h
 
   _wrapper = document.createElement('div')
-  // padding-top creates the gap between the header border and the first line
-  // of text on every page. The wrapper stays overflow:hidden so nothing bleeds
-  // outside the card; the container height is reduced by the same amount so
-  // the last line of each page is never clipped by the wrapper's bottom edge.
   _wrapper.style.cssText = `overflow:hidden;width:100%;height:100%;position:relative;padding-top:${COL_TOP_PAD}px;box-sizing:border-box;`
 
-  _container = document.createElement('div')
-  // Keep 'page-content' class so existing selectors in ReaderView still work
-  _container.className = 'col-container page-content'
+  // The strip: ONE multi-column render of the chapter. Visible. Paging is a
+  // translateX of this element inside the clipped wrapper.
+  const stripH = h - BOTTOM_SAFETY
+  _strip = document.createElement('div')
+  _strip.className = 'col-container page-content'
+  _strip.style.cssText = _columnCSS(stripH, MAX_COLS * (_colW + _colGap)) +
+    ';will-change:transform'
+  _strip.style.setProperty('--col-h', stripH + 'px')
 
-  // Give the container an explicit wide CSS width so every CSS column falls
-  // inside the container's own box (not in its scrollable overflow).
-  // WebKit does not paint content in the scrollable-overflow region of a
-  // multi-column container, which causes all pages after the first to appear
-  // blank.  100 columns covers even very dense book chapters while keeping
-  // browser layout work proportional to actual content.
-  const containerW = 100 * (_colW + _colGap)
+  // Hidden measuring container for the background scan — same column geometry,
+  // never visible, never translated.
+  _scanEl = document.createElement('div')
+  _scanEl.className = 'col-container'   // NOT page-content — out of TTS/highlight queries
+  _scanEl.style.cssText = _columnCSS(stripH, MAX_COLS * (_colW + _colGap)) +
+    ';position:absolute;top:' + COL_TOP_PAD + 'px;left:0;opacity:0;pointer-events:none'
+  _scanEl.style.setProperty('--col-h', stripH + 'px')
 
-  _container.style.cssText = [
-    `column-width:${_colW}px`,
-    'column-fill:auto',
-    `column-gap:${_colGap}px`,
-    `height:${h}px`,
-    `width:${containerW}px`,
-    'overflow-y:hidden',
-    'will-change:transform',
-    'word-break:break-word',
-  ].join(';')
-  _container.style.setProperty('--col-h', h + 'px')
-
-  // Overlay sits on top of the container at z-index 1. It is shown (opaque)
-  // while new chapter content is being laid out and rasterized, then faded
-  // out by revealContent(). Because the content underneath stays at opacity:1,
-  // the browser rasterizes it eagerly — unlike opacity:0 on the wrapper which
-  // causes WebKit to defer GPU rasterization entirely, producing the
-  // "half-page then full-page" visual lag.
+  // Overlay covers everything (z-index:1) while new content is being laid out.
   _overlay = document.createElement('div')
   _overlay.style.cssText = 'position:absolute;inset:0;background:var(--readerCard);z-index:1;pointer-events:none;'
 
-  _wrapper.appendChild(_container)
+  _wrapper.appendChild(_strip)
+  _wrapper.appendChild(_scanEl)
   _wrapper.appendChild(_overlay)
   cardEl.appendChild(_wrapper)
 }
 
 // ── Chapter rendering ─────────────────────────────────────────────────────────
-// Sets innerHTML on the container and resets scroll position.
-// Must call measurePageCount() after a rAF to let the browser lay out columns.
+// Loads content into the strip and raises the overlay.
+// Call measurePageCount() → trimContainerWidth() → showPage() inside a rAF,
+// then revealContent().
 
-// pageIdx — optional logical page to start at (default 0).
-// The wrapper is hidden with opacity:0 before the innerHTML swap so the user
-// never sees a flash of partially-laid-out content. Call revealContent() once
-// the two-rAF measurement cycle is done and the correct position is confirmed.
-export function renderChapterContent(blocks, pageIdx = 0) {
-  if (!_container) return
-  const step   = _twoPage ? 2 : 1
-  const offset = pageIdx * step * (_colW + _colGap)
-  _container.style.transition = 'none'
-  _container.style.transform  = `translateX(-${offset}px)`
-  // Show overlay instantly so new content is hidden during layout/rasterization.
-  // The container itself stays opacity:1 so the browser rasterizes it eagerly.
+export function renderChapterContent(blocks) {
+  _scanAbort = true    // cancel any in-flight background scan
+  if (!_strip) return
   if (_overlay) { _overlay.style.transition = 'none'; _overlay.style.opacity = '1' }
-  _container.innerHTML = blocksToDisplayHTML(blocks)
+  // Full width for accurate column layout; trimContainerWidth narrows afterwards.
+  _strip.style.width = (MAX_COLS * (_colW + _colGap)) + 'px'
+  _strip.innerHTML = blocksToDisplayHTML(blocks)
 }
 
-// Fade the overlay out once layout is settled and the position is confirmed.
-// Because content was rasterized at opacity:1 underneath, it is fully painted
-// by the time the overlay becomes transparent.
+export function raiseOverlay() {
+  if (!_overlay) return
+  _overlay.style.transition = 'none'
+  _overlay.style.opacity    = '1'
+}
+
 export function revealContent() {
   if (!_overlay) return
-  _overlay.style.transition = 'opacity 0.18s ease'
+  _overlay.style.transition = 'opacity 0.1s ease'
   _overlay.style.opacity    = '0'
 }
 
 // ── Page measurement ──────────────────────────────────────────────────────────
 // Call inside a requestAnimationFrame after renderChapterContent().
-// Returns the number of logical pages (columns / step) in the chapter.
+// One rect read on the container + one on its last child.
 
-export function measurePageCount() {
-  if (!_container || _colW <= 0) return 1
-  const lastEl = _container.lastElementChild
+function _measurePagesIn(el) {
+  if (!el || _colW <= 0) return 1
+  const lastEl = el.lastElementChild
   if (!lastEl) return 1
-  const unit = _colW + _colGap
-  // getBoundingClientRect() returns the actual rendered position including
-  // CSS-column offsets, unlike offsetLeft which WebKit reports incorrectly
-  // inside multi-column containers.  Both rects are affected equally by any
-  // translateX on the container, so the difference is always accurate.
-  const containerRect = _container.getBoundingClientRect()
+  const unit          = _colW + _colGap
+  const containerRect = el.getBoundingClientRect()
   const elRect        = lastEl.getBoundingClientRect()
   const midX          = (elRect.left + elRect.right) / 2 - containerRect.left
   const colIdx        = Math.max(0, Math.floor(midX / unit))
-  return _twoPage ? Math.ceil((colIdx + 1) / 2) : colIdx + 1
+  // Raw CSS-column count. In two-page mode the caller (ReaderView) uses step=2
+  // to advance one spread at a time; each "page index" is one CSS column.
+  return colIdx + 1
+}
+
+export function measurePageCount() {
+  return _measurePagesIn(_strip)
+}
+
+// ── Chapter cache ─────────────────────────────────────────────────────────────
+
+// Snapshot the rendered chapter so revisiting it skips HTML building + measure.
+export function cacheCurrentChapter(chIdx, count) {
+  if (!_strip) return
+  _chapterCache[chIdx] = { count, html: _strip.innerHTML }
+}
+
+// Restore a previously-cached chapter into the strip.
+// Returns the page count, or null on miss.
+export function loadCachedChapter(chIdx) {
+  const cached = _chapterCache[chIdx]
+  if (!cached || !_strip) return null
+  _scanAbort = true
+  _strip.innerHTML = cached.html
+  trimContainerWidth(cached.count)
+  return cached.count
+}
+
+export function clearChapterCache() {
+  _chapterCache = {}
+}
+
+// Kept for API compatibility with older call sites; the strip needs no
+// per-page extraction.
+export function getActivePage() {
+  return _strip
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
-// Translates the container to reveal the given logical page.
-// Each logical page = 1 CSS column in single-page mode, 2 in two-page mode.
+// showPage translates the strip to column `pageIdx`. 'slide' animates the
+// transform (direction falls out of the delta); 'fade' blinks the overlay;
+// rapid successive calls (< 120 ms) skip animations to prevent backlog.
 
-// transition: false = instant, 'slide' = translateX animation, 'fade' = opacity cross-fade
-// Animations are automatically skipped when pages are turned rapidly (< 180 ms apart)
-// so the compositor never queues up a backlog of in-flight transitions.
 export function showPage(pageIdx, transition) {
-  if (!_container || !_wrapper) return
-  const step   = _twoPage ? 2 : 1
-  const offset = pageIdx * step * (_colW + _colGap)
+  if (!_strip) return
 
-  const now     = Date.now()
-  const rapid   = now - _lastNavTime < 180   // user is navigating quickly — skip animation
-  _lastNavTime  = now
+  const now   = Date.now()
+  const rapid = now - _lastNavTime < 120
+  _lastNavTime = now
 
-  // Cancel any pending fade timer from a previous call
   if (_fadeTimer !== null) { clearTimeout(_fadeTimer); _fadeTimer = null }
 
+  const x = -pageIdx * (_colW + _colGap)
+  const target = `translateX(${x}px)`
+
+  if (!rapid && transition === 'slide') {
+    _strip.style.transition = 'transform 0.14s ease-out'
+    _strip.style.transform  = target
+    return
+  }
+
   if (!rapid && transition === 'fade') {
-    // Fade transition: use the overlay (not the wrapper) so content stays
-    // opacity:1 and the GPU keeps its rasterized tiles during the cross-fade.
-    if (_overlay) { _overlay.style.transition = 'opacity 0.14s ease'; _overlay.style.opacity = '1' }
+    if (_overlay) { _overlay.style.transition = 'opacity 0.06s ease'; _overlay.style.opacity = '1' }
     _fadeTimer = setTimeout(() => {
       _fadeTimer = null
-      if (!_container || !_overlay) return
-      _container.style.transition = 'none'
-      _container.style.transform  = `translateX(-${offset}px)`
-      _overlay.style.transition   = 'opacity 0.18s ease'
-      _overlay.style.opacity      = '0'
-    }, 140)
-  } else if (!rapid && transition === 'slide') {
-    _container.style.transition = 'transform 0.22s ease'
-    _container.style.transform  = `translateX(-${offset}px)`
-  } else {
-    // Instant: no animation, or rapid-fire override
-    _container.style.transition = 'none'
-    _container.style.transform  = `translateX(-${offset}px)`
+      _strip.style.transition = 'none'
+      _strip.style.transform  = target
+      if (!_overlay) return
+      _overlay.style.transition = 'opacity 0.08s ease'
+      _overlay.style.opacity    = '0'
+    }, 60)
+    return
   }
+
+  // Instant or rapid-fire.
+  _strip.style.transition = 'none'
+  _strip.style.transform  = target
 }
 
-// Shrink the container to the exact column count after measuring.
-// The GPU compositor rasterizes the container in tiles; trimming from
-// 100 pre-allocated columns to the real count slashes rasterization work
-// and eliminates the "partial page then full page" visual lag.
-// Called while the overlay is still opaque so the reflow is invisible.
+// ── Container width trimming ──────────────────────────────────────────────────
+// Narrows the strip to the real column count so it doesn't keep a 100-column
+// layout box around.
+
 export function trimContainerWidth(pageCount) {
-  if (!_container || _colW <= 0) return
-  const step       = _twoPage ? 2 : 1
-  const colCount   = pageCount * step
-  // +1 column as a safety buffer against sub-pixel rounding edge cases
-  const trimmedW   = (colCount + 1) * (_colW + _colGap)
-  _container.style.width = trimmedW + 'px'
+  if (!_strip || _colW <= 0) return
+  const step     = _twoPage ? 2 : 1
+  const colCount = pageCount * step
+  // +1 column as a sub-pixel rounding buffer
+  _strip.style.width = ((colCount + 1) * (_colW + _colGap)) + 'px'
 }
 
 // ── Cache / teardown ──────────────────────────────────────────────────────────
 
 export function invalidateCache() {
-  _colW = 0; _colGap = 0; _container = null; _wrapper = null; _overlay = null
+  _scanAbort = true
+  _chapterCache = {}
+  _colW = 0; _colGap = 0
+  _strip = null; _wrapper = null; _overlay = null; _scanEl = null
   if (_fadeTimer !== null) { clearTimeout(_fadeTimer); _fadeTimer = null }
   _lastNavTime = 0
 }
 
-// Sums known chapter page-counts and estimates unmeasured chapters using the
-// average of the ones already measured.  This avoids the wildly-low totals
-// that come from defaulting every unmeasured chapter to 1.
+// ── Background chapter scan ───────────────────────────────────────────────────
+// Renders every chapter into the HIDDEN _scanEl one at a time, measures page
+// count, and calls onChapterDone(chIdx, count) for each. Starts in an idle
+// callback and yields between chapters so it never competes with interaction.
+// Cancelled automatically when renderChapterContent() fires (chapter
+// navigation) or explicitly via cancelScan().
+
+export function cancelScan() {
+  _scanAbort = true
+}
+
+const _idle = typeof requestIdleCallback === 'function'
+  ? (fn) => requestIdleCallback(fn, { timeout: 2000 })
+  : (fn) => setTimeout(fn, 200)
+
+export function scanAllChapters(chapters, onChapterDone) {
+  _scanAbort = false
+  if (!_scanEl || _colW <= 0 || !chapters.length) return
+
+  let i = 0
+
+  function step() {
+    if (_scanAbort || !_scanEl || i >= chapters.length) {
+      if (_scanEl) _scanEl.innerHTML = ''   // free the scan DOM when done
+      return
+    }
+
+    const chIdx = i++
+    _scanEl.innerHTML = blocksToDisplayHTML(chapters[chIdx].blocks)
+
+    requestAnimationFrame(() => {
+      if (_scanAbort || !_scanEl) return
+      const count = _measurePagesIn(_scanEl)
+      onChapterDone(chIdx, count)
+      _idle(step)   // yield — only continue when the main thread is free
+    })
+  }
+
+  _idle(step)
+}
+
+// ── Global page-count estimation ─────────────────────────────────────────────
+// Sums known chapter page-counts; estimates unmeasured chapters using the
+// average of measured ones to avoid wildly-low totals.
+
 export function getTotalPages(chapterPageCounts, numChapters) {
-  let measuredSum   = 0
-  let measuredCount = 0
+  let measuredSum = 0, measuredCount = 0
   for (let i = 0; i < numChapters; i++) {
     const c = chapterPageCounts[i]
     if (c != null) { measuredSum += c; measuredCount++ }
   }
   const avg = measuredCount > 0 ? measuredSum / measuredCount : 10
   let total = 0
-  for (let i = 0; i < numChapters; i++) {
-    total += chapterPageCounts[i] ?? avg
-  }
+  for (let i = 0; i < numChapters; i++) total += chapterPageCounts[i] ?? avg
   return Math.round(total)
 }

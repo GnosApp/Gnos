@@ -3,6 +3,82 @@ import { loadLibrary, saveLibrary, loadNotebooksMeta, saveNotebooksMeta, loadPre
 import { applyTheme, BUILT_IN_THEMES } from '@/lib/themes'
 import { makeId } from '@/lib/utils'
 
+// ── DEV: Representative seed data (skips onboarding for mobile testing) ───────
+const SEED_LIBRARY = [
+  { id: 'seed_book_1', title: 'Dune', author: 'Frank Herbert', format: 'epub', totalChapters: 2, currentChapter: 0, currentPage: 0, addedAt: '2024-11-01T10:00:00Z', hasAudio: false, coverDataUrl: null, pdfDataUrl: null },
+  { id: 'seed_book_2', title: 'The Name of the Wind', author: 'Patrick Rothfuss', format: 'epub', totalChapters: 92, currentChapter: 0, currentPage: 0, addedAt: '2024-11-05T10:00:00Z', hasAudio: false, coverDataUrl: null, pdfDataUrl: null },
+  { id: 'seed_book_3', title: 'Meditations', author: 'Marcus Aurelius', format: 'txt', totalChapters: 12, currentChapter: 0, currentPage: 0, addedAt: '2024-12-10T10:00:00Z', hasAudio: false, coverDataUrl: null, pdfDataUrl: null },
+  { id: 'seed_book_4', title: 'Thinking, Fast and Slow', author: 'Daniel Kahneman', format: 'epub', totalChapters: 38, currentChapter: 7, currentPage: 1, addedAt: '2025-01-03T10:00:00Z', hasAudio: false, coverDataUrl: null, pdfDataUrl: null },
+  { id: 'seed_book_5', title: 'The Pragmatic Programmer', author: 'David Thomas, Andrew Hunt', format: 'epub', totalChapters: 53, currentChapter: 0, currentPage: 0, addedAt: '2025-02-14T10:00:00Z', hasAudio: false, coverDataUrl: null, pdfDataUrl: null },
+]
+const SEED_NOTEBOOKS = [
+  { id: 'seed_nb_1', title: 'Reading Notes', wordCount: 840, createdAt: '2024-11-15T10:00:00Z', updatedAt: '2025-03-01T10:00:00Z' },
+  { id: 'seed_nb_2', title: 'Ideas', wordCount: 220, createdAt: '2025-01-10T10:00:00Z', updatedAt: '2025-04-01T10:00:00Z' },
+]
+const SEED_SKETCHBOOKS = [
+  { id: 'seed_sb_1', title: 'Diagrams', createdAt: '2025-02-01T10:00:00Z', updatedAt: '2025-02-20T10:00:00Z', coverColor: '#0d5eaf' },
+]
+
+// ── Titlebar layout ───────────────────────────────────────────────────────────
+// Ordered zones. Ids are rendered from a registry in App.jsx. 'search' must stay
+// in center; anything in `tray` is hidden from the title bar.
+
+export const TITLEBAR_MOVABLE_IDS = ['home', 'save', 'arrows', 'add', 'quickAccess', 'tabManager']
+
+export function defaultTitlebarLayout() {
+  return {
+    left:   ['home', 'save'],
+    center: ['arrows', 'search', 'add'],
+    right:  ['quickAccess', 'tabManager'],
+    tray:   [],
+  }
+}
+
+// Accepts a stored layout (new format) or the legacy titlebarItems boolean map.
+// Always returns a complete, sanitized layout: every known id appears exactly
+// once, unknown ids are dropped, and 'search' is forced into center.
+export function migrateTitlebarLayout(titlebarLayout, legacyItems) {
+  const def = defaultTitlebarLayout()
+
+  if (titlebarLayout && Array.isArray(titlebarLayout.left)) {
+    const seen = new Set()
+    const out = { left: [], center: [], right: [], tray: [] }
+    for (const zone of ['left', 'center', 'right', 'tray']) {
+      for (const id of titlebarLayout[zone] || []) {
+        if (seen.has(id)) continue
+        if (id === 'search' || TITLEBAR_MOVABLE_IDS.includes(id)) { out[zone].push(id); seen.add(id) }
+      }
+    }
+    // Anything missing goes back to its default zone (tray never gains items silently).
+    for (const zone of ['left', 'center', 'right']) {
+      for (const id of def[zone]) if (!seen.has(id)) { out[zone].push(id); seen.add(id) }
+    }
+    // Search is not movable — pin it to the center (default position if lost).
+    if (!out.center.includes('search')) {
+      for (const zone of ['left', 'right', 'tray']) {
+        const i = out[zone].indexOf('search')
+        if (i >= 0) out[zone].splice(i, 1)
+      }
+      out.center.splice(Math.min(1, out.center.length), 0, 'search')
+    }
+    return out
+  }
+
+  // Legacy boolean map: false → tray, order comes from the defaults.
+  if (legacyItems) {
+    const out = { left: [], center: [], right: [], tray: [] }
+    for (const zone of ['left', 'center', 'right']) {
+      for (const id of def[zone]) {
+        if (id !== 'search' && legacyItems[id] === false) out.tray.push(id)
+        else out[zone].push(id)
+      }
+    }
+    return out
+  }
+
+  return def
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // App-wide state store
 // ─────────────────────────────────────────────────────────────────────────────
@@ -12,7 +88,7 @@ const useAppStore = create((set, get) => ({
   // ── View routing ────────────────────────────────────────────────────────────
   view: 'library',
   activeLibTab: 'library',
-  setView: (view) => set({ view }),
+  setView: (view) => set(s => ({ view, tabs: s.tabs.map(t => t.id === s.activeTabId ? { ...t, view } : t) })),
   setActiveLibTab: (tab) => set({ activeLibTab: tab }),
 
   // ── Side nav ────────────────────────────────────────────────────────────────
@@ -325,11 +401,32 @@ const useAppStore = create((set, get) => ({
         : c
     ),
   })),
-  moveCollection: (collectionId, newParentId) => set(s => ({
-    collections: s.collections.map(c =>
-      c.id === collectionId ? { ...c, parentId: newParentId || null } : c
-    ),
+  /** Move itemId so it sits at the position of targetItemId within the collection's items. */
+  reorderCollectionItems: (collectionId, itemId, targetItemId) => set(s => ({
+    collections: s.collections.map(c => {
+      if (c.id !== collectionId) return c
+      const items = [...c.items]
+      const fi = items.indexOf(itemId)
+      const ti = items.indexOf(targetItemId)
+      if (fi === -1 || ti === -1) return c
+      items.splice(fi, 1)
+      items.splice(ti, 0, itemId)
+      return { ...c, items }
+    }),
   })),
+  moveCollection: (collectionId, newParentId) => set(s => {
+    // Reject moves that would create a cycle (new parent is itself or a descendant)
+    let p = newParentId
+    while (p) {
+      if (p === collectionId) return {}
+      p = s.collections.find(c => c.id === p)?.parentId || null
+    }
+    return {
+      collections: s.collections.map(c =>
+        c.id === collectionId ? { ...c, parentId: newParentId || null } : c
+      ),
+    }
+  }),
 
   // ── Calendar events ──────────────────────────────────────────────────────────
   calendarEvents: [],
@@ -386,6 +483,24 @@ const useAppStore = create((set, get) => ({
     notebookContentCache: { ...s.notebookContentCache, [id]: { text, ts: Date.now() } },
   })),
 
+  // ── Plugin system ─────────────────────────────────────────────────────────────
+  // installedPlugins: manifests discovered on disk (community) or bundled
+  // enabledPluginIds: persisted set of ids the user has turned on
+  installedPlugins: [],       // [{ id, name, version, description, bundled, error }]
+  enabledPluginIds: [],       // [id, ...]  — persisted to prefs
+  setInstalledPlugins: (list) => set({ installedPlugins: list }),
+  setPluginEnabled: (id, enabled) => set(s => {
+    const ids = enabled
+      ? [...new Set([...s.enabledPluginIds, id])]
+      : s.enabledPluginIds.filter(x => x !== id)
+    get().persistPreferences()
+    return { enabledPluginIds: ids }
+  }),
+
+  // Active collection workspace (null = Home / show all)
+  activeCollectionId: null,
+  setActiveCollectionId: (id) => set({ activeCollectionId: id }),
+
   // Filter persistence
   libSubFilter: 'all',
   setLibSubFilter: (f) => { set({ libSubFilter: f }); get().persistPreferences() },
@@ -393,6 +508,26 @@ const useAppStore = create((set, get) => ({
   // Unified cross-type order for the main library tab
   unifiedLibraryOrder: [],
   setUnifiedLibraryOrder: (order) => set({ unifiedLibraryOrder: order }),
+
+  // Quick note popup — custom save folder ('' = save into the archive as notebooks)
+  quickNoteDir: '',
+
+  // Quick note popup — show the fanned-card peek behind the active note
+  quickNoteFanEnabled: true,
+
+  // Sidebar behaviour: false = floating overlay that hides, true = always present (pinned)
+  sidebarPinned: false,
+
+  // Titlebar layout — ordered zones, customized via right-click → Customize Toolbar.
+  // 'search' is a fixed member of center (guarded in the customize page).
+  // The sidebar toggle is not part of the model — it always renders first on the left.
+  titlebarLayout: defaultTitlebarLayout(),
+  setTitlebarLayout: (titlebarLayout) => set({ titlebarLayout }),
+
+  // Titlebar search-bar extras set by the active view — { text } and/or
+  // { dropdown: { items: [{ id, label }], activeId, onSelect } }
+  titlebarMeta: null,
+  setTitlebarMeta: (titlebarMeta) => set({ titlebarMeta }),
 
   // Creation behaviour
   openOnCreate: true,
@@ -420,7 +555,11 @@ const useAppStore = create((set, get) => ({
   onboardingComplete: false,
   setUsername: (username) => set({ username }),
   setArchivePath: (archivePath) => set({ archivePath }),
-  setOnboardingComplete: (v) => set({ onboardingComplete: v }),
+  setOnboardingComplete: (v) => {
+    set({ onboardingComplete: v })
+    if (v) localStorage.setItem('gnos_onboarding_done', '1')
+    get().persistPreferences()
+  },
 
   // ── Async actions ─────────────────────────────────────────────────────────────
 
@@ -435,23 +574,16 @@ const useAppStore = create((set, get) => ({
       set({ archivePath: savedArchivePath })
     }
 
-    // ── Step 2: load everything from the correct location ─────────────────────
-    const [library, notebooks, sketchbooks, prefs, collections, flashcardDecks, calendarEvents] = await Promise.all([
-      loadLibrary(),
-      loadNotebooksMeta(),
-      loadSketchbooksMeta(),
-      loadPreferences(),
-      getJSON('collections_meta', []),
-      getJSON('flashcard_decks', []),
-      loadCalendarEvents(),
-    ])
+    // ── Step 2: preferences first (one small file) so the theme + prefs paint
+    //           immediately, instead of waiting on the heavy folder scans below. ──
+    const prefs = await loadPreferences()
 
     if (prefs) {
       const {
         themeKey = 'dark', customThemes = {},
         fontSize = 18, lineSpacing = 1.7, fontFamily = 'Georgia, serif',
         tapToTurn = true, twoPage = false,
-        justifyText = true, highlightWords = false, underlineLine = false, pageTransition = 'slide',
+        justifyText = true, highlightWords = false, underlineLine = false, pageTransition = 'slide', fontWeight = 400,
         defaultViewMode = 'live', autosave = true, smartListContinuation = true, syntaxAutocomplete = true, nbFontSize = 15,
         rememberPosition = true, defaultPlaybackSpeed = 1,
         ttsEnabled = false, ttsVoice = '', ttsSpeed = 1, ttsRate = 1.0, piperVoice = '',
@@ -460,6 +592,13 @@ const useAppStore = create((set, get) => ({
         libSubFilter = 'all',
         calendarStartHour = 7, calendarEndHour = 21, calendarWeekStart = 0,
         unifiedLibraryOrder = [], openOnCreate = true,
+        enabledPluginIds = [],
+        activeCollectionId = null,
+        quickNoteDir = '',
+        quickNoteFanEnabled = true,
+        sidebarPinned = false,
+        titlebarItems = null,
+        titlebarLayout = null,
       } = prefs
       // archivePath from prefs wins over the pointer (they should match, but prefs is authoritative)
       set({ themeKey, customThemes, fontSize, lineSpacing, fontFamily,
@@ -469,14 +608,52 @@ const useAppStore = create((set, get) => ({
             ttsEnabled, ttsVoice, ttsSpeed, ttsRate, piperVoice,
             ollamaUrl, ollamaModel, username, libSubFilter,
             calendarStartHour, calendarEndHour, calendarWeekStart,
-            unifiedLibraryOrder, openOnCreate,
+            unifiedLibraryOrder, openOnCreate, enabledPluginIds, activeCollectionId,
+            quickNoteDir, quickNoteFanEnabled, sidebarPinned,
+            titlebarLayout: migrateTitlebarLayout(titlebarLayout, titlebarItems),
+            // Pinned sidebar starts open
+            ...(sidebarPinned ? { sideNavOpen: true } : {}),
             archivePath: archivePath || savedArchivePath,
             onboardingComplete })
       applyTheme(themeKey, customThemes)
     } else {
       applyTheme('dark')
     }
-    set({ library: library ?? [], notebooks: notebooks ?? [], sketchbooks: sketchbooks ?? [], collections: collections ?? [], flashcardDecks: flashcardDecks ?? [], calendarEvents: calendarEvents ?? [] })
+
+    // ── Step 3: FAST PASS — paint from the single-file flat indexes so the real
+    //           library/notebooks appear on first frame. These are one JSON read
+    //           each (vs. N per-folder meta.json scans), so they resolve well
+    //           before the ~350ms splash fades. May be slightly stale — Step 4
+    //           reconciles. Never persisted. ──
+    const [fastLib, fastNb, fastSk, collections, flashcardDecks, calendarEvents] = await Promise.all([
+      getJSON('library', []),
+      getJSON('notebooks_meta', []),
+      getJSON('sketchbooks_meta', []),
+      getJSON('collections_meta', []),
+      getJSON('flashcard_decks', []),
+      loadCalendarEvents(),
+    ])
+    set({
+      library:    (fastLib?.length) ? fastLib : [],
+      notebooks:  (fastNb?.length)  ? fastNb  : SEED_NOTEBOOKS,
+      sketchbooks:(fastSk?.length)  ? fastSk  : SEED_SKETCHBOOKS,
+      collections: collections ?? [],
+      flashcardDecks: flashcardDecks ?? [],
+      calendarEvents: calendarEvents ?? [],
+    })
+
+    // ── Step 4: RECONCILE — authoritative folder scans (self-heal trash/renames,
+    //           attach book covers). Overwrites the fast-pass data once ready. ──
+    const [library, notebooks, sketchbooks] = await Promise.all([
+      loadLibrary(),
+      loadNotebooksMeta(),
+      loadSketchbooksMeta(),
+    ])
+    set({
+      library:    (library?.length)    ? library    : [],
+      notebooks:  (notebooks?.length)  ? notebooks  : SEED_NOTEBOOKS,
+      sketchbooks:(sketchbooks?.length)? sketchbooks : SEED_SKETCHBOOKS,
+    })
     migrateBooksToNamedFolders(library ?? []).catch(err => console.warn('[Gnos] Migration error:', err))
     migrateNotebooksToFolders(notebooks ?? []).catch(err => console.warn('[Gnos] Notebook migration error:', err))
     migrateSketchbooksToFolders(sketchbooks ?? []).catch(err => console.warn('[Gnos] Sketchbook migration error:', err))
@@ -515,6 +692,12 @@ const useAppStore = create((set, get) => ({
       libSubFilter: s.libSubFilter,
       calendarStartHour: s.calendarStartHour, calendarEndHour: s.calendarEndHour, calendarWeekStart: s.calendarWeekStart,
       unifiedLibraryOrder: s.unifiedLibraryOrder, openOnCreate: s.openOnCreate,
+      enabledPluginIds: s.enabledPluginIds,
+      activeCollectionId: s.activeCollectionId,
+      quickNoteDir: s.quickNoteDir,
+      quickNoteFanEnabled: s.quickNoteFanEnabled,
+      sidebarPinned: s.sidebarPinned,
+      titlebarLayout: s.titlebarLayout,
     })
     // Always keep the pointer file up to date so init() can find the archive on next launch
     if (s.archivePath) {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import useAppStore from '@/store/useAppStore'
 import { generateCoverColor } from '@/lib/utils'
-import { GnosNavButton } from '@/components/SideNav'
+import QuickAccess from '@/components/QuickAccess'
 
 // ── Load PDF.js from CDN ───────────────────────────────────────────────────────
 
@@ -227,34 +227,14 @@ export default function PdfView() {
   return (
     <div style={{ display:'flex', flexDirection:'column', height:'100%', background:'var(--readerBg)', color:'var(--text)' }}>
 
-      {/* Header */}
-      <header className="gnos-header" style={{
-        display:'flex', alignItems:'center', gap:10, padding:'0 20px', height:52,
-        borderBottom:'1px solid var(--borderSubtle)', background:'var(--headerBg)', flexShrink:0,
-      }}>
-        <GnosNavButton />
-        <div style={{ width:1, height:16, background:'var(--border)' }} />
-
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ fontSize:13, fontWeight:600, color:'var(--text)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
-            {activeBook?.title || 'PDF'}
-          </div>
-          {activeBook?.author && (
-            <div style={{ fontSize:11, color:'var(--textDim)' }}>{activeBook.author}</div>
-          )}
-        </div>
-
-        {/* Zoom controls — order: Fit | − | % | + */}
-        <div style={{ display:'flex', alignItems:'center', gap:4, flexShrink:0 }}>
-          <button onClick={() => setScale(fitScale)} title="Fit to screen"
-            style={{ background:'var(--surface)', border:'1px solid var(--border)', color:'var(--textDim)', borderRadius:7, height:30, padding:'0 9px', cursor:'pointer', fontSize:11, fontFamily:'inherit', whiteSpace:'nowrap', fontWeight:600, transition:'background 0.1s' }}>Fit</button>
-          <button onClick={() => setScale(s => Math.max(0.3, +(s - 0.15).toFixed(2)))} title="Zoom out"
-            style={{ background:'var(--surface)', border:'1px solid var(--border)', color:'var(--text)', borderRadius:7, width:30, height:30, cursor:'pointer', fontSize:16, display:'flex', alignItems:'center', justifyContent:'center', transition:'background 0.1s' }}>−</button>
-          <span style={{ fontSize:11, color:'var(--textDim)', minWidth:38, textAlign:'center', fontVariantNumeric:'tabular-nums' }}>{Math.round(scale * 100)}%</span>
-          <button onClick={() => setScale(s => Math.min(3, +(s + 0.15).toFixed(2)))} title="Zoom in"
-            style={{ background:'var(--surface)', border:'1px solid var(--border)', color:'var(--text)', borderRadius:7, width:30, height:30, cursor:'pointer', fontSize:16, display:'flex', alignItems:'center', justifyContent:'center', transition:'background 0.1s' }}>+</button>
-        </div>
-      </header>
+      {/* Zoom controls live in the title bar's quick-access strip */}
+      <QuickAccess>
+        <button className="gnos-settings-btn" onClick={() => setScale(fitScale)} title="Fit to screen"
+          style={{ width: 'auto', padding: '0 8px', fontSize: 11, fontWeight: 600, fontFamily: 'inherit' }}>Fit</button>
+        <button className="gnos-settings-btn" onClick={() => setScale(s => Math.max(0.3, +(s - 0.15).toFixed(2)))} title="Zoom out" style={{ fontSize: 15 }}>−</button>
+        <span style={{ fontSize: 10.5, color: 'var(--textDim)', minWidth: 34, textAlign: 'center', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{Math.round(scale * 100)}%</span>
+        <button className="gnos-settings-btn" onClick={() => setScale(s => Math.min(3, +(s + 0.15).toFixed(2)))} title="Zoom in" style={{ fontSize: 15 }}>+</button>
+      </QuickAccess>
 
       {/* Main */}
       <main id="pdf-main-container" style={{ flex:1, overflow:'auto', display:'flex', alignItems:'flex-start', justifyContent:'center', padding:'24px 16px', background:'var(--readerBg)' }}>

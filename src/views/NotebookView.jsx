@@ -24,12 +24,17 @@
  *   use the autocomplete tooltip.
  */
 
-import { useState, useEffect, useRef, useCallback, useMemo, useContext, createElement } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useContext, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import useAppStore from '@/store/useAppStore'
 import { PaneContext } from '@/lib/PaneContext'
+import { useIsActiveTab } from '@/lib/useIsActiveTab'
 import { loadNotebookContent, saveNotebookContent, saveNotebookImage, getNotebookFolderPath, addReadingMinutes } from '@/lib/storage'
-import { GnosNavButton } from '@/components/SideNav'
+import QuickAccess, { useTitlebarMeta } from '@/components/QuickAccess'
+import { useIsMobile } from '@/lib/useIsMobile'
+import { Slider } from '@/components/Controls'
+import { IconQuill } from '@/components/icons'
+import { makeMathCalcPlugin } from '@/lib/notebookEditor'
 import { listen } from '@tauri-apps/api/event'
 
 
@@ -54,6 +59,17 @@ let _dialogOpen = null
 // ─── Tiny id helper ───────────────────────────────────────────────────────────
 function makeId(prefix = 'id') {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
+}
+
+// ─── Shared doc-string cache ──────────────────────────────────────────────────
+// Several decoration builders need the full document as a string on every
+// update; CM's Text is immutable, so cache the stringification per doc instance
+// instead of re-serializing 4-5× per keystroke.
+const _docStrCache = new WeakMap()
+function docString(doc) {
+  let s = _docStrCache.get(doc)
+  if (s === undefined) { s = doc.toString(); _docStrCache.set(doc, s) }
+  return s
 }
 
 
@@ -425,6 +441,12 @@ function blockToHtml(raw, notebooks, library, footnotesBuf, sketchbooks = [], fl
     return `<div class="cm-cal-prev-block"><div class="cm-cal-prev-title">${esc(titleText)}</div>${evtHtml}</div>`
   }
 
+  // /math zone command — render as a small badge in preview
+  if (/^\/(?:math(?:\s+end)?|endmath)\s*$/i.test(first)) {
+    const isEnd = /end/i.test(first)
+    return `<div><span class="cm-mathzone-badge${isEnd ? ' cm-mathzone-end' : ''}"><span class="cm-mathzone-icon">∑</span>${isEnd ? 'math off' : 'math on'}</span></div>`
+  }
+
   // /pomo block — render as pomodoro status in preview
   if (/^\/pomo$/.test(first)) {
     return `<div class="cm-pomo-prev"><span class="cm-pomo-prev-icon">\u{1F345}</span><span class="cm-pomo-prev-text">Pomodoro Timer</span><span class="cm-pomo-prev-sub">25 min focus · 5 min break</span></div>`
@@ -548,7 +570,7 @@ function makeTheme(cm) {
       background: 'transparent',
       color: 'var(--text)',
       height: '100%',
-      fontFamily: 'Erode, Georgia, serif',
+      fontFamily: 'Author, Satoshi, sans-serif',
       fontSize: '15px',
       fontWeight: '450',
     },
@@ -571,8 +593,8 @@ function makeHighlight(cm) {
   const { tags } = cm.highlight
   const { HighlightStyle } = cm.language
   return HighlightStyle.define([
-    { tag: tags.heading1, color: 'var(--text)', fontWeight: '600', fontSize: '1.6em', fontFamily: 'Erode, Georgia, serif', letterSpacing: '-0.3px' },
-    { tag: tags.heading2, color: 'var(--text)', fontWeight: '600', fontSize: '1.35em', fontFamily: 'Erode, Georgia, serif', letterSpacing: '-0.2px' },
+    { tag: tags.heading1, color: 'var(--text)', fontWeight: '600', fontSize: '1.6em', fontFamily: 'Author, Satoshi, sans-serif', letterSpacing: '-0.3px' },
+    { tag: tags.heading2, color: 'var(--text)', fontWeight: '600', fontSize: '1.35em', fontFamily: 'Author, Satoshi, sans-serif', letterSpacing: '-0.2px' },
     { tag: tags.heading3, color: 'var(--text)', fontWeight: '600', fontSize: '1.15em', fontFamily: 'Satoshi, Author, sans-serif' },
     { tag: tags.heading4, color: 'var(--text)', fontWeight: '600', fontFamily: 'Satoshi, Author, sans-serif' },
     { tag: tags.strong,   color: 'var(--nb-bold-color)', fontWeight: '700' },
@@ -740,7 +762,7 @@ function makePairInputHandler(cm) {
   // Obsidian-style: only auto-wrap when there's a selection.
   // No selection → just type the character normally (no auto-closing).
   // Exception: backtick and $ get lightweight auto-close (easy to dismiss).
-  const WRAP_PAIRS = { '*':'*', '_':'_', '~':'~', '=':'=', '`':'`', '$':'$' }
+  const WRAP_PAIRS = { '*':'*', '_':'_', '=':'=', '`':'`', '$':'$' }  // '~' removed: sup/sub should not auto-wrap
   return cm.view.EditorView.inputHandler.of((view, _from, _to, text) => {
     if (!WRAP_PAIRS[text]) return false
     const sel = view.state.selection.main
@@ -781,7 +803,54 @@ function makePairInputHandler(cm) {
 }
 
 function makeSmartEnter(cm) {
-  return cm.view.keymap.of([{ key: 'Enter', run: cm.commands.insertNewlineAndIndentContinueMarkupList }])
+  const smartEnterRun = ({ state, dispatch }) => {
+    const sel = state.selection.main
+    if (!sel.empty) return false // Let default handle selections
+    const line = state.doc.lineAt(sel.from)
+    const text = line.text
+
+    // Detect unordered list item: leading spaces + marker (- * +) + space
+    const ulMatch = text.match(/^(\s*)([-*+]) /)
+    // Detect ordered list item: leading spaces + digits + . + space
+    const olMatch = text.match(/^(\s*)(\d+)\. /)
+
+    const match = ulMatch || olMatch
+    if (!match) return false
+
+    // Content after the marker
+    const prefixLen = match[0].length
+    const contentStart = line.from + prefixLen
+    const isEmpty = sel.from <= contentStart && text.slice(prefixLen).trim() === ''
+
+    if (isEmpty) {
+      // Empty list item — clear the line (exit the list)
+      dispatch(state.update({
+        changes: { from: line.from, to: line.to, insert: '' },
+        selection: { anchor: line.from },
+        scrollIntoView: true,
+      }))
+      return true
+    }
+
+    // Build next-line prefix: same indent + same marker (or incremented number)
+    let nextPrefix
+    if (olMatch) {
+      const n = parseInt(olMatch[2], 10)
+      nextPrefix = olMatch[1] + (n + 1) + '. '
+    } else {
+      nextPrefix = ulMatch[1] + ulMatch[2] + ' '
+    }
+
+    // Insert exactly one newline + list prefix (no blank line)
+    const insert = '\n' + nextPrefix
+    dispatch(state.update({
+      changes: { from: sel.from, to: sel.to, insert },
+      selection: { anchor: sel.from + insert.length },
+      scrollIntoView: true,
+    }))
+    return true
+  }
+  return cm.view.keymap.of([{ key: 'Enter', run: smartEnterRun }])
 }
 
 // ─── Inline format shortcuts ──────────────────────────────────────────────────
@@ -927,622 +996,6 @@ function makeGhostHintPlugin(cm) {
 }
 
 
-// ─── Math.js + Algebrite inline calculator (ghost hint for `expr=`) ─────────
-// Lazy-loads mathjs and algebrite. Shows result as ghost text after `=`.
-let _mathP = null
-function getMathjs() {
-  if (_mathP) return _mathP
-  _mathP = import('mathjs').then(m => m).catch(() => null)
-  return _mathP
-}
-let _algP = null
-function getAlgebrite() {
-  if (_algP) return _algP
-  _algP = import('algebrite').then(m => m.default || m).catch(() => null)
-  return _algP
-}
-
-function makeMathCalcPlugin(cm) {
-  const { ViewPlugin, Decoration, WidgetType } = cm.view
-
-  class MathGhostWidget extends WidgetType {
-    constructor(text) { super(); this.text = text }
-    toDOM() {
-      const span = document.createElement('span')
-      span.className = 'cm-ghost-hint cm-math-ghost'
-      span.textContent = this.text
-      span.setAttribute('aria-hidden', 'true')
-      return span
-    }
-    eq(o) { return o instanceof MathGhostWidget && o.text === this.text }
-    ignoreEvent() { return true }
-  }
-
-  let mathLib = null
-  let algLib = null
-  getMathjs().then(m => {
-    if (m) {
-      try {
-        m.import({
-          FV: function(rate, nper, pmt, pv) {
-            pv = pv || 0
-            return pv * Math.pow(1 + rate, nper) + pmt * (Math.pow(1 + rate, nper) - 1) / rate
-          },
-          PV: function(rate, nper, pmt, fv) {
-            fv = fv || 0
-            return (pmt * (1 - Math.pow(1 + rate, -nper)) / rate) + fv * Math.pow(1 + rate, -nper)
-          },
-          PMT: function(rate, nper, pv, fv) {
-            fv = fv || 0
-            return (pv * rate * Math.pow(1 + rate, nper) + fv * rate) / (Math.pow(1 + rate, nper) - 1)
-          },
-          NPV: function(rate, ...cashflows) {
-            return cashflows.reduce((sum, cf, t) => sum + cf / Math.pow(1 + rate, t + 1), 0)
-          },
-        }, { override: false })
-      } catch { /* ignore */ }
-    }
-    mathLib = m
-  })
-  getAlgebrite().then(a => { algLib = a })
-
-  // Patterns that should go directly to Algebrite (symbolic CAS)
-  const CAS_RE = /\b(integral|integrate|roots|solve|factor|expand|taylor|defint|laplace)\b/i
-
-  // Comprehensive date/time math
-  function tryDateMath(expr) {
-    const lower = expr.toLowerCase().trim()
-    const DAY_NAMES = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday']
-    const UNITS = 'second|seconds|minute|minutes|min|mins|hour|hours|hr|hrs|day|days|week|weeks|month|months|year|years'
-
-    function parseBase(s) {
-      s = s.trim()
-      const now = new Date()
-      const today = new Date(now); today.setHours(0,0,0,0)
-      if (s === 'today') return new Date(today)
-      if (s === 'tomorrow')  { const d = new Date(today); d.setDate(d.getDate()+1); return d }
-      if (s === 'yesterday') { const d = new Date(today); d.setDate(d.getDate()-1); return d }
-      if (s === 'now') return new Date(now)
-      // next/last/this [weekday]
-      const nextDayM = s.match(/^(?:next|this)\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)$/)
-      if (nextDayM) {
-        const target = DAY_NAMES.indexOf(nextDayM[1])
-        const d = new Date(today); let diff = target - d.getDay(); if (diff <= 0) diff += 7
-        d.setDate(d.getDate() + diff); return d
-      }
-      const lastDayM = s.match(/^last\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)$/)
-      if (lastDayM) {
-        const target = DAY_NAMES.indexOf(lastDayM[1])
-        const d = new Date(today); let diff = d.getDay() - target; if (diff <= 0) diff += 7
-        d.setDate(d.getDate() - diff); return d
-      }
-      // next/last week/month/year
-      if (s === 'next week')  { const d = new Date(today); d.setDate(d.getDate()+7); return d }
-      if (s === 'last week')  { const d = new Date(today); d.setDate(d.getDate()-7); return d }
-      if (s === 'next month') { const d = new Date(today); d.setMonth(d.getMonth()+1); return d }
-      if (s === 'last month') { const d = new Date(today); d.setMonth(d.getMonth()-1); return d }
-      if (s === 'next year')  { const d = new Date(today); d.setFullYear(d.getFullYear()+1); return d }
-      if (s === 'last year')  { const d = new Date(today); d.setFullYear(d.getFullYear()-1); return d }
-      // time: "9am", "9:30am", "14:30"
-      const timeM = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/)
-      if (timeM) {
-        const d = new Date(now); let h = parseInt(timeM[1],10); const m = parseInt(timeM[2]||'0',10)
-        if (timeM[3]==='pm' && h!==12) h+=12; if (timeM[3]==='am' && h===12) h=0
-        d.setHours(h,m,0,0); return d
-      }
-      const time24M = s.match(/^(\d{1,2}):(\d{2})$/)
-      if (time24M) { const d = new Date(now); d.setHours(parseInt(time24M[1],10),parseInt(time24M[2],10),0,0); return d }
-      // Try JS date parsing
-      const parsed = new Date(s)
-      if (!isNaN(parsed.getTime())) return parsed
-      return null
-    }
-
-    function applyDur(d, sign, n, unit) {
-      const r = new Date(d)
-      const u = unit.toLowerCase()
-      if (u.startsWith('sec')) r.setSeconds(r.getSeconds()+sign*n)
-      else if (u.startsWith('min') || u==='min' || u==='mins') r.setMinutes(r.getMinutes()+sign*n)
-      else if (u.startsWith('hour') || u==='hr' || u==='hrs') r.setHours(r.getHours()+sign*n)
-      else if (u.startsWith('day')) r.setDate(r.getDate()+sign*n)
-      else if (u.startsWith('week')) r.setDate(r.getDate()+sign*n*7)
-      else if (u.startsWith('month')) r.setMonth(r.getMonth()+sign*n)
-      else if (u.startsWith('year')) r.setFullYear(r.getFullYear()+sign*n)
-      return r
-    }
-
-    function isTimeUnit(u) { return /^(sec|min|hour|hr)/.test(u.toLowerCase()) || u==='mins' || u==='hrs' }
-
-    function fmtDate(d) { return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'}) }
-    function fmtTime(d) { return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})+' @ '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) }
-    function fmt(d, wasTime) { return wasTime ? fmtTime(d) : fmtDate(d) }
-
-    // Standalone: "today", "tomorrow", "yesterday", "next monday", etc.
-    const base = parseBase(lower)
-    if (base) return fmtDate(base)
-
-    // "base +/- N units"
-    const durRe = new RegExp(`^(.+?)\\s*([+-])\\s*(\\d+)\\s*(${UNITS})$`)
-    const durM = lower.match(durRe)
-    if (durM) {
-      const b = parseBase(durM[1].trim())
-      if (b) {
-        const sign = durM[2]==='+' ? 1 : -1
-        const n = parseInt(durM[3],10), u = durM[4]
-        return fmt(applyDur(b, sign, n, u), isTimeUnit(u))
-      }
-    }
-
-    // "N units ago"
-    const agoM = lower.match(new RegExp(`^(\\d+)\\s*(${UNITS})\\s+ago$`))
-    if (agoM) {
-      const r = applyDur(new Date(), -1, parseInt(agoM[1],10), agoM[2])
-      return fmt(r, isTimeUnit(agoM[2]))
-    }
-    // "in N units"
-    const inM = lower.match(new RegExp(`^in\\s+(\\d+)\\s*(${UNITS})$`))
-    if (inM) {
-      const r = applyDur(new Date(), 1, parseInt(inM[1],10), inM[2])
-      return fmt(r, isTimeUnit(inM[2]))
-    }
-
-    // "days until [date]" / "hours until [date]"
-    const untilM = lower.match(/^(?:how many )?(days|hours|weeks) until (.+)$/)
-    if (untilM) {
-      const d = parseBase(untilM[2]) || new Date(untilM[2])
-      if (d && !isNaN(d.getTime())) {
-        const ms = d.getTime() - Date.now()
-        if (untilM[1]==='days')  { const n=Math.ceil(ms/86400000); return `${n} day${Math.abs(n)!==1?'s':''}` }
-        if (untilM[1]==='hours') { const n=Math.ceil(ms/3600000); return `${n} hour${Math.abs(n)!==1?'s':''}` }
-        if (untilM[1]==='weeks') { const n=Math.ceil(ms/604800000); return `${n} week${Math.abs(n)!==1?'s':''}` }
-      }
-    }
-
-    // "days/hours since [date]"
-    const sinceM = lower.match(/^(?:how many )?(days|hours|weeks) since (.+)$/)
-    if (sinceM) {
-      const d = parseBase(sinceM[2]) || new Date(sinceM[2])
-      if (d && !isNaN(d.getTime())) {
-        const ms = Date.now() - d.getTime()
-        if (sinceM[1]==='days')  { const n=Math.floor(ms/86400000); return `${n} day${n!==1?'s':''}` }
-        if (sinceM[1]==='hours') { const n=Math.floor(ms/3600000); return `${n} hour${n!==1?'s':''}` }
-        if (sinceM[1]==='weeks') { const n=Math.floor(ms/604800000); return `${n} week${n!==1?'s':''}` }
-      }
-    }
-
-    return null
-  }
-
-  // Convert natural language math to evaluatable expression
-  function naturalLangToExpr(expr) {
-    let s = expr.toLowerCase()
-    s = s.replace(/^(?:what is|calculate|compute|find|evaluate)\s+/i, '')
-    s = s.replace(/\bplus\b/g, '+')
-    s = s.replace(/\bminus\b/g, '-')
-    s = s.replace(/\btimes\b/g, '*')
-    s = s.replace(/\bdivided by\b/g, '/')
-    s = s.replace(/\bsquared\b/g, '^2')
-    s = s.replace(/\bcubed\b/g, '^3')
-    s = s.replace(/\bsquare root of\b/g, 'sqrt(')
-    // Close open sqrt( if we added it
-    if (s.includes('sqrt(') && !s.includes(')')) s += ')'
-    s = s.replace(/\bpercent of\b/g, '/100 *')
-    return s
-  }
-
-  // ─── Variable name registry ───────────────────────────────────────────────
-  // Stable mapping from lowercase display name → internal math.js-safe token.
-  // Each editor instance gets its own registry via closure.
-  const _nameToToken = new Map()
-  let _tokenCtr = 0
-  function getVarToken(name) {
-    const key = name.toLowerCase()
-    if (!_nameToToken.has(key)) _nameToToken.set(key, `_mv${_tokenCtr++}`)
-    return _nameToToken.get(key)
-  }
-
-  // ─── Document scope scan ──────────────────────────────────────────────────
-  // Scans all lines top-to-bottom for "Name: expression" patterns.
-  // Returns { varDefs, scope } where scope maps token → numeric value.
-  function buildDocScope(state) {
-    const varDefs = []  // [{ name, token, value, lineFrom, lineEnd, nameFrom, nameEnd, colonFrom, rhsFrom }]
-    const scope   = {}
-    for (let ln = 1; ln <= state.doc.lines; ln++) {
-      const line = state.doc.line(ln)
-      const m    = line.text.match(/^(.+?):\s*(.+)$/)
-      if (!m) continue
-      const name   = m[1].trim()
-      const valStr = m[2].trim()
-      // Skip markdown artifacts (headings, lists, blockquotes, URLs, code fences…)
-      if (!name || /^[-*#>|`\\]/.test(name) || /[:/\\]/.test(name)) continue
-      const token       = getVarToken(name)
-      const substituted = applyVarSubstitution(valStr, varDefs)
-      let value = null
-      if (mathLib) {
-        try {
-          const r = mathLib.evaluate(substituted, { ...scope })
-          if (r !== undefined && r !== null && typeof r !== 'function') {
-            const n = typeof r === 'number' ? r : parseFloat(String(r))
-            if (!isNaN(n)) value = n
-          }
-        } catch { /* non-numeric def — still register for autocomplete/deco */ }
-      }
-      // Compute exact character positions for decorations
-      const nameFrom  = line.from + m[1].search(/\S/)   // skip any leading spaces
-      const nameEnd   = nameFrom + name.length
-      const colonFrom = line.from + m[1].length          // position of the ':'
-      const rhsFrom   = line.from + m[0].length - m[2].length  // start of RHS text
-      varDefs.push({ name, token, value, lineFrom: line.from, lineEnd: line.to, nameFrom, nameEnd, colonFrom, rhsFrom })
-      if (value !== null) scope[token] = value
-    }
-    return { varDefs, scope }
-  }
-
-  // ─── Variable substitution ────────────────────────────────────────────────
-  // Replaces multi-word variable names (and "per X" sugar) with internal tokens.
-  function applyVarSubstitution(expr, varDefs) {
-    let result = expr
-    // "0.25 per mile" → "0.25 * _mv1"
-    result = result.replace(/\bper\s+([a-zA-Z][a-zA-Z0-9 ]*)/g, (_, unit) => {
-      const match = varDefs.find(v => v.name.toLowerCase() === unit.trim().toLowerCase() && v.value !== null)
-      return match ? `* ${match.token}` : `/ ${unit.trim()}`
-    })
-    // Replace variable names longest-first to avoid partial matches
-    const sorted = [...varDefs].sort((a, b) => b.name.length - a.name.length)
-    for (const { name, token } of sorted) {
-      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      result = result.replace(new RegExp(`(?<![_a-zA-Z0-9])${escaped}(?![_a-zA-Z0-9])`, 'gi'), token)
-    }
-    return result
-  }
-
-  // ─── Scope state field ───────────────────────────────────────────────────
-  // Caches the document scope; rebuilt only on doc changes, not cursor moves.
-  const docScopeField = cm.state.StateField.define({
-    create: state => buildDocScope(state),
-    update: (val, tr) => tr.docChanged ? buildDocScope(tr.state) : val,
-  })
-
-  function evalExpr(expr, scope = {}) {
-    // Strip thousands-separator commas (e.g. 1,000 → 1000, 1,000,000 → 1000000)
-    expr = expr.replace(/\b(\d{1,3}(?:,\d{3})+)\b/g, m => m.replace(/,/g, ''))
-
-    // Try date math first
-    const dateResult = tryDateMath(expr)
-    if (dateResult !== null) return dateResult
-
-    // Natural language conversion
-    const naturalExpr = naturalLangToExpr(expr)
-
-    // Route CAS-like expressions to Algebrite first
-    if (algLib && CAS_RE.test(expr)) {
-      try {
-        const r = algLib.run(expr)
-        if (r && r !== 'Stop' && r !== 'nil') return r
-      } catch { /* fall through to mathjs */ }
-    }
-    // Try math.js (also handles unit conversions like "5 km to miles")
-    if (mathLib) {
-      try {
-        const result = mathLib.evaluate(expr, { ...scope })
-        if (result === undefined || result === null || typeof result === 'function') return null
-        return String(typeof result === 'object' && result.toString ? result.toString() : result)
-      } catch { /* try natural language variant */ }
-      // Try the natural language converted expression
-      if (naturalExpr !== expr) {
-        try {
-          const result = mathLib.evaluate(naturalExpr, { ...scope })
-          if (result !== undefined && result !== null && typeof result !== 'function') {
-            return String(typeof result === 'object' && result.toString ? result.toString() : result)
-          }
-        } catch { /* fall through */ }
-      }
-    }
-    // Algebrite fallback for anything math.js couldn't handle
-    if (algLib) {
-      try {
-        const r = algLib.run(expr)
-        if (r && r !== 'Stop' && r !== 'nil') return r
-      } catch { /* give up */ }
-    }
-    return null
-  }
-
-  const mathPlugin = ViewPlugin.fromClass(class {
-    constructor(view) { this.deco = Decoration.none; this._hint = null; this._compute(view) }
-    update(upd) { if (upd.docChanged || upd.selectionSet) this._compute(upd.view) }
-    _compute(view) {
-      if (!mathLib && !algLib) { this.deco = Decoration.none; this._hint = null; return }
-      const { state } = view
-      const cur = state.selection.main
-      if (!cur.empty) { this.deco = Decoration.none; this._hint = null; return }
-      const line = state.doc.lineAt(cur.head)
-      const col = cur.head - line.from
-      const textBefore = line.text.slice(0, col)
-
-      // Read cached scope (rebuilt by docScopeField only on doc changes)
-      const { varDefs, scope } = state.field(docScopeField)
-
-      // Support =:.N precision syntax: "2*32.12321 =:.2" rounds to 2 decimals
-      const precMatch = textBefore.match(/^(.*?)([^=\n]+)=:\.(\d+)\s*$/)
-      const plainMatch = textBefore.match(/^(.*?)([^=\n]+)=\s*$/)
-      const match = precMatch || plainMatch
-      if (!match) { this.deco = Decoration.none; this._hint = null; return }
-      const precision = precMatch ? parseInt(precMatch[3]) : null
-      let rawExpr = match[2].trim()
-
-      // Strip "Name: " prefix from variable definition lines so the RHS is evaluated.
-      // e.g. "Catering price: Friends * Food price =" → evaluate "Friends * Food price"
-      const colonM = rawExpr.match(/^[^:]+:\s*(.+)$/)
-      if (colonM) rawExpr = colonM[1].trim()
-
-      // Strip list prefixes and markdown formatting
-      rawExpr = rawExpr.replace(/^(?:[-*+]|\d+\.)\s+/, '')
-      rawExpr = rawExpr.replace(/\*{2,}|[_~`]+/g, '')
-
-      // Substitute variable names → tokens
-      let expr = applyVarSubstitution(rawExpr, varDefs)
-
-      // Check if this expression references any defined variables
-      const hasVarRef = varDefs.some(v => v.value !== null && expr.includes(v.token))
-
-      if (!hasVarRef) {
-        // Original math isolation logic for plain numeric expressions
-        const mathStart = expr.match(/((?:(?:sin|cos|tan|log|ln|sqrt|abs|ceil|floor|round|exp|pow|FV|PV|PMT|NPV|integral|solve|factor|expand)\s*\(|[-+]?\s*[\d(]).*$)/i)
-        if (mathStart) expr = mathStart[1].trim()
-        else {
-          const mathPart = expr.match(/([\d(][\d\s+\-*/^().,%]*[\d)])\s*$/)
-          if (mathPart) expr = mathPart[1].trim()
-        }
-        if (!expr || /^[a-zA-Z]{4,}$/.test(expr)) { this.deco = Decoration.none; this._hint = null; return }
-        if (!/[+\-*/^%()]/.test(expr) && !/\b(sin|cos|tan|log|ln|sqrt|abs|ceil|floor|round|exp|pow|FV|PV|PMT|NPV)\s*\(/i.test(expr) && !/\bto\b/i.test(expr)) {
-          this.deco = Decoration.none; this._hint = null; return
-        }
-      }
-
-      let result = evalExpr(expr, scope)
-      if (!result) { this.deco = Decoration.none; this._hint = null; return }
-
-      // Apply precision rounding if =:.N was used
-      if (precision !== null) {
-        const num = parseFloat(result)
-        if (!isNaN(num)) result = num.toFixed(precision)
-      }
-
-      const resultStr = ' ' + result
-      const builder = new cm.state.RangeSetBuilder()
-      try {
-        builder.add(cur.head, cur.head, Decoration.widget({ widget: new MathGhostWidget(resultStr), side: 1 }))
-      } catch { /* ignore */ }
-      this.deco = builder.finish()
-      this._hint = { pos: cur.head, insert: resultStr }
-    }
-    get decorations() { return this.deco }
-  }, { decorations: v => v.decorations })
-
-  // ─── Variable definition decorator ───────────────────────────────────────
-  // Colors: name (pastel orange), colon (dim orange), var refs everywhere (blue).
-  const varDecoPlugin = ViewPlugin.fromClass(class {
-    constructor(view) { this.deco = Decoration.none; this._rebuild(view) }
-    update(upd) { if (upd.docChanged) this._rebuild(upd.view) }
-    _rebuild(view) {
-      const { varDefs } = view.state.field(docScopeField)
-      if (!varDefs.length) { this.deco = Decoration.none; return }
-      const liveVars = varDefs.filter(v => v.value !== null).sort((a, b) => b.name.length - a.name.length)
-
-      // Track which lines are definition lines so we skip them in the ref scan below
-      const defLineFroms = new Set(varDefs.map(v => v.lineFrom))
-
-      // Helper: scan a text segment for variable name references, push into ranges[]
-      function addRefs(ranges, basePos, text) {
-        if (!liveVars.length) return
-        const covered = []
-        for (const { name } of liveVars) {
-          const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-          const re = new RegExp(`(?<![_a-zA-Z0-9])${escaped}(?![_a-zA-Z0-9])`, 'gi')
-          let hit
-          while ((hit = re.exec(text)) !== null) {
-            const from = basePos + hit.index
-            const to   = from + name.length
-            if (covered.some(r => from < r.to && to > r.from)) continue
-            covered.push({ from, to })
-            ranges.push({ from, to, cls: 'cm-math-ref' })
-          }
-        }
-      }
-
-      // Collect all ranges then sort — RangeSetBuilder requires ascending order
-      const ranges = []
-
-      // 1. Definition lines: name, colon, RHS references
-      for (const { nameFrom, nameEnd, colonFrom, rhsFrom, lineEnd, value } of varDefs) {
-        ranges.push({ from: nameFrom, to: nameEnd, cls: value !== null ? 'cm-math-var cm-math-var-live' : 'cm-math-var' })
-        ranges.push({ from: colonFrom, to: colonFrom + 1, cls: 'cm-math-colon' })
-        if (rhsFrom < lineEnd)
-          addRefs(ranges, rhsFrom, view.state.doc.sliceString(rhsFrom, lineEnd))
-      }
-
-      // 2. Non-definition lines: highlight any variable references on lines that
-      //    look like expressions (contain = or math operators)
-      for (let ln = 1; ln <= view.state.doc.lines; ln++) {
-        const line = view.state.doc.line(ln)
-        if (defLineFroms.has(line.from)) continue  // already handled
-        const text = line.text
-        if (!text.includes('=') && !/[+\-*/^%]/.test(text)) continue
-        addRefs(ranges, line.from, text)
-      }
-
-      ranges.sort((a, b) => a.from - b.from || a.to - b.to)
-      const builder = new cm.state.RangeSetBuilder()
-      for (const { from, to, cls } of ranges) builder.add(from, to, Decoration.mark({ class: cls }))
-      this.deco = builder.finish()
-    }
-    get decorations() { return this.deco }
-  }, { decorations: v => v.deco })
-
-  // ─── Variable autocomplete ────────────────────────────────────────────────
-  // Triggers on lines containing ":" or "=" and offers defined variable names.
-  function varCompleteSource(context) {
-    const line     = context.state.doc.lineAt(context.pos)
-    const lineText = line.text
-    // Only activate on expression/definition lines
-    if (!lineText.includes(':') && !lineText.includes('=')) return null
-    const { varDefs } = buildDocScope(context.state)
-    const liveVars = varDefs.filter(v => v.value !== null)
-    if (!liveVars.length) return null
-    const word = context.matchBefore(/[a-zA-Z][a-zA-Z0-9 ]{1,40}/)
-    if (!word || (word.from === word.to && !context.explicit)) return null
-    const typed = word.text.toLowerCase().trimEnd()
-    if (typed.length < 2) return null
-    const options = liveVars
-      .filter(v => v.name.toLowerCase().startsWith(typed) && v.name.toLowerCase() !== typed)
-      .map(v => ({ label: v.name, detail: `= ${v.value}`, type: 'variable', apply: v.name }))
-    if (!options.length) return null
-    return { from: word.from, options, validFor: /^[a-zA-Z][a-zA-Z0-9 ]*$/ }
-  }
-
-  const varAutocompletion = cm.autocomplete.autocompletion({
-    override: [varCompleteSource],
-    icons: false,
-    closeOnBlur: true,
-  })
-
-  // ─── Update animation ────────────────────────────────────────────────────
-  // Tracks which line numbers currently have a live-update animation playing.
-  const varUpdateEffect    = cm.state.StateEffect.define()
-  const varUpdateField     = cm.state.StateField.define({
-    create: () => new Set(),
-    update: (val, tr) => {
-      for (const e of tr.effects) if (e.is(varUpdateEffect)) return new Set(e.value)
-      return val
-    },
-  })
-
-  // Decorates updated result numbers with the shimmer animation class.
-  const varResultDecoPlugin = ViewPlugin.fromClass(class {
-    constructor(view) { this.deco = Decoration.none }
-    update(upd) {
-      const updatedLines = upd.state.field(varUpdateField)
-      if (!updatedLines.size) { this.deco = Decoration.none; return }
-      const builder = new cm.state.RangeSetBuilder()
-      const sorted = [...updatedLines].sort((a, b) => a - b)
-      for (const ln of sorted) {
-        if (ln > upd.state.doc.lines) continue
-        const line = upd.state.doc.line(ln)
-        const m = line.text.match(/^(.*?\S)(\s*=\s*)(-?\d+(?:\.\d+)?)/)
-        if (!m) continue
-        const numFrom = line.from + m[1].length + m[2].length
-        builder.add(numFrom, numFrom + m[3].length, Decoration.mark({ class: 'cm-math-live-updated' }))
-      }
-      this.deco = builder.finish()
-    }
-    get decorations() { return this.deco }
-  }, { decorations: v => v.deco })
-
-  // ─── Live result updater ─────────────────────────────────────────────────
-  // When a variable value changes, auto-updates any Tab-accepted results in the doc.
-  const liveResultAnnotation = cm.state.Annotation.define()
-
-  const liveResultPlugin = ViewPlugin.fromClass(class {
-    constructor() { this._clearTimer = null }
-    update(upd) {
-      if (!upd.docChanged) return
-      if (upd.transactions.some(tr => tr.annotation(liveResultAnnotation))) return
-      if (!mathLib) return
-      const { varDefs, scope } = upd.state.field(docScopeField)
-      if (!varDefs.length) return
-      const curLine = upd.state.doc.lineAt(upd.state.selection.main.head).number
-      const changes = []
-      const updatedLineNums = []
-      for (let ln = 1; ln <= upd.state.doc.lines; ln++) {
-        if (ln === curLine) continue  // skip line being typed on
-        const line = upd.state.doc.line(ln)
-        // Match lines ending with "= <number>" — a previously accepted ghost result
-        const m = line.text.match(/^(.*?\S)(\s*=\s*)(-?\d+(?:\.\d+)?)(\s*)$/)
-        if (!m) continue
-        let rawExpr = m[1].trim()
-        const colonM = rawExpr.match(/^[^:]+:\s*(.+)$/)
-        if (colonM) rawExpr = colonM[1].trim()
-        rawExpr = rawExpr.replace(/^(?:[-*+]|\d+\.)\s+/, '').replace(/\*{2,}|[_~`]+/g, '')
-        const expr = applyVarSubstitution(rawExpr, varDefs)
-        if (!varDefs.some(v => v.value !== null && expr.includes(v.token))) continue
-        const result = evalExpr(expr, scope)
-        if (!result) continue
-        const newNum    = parseFloat(result)
-        const storedNum = parseFloat(m[3])
-        if (isNaN(newNum) || isNaN(storedNum) || Math.abs(newNum - storedNum) < 1e-10) continue
-        const numFrom = line.from + m[1].length + m[2].length
-        changes.push({ from: numFrom, to: numFrom + m[3].length, insert: result })
-        updatedLineNums.push(ln)
-      }
-      if (!changes.length) return
-      const view = upd.view
-      // Defer dispatch to avoid mutating state inside an update cycle
-      setTimeout(() => {
-        try {
-          view.dispatch({
-            changes,
-            annotations: liveResultAnnotation.of(true),
-            effects: [varUpdateEffect.of(new Set(updatedLineNums))],
-          })
-          // Guard: cancel any pending clear so rapid updates don't retrigger the animation
-          clearTimeout(this._clearTimer)
-          this._clearTimer = setTimeout(() => {
-            try { view.dispatch({ effects: [varUpdateEffect.of(new Set())] }) } catch {}
-          }, 1800)  // matches animation duration + buffer
-        } catch { /* view destroyed */ }
-      }, 0)
-    }
-  })
-
-  const mathKeymap = cm.view.keymap.of([{
-    key: 'Tab',
-    run: view => {
-      const plugin = view.plugin(mathPlugin)
-      if (!plugin?._hint) return false
-      const { pos, insert } = plugin._hint
-      if (view.state.selection.main.head !== pos) return false
-      view.dispatch({
-        changes: { from: pos, to: pos, insert },
-        selection: { anchor: pos + insert.length },
-      })
-      return true
-    },
-  }])
-
-  // ─── Prose number decorator ───────────────────────────────────────────────
-  // Applies uniform tabular-nums + slightly heavier weight to all digit sequences
-  // in editor text (the highlight style only fires inside code contexts).
-  const _numRE   = /(?<![_a-zA-Z#])\d+(?:[.,]\d+)*/g
-  const _numMark = Decoration.mark({ class: 'cm-nb-num' })
-  const numberDecoPlugin = ViewPlugin.fromClass(class {
-    constructor(view) { this.deco = this._build(view) }
-    update(upd) { if (upd.docChanged || upd.viewportChanged) this.deco = this._build(upd.view) }
-    _build(view) {
-      const builder = new cm.state.RangeSetBuilder()
-      for (const { from, to } of view.visibleRanges) {
-        let pos = from
-        while (pos <= to) {
-          const line = view.state.doc.lineAt(pos)
-          const end  = Math.min(line.to, to)
-          _numRE.lastIndex = 0
-          const text = line.text.slice(pos - line.from, end - line.from)
-          let m
-          while ((m = _numRE.exec(text)) !== null) {
-            const s = pos + m.index
-            try { builder.add(s, s + m[0].length, _numMark) } catch {}
-          }
-          pos = line.to + 1
-        }
-      }
-      return builder.finish()
-    }
-    get decorations() { return this.deco }
-  }, { decorations: v => v.deco })
-
-  return [docScopeField, varUpdateField, mathPlugin, varDecoPlugin, varResultDecoPlugin, numberDecoPlugin, liveResultPlugin, mathKeymap, varAutocompletion]
-}
-
 // ─── /table slash command ────────────────────────────────────────────────────
 // Typing `/table` or `/table NxM` then Enter inserts a markdown table template.
 function makeTableCommand(cm) {
@@ -1582,6 +1035,23 @@ class HRWidget {
   ignoreEvent() { return true }
   get estimatedHeight() { return 2 }
   coordsAt() { return null }
+}
+
+class ColumnsWidget {
+  constructor(cols, innerHtml, rawText) { this.cols = cols; this.innerHtml = innerHtml; this.rawText = rawText }
+  eq(o) { return o instanceof ColumnsWidget && o.rawText === this.rawText }
+  compare(o) { return this.eq(o) }
+  toDOM() {
+    const wrap = document.createElement('div')
+    wrap.className = 'cm-columns-widget'
+    wrap.style.cssText = `column-count:${this.cols};column-gap:1.6em;column-rule:1px solid var(--border,#333);width:100%;box-sizing:border-box;padding:0.25em 0;`
+    wrap.innerHTML = this.innerHtml
+    return wrap
+  }
+  ignoreEvent() { return true }
+  get estimatedHeight() { return 80 }
+  coordsAt() { return null }
+  destroy() {}
 }
 
 class CheckboxWidget {
@@ -3070,15 +2540,99 @@ class TableWidget {
         return
       }
 
+      if (e.key === 'Backspace' && cell.textContent.trim() === '') {
+        e.preventDefault()
+        const rows = Array.from(wrap.querySelectorAll('tr'))
+        const rowCells = Array.from(rows[rowIdx].querySelectorAll('td, th'))
+        // Leftmost cell + entire row empty → delete the row (never delete header)
+        if (colIdx === 0 && rowIdx !== 0 && rowCells.every(c => c.textContent.trim() === '')) {
+          this._deleteRow(cmView, rowIdx)
+          return
+        }
+        // Otherwise navigate to previous cell, cursor at end
+        const cols = rowCells.length
+        let nRow = rowIdx, nCol = colIdx - 1
+        if (nCol < 0) {
+          nRow--
+          nCol = nRow >= 0 ? (rows[nRow]?.querySelectorAll('td, th').length ?? 1) - 1 : 0
+        }
+        if (nRow >= 0 && nRow < rows.length) {
+          const prev = rows[nRow].querySelectorAll('td, th')[nCol]
+          if (prev) {
+            prev.focus()
+            const range = document.createRange()
+            range.selectNodeContents(prev)
+            range.collapse(false) // cursor at end
+            const sel = window.getSelection()
+            sel.removeAllRanges()
+            sel.addRange(range)
+          }
+        }
+        return
+      }
+
       if (e.key === 'Enter') {
         e.preventDefault()
         const rows = Array.from(wrap.querySelectorAll('tr'))
-        const nRow = rowIdx + 1 < rows.length ? rowIdx + 1 : null
-        const dispatched = this._commitCell(cmView, cell, rowIdx, colIdx,
-          nRow !== null ? { rowIdx: nRow, colIdx } : null)
-        if (!dispatched && nRow !== null) {
-          const next = rows[nRow].querySelectorAll('td, th')[colIdx]
-          if (next) { next.focus(); this._selectAll(next) }
+        const cols = rows[rowIdx]?.querySelectorAll('td, th').length ?? 0
+        const isLastCol = colIdx === cols - 1
+        const isLastRow = rowIdx === rows.length - 1
+
+        if (!isLastCol) {
+          // Move to next cell in same row
+          const dispatched = this._commitCell(cmView, cell, rowIdx, colIdx,
+            { rowIdx, colIdx: colIdx + 1 })
+          if (!dispatched) {
+            const next = rows[rowIdx].querySelectorAll('td, th')[colIdx + 1]
+            if (next) { next.focus(); this._selectAll(next) }
+          }
+        } else if (!isLastRow) {
+          // Last cell of row but not last row — move to first cell of next row
+          const dispatched = this._commitCell(cmView, cell, rowIdx, colIdx,
+            { rowIdx: rowIdx + 1, colIdx: 0 })
+          if (!dispatched) {
+            const next = rows[rowIdx + 1].querySelectorAll('td, th')[0]
+            if (next) { next.focus(); this._selectAll(next) }
+          }
+        } else {
+          // Last cell of last row — commit, insert new row, focus its first cell
+          const numCols = this._parseRowRaw(this.rawText.split('\n')[0]).length
+          const newRow = '|' + Array(numCols).fill('    ').join('|') + '|'
+          const lines = this.rawText.split('\n')
+          const newRaw = [...lines, newRow].join('\n')
+          // Store pending focus on the new row (rows.length = new row index after insert)
+          const full = cmView.state.doc.toString()
+          const tIdx = full.indexOf(this.rawText)
+          if (tIdx !== -1) {
+            _tablePendingFocus = { tableFrom: tIdx, rowIdx: rows.length, colIdx: 0 }
+            setTimeout(() => { _tablePendingFocus = null }, 500)
+          }
+          // Commit cell edit (if changed) then insert new row
+          if (cell.textContent.trim() !== (cell._nbRaw ?? '').trim()) {
+            // cell changed — commit first; pendingFocus already set, new row insert piggybacks
+            // We need to do both atomically: commit cell + append row
+            const full2 = cmView.state.doc.toString()
+            const tIdx2 = full2.indexOf(this.rawText)
+            if (tIdx2 !== -1) {
+              const lineIdx = rowIdx === 0 ? 0 : rowIdx + 1
+              const oldLines = this.rawText.split('\n')
+              const line = oldLines[lineIdx]
+              const r = this._cellRange(line, colIdx)
+              if (r) {
+                let lineStart = tIdx2
+                for (let i = 0; i < lineIdx; i++) lineStart += oldLines[i].length + 1
+                const old = line.slice(r[0], r[1])
+                const lead = old.match(/^\s*/)[0], trail = old.match(/\s*$/)[0]
+                const insert = lead + cell.textContent.trim() + trail
+                const patchedLines = [...oldLines]
+                patchedLines[lineIdx] = line.slice(0, r[0]) + insert + line.slice(r[1])
+                const finalRaw = [...patchedLines, newRow].join('\n')
+                cmView.dispatch({ changes: { from: tIdx2, to: tIdx2 + this.rawText.length, insert: finalRaw } })
+              }
+            }
+          } else {
+            this._replaceRaw(cmView, newRaw)
+          }
         }
         return
       }
@@ -3319,6 +2873,25 @@ class FnRefWidget {
   coordsAt() { return null }
 }
 
+// ─── /math zone badge — marks where the inline calculator turns on/off ────────
+class MathZoneWidget {
+  constructor(kind) { this.kind = kind }
+  toDOM() {
+    const el = document.createElement('span')
+    el.className = 'cm-mathzone-badge' + (this.kind === 'end' ? ' cm-mathzone-end' : '')
+    const icon = document.createElement('span')
+    icon.className = 'cm-mathzone-icon'
+    icon.textContent = '∑'
+    const txt = document.createElement('span')
+    txt.textContent = this.kind === 'end' ? 'math off' : 'math on'
+    el.appendChild(icon); el.appendChild(txt)
+    return el
+  }
+  eq(o) { return o instanceof MathZoneWidget && o.kind === this.kind }
+  compare(o) { return this.eq(o) }
+  ignoreEvent() { return false }
+}
+
 // ─── /timer widget (interactive: pause/resume/edit) ───────────────────────────
 class TimerWidget {
   constructor(totalSec, label, rawLine) {
@@ -3396,15 +2969,11 @@ class TimerWidget {
     const entry = { remaining, paused, bgInterval: null }
     _timerPersist.set(this.rawLine, entry)
 
-    if (this.label) {
-      const lbl = document.createElement('div')
-      lbl.className = 'cm-timer-label'
-      lbl.textContent = this.label
-      wrap.appendChild(lbl)
-    }
+    // Vertical left-gutter rail (mirrors the quick-note timer). Multiple /timer
+    // lines each float their own rail on the left and stack down the page.
+    wrap.classList.add('cm-timer-rail')
+    if (this.label) wrap.title = this.label
 
-    const row = document.createElement('div')
-    row.className = 'cm-timer-row'
     const timeText = document.createElement('div')
     timeText.className = 'cm-timer-time'
     timeText.textContent = fmt(remaining)
@@ -3448,18 +3017,22 @@ class TimerWidget {
     resetBtn.className = 'cm-timer-btn'
     resetBtn.textContent = '\u21ba'
 
-    row.appendChild(timeText)
-    row.appendChild(pauseBtn)
-    row.appendChild(resetBtn)
-    wrap.appendChild(row)
-
+    // Vertical track \u2014 fill drains from the top (height shrinks as time elapses).
     const bar = document.createElement('div')
     bar.className = 'cm-timer-bar'
     const fill = document.createElement('div')
     fill.className = 'cm-timer-fill'
-    fill.style.width = `${(remaining / total) * 100}%`
+    fill.style.height = `${(remaining / total) * 100}%`
     bar.appendChild(fill)
+
+    const btnRow = document.createElement('div')
+    btnRow.className = 'cm-timer-railbtns'
+    btnRow.appendChild(pauseBtn)
+    btnRow.appendChild(resetBtn)
+
     wrap.appendChild(bar)
+    wrap.appendChild(timeText)
+    wrap.appendChild(btnRow)
 
     const playTimerSound = () => {
       try {
@@ -3485,14 +3058,14 @@ class TimerWidget {
         clearInterval(ref.interval); ref.interval = null
         timeText.textContent = 'Done!'
         timeText.classList.add('cm-timer-done')
-        fill.style.width = '0%'
+        fill.style.height = '0%'
         pauseBtn.textContent = '\u23f8'
         _timerPersist.delete(this.rawLine)
         playTimerSound()
         return
       }
       timeText.textContent = fmt(remaining)
-      fill.style.width = `${(remaining / total) * 100}%`
+      fill.style.height = `${(remaining / total) * 100}%`
     }
 
     if (!paused) {
@@ -3516,7 +3089,7 @@ class TimerWidget {
       entry.remaining = total; entry.paused = false
       timeText.textContent = fmt(remaining)
       timeText.classList.remove('cm-timer-done')
-      fill.style.width = '100%'
+      fill.style.height = '100%'
       pauseBtn.textContent = '\u23f8'
       if (ref.interval) clearInterval(ref.interval)
       ref.interval = setInterval(tick, 1000)
@@ -3548,7 +3121,7 @@ class TimerWidget {
     }
   }
   ignoreEvent() { return true }
-  get estimatedHeight() { return this.totalSec === 0 ? 48 : 72 }
+  get estimatedHeight() { return this.totalSec === 0 ? 40 : 56 }
   coordsAt() { return null }
 }
 
@@ -3590,57 +3163,46 @@ class PomoWidget {
       } catch { /* */ }
     }
 
-    // Header
-    const hdr = document.createElement('div')
-    hdr.className = 'cm-pomo-hdr'
-    const title = document.createElement('span')
-    title.className = 'cm-pomo-title'
-    title.textContent = 'Pomodoro'
-    const sessionBadge = document.createElement('span')
-    sessionBadge.className = 'cm-pomo-sessions'
-    sessionBadge.textContent = '0 sessions'
-    hdr.appendChild(title)
-    hdr.appendChild(sessionBadge)
-    wrap.appendChild(hdr)
+    // Vertical left-gutter rail (mirrors the /timer rail). Phase shown as a small
+    // tag + fill color; click the tag or skip to advance phase.
+    wrap.classList.add('cm-pomo-rail')
+    const phaseLabels = { work: 'Focus', short: 'Break', long: 'Long' }
 
-    // Phase indicator
-    const phaseRow = document.createElement('div')
-    phaseRow.className = 'cm-pomo-phase-row'
-    const phases = ['work', 'short', 'long']
-    const phaseLabels = { work: 'Focus', short: 'Short Break', long: 'Long Break' }
-    const phaseBtns = {}
-    phases.forEach(p => {
-      const btn = document.createElement('button')
-      btn.className = `cm-pomo-phase-btn${p === phase ? ' active' : ''}`
-      btn.textContent = phaseLabels[p]
-      btn.onclick = () => {
-        phase = p
-        remaining = p === 'work' ? WORK : p === 'short' ? SHORT : LONG
-        paused = true
-        if (ref.interval) { clearInterval(ref.interval); ref.interval = null }
-        update()
-      }
-      phaseBtns[p] = btn
-      phaseRow.appendChild(btn)
-    })
-    wrap.appendChild(phaseRow)
+    // Phase tag \u2014 click cycles work \u2192 short \u2192 long \u2192 work
+    const phaseTag = document.createElement('button')
+    phaseTag.className = 'cm-pomo-tag'
+    phaseTag.onclick = () => {
+      phase = phase === 'work' ? 'short' : phase === 'short' ? 'long' : 'work'
+      remaining = getTotal()
+      paused = true
+      if (ref.interval) { clearInterval(ref.interval); ref.interval = null }
+      update()
+    }
+    wrap.appendChild(phaseTag)
 
-    // Time display
+    // Vertical track + fill (drains from the top)
+    const bar = document.createElement('div')
+    bar.className = 'cm-pomo-bar'
+    const fill = document.createElement('div')
+    fill.className = 'cm-pomo-fill'
+    fill.style.height = '100%'
+    bar.appendChild(fill)
+    wrap.appendChild(bar)
+
+    // Time display (vertical)
     const timeText = document.createElement('div')
     timeText.className = 'cm-pomo-time'
     timeText.textContent = fmt(remaining)
     wrap.appendChild(timeText)
 
-    // Progress bar
-    const bar = document.createElement('div')
-    bar.className = 'cm-pomo-bar'
-    const fill = document.createElement('div')
-    fill.className = 'cm-pomo-fill'
-    fill.style.width = '100%'
-    bar.appendChild(fill)
-    wrap.appendChild(bar)
+    // Session count
+    const sessionBadge = document.createElement('span')
+    sessionBadge.className = 'cm-pomo-sessions'
+    sessionBadge.textContent = '0'
+    sessionBadge.title = 'Completed focus sessions'
+    wrap.appendChild(sessionBadge)
 
-    // Controls
+    // Controls (compact, revealed on hover)
     const controls = document.createElement('div')
     controls.className = 'cm-pomo-controls'
     const playBtn = document.createElement('button')
@@ -3663,13 +3225,12 @@ class PomoWidget {
     const update = () => {
       timeText.textContent = fmt(remaining)
       const total = getTotal()
-      fill.style.width = `${(remaining / total) * 100}%`
+      fill.style.height = `${(remaining / total) * 100}%`
       fill.className = `cm-pomo-fill ${phase === 'work' ? 'cm-pomo-fill-work' : 'cm-pomo-fill-break'}`
       playBtn.textContent = paused ? '\u25b6' : '\u23f8'
-      sessionBadge.textContent = `${sessions} session${sessions !== 1 ? 's' : ''}`
-      phases.forEach(p => {
-        phaseBtns[p].className = `cm-pomo-phase-btn${p === phase ? ' active' : ''}`
-      })
+      sessionBadge.textContent = `${sessions}`
+      phaseTag.textContent = phaseLabels[phase]
+      phaseTag.className = `cm-pomo-tag ${phase === 'work' ? 'cm-pomo-tag-work' : 'cm-pomo-tag-break'}`
     }
 
     const nextPhase = () => {
@@ -3926,7 +3487,7 @@ class WebLinkWidget {
     let attempts = 0
 
     const getHeaderBottom = () => {
-      const hdr = document.querySelector('.nb-header') || document.querySelector('.gnos-header')
+      const hdr = document.querySelector('.nb-header') || document.querySelector('.gnos-header') || document.querySelector('.gnos-titlebar')
       return hdr ? Math.ceil(hdr.getBoundingClientRect().bottom) : 0
     }
 
@@ -4072,6 +3633,239 @@ function makeLinkCommands(cm, onPickRef) {
   }]))
 }
 
+// ─── /color, /font, /spacing, /size — keymap only ────────────────────────────
+// Detection + coord lookup lives in the EditorView.updateListener (see below).
+// This function only provides the Prec.high keymap so Enter/Tab/↑↓ work.
+function makeInlineCmdPlugin(cm, navRef) {
+  const { Prec } = cm.state
+  const { keymap: keymapFacet } = cm.view
+
+  const CMD_RE = /^\s*\/(color|font|spacing|size|align|columns|bold|italic|bi|strike|highlight|code|sup|sub)(?::([^\s]*))?$/
+  const shared = { selectedIdx: 0, type: null }
+
+  function detect(state) {
+    const cur = state.selection.main.head
+    const line = state.doc.lineAt(cur)
+    const m = line.text.match(CMD_RE)
+    if (!m) return null
+    return { type: m[1], hint: (m[2] || '').toLowerCase(), lineFrom: line.from, lineTo: line.to }
+  }
+
+  return Prec.high(keymapFacet.of([
+    {
+      key: 'Escape',
+      run: _view => {
+        const result = detect(_view.state)
+        if (!result) return false
+        _inlineCmdSelectedIdx.current = 0
+        shared.selectedIdx = 0; shared.type = null
+        navRef?.current?.()
+        return false  // let Escape propagate
+      },
+    },
+    {
+      key: 'ArrowDown',
+      run: _view => {
+        const result = detect(_view.state)
+        if (!result) return false
+        const count = _getOptionCount(result.type)
+        if (count > 0) {
+          const newIdx = (_inlineCmdSelectedIdx.current + 1) % count
+          _inlineCmdSelectedIdx.current = newIdx
+          navRef?.current?.()
+        }
+        return true  // consume — prevents cursor moving off the command line
+      },
+    },
+    {
+      key: 'ArrowUp',
+      run: _view => {
+        const result = detect(_view.state)
+        if (!result) return false
+        const count = _getOptionCount(result.type)
+        if (count > 0) {
+          const newIdx = (_inlineCmdSelectedIdx.current - 1 + count) % count
+          _inlineCmdSelectedIdx.current = newIdx
+          navRef?.current?.()
+        }
+        return true  // consume — prevents cursor moving off the command line
+      },
+    },
+    {
+      key: 'Tab',
+      run: view => {
+        const result = detect(view.state)
+        if (!result) return false
+        _confirmInlineCmd(view, result.type, _inlineCmdSelectedIdx.current, result.hint, result.lineFrom, result.lineTo)
+        shared.selectedIdx = 0; shared.type = null; _inlineCmdSelectedIdx.current = 0
+        return true
+      },
+    },
+    {
+      key: 'Enter',
+      run: view => {
+        const result = detect(view.state)
+        if (!result) return false
+        _confirmInlineCmd(view, result.type, _inlineCmdSelectedIdx.current, result.hint, result.lineFrom, result.lineTo)
+        shared.selectedIdx = 0; shared.type = null; _inlineCmdSelectedIdx.current = 0
+        return true
+      },
+    },
+  ]))
+}
+
+// Shared mutable ref for selectedIdx — written by the keymap, read by React render
+const _inlineCmdSelectedIdx = { current: 0 }
+
+const INLINE_COLORS = [
+  { name: 'Red',     value: '#e53935' },
+  { name: 'Orange',  value: '#f4511e' },
+  { name: 'Amber',   value: '#f59f00' },
+  { name: 'Yellow',  value: '#e6c20a' },
+  { name: 'Green',   value: '#2e7d32' },
+  { name: 'Teal',    value: '#00796b' },
+  { name: 'Cyan',    value: '#0097a7' },
+  { name: 'Blue',    value: '#1565c0' },
+  { name: 'Indigo',  value: '#3949ab' },
+  { name: 'Violet',  value: '#6a1b9a' },
+  { name: 'Purple',  value: '#8e24aa' },
+  { name: 'Pink',    value: '#d81b60' },
+  { name: 'Rose',    value: '#c2185b' },
+  { name: 'Brown',   value: '#6d4c41' },
+  { name: 'Slate',   value: '#546e7a' },
+  { name: 'Gray',    value: '#757575' },
+  { name: 'Silver',  value: '#9e9e9e' },
+  { name: 'Muted',   value: 'var(--textDim)' },
+  { name: 'Accent',  value: 'var(--accent)' },
+  { name: 'Default', value: 'inherit' },
+]
+
+const INLINE_FONTS = [
+  { name: 'Default',       value: 'var(--nb-ff)' },
+  { name: 'Georgia',       value: 'Georgia, serif' },
+  { name: 'Palatino',      value: '"Palatino Linotype", Palatino, serif' },
+  { name: 'Garamond',      value: '"EB Garamond", Garamond, serif' },
+  { name: 'Times',         value: '"Times New Roman", Times, serif' },
+  { name: 'Arial',         value: 'Arial, sans-serif' },
+  { name: 'Helvetica',     value: 'Helvetica, Arial, sans-serif' },
+  { name: 'Verdana',       value: 'Verdana, Geneva, sans-serif' },
+  { name: 'Trebuchet',     value: '"Trebuchet MS", sans-serif' },
+  { name: 'Optima',        value: '"Optima", "Segoe UI", sans-serif' },
+  { name: 'Gill Sans',     value: '"Gill Sans", "Gill Sans MT", sans-serif' },
+  { name: 'Futura',        value: '"Futura", "Century Gothic", sans-serif' },
+  { name: 'Courier',       value: '"Courier New", Courier, monospace' },
+  { name: 'Menlo',         value: 'Menlo, Monaco, Consolas, monospace' },
+  { name: 'SF Mono',       value: '"SF Mono", "Fira Code", monospace' },
+]
+
+const INLINE_SPACINGS = [
+  { name: 'Tight',    value: '1.3', preview: '1.3×' },
+  { name: 'Compact',  value: '1.5', preview: '1.5×' },
+  { name: 'Normal',   value: '1.8', preview: '1.8×' },
+  { name: 'Relaxed',  value: '2.2', preview: '2.2×' },
+  { name: 'Double',   value: '2.8', preview: '2.8×' },
+]
+
+const INLINE_SIZES = [
+  { name: 'XS',     value: '0.72em', preview: 'Aa' },
+  { name: 'Small',  value: '0.85em', preview: 'Aa' },
+  { name: 'Normal', value: '1em',    preview: 'Aa' },
+  { name: 'Large',  value: '1.2em',  preview: 'Aa' },
+  { name: 'XL',     value: '1.5em',  preview: 'Aa' },
+  { name: 'XXL',    value: '2em',    preview: 'Aa' },
+  { name: 'Huge',   value: '2.8em',  preview: 'Aa' },
+]
+
+const INLINE_ALIGNS = [
+  { name: 'Left',    value: 'left'    },
+  { name: 'Center',  value: 'center'  },
+  { name: 'Right',   value: 'right'   },
+  { name: 'Justify', value: 'justify' },
+]
+
+const INLINE_COLUMNS = [
+  { name: '1 Column',  value: '1', preview: '1×' },
+  { name: '2 Columns', value: '2', preview: '2×' },
+  { name: '3 Columns', value: '3', preview: '3×' },
+  { name: '4 Columns', value: '4', preview: '4×' },
+]
+
+function _getOptionCount(type) {
+  if (type === 'color') return INLINE_COLORS.length
+  if (type === 'font') return INLINE_FONTS.length
+  if (type === 'spacing') return INLINE_SPACINGS.length
+  if (type === 'size') return INLINE_SIZES.length
+  if (type === 'align') return INLINE_ALIGNS.length
+  if (type === 'columns') return INLINE_COLUMNS.length
+  return 0
+}
+
+function _confirmInlineCmd(view, type, selectedIdx, hint, lineFrom, lineTo) {
+  let marker = ''
+  if (type === 'color') {
+    // If hint matches a named color, use it; otherwise use selected
+    const byName = INLINE_COLORS.find(c => c.name.toLowerCase() === hint)
+    const opt = byName || INLINE_COLORS[Math.min(selectedIdx, INLINE_COLORS.length - 1)]
+    if (opt) marker = `{color:${opt.value}}`
+  } else if (type === 'font') {
+    const byName = hint && INLINE_FONTS.find(f => f.name.toLowerCase().startsWith(hint))
+    const opt = byName || INLINE_FONTS[Math.min(selectedIdx, INLINE_FONTS.length - 1)]
+    if (opt) marker = `{font:${opt.value}}`
+  } else if (type === 'spacing') {
+    const byName = hint && INLINE_SPACINGS.find(s => s.name.toLowerCase().startsWith(hint))
+    const opt = byName || INLINE_SPACINGS[Math.min(selectedIdx, INLINE_SPACINGS.length - 1)]
+    if (opt) marker = `{spacing:${opt.value}}`
+  } else if (type === 'size') {
+    const byName = hint && INLINE_SIZES.find(s => s.name.toLowerCase().startsWith(hint))
+    const opt = byName || INLINE_SIZES[Math.min(selectedIdx, INLINE_SIZES.length - 1)]
+    if (opt) marker = `{size:${opt.value}}`
+  } else if (type === 'align') {
+    const byName = hint && INLINE_ALIGNS.find(a => a.name.toLowerCase().startsWith(hint) || a.value.startsWith(hint))
+    const opt = byName || INLINE_ALIGNS[Math.min(selectedIdx, INLINE_ALIGNS.length - 1)]
+    if (opt) marker = `{align:${opt.value}}`
+  } else if (type === 'columns') {
+    const byName = hint && INLINE_COLUMNS.find(c => c.value === hint || c.name.toLowerCase().startsWith(hint))
+    const opt = byName || INLINE_COLUMNS[Math.min(selectedIdx, INLINE_COLUMNS.length - 1)]
+    if (opt) marker = `{columns:${opt.value}}`
+  } else if (['bold','italic','bi','strike','highlight','code','sup','sub'].includes(type)) {
+    marker = `{${type}}`
+  }
+  if (!marker) return
+  view.dispatch({
+    changes: { from: lineFrom, to: lineTo, insert: marker },
+    selection: { anchor: lineFrom + marker.length },
+  })
+}
+
+// ─── Auto-close {//} when user types // after an open inline-cmd span ────────
+function makeInlineCmdCloseHandler(cm) {
+  return cm.view.EditorView.inputHandler.of((view, from, to, text) => {
+    if (text !== '/') return false
+    const { state } = view
+    const docText = state.doc.toString()
+    const charBefore = from > 0 ? docText[from - 1] : ''
+    // Only trigger on second slash (user just typed the second /)
+    if (charBefore !== '/') return false
+    // Don't convert if preceded by : (e.g., https://)
+    if (from >= 2 && docText[from - 2] === ':') return false
+    // Check if there's an unclosed {color:...}, {font:...}, or {spacing:...} before cursor
+    const textBefore = docText.slice(0, from - 1) // text before the first slash
+    const openRe = /\{(color|font|spacing|size|align|columns|bold|italic|bi|strike|highlight|code|sup|sub)(?::[^}]+)?\}/g
+    const closeRe = /\{\/\/\}/g
+    let openCount = 0, closeCount = 0
+    let m
+    while ((m = openRe.exec(textBefore)) !== null) openCount++
+    while ((m = closeRe.exec(textBefore)) !== null) closeCount++
+    if (openCount <= closeCount) return false // no unclosed span
+    // Replace the first / and insert {//}
+    view.dispatch({
+      changes: { from: from - 1, to, insert: '{//}' },
+      selection: { anchor: from - 1 + 4 },
+    })
+    return true
+  })
+}
+
 // ─── Live preview plugin ──────────────────────────────────────────────────────
 function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [], flashcardDecks = [], notebookDir = null, isPreview = false) {
   const { ViewPlugin, Decoration, WidgetType } = cm.view
@@ -4079,7 +3873,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
   const { syntaxTree } = cm.language
 
   // Patch widget classes to extend WidgetType so CM6 properly handles them
-  for (const Cls of [HRWidget, CheckboxWidget, ImgWidget, ListMarkerWidget, MathWidget, WikiWidget, LinkWidget, TableWidget, HabitsWidget, TaskBlockWidget, SupWidget, SubWidget, TimerWidget, CalendarWidget, TimeRefWidget, FnRefWidget, DueDateWidget, TagWidget, QuestionWidget, FileLinkWidget, WebLinkWidget, VideoLinkWidget]) {
+  for (const Cls of [HRWidget, ColumnsWidget, CheckboxWidget, ImgWidget, ListMarkerWidget, MathWidget, WikiWidget, LinkWidget, TableWidget, HabitsWidget, TaskBlockWidget, SupWidget, SubWidget, TimerWidget, MathZoneWidget, CalendarWidget, TimeRefWidget, FnRefWidget, DueDateWidget, TagWidget, QuestionWidget, FileLinkWidget, WebLinkWidget, VideoLinkWidget]) {
     if (!(Cls.prototype instanceof WidgetType)) {
       Object.setPrototypeOf(Cls.prototype, WidgetType.prototype)
     }
@@ -4115,8 +3909,8 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
     const tableText = doc.sliceString(from, to)
     const tableLines = tableText.split('\n').filter(l => l.trim())
     if (tableLines.length < 2) return
-    // Must have a separator row (|---|---|)
-    if (!/^[\s|:-]+$/.test(tableLines[1])) return
+    // Must have a separator row (|---|---| or |:--|--:|)
+    if (!/^\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?$/.test(tableLines[1].trim())) return
     const parseRow = row => {
       const trimmed = row.trim()
       const inner = trimmed.replace(/^(?<!\\)\|/, '').replace(/(?<!\\)\|$/, '')
@@ -4149,10 +3943,12 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
   function _buildTableDecos(state) {
     const builder = new RangeSetBuilder()
     const doc  = state.doc
-    const full = doc.toString()
+    const full = docString(doc)
+    if (!full.includes('|')) return builder.finish() // no tables — skip the regex scan
     const decos = []
-    // Match header row \n separator row \n optional body rows
-    const tableRe = /^(\|?.+\|.+)\n(\|?[\s:|-]+\|[\s:|-]*)((?:\n\|?.+\|.+)*)/gm
+    // Match header row \n separator row \n optional body rows.
+    // Body rows: \|?[^\n]+ (anything with at least one char — no trailing-pipe requirement)
+    const tableRe = /^(\|[^\n]+\|?)\n(\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?)((?:\n\|[^\n]+)*)/gm
     let tm
     while ((tm = tableRe.exec(full)) !== null) {
       const tFrom   = tm.index
@@ -4196,7 +3992,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
     const cur = state.selection.main.head
     const doc = state.doc
     const inCur = isPreview ? () => false : (f, t) => cur >= f && cur <= t
-    const fullDoc = doc.toString()
+    const fullDoc = docString(doc)
 
     const inlines  = []
     const lineDecs = []
@@ -4726,6 +4522,18 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
       }
     } catch { /**/ }
 
+    // ── /math zone command badges ────────────────────────────────────────
+    try {
+      const mathCmdRe = /^\/(?:math(?:\s+end)?|endmath)\s*$/gim
+      let mzm
+      while ((mzm = mathCmdRe.exec(fullDoc)) !== null) {
+        const mzLine = doc.lineAt(mzm.index)
+        if (inCur(mzLine.from, mzLine.to)) continue
+        const kind = /end/i.test(mzm[0]) ? 'end' : 'start'
+        inlines.push({ from: mzLine.from, to: mzLine.to, deco: Decoration.replace({ widget: new MathZoneWidget(kind) }) })
+      }
+    } catch { /**/ }
+
     // ── /pomo block widget ──────────────────────────────────────────────
     try {
       const pomoRe = /^\/pomo$/gm
@@ -4929,8 +4737,162 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
       }
     } catch { /**/ }
 
+    // ── Inline CMD spans: {color:X}…{//}, {bold}…{//}, {align:X}…{//}, etc. ──
+    try {
+      // Returns CSS inline-style string for mark decorations.
+      // Returns null for align/columns (handled as line decorations separately).
+      function inlineStyleAttr(type, value) {
+        if (type === 'color')     return `color:${value}`
+        if (type === 'font')      return `font-family:${value}`
+        if (type === 'spacing')   return `line-height:${value}`
+        if (type === 'size')      return `font-size:${value}`
+        if (type === 'bold')      return 'font-weight:700'
+        if (type === 'italic')    return 'font-style:italic'
+        if (type === 'bi')        return 'font-weight:700;font-style:italic'
+        if (type === 'strike')    return 'text-decoration:line-through'
+        if (type === 'highlight') return 'background:#ffe06699;border-radius:3px;padding:0 2px'
+        if (type === 'code')      return 'font-family:SF Mono,Menlo,Consolas,monospace;background:var(--nb-code-bg,var(--surfaceAlt));border-radius:4px;padding:1px 4px;font-size:.87em;color:var(--nb-code-color,inherit)'
+        if (type === 'sup')       return 'font-size:.75em;vertical-align:super'
+        if (type === 'sub')       return 'font-size:.75em;vertical-align:sub'
+        // align + columns → null (use line decorations)
+        return null
+      }
+
+      // Returns line-level style string for align; null for others.
+      // columns handled as a block widget in columnsDecoField (not per-line).
+      function lineStyleAttr(type, value) {
+        if (type === 'align') return `text-align:${value}`
+        return null
+      }
+
+      // Enumerate doc lines overlapping [startPos, endPos) and push line decos
+      function pushLineDecos(startPos, endPos, style) {
+        let lp = doc.lineAt(Math.max(0, startPos)).from
+        while (lp < endPos && lp < doc.length) {
+          lineDecs.push({ pos: lp, style })
+          const ln = doc.lineAt(lp)
+          if (ln.to >= endPos) break
+          lp = ln.to + 1
+        }
+      }
+
+      // Collect all {//} positions upfront so Pass 2 can use them as boundaries
+      const allClosePositions = []
+      const consumedCloseSet  = new Set()
+      const closeRe = /\{\/\/\}/g
+      let closeMatch
+      while ((closeMatch = closeRe.exec(fullDoc)) !== null) allClosePositions.push(closeMatch.index)
+
+      // All supported types — value is optional for bold/italic/bi/strike/highlight/code/sup/sub
+      const ALL_TYPES = 'color|font|spacing|size|align|columns|bold|italic|bi|strike|highlight|code|sup|sub'
+
+      // ── Pass 1: closed spans — full {type[:val]}...{//} pairs ───────────
+      const spanRe = new RegExp(`\\{(${ALL_TYPES})(?::([^}]+))?\\}([\\s\\S]*?)\\{\\/\\/\\}`, 'g')
+      const closedOpenStarts = new Set()
+      let sm
+      while ((sm = spanRe.exec(fullDoc)) !== null) {
+        const type     = sm[1]
+        const rawVal   = sm[2] ?? null   // null for value-less types like {bold}
+        const value    = rawVal != null ? rawVal.trim() : ''
+        const spanStart = sm.index
+        const spanEnd  = sm.index + sm[0].length
+        const openLen  = rawVal != null
+          ? 1 + type.length + 1 + rawVal.length + 1  // {type:rawVal}
+          : 1 + type.length + 1                       // {type}
+        const openEnd    = spanStart + openLen
+        const closeStart = spanEnd - 4  // {//} is 4 chars
+
+        if (openEnd > spanEnd || closeStart < openEnd) continue
+        closedOpenStarts.add(spanStart)
+        consumedCloseSet.add(closeStart)
+
+        // Opening marker — hide unless cursor is inside it
+        if (inCur(spanStart, openEnd)) {
+          inlines.push({ from: spanStart, to: openEnd, deco: Decoration.mark({ class: 'cm-lv-p' }) })
+        } else {
+          inlines.push({ from: spanStart, to: openEnd, deco: Decoration.mark({ class: 'cm-lv-hidden' }) })
+        }
+
+        // Content — apply inline style or line decoration
+        if (openEnd < closeStart) {
+          const ls = lineStyleAttr(type, value)
+          if (ls) {
+            pushLineDecos(openEnd, closeStart, ls)
+          } else {
+            const s = inlineStyleAttr(type, value)
+            if (s) inlines.push({ from: openEnd, to: closeStart, deco: Decoration.mark({ attributes: { style: s } }) })
+          }
+        }
+
+        // Closing marker — hide unless cursor is inside it
+        if (inCur(closeStart, spanEnd)) {
+          inlines.push({ from: closeStart, to: spanEnd, deco: Decoration.mark({ class: 'cm-lv-p' }) })
+        } else {
+          inlines.push({ from: closeStart, to: spanEnd, deco: Decoration.mark({ class: 'cm-lv-hidden' }) })
+        }
+      }
+
+      // ── Pass 2: open (unclosed) spans — styled to next {//} or doc end ───
+      const openTagRe = new RegExp(`\\{(${ALL_TYPES})(?::([^}]+))?\\}`, 'g')
+      let ot
+      while ((ot = openTagRe.exec(fullDoc)) !== null) {
+        const oStart = ot.index
+        const oEnd   = ot.index + ot[0].length
+        const type   = ot[1]
+        const rawVal = ot[2] ?? null
+        const value  = rawVal != null ? rawVal.trim() : ''
+
+        // Skip tags already matched by Pass 1
+        if (closedOpenStarts.has(oStart)) continue
+
+        // Hide/show the opening marker based on cursor position
+        if (inCur(oStart, oEnd)) {
+          inlines.push({ from: oStart, to: oEnd, deco: Decoration.mark({ class: 'cm-lv-p' }) })
+        } else {
+          inlines.push({ from: oStart, to: oEnd, deco: Decoration.mark({ class: 'cm-lv-hidden' }) })
+        }
+
+        // Find nearest unconsumed {//} after this opener
+        const nextClose = allClosePositions.find(p => p >= oEnd && !consumedCloseSet.has(p))
+        const styleEnd  = nextClose != null ? nextClose : doc.length
+
+        // Apply style from end of opener to boundary
+        if (oEnd < styleEnd) {
+          const ls = lineStyleAttr(type, value)
+          if (ls) {
+            pushLineDecos(oEnd, styleEnd, ls)
+          } else {
+            const s = inlineStyleAttr(type, value)
+            if (s) inlines.push({ from: oEnd, to: styleEnd, deco: Decoration.mark({ attributes: { style: s } }) })
+          }
+        }
+
+        // Hide the boundary {//} if one was found
+        if (nextClose != null) {
+          consumedCloseSet.add(nextClose)
+          const closeEnd = nextClose + 4
+          if (inCur(nextClose, closeEnd)) {
+            inlines.push({ from: nextClose, to: closeEnd, deco: Decoration.mark({ class: 'cm-lv-p' }) })
+          } else {
+            inlines.push({ from: nextClose, to: closeEnd, deco: Decoration.mark({ class: 'cm-lv-hidden' }) })
+          }
+        }
+      }
+
+      // Hide any {//} markers not consumed by either pass
+      for (const pos of allClosePositions) {
+        if (consumedCloseSet.has(pos)) continue
+        const closeEnd = pos + 4
+        if (inCur(pos, closeEnd)) {
+          inlines.push({ from: pos, to: closeEnd, deco: Decoration.mark({ class: 'cm-lv-p' }) })
+        } else {
+          inlines.push({ from: pos, to: closeEnd, deco: Decoration.mark({ class: 'cm-lv-hidden' }) })
+        }
+      }
+    } catch { /**/ }
+
     // ── Sort and build ────────────────────────────────────────────────────
-    inlines.sort((a, b) => a.from !== b.from ? a.from - b.from : b.to - a.to)
+    inlines.sort((a, b) => a.from !== b.from ? a.from - b.from : a.to - b.to)
 
     // Remove mark decorations that overlap with replace-widget ranges.
     // Overlapping mark+replace in a CM6 RangeSet causes errors that silently drop widgets.
@@ -4959,10 +4921,14 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
     lineDecs.sort((a, b) => a.pos - b.pos)
     const lb = new RangeSetBuilder()
     const seen = new Set()
-    for (const { pos, cls } of lineDecs) {
-      const k = `${pos}:${cls}`
+    for (const { pos, cls, style } of lineDecs) {
+      const k = `${pos}:${cls||''}:${style||''}`
       if (seen.has(k)) continue; seen.add(k)
-      try { lb.add(pos, pos, Decoration.line({ class: cls })) } catch { /**/ }
+      const decoOpts = {}
+      if (cls) decoOpts.class = cls
+      if (style) decoOpts.attributes = { style }
+      if (!cls && !style) continue
+      try { lb.add(pos, pos, Decoration.line(decoOpts)) } catch { /**/ }
     }
 
     let spans, lines
@@ -4973,10 +4939,10 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
 
   // ── /task block decorations live in a StateField (multi-line replace forbidden in ViewPlugin) ──
   const taskDecoField = StateField.define({
-    create(state) { return _buildTaskDecos(state.doc.toString(), Decoration, RangeSetBuilder) },
+    create(state) { return _buildTaskDecos(docString(state.doc), Decoration, RangeSetBuilder) },
     update(decos, tr) {
       if (!tr.docChanged) return decos
-      return _buildTaskDecos(tr.newDoc.toString(), Decoration, RangeSetBuilder)
+      return _buildTaskDecos(docString(tr.newDoc), Decoration, RangeSetBuilder)
     },
     provide: f => cm.view.EditorView.decorations.from(f),
   })
@@ -4991,7 +4957,17 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
     provide: f => cm.view.EditorView.decorations.from(f),
   })
 
-  return [taskDecoField, tableDecoField, ViewPlugin.fromClass(
+  // ── {columns:N}…{//} block widget — replaces per-line column-count approach ──
+  const columnsDecoField = StateField.define({
+    create(state) { return _buildColumnsDecos(state, Decoration, RangeSetBuilder, isPreview) },
+    update(decos, tr) {
+      if (!tr.docChanged && !tr.selectionSet) return decos
+      return _buildColumnsDecos(tr.state, Decoration, RangeSetBuilder, isPreview)
+    },
+    provide: f => cm.view.EditorView.decorations.from(f),
+  })
+
+  return [taskDecoField, tableDecoField, columnsDecoField, ViewPlugin.fromClass(
     class {
       constructor(view) {
         try { const r = build(view); this.decorations = r.spans; this.lineDecos = r.lines }
@@ -5020,6 +4996,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
 function _buildTaskDecos(fullDoc, Decoration, RangeSetBuilder) {
   const builder = new RangeSetBuilder()
   try {
+    if (!fullDoc.includes('/task')) return builder.finish() // no boards — skip line scan
     const lines = fullDoc.split('\n')
     const lineStarts = []
     let pos = 0
@@ -5048,6 +5025,30 @@ function _buildTaskDecos(fullDoc, Decoration, RangeSetBuilder) {
     decos.sort((a, b) => a.from - b.from)
     for (const { from, to, widget } of decos) {
       builder.add(from, to, Decoration.replace({ widget }))
+    }
+  } catch { /**/ }
+  return builder.finish()
+}
+
+// ─── {columns:N}…{//} block decoration builder ───────────────────────────────
+function _buildColumnsDecos(state, Decoration, RangeSetBuilder, isPreview) {
+  const builder = new RangeSetBuilder()
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  try {
+    const full = docString(state.doc)
+    if (!full.includes('{columns:')) return builder.finish() // no column blocks
+    const cur  = state.selection.main.head
+    const re   = /\{columns:(\d+)\}([\s\S]*?)\{\/\/\}/g
+    let m
+    while ((m = re.exec(full)) !== null) {
+      const n        = Math.min(Math.max(parseInt(m[1]) || 2, 1), 6)
+      const blockFrom = state.doc.lineAt(m.index).from
+      const blockTo   = state.doc.lineAt(m.index + m[0].length).to
+      if (!isPreview && cur >= blockFrom && cur <= blockTo) continue
+      const innerText = m[2].trim()
+      const paras = innerText.split(/\n\n+/)
+      const innerHtml = paras.map(p => `<p style="margin:0 0 0.8em 0">${esc(p.replace(/\n/g,'<br>'))}</p>`).join('')
+      try { builder.add(blockFrom, blockTo, Decoration.replace({ widget: new ColumnsWidget(n, innerHtml, m[0]), block: true })) } catch { /**/ }
     }
   } catch { /**/ }
   return builder.finish()
@@ -5416,10 +5417,14 @@ function makeSourcePlugin(cm) {
     lineDecs.sort((a, b) => a.pos - b.pos)
     const lb = new RangeSetBuilder()
     const seen = new Set()
-    for (const { pos, cls } of lineDecs) {
-      const k = `${pos}:${cls}`
+    for (const { pos, cls, style } of lineDecs) {
+      const k = `${pos}:${cls||''}:${style||''}`
       if (seen.has(k)) continue; seen.add(k)
-      try { lb.add(pos, pos, Decoration.line({ class: cls })) } catch { /**/ }
+      const decoOpts = {}
+      if (cls) decoOpts.class = cls
+      if (style) decoOpts.attributes = { style }
+      if (!cls && !style) continue
+      try { lb.add(pos, pos, Decoration.line(decoOpts)) } catch { /**/ }
     }
 
     return { spans: sb.finish(), lines: lb.finish() }
@@ -5464,15 +5469,7 @@ const IconPrev = () => (
     <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.4"/>
   </svg>
 )
-const IconLive = () => (
-  <svg width="15" height="15" viewBox="0 0 32 32" fill="none">
-    <path d="M26 3C22 5 14 10 10 18C8 22 7 25 6.5 28" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" />
-    <path d="M26 3C24 8 18 15 10 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" opacity="0.6" />
-    <path d="M26 3C25 6 22 10 16 14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" opacity="0.45" />
-    <path d="M6.5 28L9 23" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" />
-    <path d="M3 30h26" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" opacity="0.55" />
-  </svg>
-)
+const IconLive = () => <IconQuill size={15} />
 const MODE_META = {
   live:    { icon: <IconLive />, label: 'Live',    title: 'Live preview' },
   source:  { icon: <IconSrc />,  label: 'Source',  title: 'Source mode' },
@@ -5506,7 +5503,7 @@ function ViewModeBtn({ viewMode, setViewMode }) {
 
   return (
     <div style={{ position:'relative', flexShrink:0 }} ref={wrapRef}>
-      <button style={{ width:30, height:30, background:'none', border:'1px solid var(--border)', borderRadius:6, color:'var(--textDim)', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', transition:'background .12s,color .12s' }}
+      <button className="gnos-settings-btn"
         title={MODE_META[viewMode].title}
         onMouseDown={() => { didLong.current=false; holdTimer.current=setTimeout(()=>{ didLong.current=true; setDropOpen(d=>!d) },300) }}
         onMouseUp={() => clearTimeout(holdTimer.current)}
@@ -5533,12 +5530,102 @@ function ViewModeBtn({ viewMode, setViewMode }) {
   )
 }
 
+function NbShareMenu({ noteTitle, notebookTitle, contentRef, previewHtml }) {
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef(null)
+  useEffect(() => {
+    if (!open) return
+    const h = e => { if (!wrapRef.current?.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [open])
+
+  const title = noteTitle || notebookTitle || 'notebook'
+  const safeName = title.replace(/[/\\?%*:|"<>]/g, '-')
+
+  async function shareMarkdown() {
+    setOpen(false)
+    const text = contentRef.current || ''
+    const filename = safeName + '.md'
+    if (navigator.share) {
+      try {
+        const file = new File([text], filename, { type: 'text/markdown' })
+        await navigator.share({ files: [file], title })
+        return
+      } catch (e) { if (e.name === 'AbortError') return }
+    }
+    const blob = new Blob([text], { type: 'text/markdown' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = filename; a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
+  function exportPdf() {
+    setOpen(false)
+    const html = previewHtml || ''
+    const w = window.open('', '_blank')
+    if (!w) return
+    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title><style>
+      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; color: #111; line-height: 1.6; font-size: 15px; }
+      h1,h2,h3,h4,h5,h6 { margin: 1.5em 0 0.5em; font-weight: 700; }
+      h1 { font-size: 2em; } h2 { font-size: 1.5em; } h3 { font-size: 1.25em; }
+      p { margin: 0.75em 0; }
+      pre { background: #f5f5f5; padding: 12px 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
+      code { background: #f0f0f0; padding: 2px 5px; border-radius: 4px; font-size: 0.9em; }
+      blockquote { border-left: 3px solid #ccc; margin: 0; padding-left: 16px; color: #555; }
+      table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+      th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+      th { background: #f5f5f5; font-weight: 600; }
+      img { max-width: 100%; }
+      hr { border: none; border-top: 1px solid #ddd; margin: 2em 0; }
+      @media print { body { margin: 0; max-width: none; } }
+    </style></head><body>${html}</body></html>`)
+    w.document.close()
+    w.focus()
+    setTimeout(() => { w.print() }, 400)
+  }
+
+  const SHARE_ICON = <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+    <path d="M8 11V3M5 6l3-3 3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+    <path d="M3 11v1a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+  </svg>
+
+  return (
+    <div style={{ position:'relative', flexShrink:0 }} ref={wrapRef}>
+      <button
+        className="gnos-settings-btn"
+        title="Share / Export"
+        onClick={() => setOpen(o => !o)}>
+        {SHARE_ICON}
+      </button>
+      {open && (
+        <div style={{ position:'absolute', top:'calc(100% + 6px)', right:0, background:'var(--surface)', border:'1px solid var(--border)', borderRadius:10, overflow:'hidden', boxShadow:'0 12px 40px rgba(0,0,0,.45)', minWidth:160, zIndex:9300 }}>
+          {[
+            { label: 'Share / Export Markdown', action: shareMarkdown, icon: <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M8 11V3M5 6l3-3 3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M3 11v1a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> },
+            { label: 'Export as PDF', action: exportPdf, icon: <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="10" height="13" rx="1" stroke="currentColor" strokeWidth="1.4"/><path d="M5 5h6M5 8h6M5 11h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><path d="M10 1v4h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg> },
+          ].map(({ label, action, icon }) => (
+            <button key={label} onMouseDown={e => { e.preventDefault(); action() }}
+              style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 14px', border:'none', background:'none', width:'100%', cursor:'pointer', textAlign:'left', fontSize:13, fontFamily:'inherit', color:'var(--text)', transition:'background .08s' }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--hover)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'none'}
+            >
+              {icon}
+              <span style={{ flex:1, fontWeight:500 }}>{label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // NotebookView
 // ─────────────────────────────────────────────────────────────────────────────
 export default function NotebookView() {
   const themeKey        = useAppStore(s => s.themeKey ?? 'dark')
   const paneTabId      = useContext(PaneContext)
+  const isActive       = useIsActiveTab()
   const notebook       = useAppStore(useCallback(
     s => {
       const tab = paneTabId ? s.tabs.find(t => t.id === paneTabId) : null
@@ -5580,16 +5667,20 @@ export default function NotebookView() {
   const [findCount, setFindCount]= useState(0)
   const [findCurD,  setFindCurD] = useState(0)
   const [selectionWC, setSelectionWC] = useState(0)
+  const [findOpen, setFindOpen] = useState(false)
   const [editModal, setEditModal]= useState(false)
+  const [showMobileViewMenu, setShowMobileViewMenu] = useState(false)
 
   const editorRef     = useRef(null)
   const cmRef         = useRef(null)
   const coverInputRef = useRef(null)
   const cmMods     = useRef(null)
-  const saveTimer  = useRef(null)
-  const saveVisT   = useRef(null)
-  const contentRef = useRef('')
-  const titleRef   = useRef('')
+  const saveTimer        = useRef(null)
+  const saveVisT         = useRef(null)
+  const contentRef       = useRef('')
+  const titleRef         = useRef('')
+  const lastSavedTextRef = useRef(null)
+  const contentStateTimer = useRef(null)
   const findRef    = useRef(null)
   const previewRef = useRef(null)
   const hitsRef    = useRef([])
@@ -5601,6 +5692,14 @@ export default function NotebookView() {
   // Tauri drag-drop handler to skip processing if DOM already handled the drop.
   const domDropRef = useRef(0)
   const [wikiDrop, setWikiDrop] = useState(null) // { options, selectedIdx, coords }
+  const [inlineCmd, setInlineCmd] = useState(null) // { type, hint, selectedIdx, coords, lineFrom, lineTo }
+  const inlineCmdRef = useRef(null)
+  const inlineCmdNavRef = useRef(null)  // called by CM6 keymap to push selectedIdx into React state
+  const [cursorPos, setCursorPos] = useState(0)
+  // Keep nav callback fresh every render so it always closes over the latest setInlineCmd
+  inlineCmdNavRef.current = () => {
+    setInlineCmd(prev => prev ? { ...prev, selectedIdx: _inlineCmdSelectedIdx.current } : prev)
+  }
 
   contentRef.current = content
   titleRef.current   = noteTitle
@@ -5612,7 +5711,9 @@ export default function NotebookView() {
   useEffect(() => {
     if (!nbCacheEntry || !isLoaded) return
     const { text: cachedText } = nbCacheEntry
-    // Skip if this instance is already showing this content (we're the one who saved)
+    // Skip if we set this cache entry (avoids overwriting chars typed after the save started)
+    if (cachedText === lastSavedTextRef.current) return
+    // Skip if editor already shows this content
     if (cachedText === contentRef.current) return
     contentRef.current = cachedText; setContent(cachedText)
     // Push the new text into the live CM6 editor if mounted
@@ -5716,6 +5817,7 @@ export default function NotebookView() {
   }, [setView, paneTabId]) // eslint-disable-line react-hooks/exhaustive-deps
   wikiNavRef.current  = handleWikiNav
   linkPickRef.current = info => setLinkPicker(info)
+  inlineCmdRef.current = inlineCmd  // kept in sync for the stable window keydown listener
 
   function createAndOpenItem(title, kind) {
     const s = useAppStore.getState()
@@ -5747,7 +5849,7 @@ export default function NotebookView() {
 
   // ── Study timer — tracks minutes spent in notebook for streak/stats ────────
   useEffect(() => {
-    if (!notebook) return
+    if (!notebook || !isActive) return
     const TICK_MS = 60_000
     const IDLE_MS = 120_000
     let lastActive = Date.now()
@@ -5770,10 +5872,11 @@ export default function NotebookView() {
       window.removeEventListener('keydown',   onActivity)
       if (accumulated >= 0.1) addReadingMinutes(Math.max(1, Math.round(accumulated))).catch(() => {})
     }
-  }, [notebook])
+  }, [notebook, isActive])
 
   // ── Cmd/Ctrl + +/- font size zoom ─────────────────────────────────────────
   useEffect(() => {
+    if (!isActive) return
     const handler = (e) => {
       if (!(e.metaKey || e.ctrlKey)) return
       if (e.key !== '+' && e.key !== '=' && e.key !== '-') return
@@ -5786,7 +5889,28 @@ export default function NotebookView() {
     }
     window.addEventListener('keydown', handler, { capture: true })
     return () => window.removeEventListener('keydown', handler, { capture: true })
-  }, [setPref, persistPreferences])
+  }, [isActive, setPref, persistPreferences])
+
+  // ── Inline cmd dropdown arrow-key navigation ─────────────────────────────
+  // Capture phase on window so we fire before CM6 — prevents cursor movement
+  // in the editor while the /color /font /spacing /size dropdown is open.
+  useEffect(() => {
+    const onKey = (e) => {
+      const cmd = inlineCmdRef.current
+      if (!cmd) return
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+      e.preventDefault()
+      e.stopPropagation()
+      const delta = e.key === 'ArrowDown' ? 1 : -1
+      const count = _getOptionCount(cmd.type)
+      if (count === 0) return
+      const newIdx = (_inlineCmdSelectedIdx.current + delta + count) % count
+      _inlineCmdSelectedIdx.current = newIdx  // sync — must happen before Enter fires
+      setInlineCmd(prev => prev ? { ...prev, selectedIdx: newIdx } : prev)
+    }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
+  }, [])
 
   // ── Mount CodeMirror ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -5823,6 +5947,10 @@ export default function NotebookView() {
         // /table, /linkf, /linkw, /linkv slash commands (must be before smartEnter)
         makeTableCommand(cm),
         makeLinkCommands(cm, linkPickRef),
+        // /color, /font, /spacing, /size inline command keymap
+        makeInlineCmdPlugin(cm, inlineCmdNavRef),
+        // {//} auto-close for inline-cmd spans
+        makeInlineCmdCloseHandler(cm),
         makeSmartEnter(cm),
         // Pair auto-wrap via input handler
         makePairInputHandler(cm),
@@ -5868,7 +5996,12 @@ export default function NotebookView() {
           if (dead) return
           if (upd.docChanged) {
             const t = upd.state.doc.toString()
-            contentRef.current = t; setContent(t); scheduleSave(t)
+            contentRef.current = t
+            scheduleSave(t)
+            // Debounce React state update — only needed for wordCount display and previewHtml.
+            // Save and cross-tab sync both use contentRef directly, so this doesn't affect them.
+            clearTimeout(contentStateTimer.current)
+            contentStateTimer.current = setTimeout(() => { if (!dead) setContent(t) }, 300)
           }
           if (upd.selectionSet || upd.docChanged) {
             const sel = upd.state.selection.main
@@ -5879,6 +6012,10 @@ export default function NotebookView() {
             } else {
               setSelectionWC(0)
             }
+          }
+          // Track cursor position so the inline-cmd useLayoutEffect can fire
+          if (upd.selectionSet || upd.docChanged) {
+            setCursorPos(upd.state.selection.main.head)
           }
         }),
         EditorView.lineWrapping,
@@ -5986,10 +6123,39 @@ export default function NotebookView() {
 
     return () => {
       dead = true
+      clearTimeout(contentStateTimer.current)
       if (cmRef.current) { cmRef.current.destroy(); cmRef.current = null }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoaded, viewMode, notebook?.id])
+
+  // ── Inline command dropdown detection ─────────────────────────────────────
+  // useLayoutEffect fires after React's DOM mutations, before paint — exactly
+  // when coordsAtPos is reliable. cursorPos changes on every keystroke/cursor move.
+  const INLINE_CMD_RE = /^\s*\/(color|font|spacing|size|align|columns|bold|italic|bi|strike|highlight|code|sup|sub)(?::([^\s]*))?$/
+  useLayoutEffect(() => {
+    const view = cmRef.current
+    if (!view) { setInlineCmd(null); return }
+    const cur = view.state.selection.main.head
+    const line = view.state.doc.lineAt(cur)
+    const m = line.text.match(INLINE_CMD_RE)
+    if (!m) {
+      setInlineCmd(prev => prev ? null : prev)
+      return
+    }
+    const coords = view.coordsAtPos(cur)
+    const type = m[1]
+    setInlineCmd(prev => ({
+      type,
+      hint: (m[2] || '').toLowerCase(),
+      selectedIdx: prev?.type === type ? (prev.selectedIdx ?? 0) : 0,
+      lineFrom: line.from,
+      lineTo: line.to,
+      coords: coords
+        ? { left: coords.left, top: coords.bottom + 6 }
+        : { left: 120, top: 160 },
+    }))
+  }, [cursorPos]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Save ──────────────────────────────────────────────────────────────────
   const animateSave = useCallback(() => {
@@ -6048,6 +6214,7 @@ export default function NotebookView() {
     updateNotebook(notebook.id, patch)
     useAppStore.getState().persistNotebooks?.()
     // Signal other tabs showing the same notebook to pull in the new content
+    lastSavedTextRef.current = text
     useAppStore.getState().setNotebookContentCache?.(notebook.id, text)
     setSaving(false); animateSave()
   }, [notebook, updateNotebook, animateSave])
@@ -6140,15 +6307,18 @@ export default function NotebookView() {
 
   // ── Ctrl+F ────────────────────────────────────────────────────────────────
   useEffect(() => {
+    if (!isActive) return
     const h = e => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-        e.preventDefault(); findRef.current?.focus(); findRef.current?.select()
+        e.preventDefault()
+        setFindOpen(true)
+        setTimeout(() => { findRef.current?.focus(); findRef.current?.select() }, 30)
       }
 
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [])
+  }, [isActive])
 
   // ── Tauri native file drop (Finder drag-and-drop) ───────────────────────────
   useEffect(() => {
@@ -6280,6 +6450,54 @@ export default function NotebookView() {
 
   const wordCount = useMemo(() => (content.match(/\b\w+\b/g) || []).length, [content])
 
+  // Whether the doc currently has a `/math` calc zone (open or a closed pair).
+  // Drives the ∑ indicator in the top-left of the editor area. Mirrors computeMathZones.
+  const hasMathZone = useMemo(() => {
+    let open = false, any = false
+    for (const raw of content.split('\n')) {
+      const t = raw.trim()
+      if (!open) { if (/^\/math$/i.test(t)) open = true }
+      else if (/^(?:\/math\s+end|\/endmath)$/i.test(t)) { open = false; any = true }
+    }
+    return open || any
+  }, [content])
+
+  // Word count lives in the title-bar search bar
+  useTitlebarMeta({
+    text: selectionWC > 0
+      ? `${selectionWC} of ${wordCount.toLocaleString()} words`
+      : `${wordCount.toLocaleString()} words`,
+  })
+
+  const isMobile = useIsMobile()
+
+  const switchModeRef = useRef(null)
+
+  // Mobile event bridge — listen for commands from bottom nav / settings float btn
+  useEffect(() => {
+    if (!isMobile) return
+    const h = e => {
+      const { cmd } = e.detail || {}
+      if (cmd === 'live-toggle') switchModeRef.current?.()
+      if (cmd === 'live-menu') setShowMobileViewMenu(true)
+      if (cmd === 'search') window.dispatchEvent(new CustomEvent('gnos:mobile-nb-search-open'))
+      if (cmd === 'settings') setEditModal(true)
+      if (cmd === 'insert') {
+        const cm = cmRef.current; if (!cm) return
+        const { before = '', after = '', placeholder = '' } = e.detail || {}
+        const sel = cm.state.selection.main
+        const selected = cm.state.sliceDoc(sel.from, sel.to)
+        const text = selected ? `${before}${selected}${after}` : `${before}${placeholder}${after}`
+        cm.dispatch({ changes: { from: sel.from, to: sel.to, insert: text },
+                      selection: { anchor: sel.from + (selected ? text.length : before.length),
+                                   head: sel.from + (selected ? text.length : before.length + placeholder.length) } })
+        cm.focus()
+      }
+    }
+    window.addEventListener('gnos:mobile-nb-cmd', h)
+    return () => window.removeEventListener('gnos:mobile-nb-cmd', h)
+  }, [isMobile])
+
   const switchMode = useCallback((m) => {
     if (m === viewMode) return
     if (cmRef.current) {
@@ -6288,6 +6506,19 @@ export default function NotebookView() {
     }
     setVM(m)
   }, [viewMode])
+  switchModeRef.current = () => switchMode(viewMode === 'source' ? 'live' : 'source')
+
+  useEffect(() => {
+    if (!isMobile) return
+    window.dispatchEvent(new CustomEvent('gnos:nb-viewmode', { detail: { mode: viewMode } }))
+  }, [viewMode, isMobile])
+
+  useEffect(() => {
+    if (!isMobile) return
+    const h = e => doFind(e.detail || '')
+    window.addEventListener('gnos:mobile-nb-search-query', h)
+    return () => window.removeEventListener('gnos:mobile-nb-search-query', h)
+  }, [isMobile])
 
   const handlePreviewClick = useCallback(e => {
     const wl = e.target.closest('[data-wl-type]')
@@ -6332,7 +6563,7 @@ export default function NotebookView() {
     .nb-root {
       --nb-fs:   15px;
       --nb-lh:   1.8;
-      --nb-ff:   'Erode', Georgia, serif;
+      --nb-ff:   'Author', 'Satoshi', sans-serif;
       --nb-max:  780px;
       --nb-px:   48px;
       --nb-py:   28px;
@@ -6396,8 +6627,8 @@ export default function NotebookView() {
     .nb-preview .cm-selectionBackground { display: none !important; }
 
     /* ── Source mode — same visual classes as live, no hiding ── */
-    .nb-source .cm-lv-h1 { font-size: var(--nb-h1); font-weight: 600; line-height: 1.25; font-family: 'Erode', Georgia, serif; color: var(--nb-h1-color); padding-top: 0.4em; padding-bottom: 0.1em; letter-spacing: -0.3px; }
-    .nb-source .cm-lv-h2 { font-size: var(--nb-h2); font-weight: 600; line-height: 1.3; font-family: 'Erode', Georgia, serif; color: var(--nb-h2-color); padding-top: 0.35em; padding-bottom: 0.1em; letter-spacing: -0.2px; }
+    .nb-source .cm-lv-h1 { font-size: var(--nb-h1); font-weight: 600; line-height: 1.25; font-family: 'Author', 'Satoshi', sans-serif; color: var(--nb-h1-color); padding-top: 0.4em; padding-bottom: 0.1em; letter-spacing: -0.3px; }
+    .nb-source .cm-lv-h2 { font-size: var(--nb-h2); font-weight: 600; line-height: 1.3; font-family: 'Author', 'Satoshi', sans-serif; color: var(--nb-h2-color); padding-top: 0.35em; padding-bottom: 0.1em; letter-spacing: -0.2px; }
     .nb-source .cm-lv-h3 { font-size: var(--nb-h3); font-weight: 600; line-height: 1.4; color: var(--nb-h3-color); font-family: 'Satoshi', 'Author', sans-serif; padding-top: 0.3em; }
     .nb-source .cm-lv-h4 { font-size: var(--nb-h4); font-weight: 600; color: var(--nb-h4-color); font-family: 'Satoshi', 'Author', sans-serif; }
     .nb-source .cm-lv-h5 { font-size: var(--nb-h5); font-weight: 600; color: var(--nb-h5-color); font-family: 'Satoshi', 'Author', sans-serif; }
@@ -6420,6 +6651,9 @@ export default function NotebookView() {
       overflow: hidden;
     }
 
+    /* ── Inline styled spans ({color:X}, {font:X}, {spacing:X}) ── */
+    .cm-inline-styled { /* styles applied via inline style attribute */ }
+
     /* ══════════════════════════════════════════════════════
        LIVE VIEW — line-level class decorations
        These must match the .nb-prev selectors exactly.
@@ -6428,13 +6662,13 @@ export default function NotebookView() {
     /* Headings — weight, size, rhythm identical to preview */
     .nb-live .cm-lv-h1 {
       font-size: var(--nb-h1); font-weight: 600; line-height: 1.25;
-      font-family: 'Erode', Georgia, serif; color: var(--nb-h1-color);
+      font-family: 'Author', 'Satoshi', sans-serif; color: var(--nb-h1-color);
       margin-top: 0; padding-top: 0.4em; padding-bottom: 0.1em;
       letter-spacing: -0.3px;
     }
     .nb-live .cm-lv-h2 {
       font-size: var(--nb-h2); font-weight: 600; line-height: 1.3;
-      font-family: 'Erode', Georgia, serif; color: var(--nb-h2-color);
+      font-family: 'Author', 'Satoshi', sans-serif; color: var(--nb-h2-color);
       padding-top: 0.35em; padding-bottom: 0.1em;
       letter-spacing: -0.2px;
     }
@@ -6599,7 +6833,7 @@ export default function NotebookView() {
       border-right: 1px solid var(--borderSubtle);
       border-bottom: 1px solid var(--borderSubtle);
       padding: 5px 10px; text-align: left;
-      white-space: nowrap; min-width: 80px;
+      white-space: pre-wrap; word-break: break-word; min-width: 80px;
     }
     .cm-table-wrap table.nb-table th:last-child,
     .cm-table-wrap table.nb-table td:last-child { border-right: none; }
@@ -6729,7 +6963,7 @@ export default function NotebookView() {
     }
     .cm-task-title-w {
       font-size: 13px; font-weight: 600; color: var(--text);
-      font-family: 'Erode', Georgia, serif; letter-spacing: -0.1px;
+      font-family: 'Author', 'Satoshi', sans-serif; letter-spacing: -0.1px;
     }
     .cm-task-cols-w {
       display: flex; gap: 6px; padding: 0 8px 10px;
@@ -6933,34 +7167,36 @@ export default function NotebookView() {
     }
     .gnos-dtp-done:hover { opacity: .85; }
 
-    /* ── Timer widget ── */
+    /* ── Timer widget — antinote-style: quiet pill, hairline progress, hover controls ── */
     .cm-timer-widget {
-      margin: 0.6em 0; padding: 10px 14px; border-radius: 10px;
-      border: 1px solid var(--border); background: var(--surface);
-      display: flex; flex-direction: column; gap: 4px; max-width: 320px;
+      margin: 0.5em 0; padding: 9px 12px; border-radius: 12px;
+      border: 1px solid var(--borderSubtle, var(--border));
+      background: var(--surfaceAlt, var(--surface));
+      display: flex; flex-direction: column; gap: 7px; max-width: 260px;
     }
-    .cm-timer-label { font-size: 11px; font-weight: 600; color: var(--textDim); letter-spacing: .03em; }
-    .cm-timer-row { display: flex; align-items: center; gap: 8px; }
+    .cm-timer-label {
+      font-size: 11.5px; font-weight: 500; color: var(--textDim); flex: 1;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .cm-timer-row { display: flex; align-items: baseline; gap: 8px; }
     .cm-timer-time {
-      font-size: 22px; font-weight: 700; color: var(--text);
-      font-variant-numeric: tabular-nums; cursor: pointer; flex: 1;
+      font-size: 19px; font-weight: 600; color: var(--text); line-height: 1;
+      font-variant-numeric: tabular-nums; cursor: pointer; letter-spacing: .01em;
     }
-    .cm-timer-time.cm-timer-done { color: var(--accent); }
+    .cm-timer-time.cm-timer-done { color: var(--accent); animation: cm-timer-donepulse 1.2s ease-in-out infinite; }
+    @keyframes cm-timer-donepulse { 0%, 100% { opacity: 1 } 50% { opacity: .55 } }
     .cm-timer-btn {
-      background: none; border: 1px solid var(--border); border-radius: 6px;
-      color: var(--text); cursor: pointer; width: 30px; height: 30px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 14px; transition: background .1s;
+      background: none; border: none; border-radius: 6px; padding: 0;
+      color: var(--textDim); cursor: pointer; width: 22px; height: 22px;
+      display: flex; align-items: center; justify-content: center; align-self: center;
+      font-size: 11px; opacity: 0; transition: opacity .15s, color .1s, background .1s;
     }
-    .cm-timer-btn:hover { background: var(--surfaceAlt); }
+    .cm-timer-btn:first-of-type { margin-left: auto; }
+    .cm-timer-widget:hover .cm-timer-btn { opacity: .7; }
+    .cm-timer-btn:hover { opacity: 1; color: var(--text); background: var(--hover, var(--surface)); }
     .cm-timer-start { width: auto; padding: 0 14px; font-size: 12px; font-weight: 600; }
-    .cm-timer-bar {
-      height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; margin-top: 2px;
-    }
-    .cm-timer-fill {
-      height: 100%; border-radius: 2px; background: var(--accent);
-      transition: width 1s linear;
-    }
+    .cm-timer-bar { height: 2px; border-radius: 1px; background: var(--border); overflow: hidden; }
+    .cm-timer-fill { height: 100%; border-radius: 1px; background: var(--accent); transition: width 1s linear; }
     .cm-timer-setup { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
     .cm-timer-input {
       background: none; border: 1px solid var(--border); border-radius: 6px;
@@ -6971,12 +7207,54 @@ export default function NotebookView() {
     .cm-timer-input:focus { border-color: var(--accent); }
     .cm-timer-edit-input {
       background: none; border: none; outline: none;
-      font-size: 22px; font-weight: 700; color: var(--text);
-      font-variant-numeric: tabular-nums; width: 120px; font-family: inherit;
+      font-size: 19px; font-weight: 600; color: var(--text);
+      font-variant-numeric: tabular-nums; width: 110px; font-family: inherit;
     }
 
-    .cm-timer-time-editable { cursor: text; opacity: 0.5; }
+    .cm-timer-time-editable { cursor: text; opacity: 0.45; font-size: 15px; }
     .cm-timer-time-editable:hover { opacity: 0.8; }
+
+    /* ── /timer as a left-gutter vertical rail (quick-note style) ── */
+    .cm-timer-widget.cm-timer-rail {
+      width: 42px; max-width: none; height: 140px;
+      margin: 0.4em 0; padding: 8px 0 6px;
+      align-items: center; gap: 7px;
+    }
+    .cm-timer-rail .cm-timer-bar {
+      flex: 1; width: 3px; height: auto; border-radius: 2px;
+      background: var(--border); overflow: hidden;
+      display: flex; flex-direction: column; justify-content: flex-start;
+    }
+    .cm-timer-rail .cm-timer-fill {
+      width: 100%; height: 100%; background: var(--accent);
+      border-radius: 2px; transition: height 1s linear;
+    }
+    .cm-timer-rail .cm-timer-time {
+      writing-mode: vertical-rl; font-size: 12px; font-weight: 600;
+      letter-spacing: .05em; line-height: 1;
+    }
+    .cm-timer-railbtns { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+    .cm-timer-rail .cm-timer-btn { width: 20px; height: 18px; margin: 0; }
+
+    /* ── /math zone badge ── */
+    .cm-mathzone-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 2px 10px 2px 8px; border-radius: 999px;
+      border: 1px solid var(--borderSubtle, var(--border));
+      background: var(--surfaceAlt, var(--surface));
+      color: var(--textDim); font-size: 10.5px; font-weight: 600;
+      letter-spacing: .06em; text-transform: uppercase;
+      vertical-align: middle; user-select: none; cursor: default;
+    }
+    .cm-mathzone-icon { color: var(--accent); font-size: 12px; font-weight: 500; }
+    .nb-mathzone-indicator {
+      position: absolute; top: 10px; left: 12px; z-index: 5;
+      padding: 3px 7px; pointer-events: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,.18);
+    }
+    .nb-mathzone-indicator .cm-mathzone-icon { font-size: 13px; }
+    .cm-mathzone-end { opacity: .6; }
+    .cm-mathzone-end .cm-mathzone-icon { color: var(--textDim); }
 
     /* ── Pomodoro widget ── */
     .cm-pomo-widget {
@@ -7037,6 +7315,40 @@ export default function NotebookView() {
     .cm-pomo-prev-icon { font-size: 18px; }
     .cm-pomo-prev-text { font-size: 13px; font-weight: 600; color: var(--text); }
     .cm-pomo-prev-sub { font-size: 10px; color: var(--textDim); margin-left: auto; }
+
+    /* ── /pomo as a left-gutter vertical rail ── */
+    .cm-pomo-widget.cm-pomo-rail {
+      width: 52px; max-width: none; height: 190px;
+      margin: 0.5em 0; padding: 8px 4px 8px;
+      align-items: center; gap: 7px;
+    }
+    .cm-pomo-tag {
+      font-size: 9.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+      border: 1px solid var(--borderSubtle); border-radius: 5px;
+      padding: 2px 6px; background: none; cursor: pointer; font-family: inherit;
+      color: var(--textDim); transition: all .12s;
+    }
+    .cm-pomo-tag-work  { color: var(--accent); border-color: var(--accent); }
+    .cm-pomo-tag-break { color: #3fb950; border-color: #3fb950; }
+    .cm-pomo-rail .cm-pomo-bar {
+      flex: 1; width: 3px; height: auto; border-radius: 2px;
+      background: var(--borderSubtle); overflow: hidden;
+      display: flex; flex-direction: column; justify-content: flex-start;
+    }
+    .cm-pomo-rail .cm-pomo-fill { width: 100%; height: 100%; transition: height 1s linear; }
+    .cm-pomo-rail .cm-pomo-time {
+      writing-mode: vertical-rl; font-size: 14px; font-weight: 700;
+      letter-spacing: 1px; padding: 0; text-align: center;
+    }
+    .cm-pomo-rail .cm-pomo-sessions {
+      font-size: 10px; padding: 1px 6px; border-radius: 4px;
+    }
+    .cm-pomo-rail .cm-pomo-controls {
+      flex-direction: column; gap: 2px; opacity: 0; transition: opacity .15s;
+    }
+    .cm-pomo-rail:hover .cm-pomo-controls { opacity: 1; }
+    .cm-pomo-rail .cm-pomo-btn { width: 26px; height: 22px; font-size: 12px; }
+    .cm-pomo-rail .cm-pomo-play { width: 26px; }
 
     /* ── Calendar widget ── */
     .cm-calendar-widget {
@@ -7238,8 +7550,8 @@ export default function NotebookView() {
       box-sizing: border-box;
     }
     /* Headings — match live exactly */
-    .nb-prev h1 { font-size:var(--nb-h1); font-weight:600; margin:1.15em 0 .45em; font-family:'Erode',Georgia,serif; color:var(--nb-h1-color); line-height:1.25; letter-spacing:-0.3px; }
-    .nb-prev h2 { font-size:var(--nb-h2); font-weight:600; margin:1.1em 0 .4em;  font-family:'Erode',Georgia,serif; color:var(--nb-h2-color); line-height:1.3; letter-spacing:-0.2px; }
+    .nb-prev h1 { font-size:var(--nb-h1); font-weight:600; margin:1.15em 0 .45em; font-family:'Author','Satoshi',sans-serif; color:var(--nb-h1-color); line-height:1.25; letter-spacing:-0.3px; }
+    .nb-prev h2 { font-size:var(--nb-h2); font-weight:600; margin:1.1em 0 .4em;  font-family:'Author','Satoshi',sans-serif; color:var(--nb-h2-color); line-height:1.3; letter-spacing:-0.2px; }
     .nb-prev h3 { font-size:var(--nb-h3); font-weight:600; margin:1em 0 .35em;   font-family:'Satoshi','Author',sans-serif; color:var(--nb-h3-color); line-height:1.4; }
     .nb-prev h4 { font-size:var(--nb-h4); font-weight:600; margin:.9em 0 .3em;   font-family:'Satoshi','Author',sans-serif; color:var(--nb-h4-color); }
     .nb-prev h5 { font-size:var(--nb-h5); font-weight:600; margin:.85em 0 .25em; font-family:'Satoshi','Author',sans-serif; color:var(--nb-h5-color); }
@@ -7291,7 +7603,7 @@ export default function NotebookView() {
     .nb-math-mq .mq-root-block { color: var(--text) !important; }
     /* Preview-mode calendar block */
     .cm-cal-prev-block { border: 1px solid var(--borderSubtle); border-radius: 8px; overflow: hidden; margin: .6em 0; }
-    .cm-cal-prev-title { font-size: 11px; font-weight: 600; padding: 6px 10px; background: var(--surface); color: var(--text); border-bottom: 1px solid var(--borderSubtle); font-family: 'Erode',Georgia,serif; }
+    .cm-cal-prev-title { font-size: 11px; font-weight: 600; padding: 6px 10px; background: var(--surface); color: var(--text); border-bottom: 1px solid var(--borderSubtle); font-family: 'Author','Satoshi',sans-serif; }
     .cm-cal-prev-day { display: flex; align-items: baseline; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--borderSubtle); flex-wrap: wrap; }
     .cm-cal-prev-day:last-child { border-bottom: none; }
     .cm-cal-prev-date { font-size: 10px; font-weight: 600; color: var(--textDim); min-width: 80px; font-family: 'Author',system-ui,sans-serif; }
@@ -7539,8 +7851,6 @@ export default function NotebookView() {
     .nb-cpick-zoom-btn:hover { background: var(--surfaceAlt); }
     .nb-cpick-zoom-slider {
       flex: 1;
-      accent-color: var(--accent);
-      cursor: pointer;
     }
     .nb-cover-picker-footer {
       display: flex;
@@ -7802,16 +8112,20 @@ export default function NotebookView() {
     .nb2-fc:hover { opacity:1; }
 
     /* ── Save indicator animation ──────────────────────── */
-    .nb-save-indicator { display:flex; align-items:center; }
-    .nb-save-icon { width:18px; height:18px; color:var(--accent); opacity:0; transition:opacity 0.2s; }
-    .nb-save-icon.vis { opacity:1; }
-    .nb-save-ring { stroke-dasharray:47; stroke-dashoffset:47; transition:stroke-dashoffset 0s; }
-    .nb-save-icon.anim .nb-save-ring { stroke-dashoffset:0; transition:stroke-dashoffset 0.3s ease; }
-    .nb-save-check { stroke-dasharray:12; stroke-dashoffset:12; transition:stroke-dashoffset 0s; }
-    .nb-save-icon.anim .nb-save-check { stroke-dashoffset:0; transition:stroke-dashoffset 0.15s ease 0.25s; }
-    .nb-save-icon.closing .nb-save-check { stroke-dashoffset:12; transition:stroke-dashoffset 0.15s ease; }
-    .nb-save-icon.closing .nb-save-ring { stroke-dashoffset:47; transition:stroke-dashoffset 0.3s ease 0.1s; }
-    .nb-save-icon.closing { opacity:0; transition:opacity 0.35s 0.25s; }
+    .nb-findbar {
+      position:absolute; top:10px; right:16px; z-index:400;
+      display:flex; align-items:center; gap:7px;
+      width:300px; height:32px; padding:0 10px;
+      background:var(--surface); border:1px solid var(--borderSubtle);
+      border-radius:9px; color:var(--textDim);
+      box-shadow:0 0 0 1px rgba(0,0,0,0.04), 0 10px 24px rgba(0,0,0,0.25);
+      animation: nb-findbar-in .13s cubic-bezier(0.2,0.8,0.3,1);
+    }
+    @keyframes nb-findbar-in { from { opacity:0; transform:translateY(-4px) } to { opacity:1; transform:none } }
+    .nb-findbar input {
+      flex:1; min-width:0; background:none; border:none; outline:none;
+      color:var(--text); font-size:12.5px; font-family:inherit;
+    }
   `
 
 
@@ -7896,69 +8210,59 @@ export default function NotebookView() {
       <style>{CSS}</style>
       <style>{THEME_CSS}</style>
 
-      {/* ── Header — flex: [nav] [save + search (centered)] [mode + settings] ── */}
-      <header className="nb-header gnos-header">
-        {/* Far left: nav button */}
-        <div style={{ display:'flex', alignItems:'center', flex:'0 0 auto', minWidth:0 }}>
-          <GnosNavButton />
-        </div>
+      {/* ── Header replaced by title bar: word count lives in the omnibar,
+             actions in the quick-access strip, find is a floating bar (⌘F) ── */}
+      <QuickAccess>
+        <button className={`gnos-settings-btn${(findOpen || findQ) ? ' active' : ''}`} title="Find in note (⌘F)"
+          onClick={() => {
+            if (findOpen) { setFindOpen(false); setFindQ(''); doFind('') }
+            else { setFindOpen(true); setTimeout(() => findRef.current?.focus(), 30) }
+          }}>
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.7"/>
+            <path d="M10 10l3.5 3.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+          </svg>
+        </button>
+        <ViewModeBtn viewMode={viewMode} setViewMode={switchMode} />
+        <NbShareMenu
+          noteTitle={noteTitle}
+          notebookTitle={notebook?.title}
+          contentRef={contentRef}
+          previewHtml={previewHtml}
+        />
+        <button className="gnos-settings-btn" onClick={() => setEditModal(true)} title="Backlinks & tags">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+            <path d="M6.5 9.5a3 3 0 0 0 4.24 0l2-2a3 3 0 0 0-4.24-4.24l-1 1" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+            <path d="M9.5 6.5a3 3 0 0 0-4.24 0l-2 2a3 3 0 0 0 4.24 4.24l1-1" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+          </svg>
+        </button>
+      </QuickAccess>
 
-        {/* Center: save indicator + search bar (centered) */}
-        <div style={{ display:'flex', alignItems:'center', flex:'1 1 0', minWidth:0, gap:8, margin:'0 8px', justifyContent:'center' }}>
-          <div className="nb-save-indicator" style={{ flexShrink:0 }}>
-            <svg id="nb-save-icon" className="nb-save-icon" viewBox="0 0 18 18" fill="none">
-              <circle className="nb-save-ring" cx="9" cy="9" r="7.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-              <polyline className="nb-save-check" points="5.5,9 7.8,11.5 12.5,6.5" stroke="currentColor" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </div>
-          <div style={{ flex:'0 1 520px', minWidth:0 }}>
-            <div className={`search-bar${findQ?' focused':''}`} style={{ background:'var(--surfaceAlt)' }}
-              onClick={() => findRef.current?.focus()}>
-              <svg className="search-icon" width="13" height="13" viewBox="0 0 16 16" fill="none">
-                <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5"/>
-                <path d="M10 10l3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
-              <input ref={findRef} id="nb-search-input"
-                style={{ background:'none', border:'none', color:'var(--text)', outline:'none', fontSize:13, flex:1, minWidth:0 }}
-                placeholder={noteTitle || notebook?.title || 'Find…'} value={findQ}
-                onChange={e => { setFindQ(e.target.value); doFind(e.target.value) }}
-                onKeyDown={e => {
-                  if (e.key==='Enter') { e.preventDefault(); findNav(e.shiftKey?-1:1) }
-                  if (e.key==='Escape') { setFindQ(''); doFind('') }
-                }}
-              />
-              {findQ ? (
-                <span style={{ fontSize:11, color:'var(--textDim)', whiteSpace:'nowrap', marginRight:4 }}>
-                  {findCount>0?`${findCurD+1}/${findCount}`:'Not found'}
-                </span>
-              ) : (
-                <span style={{ fontSize:11, color: selectionWC > 0 ? 'var(--accent)' : 'var(--textDim)', whiteSpace:'nowrap', paddingLeft:8, flexShrink:0 }}>
-                  {selectionWC > 0 ? `${selectionWC} of ${wordCount.toLocaleString()} words` : `${wordCount.toLocaleString()} words`}
-                </span>
-              )}
-              {findQ && (
-                <>
-                  <button className="nb2-fb" onClick={() => findNav(-1)} title="Previous">↑</button>
-                  <button className="nb2-fb" onClick={() => findNav(1)}  title="Next">↓</button>
-                  <button className="nb2-fc" onClick={() => { setFindQ(''); doFind('') }} title="Clear">×</button>
-                </>
-              )}
-            </div>
-          </div>
+      {/* Floating find bar — appears on ⌘F or via the quick-access button */}
+      {(findOpen || findQ) && (
+        <div className="nb-findbar">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink:0, opacity:.55 }}>
+            <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.6"/>
+            <path d="M10 10l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+          </svg>
+          <input ref={findRef} id="nb-search-input"
+            placeholder="Find in note…" value={findQ}
+            onChange={e => { setFindQ(e.target.value); doFind(e.target.value) }}
+            onKeyDown={e => {
+              if (e.key==='Enter') { e.preventDefault(); findNav(e.shiftKey?-1:1) }
+              if (e.key==='Escape') { setFindQ(''); doFind(''); setFindOpen(false) }
+            }}
+          />
+          {findQ && (
+            <span style={{ fontSize:11, color:'var(--textDim)', whiteSpace:'nowrap' }}>
+              {findCount>0?`${findCurD+1}/${findCount}`:'Not found'}
+            </span>
+          )}
+          <button className="nb2-fb" onClick={() => findNav(-1)} title="Previous">↑</button>
+          <button className="nb2-fb" onClick={() => findNav(1)}  title="Next">↓</button>
+          <button className="nb2-fc" onClick={() => { setFindQ(''); doFind(''); setFindOpen(false) }} title="Close">×</button>
         </div>
-
-        {/* Far right: view mode + settings */}
-        <div style={{ display:'flex', alignItems:'center', gap:6, flex:'0 0 auto' }}>
-          <ViewModeBtn viewMode={viewMode} setViewMode={switchMode} />
-          <button onClick={() => setEditModal(true)} title="Notebook settings"
-            style={{ background:'none', border:'1px solid var(--border)', borderRadius:6, color:'var(--textDim)', cursor:'pointer', width:30, height:30, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.4"/>
-              <path d="M8 1.5v1M8 13.5v1M1.5 8h1M13.5 8h1M3.3 3.3l.7.7M12 12l.7.7M12 3.3l-.7.7M4 12l-.7.7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-            </svg>
-          </button>
-        </div>
-      </header>
+      )}
 
       {/* ── Main ──────────────────────────────────────────────────────────── */}
       {!isLoaded ? (
@@ -7967,6 +8271,12 @@ export default function NotebookView() {
         </div>
       ) : (
         <div style={{ flex:1, overflow:'hidden', display:'flex', flexDirection:'column', position:'relative', background:'var(--readerBg,var(--bg))' }}>
+          {/* ∑ indicator — top-left of the editor area while a /math zone is active */}
+          {hasMathZone && (
+            <span className="cm-mathzone-badge nb-mathzone-indicator" title="Math calc zone active">
+              <span className="cm-mathzone-icon">∑</span>
+            </span>
+          )}
           {/* Hidden file input for cover image — lives outside the hover area */}
           <input
             ref={coverInputRef}
@@ -8058,7 +8368,7 @@ export default function NotebookView() {
               )}
               {viewMode === 'preview' ? (
                 noteTitle && (
-                  <div style={{ fontFamily:'Georgia,serif', fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2 }}>
+                  <div style={{ fontFamily:"'Author','Satoshi',sans-serif", fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2 }}>
                     {noteTitle}
                   </div>
                 )
@@ -8066,7 +8376,7 @@ export default function NotebookView() {
                 <input value={noteTitle}
                   onChange={e => { const t=e.target.value; setTitle(t); titleRef.current=t; scheduleSave(contentRef.current) }}
                   placeholder="Title…"
-                  style={{ width:'100%', background:'none', border:'none', outline:'none', fontFamily:'Georgia,serif', fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2, padding:0, caretColor:'var(--accent)' }}
+                  style={{ width:'100%', background:'none', border:'none', outline:'none', fontFamily:"'Author','Satoshi',sans-serif", fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.1, padding:0, caretColor:'var(--accent)' }}
                   onKeyDown={e => { if(e.key==='Enter'){e.preventDefault();cmRef.current?.focus()} }}
                 />
               )}
@@ -8074,7 +8384,7 @@ export default function NotebookView() {
           </div>
           {/* Divider — hidden in preview */}
           {viewMode !== 'preview' && (
-            <div style={{ maxWidth:780, margin:'4px auto 0', width:'100%', padding:'0 48px', boxSizing:'border-box', pointerEvents:'none' }}>
+            <div style={{ maxWidth:780, margin:'0 auto 0', width:'100%', padding:'0 48px', boxSizing:'border-box', pointerEvents:'none' }}>
               <div style={{ height:1, background:'var(--borderSubtle)', opacity:.5 }} />
             </div>
           )}
@@ -8146,10 +8456,168 @@ export default function NotebookView() {
               }}>Tab to confirm · Esc to dismiss</div>
             </div>
           )}
+          {/* ── Inline command dropdown (/color, /font, /spacing, /size) ──── */}
+          {inlineCmd && inlineCmd.coords && (() => {
+            const { type, hint, selectedIdx, coords, lineFrom, lineTo } = inlineCmd
+            const options = type === 'color' ? INLINE_COLORS
+              : type === 'font' ? INLINE_FONTS
+              : type === 'spacing' ? INLINE_SPACINGS
+              : type === 'size' ? INLINE_SIZES
+              : type === 'align' ? INLINE_ALIGNS
+              : type === 'columns' ? INLINE_COLUMNS
+              : []  // bold/italic/bi/strike/highlight/code/sup/sub — no picker
+
+            const filtered = hint
+              ? options.filter(o => o.name.toLowerCase().startsWith(hint))
+              : options
+            const activeIdx = Math.min(selectedIdx, Math.max(0, filtered.length - 1))
+
+            const TITLES = {
+              color: 'Text Color', font: 'Font', spacing: 'Line Spacing', size: 'Text Size',
+              align: 'Text Alignment', columns: 'Columns',
+              bold: 'Bold', italic: 'Italic', bi: 'Bold Italic', strike: 'Strikethrough',
+              highlight: 'Highlight', code: 'Inline Code', sup: 'Superscript', sub: 'Subscript',
+            }
+
+            const confirmOption = opt => {
+              const view = cmRef.current
+              if (!view || !opt) return
+              const marker = `{${type}:${opt.value}}`
+              view.dispatch({
+                changes: { from: lineFrom, to: lineTo, insert: marker },
+                selection: { anchor: lineFrom + marker.length },
+              })
+              setInlineCmd(null)
+              view.focus()
+            }
+
+            return (
+              <div style={{
+                position: 'fixed',
+                left: Math.min(coords.left, window.innerWidth - 380),
+                top: Math.min(coords.top, window.innerHeight - 380),
+                zIndex: 9999,
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                borderRadius: 12,
+                boxShadow: '0 16px 48px rgba(0,0,0,0.55)',
+                padding: 6,
+                minWidth: type === 'color' ? 280 : 240,
+                maxWidth: 380,
+                maxHeight: 360,
+                overflow: 'auto',
+              }}>
+                <div style={{ padding: '4px 10px 6px', fontSize: 11, color: 'var(--textDim)', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', opacity: 0.7 }}>
+                  {TITLES[type]}
+                </div>
+                {filtered.length === 0 ? (
+                  <div style={{ padding: '10px 14px 8px', fontSize: 13, color: 'var(--textDim)', textAlign: 'center' }}>
+                    Press <strong>Enter</strong> or <strong>Tab</strong> to apply
+                  </div>
+                ) : type === 'color' ? (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 4, padding: '0 4px 4px' }}>
+                    {filtered.map((opt, i) => (
+                      <button key={opt.name} title={opt.name}
+                        onMouseDown={e => { e.preventDefault(); confirmOption(opt) }}
+                        style={{
+                          width: 36, height: 36, borderRadius: 8,
+                          border: i === activeIdx ? '2px solid var(--accent)' : '2px solid transparent',
+                          background: opt.value.startsWith('var(') ? opt.value : opt.value === 'inherit' ? 'var(--surfaceAlt)' : opt.value,
+                          cursor: 'pointer', outline: 'none', position: 'relative',
+                        }}>
+                        {opt.value === 'inherit' && (
+                          <span style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: 'var(--text)', fontWeight: 700 }}>∅</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                    {filtered.map((opt, i) => (
+                      <li key={opt.name}
+                        onMouseDown={e => { e.preventDefault(); confirmOption(opt) }}
+                        style={{
+                          padding: '8px 12px', borderRadius: 8, margin: '1px 0',
+                          display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+                          background: i === activeIdx ? 'rgba(56,139,253,0.18)' : 'transparent',
+                          color: i === activeIdx ? 'var(--accent)' : 'var(--text)',
+                        }}>
+                        {type === 'font' && (
+                          <>
+                            <span style={{ flex: 1, fontSize: 14, fontFamily: opt.value, fontWeight: 500 }}>{opt.name}</span>
+                            <span style={{ fontSize: 11, opacity: 0.5, fontFamily: opt.value }}>Abc</span>
+                          </>
+                        )}
+                        {type === 'size' && (
+                          <>
+                            <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{opt.name}</span>
+                            <span style={{ fontSize: opt.value, opacity: 0.75, lineHeight: 1 }}>Aa</span>
+                          </>
+                        )}
+                        {(type === 'spacing') && (
+                          <>
+                            <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{opt.name}</span>
+                            <span style={{ fontSize: 12, opacity: 0.6, fontFamily: 'monospace' }}>{opt.preview}</span>
+                          </>
+                        )}
+                        {type === 'align' && (() => {
+                          const lines = opt.value === 'left'
+                            ? [[0,14],[0,9],[0,11]]
+                            : opt.value === 'center'
+                            ? [[1,14],[3,9],[2,11]]
+                            : opt.value === 'right'
+                            ? [[2,14],[7,9],[5,11]]
+                            : [[0,16],[0,16],[0,10]] // justify
+                          return (
+                            <>
+                              <svg width="16" height="12" viewBox="0 0 16 12" style={{ flexShrink: 0, opacity: 0.7 }} fill="currentColor">
+                                {lines.map(([x, w], i) => <rect key={i} x={x} y={i * 4} width={w} height="2" rx="1" />)}
+                              </svg>
+                              <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{opt.name}</span>
+                            </>
+                          )
+                        })()}
+                        {type === 'columns' && (
+                          <>
+                            <span style={{ fontSize: 13, opacity: 0.7, width: 28, textAlign: 'center', flexShrink: 0, letterSpacing: 1 }}>{opt.preview}</span>
+                            <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{opt.name}</span>
+                          </>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div style={{ padding: '5px 12px 6px', fontSize: 10.5, color: 'var(--textDim)', opacity: 0.65, borderTop: '1px solid var(--borderSubtle)', marginTop: 4, textAlign: 'center', letterSpacing: '0.01em' }}>
+                  {filtered.length > 0 ? '↑↓ navigate · Tab/Enter confirm · Esc dismiss' : 'Tab/Enter confirm · Esc dismiss'}
+                </div>
+              </div>
+            )
+          })()}
         </div>
       )}
 
-      {editModal && <NotebookSettingsPanel notebook={notebook} notebooks={notebooks} onClose={() => setEditModal(false)} />}
+      {editModal && <NotebookBacklinksPanel notebook={notebook} notebooks={notebooks} onClose={() => setEditModal(false)} />}
+
+      {showMobileViewMenu && (
+        <div style={{ position:'fixed', bottom:'calc(max(12px,env(safe-area-inset-bottom,0px)+6px)+45px+8px)',
+          left:'50%', transform:'translateX(-50%)',
+          background:'var(--surface)', border:'1px solid var(--border)', borderRadius:12,
+          boxShadow:'0 4px 24px rgba(0,0,0,0.35)', zIndex:9200, overflow:'hidden',
+          display:'flex', flexDirection:'column' }}>
+          {['live','source','preview'].map(m => (
+            <button key={m} onClick={() => { switchMode(m); setShowMobileViewMenu(false) }}
+              style={{ display:'flex', alignItems:'center', gap:10, padding:'11px 20px',
+                border:'none', background:'none', cursor:'pointer', textAlign:'left',
+                fontSize:14, fontFamily:'inherit', color: viewMode===m?'var(--accent)':'var(--text)',
+                fontWeight: viewMode===m ? 700 : 500 }}>
+              {MODE_META[m].icon}
+              <span>{MODE_META[m].label}</span>
+              {viewMode===m && <span style={{ marginLeft:'auto', fontSize:11, opacity:0.7 }}>✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+      {showMobileViewMenu && <div style={{ position:'fixed', inset:0, zIndex:9199 }} onClick={() => setShowMobileViewMenu(false)} />}
 
       {/* ── /linkw URL input modal ──────────────────────────────────────────── */}
       {linkPicker?.type === 'web' && (
@@ -8234,11 +8702,11 @@ export default function NotebookView() {
               <button className="nb-cpick-zoom-btn" onClick={() => {
                 setCoverPicker(p => p ? { ...p, scale: Math.max(1, (p.scale ?? 1) / 1.2) } : p)
               }} title="Zoom out">−</button>
-              <input
-                type="range" min={1} max={4} step={0.01}
+              <Slider
+                min={1} max={4} step={0.01}
                 value={Math.max(1, coverPicker.scale ?? 1)}
                 className="nb-cpick-zoom-slider"
-                onChange={e => setCoverPicker(p => p ? { ...p, scale: parseFloat(e.target.value) } : p)}
+                onChange={v => setCoverPicker(p => p ? { ...p, scale: v } : p)}
               />
               <button className="nb-cpick-zoom-btn" onClick={() => {
                 setCoverPicker(p => p ? { ...p, scale: Math.min(4, (p.scale ?? 1) * 1.2) } : p)
@@ -8256,9 +8724,10 @@ export default function NotebookView() {
   )
 }
 
-// ─── Notebook settings panel (Syntax + Backlinks tabs) ───────────────────────
-function NotebookSettingsPanel({ notebook, notebooks, onClose }) {
-  const [tab, setTab] = useState('syntax')
+// ─── Backlinks & tags panel ───────────────────────────────────────────────────
+// The markdown syntax reference formerly shown here now lives in the Settings
+// window (Notebook page) — see src/lib/markdownSyntaxRef.js.
+function NotebookBacklinksPanel({ notebook, notebooks, onClose }) {
   const [blView, setBlView] = useState('list') // 'list' | 'graph'
   const [backlinks, setBacklinks] = useState(null) // null = loading, [] = none
   const [forwardsLinks, setForwardsLinks] = useState(null) // null = loading, [] = none
@@ -8267,7 +8736,7 @@ function NotebookSettingsPanel({ notebook, notebooks, onClose }) {
   const title = notebook?.title || ''
 
   useEffect(() => {
-    if (tab !== 'backlinks' || backlinks !== null) return
+    if (backlinks !== null) return
     let gone = false
     ;(async () => {
       const { loadNotebookContent } = await import('@/lib/storage')
@@ -8283,11 +8752,11 @@ function NotebookSettingsPanel({ notebook, notebooks, onClose }) {
       if (!gone) setBacklinks(refs)
     })()
     return () => { gone = true }
-  }, [tab, backlinks, notebooks, notebook, title])
+  }, [backlinks, notebooks, notebook, title])
 
   // Scan current notebook's content for outgoing [[wikilinks]]
   useEffect(() => {
-    if (tab !== 'backlinks' || forwardsLinks !== null || !notebook?.id) return
+    if (forwardsLinks !== null || !notebook?.id) return
     let gone = false
     ;(async () => {
       const { loadNotebookContent } = await import('@/lib/storage')
@@ -8308,7 +8777,7 @@ function NotebookSettingsPanel({ notebook, notebooks, onClose }) {
       } catch { if (!gone) setForwardsLinks([]) }
     })()
     return () => { gone = true }
-  }, [tab, forwardsLinks, notebook, notebooks])
+  }, [forwardsLinks, notebook, notebooks])
 
   useEffect(() => {
     const raw = tagSearch.replace(/^::/, '').trim().toLowerCase()
@@ -8349,72 +8818,6 @@ function NotebookSettingsPanel({ notebook, notebooks, onClose }) {
     })()
     return () => { gone = true }
   }, [tagSearch, notebooks, notebook])
-
-  const SECS = [
-    { title:'Inline Formatting', rows:[
-      {k:'**bold**',d:'Bold'},{k:'*italic*',d:'Italic'},
-      {k:'***bold italic***',d:'Bold + italic'},{k:'~~strike~~',d:'Strikethrough'},
-      {k:'==highlight==',d:'Highlight'},{k:'`code`',d:'Inline code'},
-      {k:'^sup^',d:'Superscript'},{k:'~sub~',d:'Subscript'},
-      {k:'[text](url)',d:'Hyperlink'},{k:'![alt](url)',d:'Image'},{k:'![alt :left](url)',d:'Image aligned left/right/center'},
-    ]},
-    { title:'Headings', rows:[
-      {k:'# H1',d:'Heading 1'},{k:'## H2',d:'Heading 2'},{k:'### H3',d:'Heading 3'},
-      {k:'#### H4',d:'H4'},{k:'##### H5',d:'H5'},{k:'###### H6',d:'H6'},
-    ]},
-    { title:'Blocks', rows:[
-      {k:'> text',d:'Blockquote'},{k:'> [!NOTE]',d:'Callout'},
-      {k:'- item',d:'Unordered list'},{k:'1. item',d:'Ordered list'},
-      {k:'  - nested',d:'Nested list (2 spaces)'},{k:'- [ ] task',d:'Task item'},
-      {k:'- [x] done',d:'Checked task (clickable)'},{k:'```lang',d:'Code block'},
-      {k:'---',d:'Horizontal rule'},{k:'| a | b |',d:'Table'},
-      {k:'/habits',d:'Habit tracker (add habits, check off per day)'},
-      {k:'/task or /task:Title',d:'Kanban board'},
-      {k:'/timer mm:ss or hh:mm:ss',d:'Countdown timer with progress bar'},
-      {k:'/calendar',d:'Interactive inline calendar'},
-      {k:'?[question]()',d:'Review question — click to set date or link to flashcard deck'},
-      {k:'[^1]: note',d:'Footnote definition'},
-      {k:'$math$',d:'Inline math (MathQuill — click to edit)'},
-      {k:'$$\nmath\n$$',d:'Math block (MathQuill — click to edit)'},
-    ]},
-    { title:'Wikilinks', rows:[
-      {k:'[[Title]]',d:'Link to note or book'},
-      {k:'Type [[',d:'Dropdown — up to 4 suggestions'},
-      {k:'Click link',d:'Opens; creates missing notes'},
-    ]},
-    { title:'Tags & Dates', rows:[
-      {k:'::meeting',d:'Tag — renders as a #meeting badge; searchable in library'},
-      {k:'::important',d:'Another tag example — use any word after ::'},
-      {k:'::2026-03-18',d:'Due date (year-month-day)'},
-      {k:'::18-03-2026',d:'Due date (day-month-year)'},
-      {k:'::18-03-26',d:'Due date (day-month-2-digit year)'},
-      {k:'::18-03-2026,14:30',d:'Due date + time (2:30 PM = 14:30)'},
-      {k:'::14:30',d:'Due today at 14:30'},
-      {k:'::+2d',d:'Due in 2 days from now'},
-      {k:'::+3h',d:'Due in 3 hours from now'},
-    ]},
-    { title:'Auto-wrap Pairs', rows:[
-      {k:'Select text → type **',d:'Wraps selection with **…**'},
-      {k:'Select text → type *',d:'Wraps selection with *…*'},
-      {k:'Select text → type `',d:'Wraps selection with `…`'},
-      {k:'Select text → type ~~',d:'Wraps selection with ~~…~~'},
-      {k:'Select text → type ==',d:'Wraps selection with ==…=='},
-      {k:'Select text → type $',d:'Wraps selection with $…$'},
-    ]},
-    { title:'Inline Math', rows:[
-      {k:'2+2 =',d:'Shows answer as ghost hint — press Tab to accept'},
-      {k:'2*32.12321 =:.2',d:'Round result to 2 decimals → 64.25'},
-      {k:'5 km to miles =',d:'Unit conversion via math.js'},
-      {k:'@14:30',d:'Time reference (24h format)'},
-      {k:'@2:30pm',d:'Time reference (12h format)'},
-    ]},
-    { title:'Shortcuts', rows:[
-      {k:'Ctrl+B',d:'Bold'},{k:'Ctrl+I',d:'Italic'},{k:'Ctrl+K',d:'Link'},
-      {k:'Ctrl+E',d:'Code'},{k:'Ctrl+Shift+H',d:'Highlight'},
-      {k:'Ctrl+S',d:'Save'},{k:'Ctrl+F',d:'Find'},
-      {k:'Tab',d:'Indent list'},{k:'Enter',d:'Smart list continue'},
-    ]},
-  ]
 
   // Tree graph: backlinks feed INTO the current note (arrows pointing right → current)
   // forwards links branch OUT from the current note (arrows pointing right → linked)
@@ -8506,42 +8909,14 @@ function NotebookSettingsPanel({ notebook, notebooks, onClose }) {
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.55)', zIndex:10000, display:'flex', alignItems:'center', justifyContent:'center' }} onClick={onClose}>
       <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:14, width:620, maxWidth:'94vw', maxHeight:'80vh', display:'flex', flexDirection:'column', boxShadow:'0 20px 60px rgba(0,0,0,.55)' }} onClick={e=>e.stopPropagation()}>
-        {/* Header */}
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'14px 20px 0', flexShrink:0 }}>
-          <div style={{ display:'flex', gap:4 }}>
-            {['syntax','backlinks'].map(t => (
-              <button key={t} onClick={() => setTab(t)} style={{
-                padding:'6px 14px', fontSize:12, fontWeight:600, fontFamily:'inherit',
-                borderRadius:'8px 8px 0 0', border:'1px solid var(--border)',
-                borderBottom: t === tab ? '1px solid var(--surface)' : '1px solid var(--border)',
-                background: t === tab ? 'var(--surface)' : 'var(--surfaceAlt)',
-                color: t === tab ? 'var(--text)' : 'var(--textDim)', cursor:'pointer',
-                textTransform:'capitalize', marginBottom: t === tab ? -1 : 0,
-              }}>{t}</button>
-            ))}
-          </div>
-          <button onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s',marginBottom:0}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg></button>
+        {/* Header — markdown syntax reference moved to Settings → Notebook */}
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'14px 20px', flexShrink:0 }}>
+          <span style={{ fontSize:13, fontWeight:700, color:'var(--text)' }}>Backlinks & Tags</span>
+          <button onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg></button>
         </div>
         <div style={{ borderTop:'1px solid var(--border)', marginTop:0 }} />
 
-        {tab === 'syntax' && (
-          <div style={{ overflow:'auto', padding:'14px 20px 20px' }}>
-            {SECS.map(sec => (
-              <div key={sec.title} style={{ marginBottom:18 }}>
-                <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:'var(--textDim)', opacity:.6, marginBottom:8 }}>{sec.title}</div>
-                {sec.rows.map(({k,d}) => (
-                  <div key={k} style={{ display:'flex', alignItems:'baseline', gap:12, padding:'4px 0', borderBottom:'1px solid var(--borderSubtle)' }}>
-                    <code style={{ fontFamily:'SF Mono,Menlo,Consolas,monospace', fontSize:11, background:'var(--surfaceAlt)', border:'1px solid var(--border)', borderRadius:5, padding:'2px 8px', color:'var(--accent)', flexShrink:0, minWidth:130, display:'inline-block' }}>{k}</code>
-                    <span style={{ fontSize:12, color:'var(--textDim)' }}>{d}</span>
-                  </div>
-                ))}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {tab === 'backlinks' && (
-          <div style={{ overflow:'auto', padding:'14px 20px 20px', flex:1, display:'flex', flexDirection:'column', gap:16 }}>
+        <div style={{ overflow:'auto', padding:'14px 20px 20px', flex:1, display:'flex', flexDirection:'column', gap:16 }}>
 
             {/* ── Tag search ─────────────────────────────────────────── */}
             <div>
@@ -8620,7 +8995,7 @@ function NotebookSettingsPanel({ notebook, notebooks, onClose }) {
                   ) : (
                     <div style={{ display:'flex', flexDirection:'column', gap:4, marginBottom:12 }}>
                       {backlinks.map(nb => (
-                        <div key={nb.id} onClick={() => { const s = useAppStore.getState(); s.setActiveNotebook(nb); s.updateTab(paneTabId || activeTabId, { view: 'notebook', activeNotebook: nb }); s.setView('notebook') }} style={{ display:'flex', alignItems:'center', gap:10, padding:'7px 12px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surfaceAlt)', cursor:'pointer' }}>
+                        <div key={nb.id} onClick={() => { const s = useAppStore.getState(); s.setActiveNotebook(nb); s.updateTab(s.activeTabId, { view: 'notebook', activeNotebook: nb }); s.setView('notebook') }} style={{ display:'flex', alignItems:'center', gap:10, padding:'7px 12px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surfaceAlt)', cursor:'pointer' }}>
                           <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="12" height="14" rx="2" stroke="currentColor" strokeWidth="1.3"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/><line x1="5" y1="11" x2="8" y2="11" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/></svg>
                           <span style={{ fontSize:12, color:'var(--text)', fontWeight:500 }}>{nb.title}</span>
                         </div>
@@ -8639,7 +9014,7 @@ function NotebookSettingsPanel({ notebook, notebooks, onClose }) {
                   ) : (
                     <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
                       {forwardsLinks.map(nb => (
-                        <div key={nb.id} onClick={() => { const s = useAppStore.getState(); s.setActiveNotebook(nb); s.updateTab(paneTabId || activeTabId, { view: 'notebook', activeNotebook: nb }); s.setView('notebook') }} style={{ display:'flex', alignItems:'center', gap:10, padding:'7px 12px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surfaceAlt)', cursor:'pointer' }}>
+                        <div key={nb.id} onClick={() => { const s = useAppStore.getState(); s.setActiveNotebook(nb); s.updateTab(s.activeTabId, { view: 'notebook', activeNotebook: nb }); s.setView('notebook') }} style={{ display:'flex', alignItems:'center', gap:10, padding:'7px 12px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surfaceAlt)', cursor:'pointer' }}>
                           <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="12" height="14" rx="2" stroke="currentColor" strokeWidth="1.3"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/><line x1="5" y1="11" x2="8" y2="11" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/></svg>
                           <span style={{ fontSize:12, color:'var(--text)', fontWeight:500 }}>{nb.title}</span>
                         </div>
@@ -8650,7 +9025,6 @@ function NotebookSettingsPanel({ notebook, notebooks, onClose }) {
               )}
             </div>
           </div>
-        )}
       </div>
     </div>
   )

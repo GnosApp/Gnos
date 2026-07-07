@@ -1,0 +1,11 @@
+[
+  {
+    "id": "com.example.word-count",
+    "name": "Word Count",
+    "author": "example",
+    "description": "Shows a live word count for the current chapter in the reader toolbar.",
+    "repo": "example/gnos-plugin-word-count",
+    "version": "1.0.0",
+    "minAppVersion": "0.1.0"
+  }
+]

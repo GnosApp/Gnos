@@ -1,4 +1,4 @@
-import { readTextFile, writeTextFile, writeFile, readFile, remove, readDir, exists, mkdir, rename } from '@tauri-apps/plugin-fs'
+import { readTextFile, writeTextFile, writeFile, readFile, remove, readDir, exists, mkdir, rename, stat } from '@tauri-apps/plugin-fs'
 import { appDataDir, join } from '@tauri-apps/api/path'
 
 // ── Base directory ────────────────────────────────────────────────────────────
@@ -271,33 +271,37 @@ export async function loadLibrary() {
   try {
     const booksDir = await getBooksDir()
     const entries = await readDir(booksDir)
-    // Build id → folder name map from meta.json files
+    // Build id → folder name map from meta.json files (reads run in parallel)
     const folderById = {}
-    for (const entry of entries) {
-      if (!entry.name || entry.name.startsWith('.')) continue
-      const metaPath = await join(booksDir, entry.name, 'meta.json')
-      if (await exists(metaPath)) {
-        try {
-          const meta = JSON.parse(await readTextFile(metaPath))
-          if (meta.id) folderById[meta.id] = entry.name
-        } catch { /* skip corrupt */ }
-      }
-    }
+    await Promise.all(
+      entries
+        .filter(e => e.name && !e.name.startsWith('.'))
+        .map(async entry => {
+          try {
+            const metaPath = await join(booksDir, entry.name, 'meta.json')
+            if (!(await exists(metaPath))) return
+            const meta = JSON.parse(await readTextFile(metaPath))
+            if (meta.id) folderById[meta.id] = entry.name
+          } catch { /* skip corrupt */ }
+        })
+    )
     // Also scan audio folder for audiobook covers
     let audioFolderById = {}
     try {
       const audioDir = await getAudioDir()
       const audioEntries = await readDir(audioDir)
-      for (const entry of audioEntries) {
-        if (!entry.name || entry.name.startsWith('.')) continue
-        const metaPath = await join(audioDir, entry.name, 'meta.json')
-        if (await exists(metaPath)) {
-          try {
-            const meta = JSON.parse(await readTextFile(metaPath))
-            if (meta.id) audioFolderById[meta.id] = { folder: entry.name, dir: audioDir }
-          } catch { /* skip */ }
-        }
-      }
+      await Promise.all(
+        audioEntries
+          .filter(e => e.name && !e.name.startsWith('.'))
+          .map(async entry => {
+            try {
+              const metaPath = await join(audioDir, entry.name, 'meta.json')
+              if (!(await exists(metaPath))) return
+              const meta = JSON.parse(await readTextFile(metaPath))
+              if (meta.id) audioFolderById[meta.id] = { folder: entry.name, dir: audioDir }
+            } catch { /* skip */ }
+          })
+      )
     } catch { /* audio dir may not exist */ }
 
     async function loadCoverFromFolder(baseDir, folder) {
@@ -396,17 +400,19 @@ export async function loadNotebooksMeta() {
   try {
     const notebooksDir = await getNotebooksDir()
     const entries = await readDir(notebooksDir)
-    const metas = []
-    for (const entry of entries) {
-      if (!entry.name || entry.name.startsWith('.')) continue
-      const metaPath = await join(notebooksDir, entry.name, 'meta.json')
-      if (await exists(metaPath)) {
-        try {
-          const meta = JSON.parse(await readTextFile(metaPath))
-          metas.push(meta)
-        } catch { /* skip corrupt meta */ }
-      }
-    }
+    // Read every folder's meta.json in parallel — serial awaits here dominated
+    // cold-start time on large archives
+    const metas = (await Promise.all(
+      entries
+        .filter(e => e.name && !e.name.startsWith('.'))
+        .map(async entry => {
+          try {
+            const metaPath = await join(notebooksDir, entry.name, 'meta.json')
+            if (!(await exists(metaPath))) return null
+            return JSON.parse(await readTextFile(metaPath))
+          } catch { return null /* skip corrupt meta */ }
+        })
+    )).filter(Boolean)
 
     // Filter out notebooks whose IDs appear in the trash manifests.
     // This handles the case where moveToTrash's folder rename failed (e.g. cross-device)
@@ -414,17 +420,19 @@ export async function loadNotebooksMeta() {
     try {
       const trashDir = await getTrashDir()
       const trashEntries = await readDir(trashDir)
-      const trashedIds = new Set()
-      for (const te of trashEntries) {
-        if (!te.name) continue
-        const tmPath = await join(trashDir, te.name, '_trash_meta.json')
-        if (await exists(tmPath)) {
-          try {
-            const tm = JSON.parse(await readTextFile(tmPath))
-            if (tm.type === 'notebook' && tm.id) trashedIds.add(tm.id)
-          } catch { /* skip corrupt manifest */ }
-        }
-      }
+      const trashedIdList = await Promise.all(
+        trashEntries
+          .filter(te => te.name)
+          .map(async te => {
+            try {
+              const tmPath = await join(trashDir, te.name, '_trash_meta.json')
+              if (!(await exists(tmPath))) return null
+              const tm = JSON.parse(await readTextFile(tmPath))
+              return tm.type === 'notebook' && tm.id ? tm.id : null
+            } catch { return null /* skip corrupt manifest */ }
+          })
+      )
+      const trashedIds = new Set(trashedIdList.filter(Boolean))
       if (trashedIds.size > 0) {
         // For any notebook still on disk whose id is in the trash, remove the
         // meta.json so it won't resurface on the next launch either.
@@ -741,9 +749,55 @@ async function _saveLegacyBookContent(id, chapters) {
   await storage.set(`book_${id}_chunks`, String(chunks.length))
 }
 
+// ── Seed book content (no file I/O needed for testing) ───────────────────────
+const SEED_BOOK_CONTENT = {
+  seed_book_1: [
+    {
+      title: 'Book One — Dune',
+      blocks: [
+        { type: 'heading', text: 'I' },
+        { type: 'paragraph', text: 'In the week before their departure to Arrakis, when all the final preparations were being made, Paul Atreides stood at the edge of the landing field and watched the giant cargo lifters settling like tired birds onto their pads. The air smelled of burned fuel and distant rain, a combination that would not exist on Arrakis, where rain was a memory belonging to other worlds.' },
+        { type: 'paragraph', text: 'His mother had not slept. He could tell by the way she held her shoulders — that careful, deliberate stillness that Bene Gesserit training produced when its practitioner was working very hard to appear calm. Lady Jessica stood a few paces to his left, watching the same slow parade of machines and men, but seeing something else entirely.' },
+        { type: 'paragraph', text: '"You should eat something," she said without looking at him.' },
+        { type: 'paragraph', text: '"I know." He did not move.' },
+        { type: 'paragraph', text: 'The Duke had been up since before dawn. Paul had heard him in the corridor at some hour when the castle was at its quietest, his footsteps unhurried and even, a man who had learned long ago that worry was simply planning without a destination.' },
+        { type: 'paragraph', text: 'Gurney Halleck appeared at Paul\'s right elbow. He smelled of metal polish and had the look of a man who had already eaten twice and was considering a third time.' },
+        { type: 'paragraph', text: '"Finished your weapons review?" Paul asked.' },
+        { type: 'paragraph', text: '"Done before first light. The men are ready." Gurney watched a loader drag a sealed crate across the tarmac. "Whether the men are ready and whether we are ready are, of course, different questions."' },
+        { type: 'paragraph', text: 'Paul looked at him.' },
+        { type: 'paragraph', text: '"I mean only that readiness of body and readiness of mind don\'t always keep the same schedule," Gurney said, his voice carrying the faint cadence of a man who had once set that observation to music. "Your father understands this. It\'s why he\'s walking the perimeter now instead of standing here watching crates."' },
+        { type: 'paragraph', text: 'Jessica turned her head slightly. Just enough.' },
+        { type: 'paragraph', text: '"I\'ll go find him," Paul said.' },
+      ],
+    },
+    {
+      title: 'II',
+      blocks: [
+        { type: 'heading', text: 'II' },
+        { type: 'paragraph', text: 'The Duke was standing at the far edge of the field where the perimeter lights ended and the dark began. He was not walking. He was simply standing, hands clasped behind his back, looking out at nothing that could be seen.' },
+        { type: 'paragraph', text: 'Paul came up beside him and waited. This was something he had learned early: that his father\'s silences were not absences. They were a form of speech, and interrupting them was like interrupting a sentence.' },
+        { type: 'paragraph', text: 'After a while the Duke said: "Do you know what I think about, standing here?"' },
+        { type: 'paragraph', text: '"No," Paul said honestly.' },
+        { type: 'paragraph', text: '"The things I haven\'t thought of yet. The variables I haven\'t named. Every plan has a gap in it — a place where you simply have to trust the people around you and move forward." He turned to look at Paul. In the half-dark his face was hard to read, which was rare. "Arrakis will have many such gaps."' },
+        { type: 'paragraph', text: '"The Harkonnens left traps."' },
+        { type: 'paragraph', text: '"Traps we know about. And traps we don\'t. The ones we don\'t know about are the interesting ones." He paused. "Interesting is not the word I mean. I mean dangerous. But the interesting ones are always the dangerous ones, in my experience."' },
+        { type: 'paragraph', text: 'Paul thought about the dreams he had been having — fragmented things, full of sand and heat and a face he could not quite see. He had not told his mother about the most recent ones. He was not sure why.' },
+        { type: 'paragraph', text: '"I\'m not afraid," Paul said.' },
+        { type: 'paragraph', text: 'His father was quiet for a moment. "I know. That\'s the part that worries me a little." He put his hand briefly on Paul\'s shoulder — the rare, solid weight of it. "Fear is useful. It asks questions. Courage that has no fear behind it is just noise."' },
+        { type: 'paragraph', text: 'The loading lights swept across the field in their slow rotation. Somewhere on the far side of the tarmac, Gurney had started humming something — one of the old ballads, something about water and waiting.' },
+        { type: 'paragraph', text: '"Tomorrow, then," Paul said.' },
+        { type: 'paragraph', text: '"Tomorrow," his father agreed. And they stood together in the dark until the lights came around again.' },
+      ],
+    },
+  ],
+}
+
 // Load book content. Tries named folder first, then legacy flat files.
 export async function loadBookContent(bookOrId) {
   const id = typeof bookOrId === 'string' ? bookOrId : bookOrId?.id
+
+  // Return hardcoded content for seed books (no file I/O needed)
+  if (id && SEED_BOOK_CONTENT[id]) return SEED_BOOK_CONTENT[id]
 
   // 1. Named folder — look up by id in meta.json
   try {
@@ -917,6 +971,216 @@ export async function loadArchivePointer() {
   }
 }
 
+// ── Quick notes ───────────────────────────────────────────────────────────────
+// Notes captured via the quick note popup. Two save targets:
+//  • default — a regular notebook folder in the archive, so the note shows up
+//    in the main app's notebook list on next load
+//  • custom  — plain .md files in a user-chosen folder (prefs.quickNoteDir)
+
+/** Find an existing notebook folder by meta.json id. Returns folder name or null. */
+async function findNotebookFolderById(notebooksDir, id) {
+  const entries = await readDir(notebooksDir).catch(() => [])
+  for (const entry of entries) {
+    if (!entry.name || entry.name.startsWith('.')) continue
+    const metaPath = await join(notebooksDir, entry.name, 'meta.json')
+    if (await exists(metaPath)) {
+      try {
+        const meta = JSON.parse(await readTextFile(metaPath))
+        if (meta.id === id) return entry.name
+      } catch { /* skip corrupt meta */ }
+    }
+  }
+  return null
+}
+
+/** Delete one specific notebook folder by folder name (not by id). Used to prune
+ *  redundant duplicate quick-note folders that share an id with a surviving folder,
+ *  where the id-based deleteNotebookContent would hit the wrong (or a random) one. */
+async function removeNotebookFolder(notebooksDir, folderName) {
+  try {
+    const dir = await join(notebooksDir, folderName)
+    const folderEntries = await readDir(dir).catch(() => [])
+    for (const f of folderEntries) {
+      if (f.name) await remove(await join(dir, f.name)).catch(() => {})
+    }
+    await remove(dir).catch(() => {})
+  } catch { /* non-fatal */ }
+}
+
+/** Load quick-note notebooks for the QuickNoteView stack, self-healing on the way.
+ *
+ *  Real-world corruption mode: iCloud sync latency once made findNotebookFolderById
+ *  miss an existing folder, so the *same* quick note (same id) got re-saved into
+ *  several title-named folders — some of which now have empty .md files. Reading such
+ *  a folder first (loadNotebookContent returns the first id match) surfaced blank
+ *  cards on every launch.
+ *
+ *  Here we group folders by id, keep the one with the most actual on-disk content,
+ *  delete the redundant duplicates (and any id whose every copy is empty), record the
+ *  survivor in the id→folder map, and return one entry per id with content preloaded.
+ *  Returns [{ id, createdAt, title, content, folder }], newest first. */
+export async function loadQuickNoteNotebooks() {
+  const notebooksDir = await getNotebooksDir()
+  const entries = await readDir(notebooksDir).catch(() => [])
+  // Gather every quickNote folder with its real body text.
+  const folders = []
+  for (const entry of entries) {
+    if (!entry.name || entry.name.startsWith('.')) continue
+    try {
+      const dir = await join(notebooksDir, entry.name)
+      const metaPath = await join(dir, 'meta.json')
+      if (!(await exists(metaPath))) continue
+      const meta = JSON.parse(await readTextFile(metaPath))
+      if (!meta.quickNote || !meta.id) continue
+      let content = ''
+      const namedMd = await join(dir, `${entry.name}.md`)
+      if (await exists(namedMd)) content = await readTextFile(namedMd)
+      else {
+        const fe = await readDir(dir).catch(() => [])
+        const md = fe.find(e => e.name?.endsWith('.md'))
+        if (md) content = await readTextFile(await join(dir, md.name))
+      }
+      folders.push({ id: meta.id, folder: entry.name, content, meta })
+    } catch { /* skip corrupt folder */ }
+  }
+  // Group by id.
+  const byId = new Map()
+  for (const f of folders) {
+    if (!byId.has(f.id)) byId.set(f.id, [])
+    byId.get(f.id).push(f)
+  }
+  const map = await getJSON('quicknote_folder_map', {})
+  const out = []
+  for (const [id, group] of byId) {
+    // Richest folder wins; ties keep the most recently updated.
+    group.sort((a, b) =>
+      b.content.trim().length - a.content.trim().length ||
+      new Date(b.meta.updatedAt || 0) - new Date(a.meta.updatedAt || 0))
+    const winner = group[0]
+    const losers = group.slice(1)
+    if (!winner.content.trim()) {
+      // Every copy of this note is empty — a true orphan. Remove them all.
+      for (const f of group) await removeNotebookFolder(notebooksDir, f.folder)
+      delete map[id]
+      continue
+    }
+    for (const f of losers) await removeNotebookFolder(notebooksDir, f.folder)
+    map[id] = winner.folder
+    out.push({ id, createdAt: winner.meta.createdAt, title: winner.meta.title, content: winner.content, folder: winner.folder })
+  }
+  await setJSON('quicknote_folder_map', map)
+  out.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+  return out
+}
+
+/** Save a quick note as a real notebook folder in the archive.
+ *  note: { id, title, content, createdAt } — returns the written meta. */
+export async function saveQuickNoteAsNotebook(note) {
+  const notebooksDir = await getNotebooksDir()
+  // Prefer the persisted id→folder map. iCloud can hide a folder's meta.json so
+  // findNotebookFolderById misses it and spawns a duplicate; the map lets us reuse
+  // the real folder even before its meta has materialized locally.
+  const folderMap = await getJSON('quicknote_folder_map', {})
+  let folderName = null
+  if (folderMap[note.id] && await exists(await join(notebooksDir, folderMap[note.id]))) {
+    folderName = folderMap[note.id]
+  }
+  if (!folderName) folderName = await findNotebookFolderById(notebooksDir, note.id)
+  if (!folderName) {
+    const base = sanitizeFolderName(note.title || `Quick Note ${new Date().toISOString().slice(0, 10)}`) || 'Quick Note'
+    let candidate = base, i = 2
+    while (await exists(await join(notebooksDir, candidate))) candidate = `${base} ${i++}`
+    folderName = candidate
+    await mkdir(await join(notebooksDir, folderName), { recursive: true })
+  }
+  const dir = await join(notebooksDir, folderName)
+  const words = (note.content.match(/\S+/g) || []).length
+  const meta = {
+    id: note.id,
+    title: note.title || folderName,
+    wordCount: words,
+    quickNote: true,
+    createdAt: note.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }
+  await writeTextFile(await join(dir, 'meta.json'), JSON.stringify(meta, null, 2))
+  await writeTextFile(await join(dir, `${folderName}.md`), note.content)
+  folderMap[note.id] = folderName
+  await setJSON('quicknote_folder_map', folderMap)
+  await addToQuickNotesCollection(note.id)
+  return meta
+}
+
+/** Delete a quick note entirely — folder on disk + its quicknotes-collection entry. */
+export async function deleteQuickNote(noteId) {
+  try {
+    await deleteNotebookContent(noteId)
+    const folderMap = await getJSON('quicknote_folder_map', {})
+    if (folderMap[noteId]) { delete folderMap[noteId]; await setJSON('quicknote_folder_map', folderMap) }
+    const collections = await getJSON('collections_meta', [])
+    const col = collections.find(c => c.name === 'quicknotes')
+    if (col?.items?.includes(noteId)) {
+      col.items = col.items.filter(i => i !== noteId)
+      await setJSON('collections_meta', collections)
+    }
+  } catch (err) {
+    console.warn('[Gnos] deleteQuickNote failed:', err)
+  }
+}
+
+/** Ensure a "quicknotes" collection exists and contains this note id. */
+async function addToQuickNotesCollection(noteId) {
+  try {
+    const collections = await getJSON('collections_meta', [])
+    let col = collections.find(c => c.name === 'quicknotes')
+    if (!col) {
+      col = { id: `col_${Date.now().toString(36)}`, name: 'quicknotes', items: [], color: '#8250df', createdAt: new Date().toISOString() }
+      collections.push(col)
+    }
+    if (!col.items.includes(noteId)) col.items.push(noteId)
+    await setJSON('collections_meta', collections)
+  } catch (err) {
+    console.warn('[Gnos] addToQuickNotesCollection failed:', err)
+  }
+}
+
+/** Save a quick note as a plain .md file in a custom folder.
+ *  Returns the file path; pass note.filePath on re-saves to keep it stable. */
+export async function saveQuickNoteToDir(note, dirPath) {
+  if (!(await exists(dirPath))) await mkdir(dirPath, { recursive: true })
+  let filePath = note.filePath
+  if (!filePath) {
+    const base = sanitizeFolderName(note.title || `Quick Note ${new Date().toISOString().replace('T', ' ').slice(0, 19).replace(/:/g, '.')}`) || 'Quick Note'
+    let candidate = `${base}.md`, i = 2
+    while (await exists(await join(dirPath, candidate))) candidate = `${base} ${i++}.md`
+    filePath = await join(dirPath, candidate)
+  }
+  await writeTextFile(filePath, note.content)
+  return filePath
+}
+
+/** Load every `.md` quick note from a custom folder, newest first. Mirrors
+ *  saveQuickNoteToDir so custom-folder notes survive a restart (archive-mode
+ *  notes reload via loadNotebooksMeta; this is the custom-folder equivalent). */
+export async function loadQuickNotesFromDir(dirPath) {
+  if (!dirPath || !(await exists(dirPath))) return []
+  const entries = await readDir(dirPath).catch(() => [])
+  const notes = await Promise.all(
+    entries
+      .filter(e => e.name && !e.name.startsWith('.') && e.name.toLowerCase().endsWith('.md'))
+      .map(async e => {
+        try {
+          const filePath = await join(dirPath, e.name)
+          const content = await readTextFile(filePath)
+          let updatedAt = 0
+          try { updatedAt = (await stat(filePath)).mtime?.getTime?.() || 0 } catch { /* no mtime */ }
+          return { id: `qnfile:${filePath}`, filePath, title: e.name.replace(/\.md$/i, ''), content, updatedAt }
+        } catch { return null }
+      })
+  )
+  return notes.filter(Boolean).sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
 // ── Preferences ───────────────────────────────────────────────────────────────
 
 export async function loadPreferences() {
@@ -946,14 +1210,13 @@ export async function addReadingMinutes(minutes) {
 //
 // Folder layout:
 //   archive/audio/<Artist - Title>/
-//     meta.json        — book metadata (title, author, format, chapters list, …)
-//     chapter_<n>.bin  — raw audio bytes for multi-chapter audiobooks (future)
+//     meta.json            — book metadata (title, author, format, chapters list, …)
+//     audio.<ext>          — raw audio bytes for single-file audiobooks
+//     chapter_<n>.<ext>    — raw audio bytes for multi-chapter audiobooks
 //
-// Audio binary data is currently stored as base64 data-URL strings under the
-// flat keys audiodata_<id> / audiochap_<id>_<n> because writing binary files
-// requires Tauri's writeBinaryFile API which is gated on separate permissions.
-// The meta.json folder is written on every save so the library is browsable
-// on-disk even though the audio payload itself stays in the keyed store.
+// Audio binary data is stored as raw files using Tauri's writeFile/readFile APIs.
+// Legacy base64 data-URL strings under audiodata_<id> / audiochap_<id>_<n> are
+// still read as a backwards-compatibility fallback.
 
 async function getAudioDir() {
   const base = await getBaseDir()
@@ -1017,8 +1280,39 @@ export async function deleteAudiobookMeta(book) {
   } catch (err) { console.debug('[Gnos] deleteAudiobookMeta error', err) }
 }
 
-export async function loadAudioChapter(bookId, chapterIdx) {
-  return storage.get(`audiochap_${bookId}_${chapterIdx}`)
+function _extToMime(ext) {
+  const map = { mp3: 'audio/mpeg', m4b: 'audio/mp4', m4a: 'audio/mp4', wav: 'audio/wav', ogg: 'audio/ogg', flac: 'audio/flac', aac: 'audio/aac', opus: 'audio/ogg; codecs=opus' }
+  return map[ext?.toLowerCase()] || 'audio/mpeg'
+}
+
+export async function writeAudioFile(book, fileName, uint8Array) {
+  const dir = await getAudioBookDir(book)
+  await writeFile(await join(dir, fileName), uint8Array)
+}
+
+export async function readAudioFile(book, fileName) {
+  try {
+    const dir = await getAudioBookDir(book)
+    const filePath = await join(dir, fileName)
+    if (!(await exists(filePath))) return null
+    return await readFile(filePath)
+  } catch { return null }
+}
+
+export async function loadAudioChapter(bookOrId, chapterIdx) {
+  // New binary path: pass the full book object with audioChapters[n].ext set
+  if (bookOrId && typeof bookOrId === 'object') {
+    const book = bookOrId
+    const ext = book.audioChapters?.[chapterIdx]?.ext
+    if (ext) {
+      const bytes = await readAudioFile(book, `chapter_${chapterIdx}.${ext}`)
+      if (bytes) return new Blob([bytes], { type: _extToMime(ext) })
+    }
+    // Fall back to legacy keyed-store format
+    return storage.get(`audiochap_${book.id}_${chapterIdx}`)
+  }
+  // Legacy: bookOrId is a string ID
+  return storage.get(`audiochap_${bookOrId}_${chapterIdx}`)
 }
 
 export async function saveAudioChapter(bookId, chapterIdx, dataUrl) {
@@ -1039,8 +1333,17 @@ export async function deleteAudiobook(book) {
   }
 }
 
-export async function loadSingleAudioData(bookId) {
-  return storage.get(`audiodata_${bookId}`)
+export async function loadSingleAudioData(bookOrId) {
+  if (bookOrId && typeof bookOrId === 'object') {
+    const book = bookOrId
+    const ext = book.audioExt
+    if (ext) {
+      const bytes = await readAudioFile(book, `audio.${ext}`)
+      if (bytes) return new Blob([bytes], { type: _extToMime(ext) })
+    }
+    return storage.get(`audiodata_${book.id}`)
+  }
+  return storage.get(`audiodata_${bookOrId}`)
 }
 
 // Migration: write meta.json folders for any audiobooks that don't have one yet.
@@ -1113,17 +1416,17 @@ export async function loadSketchbooksMeta() {
   try {
     const sketchesDir = await getSketchesDir()
     const entries = await readDir(sketchesDir)
-    const metas = []
-    for (const entry of entries) {
-      if (!entry.name) continue
-      const metaPath = await join(sketchesDir, entry.name, 'meta.json')
-      if (await exists(metaPath)) {
-        try {
-          const meta = JSON.parse(await readTextFile(metaPath))
-          metas.push(meta)
-        } catch { /* skip corrupt */ }
-      }
-    }
+    const metas = (await Promise.all(
+      entries
+        .filter(e => e.name)
+        .map(async entry => {
+          try {
+            const metaPath = await join(sketchesDir, entry.name, 'meta.json')
+            if (!(await exists(metaPath))) return null
+            return JSON.parse(await readTextFile(metaPath))
+          } catch { return null /* skip corrupt */ }
+        })
+    )).filter(Boolean)
     if (metas.length > 0) {
       // Deduplicate by ID — keep the entry with the most recent updatedAt (rename can create duplicates)
       const seen = new Map()
@@ -1297,4 +1600,11 @@ export async function migrateSketchbooksToFolders(sketchbooks) {
       console.warn('[Gnos] migrateSketchbooksToFolders failed for', sb.id, err)
     }
   }
+}
+// ── Plugin helpers ────────────────────────────────────────────────────────────
+
+/** Returns the absolute path to the plugins directory. */
+export async function getPluginsDir() {
+  const base = await getBaseDir()
+  return join(base, 'plugins')
 }

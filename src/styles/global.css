@@ -29,12 +29,24 @@ body {
   --tagBg: #21262d;
 
   --font-ui: 'Satoshi', 'Author', system-ui, -apple-system, sans-serif;
-  --font-logo: 'Britney', Georgia, serif;
+  --font-logo: 'Lora', Georgia, serif;
   --font-title: 'Clash Display', 'Satoshi', system-ui, sans-serif;
   --font-sub: 'Satoshi', system-ui, sans-serif;
   --font-body: 'Satoshi', 'Author', system-ui, -apple-system, sans-serif;
-  --font-prose: 'Erode', Georgia, serif;
-  --font-serif: 'Erode', Georgia, serif;
+  --font-prose: 'Lora', Georgia, serif;
+  --font-serif: 'Lora', Georgia, serif;
+
+  /* ── Z-index token system ── */
+  --z-content: 1;
+  --z-floating-chrome: 9000;
+  --z-floating-chrome-above: 9001;
+  --z-mobile-modal: 9100;
+  --z-mobile-tab-switcher: 9200;
+  --z-tabs-view: 9500;
+  --z-popover: 9999;
+
+  /* ── Default translucent surface (dark theme; overridden per theme via JS) ── */
+  --surfaceTranslucent: rgba(22, 27, 34, 0.85);
 }
 
 * { box-sizing: border-box; }
@@ -229,7 +241,7 @@ button { font-family: inherit; }
   position: relative;
 }
 
-.library-grid { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
+.library-grid { display: grid; gap: 28px; align-items: start; }
 .empty-state { color: var(--textMuted); font-size: 14px; margin-top: 16px; line-height: 1.7; max-width: 280px; }
 .empty-state span { font-size: 12px; color: var(--textDim); }
 
@@ -240,7 +252,7 @@ button { font-family: inherit; }
   background: var(--headerBg);
 }
 .streak-section { display: flex; align-items: center; gap: 9px; justify-content: center; }
-.streak-label { font-size: 10px; font-weight: 400; color: var(--textDim); letter-spacing: 0.04em; }
+.streak-label { font-size: 10px; font-weight: 400; color: var(--textDim); }
 .streak-dots { display: flex; gap: 5px; flex-direction: row; }
 .streak-dot {
   width: 13px; height: 13px; border-radius: 50%;
@@ -278,12 +290,25 @@ button { font-family: inherit; }
 .cover-author { color: rgba(255,255,255,0.5); font-size: 9px; margin-top: 4px; font-family: var(--font-ui, system-ui); z-index: 1; letter-spacing: 0.06em; text-transform: uppercase; }
 .cover-badge { position: absolute; top: 6px; right: 6px; background: rgba(0,0,0,0.62); border-radius: 3px; padding: 2px 5px; font-size: 7px; color: rgba(255,255,255,0.88); font-weight: 700; font-family: monospace; letter-spacing: 0.1em; z-index: 2; }
 .cover-audio { position: absolute; bottom: 8px; left: 18px; font-size: 11px; opacity: 0.65; z-index: 2; }
+
+/* ── Multi-select cover highlight ────────────────────────────────────────── */
+.lib-card-selected .book-cover {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.lib-card-selected .book-cover::before {
+  content: '';
+  position: absolute; inset: 0; z-index: 30;
+  background: rgba(56, 139, 253, 0.22);
+  border-radius: inherit;
+  pointer-events: none;
+}
 .cover-prog-bg { position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: rgba(0,0,0,0.35); z-index: 2; }
 .cover-prog-fill { height: 100%; background: rgba(255,255,255,0.7); transition: width 0.4s; }
 
 .book-meta { padding-top: 10px; padding-bottom: 2px; display: flex; justify-content: space-between; gap: 4px; }
 .meta-text { flex: 1; min-width: 0; }
-.meta-title { font-size: 12px; color: var(--text); font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; font-family: var(--font-serif, Georgia, serif); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.meta-title { font-size: 12px; color: var(--text); font-weight: 600; line-height: 1.3; letter-spacing: 0.025em; font-family: var(--font-serif, Georgia, serif); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .meta-author { font-size: 10px; color: var(--textDim); margin-top: 2px; font-family: var(--font-ui, system-ui); letter-spacing: 0.06em; text-transform: uppercase; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-prog-bar { width: 100%; height: 3px; background: var(--progressTrack, var(--surfaceAlt)); border-radius: 2px; overflow: hidden; display: flex; align-items: center; gap: 6px; }
 .card-prog-fill { height: 100%; background: var(--accent); transition: width 0.4s; border-radius: 2px; }
@@ -508,23 +533,7 @@ button { font-family: inherit; }
 .accessibility-row:last-child { border-bottom: none; }
 .accessibility-label { font-size: 13px; font-weight: 600; color: var(--text); }
 .accessibility-sub { font-size: 11px; color: var(--textDim); margin-top: 2px; }
-.toggle-track {
-  width: 36px; height: 20px; border-radius: 10px; flex-shrink: 0;
-  position: relative; cursor: pointer;
-  transition: background 0.2s ease;
-}
-.toggle-track.on { background: var(--accent); }
-.toggle-track.off { background: var(--borderSubtle); }
-.toggle-thumb {
-  position: absolute; top: 2px; width: 16px; height: 16px;
-  border-radius: 50%; background: #fff;
-  transition: left 0.2s cubic-bezier(0.4,0,0.2,1), width 0.15s ease;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.22);
-}
-.toggle-track.on .toggle-thumb { left: 18px; }
-.toggle-track.off .toggle-thumb { left: 2px; }
-.toggle-track:active .toggle-thumb { width: 18px; }
-.toggle-track.on:active .toggle-thumb { left: 16px; }
+/* (toggle styling unified — see .gnos-toggle in section 12 near end of file) */
 
 /* === TOAST === */
 .toast { position: fixed; bottom: 24px; right: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 18px; font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 10px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); z-index: 400; max-width: 320px; }
@@ -543,7 +552,7 @@ button { font-family: inherit; }
   background: var(--headerBg); position: relative; z-index: 50;
 }
 
-.text-logo { font-size: 18px; font-weight: 600; letter-spacing: -0.3px; color: var(--text); font-family: Georgia, serif; background: none; border: none; cursor: pointer; padding: 4px 6px; border-radius: 6px; transition: background 0.15s; user-select: none; -webkit-user-select: none; }
+.text-logo { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; color: var(--text); font-family: var(--font-logo); background: none; border: none; cursor: pointer; padding: 4px 6px; border-radius: 6px; transition: background 0.15s; user-select: none; -webkit-user-select: none; }
 .text-logo:hover { background: var(--surfaceAlt); }
 
 /* True-center the chapter button regardless of left/right item widths.
@@ -584,8 +593,8 @@ button { font-family: inherit; }
 .chapter-item .ch-sub { margin-top: 1px; }
 
 .settings-panel { position: fixed; right: 16px; top: 56px; width: 260px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px; z-index: 200; box-shadow: 0 8px 32px rgba(0,0,0,0.28); max-height: calc(100vh - 80px); overflow-y: auto; }
-.settings-panel input[type=range] { width: 100%; accent-color: var(--accent); }
-.settings-panel select { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 12px; }
+.settings-panel .gnos-slider { width: 100%; }
+.settings-panel .gnos-select { width: 100%; }
 
 /* === READER MAIN & CARD (CSS-columns engine) === */
 
@@ -1244,7 +1253,7 @@ mark.reader-note-highlight {
   position: relative; z-index: 1;
   font-size: 11px; font-weight: 700; color: #222;
   text-align: center; line-height: 1.3;
-  word-break: break-word; font-family: Georgia, serif;
+  word-break: break-word; font-family: 'Lora', Georgia, serif;
   max-width: 100%; margin-top: 8px;
 }
 
@@ -1306,6 +1315,26 @@ mark.reader-note-highlight {
 .nb-sr-icon { font-size: 14px; flex-shrink: 0; opacity: 0.7; }
 .nb-sr-label { font-size: 13px; font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nb-sr-sub { font-size: 11px; color: var(--textDim); flex-shrink: 0; }
+
+/* Global search dropdown item styles — used by titlebar SearchDropdown (mounted
+   standalone, outside LibraryView) as well as LibraryView. Kept here so covers
+   stay 30×42 regardless of which parent renders the dropdown. */
+.search-drop-item {
+  display: flex; align-items: center; gap: 11px;
+  width: 100%; padding: 8px 14px 8px 14px; border: none; background: none;
+  color: var(--textDim); cursor: pointer; text-align: left;
+  font-size: 13px; font-weight: 500;
+  transition: background 0.1s, color 0.1s;
+}
+.search-drop-item:hover { background: var(--hover); color: var(--text); }
+.search-drop-cover {
+  width: 30px; height: 42px; border-radius: 4px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.search-drop-info { flex: 1; min-width: 0; }
+.search-drop-title { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.search-drop-sub { font-size: 11px; color: var(--textDim); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.search-drop-badge { font-size: 13px; flex-shrink: 0; opacity: 0.5; }
 
 /* Find-in-page highlights */
 mark.nb-hl { background: rgba(255, 220, 0, 0.35); color: inherit; border-radius: 2px; padding: 0 1px; }
@@ -1508,20 +1537,19 @@ mark.nb-find-mark-active {
 
 /* Live-mode table */
 .cm-table-wrap { overflow-x: auto; margin: 6px 0; border-radius: 6px; }
-.cm-table-wrap .nb-table,
+/* nb-table base — preview mode and non-editor contexts only.
+   Live editor tables (.cm-table-wrap .nb-table) override via NotebookView inline CSS. */
 .nb-table {
   border-collapse: collapse; width: 100%; margin: 0; font-size: 0.92em; font-family: var(--font-ui);
 }
-.cm-table-wrap .nb-table th, .cm-table-wrap .nb-table td,
 .nb-table th, .nb-table td {
   border: 1px solid var(--border); padding: 6px 12px; text-align: left; line-height: 1.4;
+  color: var(--text);
 }
-.cm-table-wrap .nb-table th,
 .nb-table th {
   background: var(--surfaceAlt); font-weight: 600; font-size: 0.87em;
   color: var(--textMuted); letter-spacing: 0.03em; text-transform: uppercase;
 }
-.cm-table-wrap .nb-table tbody tr:nth-child(even) td,
 .nb-table tbody tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
 .nb-block .nb-table {
   border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 14px;
@@ -1564,6 +1592,7 @@ mark.nb-find-mark-active {
   box-shadow: 0 1px 0 var(--borderSubtle);
   flex-shrink: 0;
   z-index: 50;
+  padding-left: 20px;
   transition: max-height 0.22s cubic-bezier(0.4,0,0.2,1), opacity 0.18s, min-height 0.22s;
 }
 
@@ -2573,3 +2602,805 @@ body.zen-active .nb-content-wrap {
   transition: background 0.1s, color 0.1s;
 }
 .cm-qd-reveal-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* === CODEMIRROR AUTOCOMPLETE TOOLTIP === */
+.cm-tooltip.cm-tooltip-autocomplete {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+  padding: 4px;
+  font-family: var(--font-ui);
+  animation: toolbarPop 0.13s ease;
+}
+.cm-tooltip.cm-tooltip-autocomplete > ul {
+  max-height: 240px;
+  font-family: var(--font-ui);
+  margin: 0;
+  padding: 0;
+}
+.cm-completionItem {
+  padding: 7px 10px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: background 0.1s;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.3;
+  font-family: var(--font-ui);
+}
+.cm-completionItem[aria-selected],
+.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] { background: var(--surface) !important; color: var(--text) !important; }
+.cm-completionLabel { font-weight: 500; color: var(--text); }
+.cm-completionItem[aria-selected] .cm-completionLabel { color: var(--accent); }
+.cm-completionDetail {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--textDim);
+  font-style: normal;
+  flex-shrink: 0;
+}
+.cm-completionIcon { display: none; }
+.cm-completionMatchingText { color: inherit; text-decoration: none; font-weight: 600; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MOBILE CHROME  (pointer: coarse = touch-primary; width fallback for DevTools)
+   ═══════════════════════════════════════════════════════════════════════════ */
+@media (pointer: coarse) and (hover: none), (max-width: 430px) {
+  /* Hide desktop titlebar and library header */
+  .gnos-titlebar { display: none !important; }
+  .app-header { display: none !important; }
+  /* Content fills from top — floating buttons sit above */
+  .sidenav-push-wrapper { padding-top: 0 !important; }
+
+  /* Sidenav fills full screen on mobile */
+  .sidenav-panel { width: 100% !important; top: 0 !important; bottom: 0 !important; left: 0 !important; border-radius: 0 !important; border: none !important; }
+  .sidenav-backdrop.open { background: rgba(0,0,0,0.22) !important; }
+
+  /* Lib panel: top clearance for floating buttons + streak at top, bottom clearance for nav */
+  .lib-tab-panel { padding: 62px 10px 100px !important; scrollbar-width: none !important; -ms-overflow-style: none !important; }
+  .lib-tab-panel::-webkit-scrollbar { display: none !important; }
+
+  /* Force 3-column grid on all library grids, equal card sizes */
+  .library-grid {
+    display: grid !important;
+    grid-template-columns: repeat(3, 1fr) !important;
+    gap: 10px !important;
+    align-items: start !important;
+  }
+  /* Ensure grid item wrappers (drag divs) don't overflow their cells */
+  .library-grid > * { min-width: 0 !important; width: 100% !important; }
+  .book-card-container { width: 100% !important; min-width: 0 !important; max-width: 100% !important; }
+  .book-cover {
+    width: 100% !important;
+    height: calc((100vw - 40px) / 3 * 155 / 110) !important;
+    aspect-ratio: unset !important;
+    overflow: hidden !important;
+    position: relative !important;
+  }
+
+  /* Hide sidebar sections that are redundant on mobile */
+  .sidenav-header { display: none !important; }
+  .sidenav-search-wrap { display: none !important; }
+  .sidenav-tabs-docked { display: none !important; }
+  .sidenav-footer { display: none !important; }
+
+  /* Reader header is replaced by floating chapter nav on mobile */
+  .reader-header { display: none !important; }
+  /* Reader main: top clearance for corner buttons (ends ~48px) + a little breathing room; TTS floats over text */
+  /* touch-action: manipulation disables double-tap zoom so our double-tap focus-mode handler fires correctly */
+  .reader-main { padding-top: 60px !important; padding-bottom: 68px !important; background: var(--readerCard) !important; touch-action: manipulation !important; }
+  .reader-card { min-height: calc(100vh - 128px) !important; }
+  /* Remove side borders from card — full-bleed on mobile */
+  .reader-card { border-left: none !important; border-right: none !important; }
+
+  /* ── View headers: hidden on mobile, replaced by floating chrome ── */
+  .nb-header { display: none !important; }
+  .fc-header { display: none !important; }
+  .sb-root > .gnos-header { display: none !important; }
+  /* Shrink canvas so Excalidraw toolbar clears the floating nav pill naturally */
+  .sb-root {
+    padding-bottom: calc(max(12px, env(safe-area-inset-bottom, 0px) + 6px) + 45px + 10px) !important;
+    box-sizing: border-box !important;
+  }
+
+  /* Notebook: top clearance for corner float buttons */
+  .nb-title-area { padding-top: 60px !important; }
+  .nb-content-wrap { padding-top: 16px !important; padding-left: 20px !important; padding-right: 20px !important; }
+  .nb-content-wrap + div { padding-left: 20px !important; padding-right: 20px !important; }
+  body .nb-root { --nb-px: 28px; --nb-py: 20px; }
+  /* Hover-only "Add cover" affordance has no analog on touch — hide and reclaim space */
+  .nb-title-meta-row { display: none !important; }
+
+  /* Flashcard: top clearance for floating deck info pill */
+  .fc-container { padding-top: 60px !important; }
+
+  /* Tighten right panel so it doesn't overflow narrow viewport */
+  .sb-canvas-wrap .excalidraw .App-toolbar--right {
+    max-width: min(220px, calc(100vw - 16px)) !important;
+  }
+  /* Tame Excalidraw popovers (color, stroke style) so they don't overflow viewport */
+  .excalidraw-wrapper .Island {
+    max-width: calc(100vw - 16px) !important;
+    box-sizing: border-box;
+  }
+
+  /* Settings panel on mobile: full-width, below corner buttons, no close btn */
+  .settings-panel {
+    top: 56px !important;
+    left: 16px !important;
+    right: 16px !important;
+    width: auto !important;
+  }
+  .settings-panel-close { display: none !important; }
+
+  /* Reader footer replaced by bottom nav page arrows — hide on mobile */
+  .reader-footer { display: none !important; }
+
+  /* ── View content: bottom padding to clear bottom nav ── */
+  .nb-cm .cm-scroller { padding-bottom: 80px !important; }
+  .fc-container { padding-bottom: 80px !important; }
+
+  /* ── Sidenav: push content below the top corner buttons ── */
+  .sidenav-scroll { padding-top: 56px !important; }
+
+  /* ── Sidenav items: touch-friendly but 10% leaner than before ── */
+  .sidenav-nav-item { padding-top: 8px !important; padding-bottom: 8px !important; font-size: 12px !important; }
+  .sidenav-section { padding: 10px 0 4px !important; }
+  .sidenav-section-label { font-size: 10px !important; }
+  .sidenav-tab-item { padding-top: 8px !important; padding-bottom: 8px !important; }
+
+  /* Audio player main: top padding for corner buttons, bottom for nav */
+  .ap-main {
+    padding-top: 56px !important;
+    padding-bottom: 80px !important;
+  }
+
+  /* Always show context dots on touch */
+  .btn-dots { opacity: 1 !important; }
+}
+
+
+/* ── Reader focus mode ──────────────────────────────────────────────────── */
+body.reader-focus-mode .reader-main { padding-bottom: calc(max(28px, env(safe-area-inset-bottom, 0px) + 16px) + 56px) !important; }
+body.reader-focus-mode .reader-card { height: 100% !important; min-height: 0 !important; }
+
+/* ── Reader margin ghost-arrow nav zones ─────────────────────────────────── */
+.reader-margin-zone { opacity: 0; transition: opacity 0.15s; -webkit-tap-highlight-color: transparent; outline: none; user-select: none; -webkit-user-select: none; }
+.reader-margin-zone:hover { opacity: 0.4; }
+@media (pointer: coarse) and (hover: none), (max-width: 430px) {
+  .reader-margin-zone { opacity: 0 !important; }
+}
+
+/* ── Mobile bottom nav bar ───────────────────────────────────────────────── */
+.mobile-bottom-bar {
+  position: fixed;
+  bottom: max(12px, calc(env(safe-area-inset-bottom, 0px) + 6px)); left: 50%; transform: translateX(-50%);
+  z-index: var(--z-floating-chrome);
+  height: 45px;
+  display: flex; align-items: center; gap: 2px;
+  padding: 0 6px;
+  background: var(--surfaceTranslucent);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.22), 0 1px 0 rgba(255,255,255,0.04) inset;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  transition: width 0.28s cubic-bezier(0.4,0,0.2,1),
+              border-radius 0.28s cubic-bezier(0.4,0,0.2,1),
+              padding 0.28s,
+              opacity 0.25s, transform 0.25s;
+  width: min(92vw, 420px); min-width: 0;
+}
+.mobile-bottom-bar.search-expanded {
+  width: min(92vw, 420px);
+  padding: 0 14px;
+}
+.mobile-nav-btn {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  flex: 1; min-height: 44px; min-width: 0;
+  border: none; background: none; cursor: pointer;
+  color: var(--textDim); border-radius: 9px;
+  transition: color 0.13s, background 0.13s;
+  -webkit-tap-highlight-color: transparent;
+  position: relative;
+}
+.mobile-nav-btn:active { background: var(--hover); color: var(--text); }
+.mobile-nav-btn.active { color: var(--accent); }
+
+/* Add button inside nav — styled like the desktop header plus button */
+.mobile-add-btn-inner {
+  width: 28px; height: 28px;
+  background: var(--surfaceAlt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--textMuted);
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.mobile-nav-btn:active .mobile-add-btn-inner {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* Search expanded state inside the nav */
+.mobile-nav-search-input {
+  flex: 1; background: none; border: none; outline: none;
+  color: var(--text); font-size: 15px; font-family: var(--font-ui, system-ui);
+  caret-color: var(--accent);
+}
+.mobile-nav-search-input::placeholder { color: var(--textMuted); }
+.mobile-nav-search-return {
+  width: 30px; height: 30px; flex-shrink: 0;
+  border: none; background: var(--surfaceAlt);
+  border: 1px solid var(--border);
+  border-radius: 9px; cursor: pointer; color: var(--textDim);
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.1s, color 0.1s;
+}
+.mobile-nav-search-return:active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* ── TTS controls bar — floats above reader bottom nav when TTS is active ── */
+.mobile-tts-bar {
+  position: fixed;
+  bottom: calc(max(12px, env(safe-area-inset-bottom, 0px) + 6px) + 45px + 6px);
+  left: 50%; transform: translateX(-50%);
+  z-index: var(--z-floating-chrome-above);
+  width: min(92vw, 420px);
+  height: 38px;
+  display: flex; align-items: stretch;
+  background: var(--surfaceTranslucent);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.22);
+  overflow: hidden;
+  animation: toolbarPop 0.15s ease;
+}
+.mobile-tts-bar-btn {
+  flex: 1; border: none; background: none;
+  color: var(--textDim); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: color 0.12s, background 0.12s;
+  -webkit-tap-highlight-color: transparent;
+}
+.mobile-tts-bar-btn + .mobile-tts-bar-btn { border-left: 1px solid var(--borderSubtle); }
+.mobile-tts-bar-btn:active { background: var(--hover); color: var(--text); }
+.mobile-tts-bar-btn.primary { color: var(--accent); flex: 1.4; }
+.mobile-tts-bar-btn.primary:active { background: var(--hover); }
+
+/* ── Mobile search results panel (floats above nav) ──────────────────────── */
+.mobile-search-results {
+  position: fixed; bottom: calc(max(12px, env(safe-area-inset-bottom, 0px) + 6px) + 45px + 8px); left: 16px; right: 16px;
+  max-height: 55vh; overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.35);
+  z-index: var(--z-floating-chrome);
+  animation: toolbarPop 0.15s ease;
+  padding: 4px 0;
+}
+/* Fix search-dropdown positioning when rendered inside mobile-search-results */
+.mobile-search-results .search-dropdown {
+  position: static !important;
+  box-shadow: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  max-height: none !important;
+  background: none !important;
+}
+
+/* ── Library tab row — slides up above nav bar on long-press ─────────────── */
+@keyframes mobileRowIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.mobile-lib-row {
+  position: fixed;
+  bottom: calc(max(12px, env(safe-area-inset-bottom, 0px) + 6px) + 45px + 8px);
+  left: 12px; right: 12px;
+  height: 40px; z-index: var(--z-mobile-modal);
+  display: flex; align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+  overflow: hidden;
+  animation: mobileRowIn 0.2s cubic-bezier(0.4,0,0.2,1);
+}
+.mobile-lib-row-item {
+  flex: 1; height: 100%; border: none; background: none;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase;
+  color: var(--textDim); cursor: pointer; font-family: var(--font-ui, system-ui);
+  display: flex; align-items: center; justify-content: center;
+  transition: color 0.12s, background 0.12s;
+  -webkit-tap-highlight-color: transparent;
+}
+.mobile-lib-row-item.active { color: var(--accent); }
+.mobile-lib-row-item:active { background: rgba(255,255,255,0.07); color: var(--text); }
+/* Thin separator between items */
+.mobile-lib-row-item + .mobile-lib-row-item {
+  border-left: 1px solid var(--borderSubtle);
+}
+
+/* ── Streak pill — floats top center, same height as corner float btns ── */
+.mobile-streak-float {
+  position: fixed;
+  top: 12px;
+  left: 50%; transform: translateX(-50%);
+  height: 36px;
+  padding: 0 14px; z-index: var(--z-floating-chrome-above);
+  display: flex; flex-direction: row; align-items: center; gap: 8px;
+  background: var(--surfaceTranslucent);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+  cursor: pointer; white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+  animation: toolbarPop 0.18s ease;
+}
+.mobile-streak-float:active { background: var(--surfaceAlt); }
+.mobile-gnos-brand {
+  font-family: var(--font-logo); font-size: 15px; font-weight: 700;
+  color: var(--text); letter-spacing: 0.3px; line-height: 1;
+}
+.mobile-streak-row { display: flex; align-items: center; gap: 7px; }
+.mobile-streak-dots { display: flex; align-items: center; gap: 3px; }
+.mobile-streak-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--borderSubtle); border: 1px solid var(--border);
+  transition: background 0.15s;
+}
+.mobile-streak-dot.filled { background: var(--accent); border-color: var(--accent); }
+.mobile-streak-text { font-size: 11px; font-weight: 600; color: var(--textDim); font-family: var(--font-ui, system-ui); }
+
+/* ── Centered Gnos title (between corner buttons) ───────────────────────── */
+.mobile-gnos-title {
+  position: fixed; top: max(12px, calc(env(safe-area-inset-top, 0px) + 6px)); left: 50%; transform: translateX(-50%);
+  z-index: var(--z-floating-chrome-above);
+  font-family: var(--font-logo); font-size: 16px; font-weight: 700;
+  color: var(--text); letter-spacing: 0.2px; line-height: 36px;
+  pointer-events: none; white-space: nowrap;
+}
+
+/* ── Floating corner buttons (sidebar + settings) ───────────────────────── */
+.mobile-float-btn {
+  position: fixed; top: max(12px, calc(env(safe-area-inset-top, 0px) + 6px)); z-index: var(--z-floating-chrome);
+  display: flex; align-items: center; justify-content: center;
+  height: 36px; padding: 0 10px;
+  background: var(--surfaceTranslucent);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.18), 0 1px 0 rgba(255,255,255,0.04) inset;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: var(--textDim); cursor: pointer;
+  transition: opacity 0.25s, transform 0.12s ease, background 0.15s, color 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.mobile-float-btn--left { left: 12px; }
+.mobile-float-btn--right { right: 12px; width: 36px; padding: 0; }
+.mobile-float-btn:active { background: var(--surfaceAlt); color: var(--text); transform: scale(0.94); }
+.mobile-float-btn::before {
+  content: ''; position: absolute;
+  top: -4px; bottom: -4px; left: -4px; right: -4px;
+}
+
+/* ── Reader page-turn arrows — rounded box style ────────────────────────── */
+.mobile-nav-btn-arrow {
+  width: 36px; height: 32px;
+  background: var(--surfaceAlt);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--textDim);
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.mobile-nav-btn:active .mobile-nav-btn-arrow {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+
+/* ── Mobile view title pill (notebook / sketchbook / flashcard) ─────────── */
+.mobile-view-title-pill {
+  position: fixed; top: max(12px, calc(env(safe-area-inset-top, 0px) + 6px)); left: 54px; right: 54px; z-index: var(--z-floating-chrome-above);
+  display: flex; justify-content: center; pointer-events: none;
+}
+.mobile-view-title-btn {
+  pointer-events: auto;
+  height: 36px; padding: 0 14px;
+  position: relative;
+  background: var(--surfaceTranslucent); border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.18), 0 1px 0 rgba(255,255,255,0.04) inset;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  display: flex; align-items: center; gap: 6px;
+  cursor: pointer; white-space: nowrap;
+  font-family: var(--font-ui, system-ui); font-size: 13px; font-weight: 600;
+  color: var(--text);
+  max-width: 100%; overflow: hidden;
+  animation: toolbarPop 0.18s ease;
+  transition: transform 0.12s ease, background 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.mobile-view-title-btn:active { transform: scale(0.96); background: var(--surfaceAlt); }
+.mobile-view-title-btn::before {
+  content: ''; position: absolute;
+  top: -4px; bottom: -4px; left: -4px; right: -4px;
+}
+.mobile-view-title-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mobile-view-title-meta {
+  font-size: 11px; font-weight: 500; color: var(--textDim);
+  flex-shrink: 0;
+}
+
+/* ── Shared accent FAB (Add Card, New Tab, etc.) ────────────────────────── */
+.mobile-fab-accent {
+  position: fixed;
+  bottom: calc(max(12px, env(safe-area-inset-bottom, 0px) + 6px) + 45px + 8px);
+  left: 50%; transform: translateX(-50%);
+  height: 40px; padding: 0 24px;
+  background: var(--accent); color: #fff;
+  border: none; border-radius: 22px;
+  font-weight: 700; font-size: 13px; font-family: inherit;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25), 0 1px 0 rgba(255,255,255,0.10) inset;
+  cursor: pointer; z-index: var(--z-floating-chrome);
+  display: flex; align-items: center; gap: 6px;
+  transition: transform 0.12s ease, box-shadow 0.15s, filter 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.mobile-fab-accent:active {
+  transform: translateX(-50%) scale(0.96);
+  filter: brightness(0.95);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.30), 0 1px 0 rgba(255,255,255,0.10) inset;
+}
+
+/* ── Add Card button — matches app bar style ─────────────────────────────── */
+.mobile-add-card-btn {
+  position: fixed;
+  bottom: calc(max(12px, env(safe-area-inset-bottom, 0px) + 6px) + 45px + 8px);
+  left: 50%; transform: translateX(-50%);
+  width: min(92vw, 420px); height: 44px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; color: var(--text); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  gap: 8px; font-family: inherit; font-size: 14px; font-weight: 600;
+  z-index: var(--z-floating-chrome);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.18), 0 1px 0 rgba(255,255,255,0.04) inset;
+  transition: background 0.12s, border-color 0.12s, transform 0.12s;
+  -webkit-tap-highlight-color: transparent;
+}
+.mobile-add-card-btn:active {
+  background: var(--surfaceAlt);
+  transform: translateX(-50%) scale(0.97);
+}
+
+/* ── Syntax reference panel ─────────────────────────────────────────────── */
+.mobile-syntax-panel {
+  position: fixed;
+  bottom: calc(max(12px, env(safe-area-inset-bottom, 0px) + 6px) + 45px + 8px);
+  left: 12px; right: 12px;
+  max-height: 60vh; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.35);
+  z-index: var(--z-floating-chrome);
+  animation: toolbarPop 0.15s ease;
+  padding: 12px 14px 16px;
+}
+.mobile-syntax-panel h4 {
+  font-size: 11px; font-weight: 700; color: var(--textDim);
+  letter-spacing: 0.08em; text-transform: uppercase;
+  margin: 0 0 8px; padding: 0;
+}
+.mobile-syntax-row {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 4px 0; border-bottom: 1px solid var(--borderSubtle);
+}
+.mobile-syntax-row:last-child { border-bottom: none; }
+.mobile-syntax-code {
+  font-size: 11px; font-family: monospace; color: var(--textDim);
+  flex-shrink: 0; min-width: 110px;
+}
+.mobile-syntax-preview {
+  font-size: 13px; color: var(--text); flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── Sketchbook mobile settings panel ───────────────────────────────────── */
+.mobile-sb-settings-panel {
+  position: fixed; top: max(56px, calc(env(safe-area-inset-top, 0px) + 56px)); left: 12px; right: 12px; z-index: var(--z-mobile-modal);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; box-shadow: 0 8px 28px rgba(0,0,0,0.35);
+  padding: 16px; animation: toolbarPop 0.15s ease;
+}
+
+/* Reader focus mode — hide all floating chrome */
+body.reader-focus-mode .mobile-float-btn,
+body.reader-focus-mode .reader-chapter-nav {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transform: translateY(-6px) !important;
+}
+body.reader-focus-mode .mobile-bottom-bar,
+body.reader-focus-mode .mobile-tts-bar {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transform: translateX(-50%) translateY(6px) !important;
+}
+/* In focus mode, expand reader content — padding handled by body.reader-focus-mode rules above */
+
+/* ── Tab switcher — full-screen view ────────────────────────────────────── */
+.mobile-tab-switcher-view {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--surface);
+  display: flex; flex-direction: column;
+  padding-top: calc(max(12px, env(safe-area-inset-top, 0px) + 6px) + 36px + 12px);
+  padding-bottom: calc(max(12px, env(safe-area-inset-bottom, 0px) + 6px) + 45px + 12px);
+}
+body.tabs-open .mobile-streak-float { display: none !important; }
+.mobile-tabs-new-btn {
+  position: fixed;
+  bottom: calc(max(12px, env(safe-area-inset-bottom, 0px) + 6px) + 45px + 8px);
+  left: 50%; transform: translateX(-50%);
+  width: min(92vw, 420px); height: 44px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; color: var(--text); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  gap: 8px; font-family: inherit; font-size: 14px; font-weight: 600;
+  z-index: 60; transition: background 0.12s, border-color 0.12s;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+}
+.mobile-tabs-new-btn:active { background: var(--surfaceAlt); border-color: var(--accent); color: var(--accent); }
+
+/* ── FAB modifier: above tab switcher ───────────────────────────────────── */
+.mobile-fab-accent--above-switcher {
+  z-index: var(--z-mobile-tab-switcher);
+}
+.mobile-tab-cards {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;
+}
+.mobile-tab-card {
+  border-radius: 16px; overflow: hidden; cursor: pointer;
+  border: 2px solid var(--border);
+  background: var(--bg);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.18);
+  transition: border-color 0.15s, transform 0.12s;
+  -webkit-tap-highlight-color: transparent;
+}
+.mobile-tab-card.active-tab { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 4px 20px rgba(56,139,253,0.18); }
+.mobile-tab-card:active { transform: scale(0.96); }
+.mobile-tab-card-preview {
+  height: 110px;
+  display: flex; align-items: center; justify-content: center;
+}
+.mobile-tab-card-footer {
+  padding: 8px 11px; border-top: 1px solid var(--borderSubtle);
+  display: flex; align-items: center; gap: 6px;
+}
+.mobile-tab-card-label {
+  font-size: 12px; font-weight: 600; color: var(--text);
+  flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mobile-tab-card-close {
+  width: 36px; height: 36px; border-radius: 50%;
+  border: none; background: var(--surfaceAlt); color: var(--textDim);
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; padding: 0;
+  transition: background 0.1s, color 0.1s;
+}
+.mobile-tab-card-close:active { background: rgba(248,81,73,0.2); color: #f85149; }
+
+/* ── Reduced transparency: fall back to opaque when system prefers it ──────── */
+@media (prefers-reduced-transparency: reduce) {
+  .mobile-bottom-bar,
+  .mobile-tts-bar,
+  .mobile-float-btn,
+  .mobile-view-title-btn,
+  .mobile-streak-float {
+    background: var(--surface) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
+/* ── Reduced motion: disable animations and scale transforms ───────────────── */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes toolbarPop { from { opacity:1; transform: none; } to { opacity:1; transform: none; } }
+  @keyframes mobileRowIn { from { opacity:1; transform: none; } to { opacity:1; transform: none; } }
+  .mobile-bottom-bar { transition: none !important; }
+  .mobile-float-btn:active,
+  .mobile-view-title-btn:active,
+  .mobile-fab-accent:active { transform: translateX(-50%) !important; }
+  .mobile-fab-accent { transition: box-shadow 0.15s !important; }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   UI MODERNIZATION PASS — July 2026
+   Documented in UI_CHANGES.md at the repo root.
+   To fully revert the new look, delete everything from this banner down.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* 1. Type rendering — crisper text on macOS, calmer selection color */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+
+/* 2. Scrollbars — thinner thumb, no visible track, only tinted on hover */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--textDim) 28%, transparent);
+  border-radius: 5px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--textDim) 50%, transparent);
+  background-clip: content-box;
+}
+
+/* 3. Focus visibility — consistent accent ring for keyboard navigation */
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 1px;
+}
+
+/* 4. Header — single hairline instead of the doubled border+shadow line */
+.app-header { border-bottom: 1px solid var(--borderSubtle); }
+.app-header-top { border-bottom: none; box-shadow: none; }
+
+/* 5. Header buttons — drop the scale "pop", soften hover into tint + hairline */
+.btn-add-square { border-radius: 8px; }
+.btn-add-square:hover {
+  transform: none;
+  background: var(--accent); color: #fff; border-color: var(--accent);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.btn-icon-round { border-radius: 8px; border-color: transparent; }
+.btn-icon-round:hover { border-color: var(--border); }
+.btn-lib-filter:hover { box-shadow: none; border-color: var(--border); background: var(--hover); }
+
+/* 6. Menus & popovers — deeper layered shadow, gentle entrance */
+@keyframes gnos-pop-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.context-menu, .lib-filter-dropdown, .search-dropdown, .search-results-dropdown {
+  animation: gnos-pop-in 0.13s cubic-bezier(0.2, 0.8, 0.3, 1);
+  transform-origin: top;
+  border-color: var(--borderSubtle);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.04), 0 10px 24px rgba(0,0,0,0.28), 0 24px 64px rgba(0,0,0,0.22);
+}
+.ctx-item + .ctx-item { border-top: none; }
+.ctx-item { border-radius: 7px; margin: 0 4px; width: calc(100% - 8px); }
+.context-menu { padding: 4px 0; }
+
+/* 7. Library canvas — a touch more breathing room */
+.lib-tab-panel { padding: 20px 40px 28px; }
+.library-grid { gap: 30px; }
+
+/* 8. Book cards — softer resting shadow, calmer hover lift */
+.book-cover { box-shadow: 0 1px 3px rgba(0,0,0,0.18), 0 4px 14px rgba(0,0,0,0.14); border-radius: 8px; }
+.book-card-container:hover .book-cover {
+  transform: translateY(-3px);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2), 0 12px 28px rgba(0,0,0,0.26);
+}
+
+/* 9. Reduced motion — respect it for the new popover animation too */
+@media (prefers-reduced-motion: reduce) {
+  .context-menu, .lib-filter-dropdown, .search-dropdown, .search-results-dropdown { animation: none; }
+}
+
+/* 10. File card under-text — modern sans, no uppercase tracking */
+.meta-title {
+  font-family: var(--font-ui);
+  font-size: 12.5px; font-weight: 600;
+  letter-spacing: -0.01em; line-height: 1.35;
+}
+.meta-author {
+  text-transform: none; letter-spacing: 0;
+  font-size: 11px; font-weight: 500; margin-top: 3px;
+  color: var(--textDim); opacity: .85;
+}
+.cover-author { letter-spacing: 0.03em; }
+
+/* 11. Typography — softer academic sans; prose no longer serif */
+:root {
+  --font-prose: 'Author', 'Satoshi', system-ui, sans-serif;
+}
+
+/* 12. Unified controls — the ONLY toggle/slider/select styling.
+   Rendered by src/components/Controls.jsx (.gnos-toggle/.gnos-slider/.gnos-select). */
+
+/* Slider: accent-filled track, white BAR thumb (no circle) */
+.gnos-slider {
+  -webkit-appearance: none; appearance: none;
+  height: 4px; border-radius: 2px; outline: none;
+  background: linear-gradient(to right,
+    var(--accent) 0%, var(--accent) var(--fill, 50%),
+    color-mix(in srgb, var(--textDim) 28%, transparent) var(--fill, 50%),
+    color-mix(in srgb, var(--textDim) 28%, transparent) 100%);
+  cursor: pointer;
+}
+.gnos-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 6px; height: 18px; border-radius: 3px;
+  background: #fff; border: none;
+  box-shadow: 0 0 0 0.5px rgba(0,0,0,0.06), 0 1px 4px rgba(0,0,0,0.35);
+  cursor: grab; transition: transform .1s;
+}
+.gnos-slider::-webkit-slider-thumb:active { cursor: grabbing; transform: scaleY(1.12); }
+.gnos-slider:disabled { opacity: .4; cursor: default; }
+
+/* Toggle: Apple-style 38×22, spring knob */
+.gnos-toggle {
+  width: 38px; height: 22px; border-radius: 11px;
+  position: relative; cursor: pointer; flex-shrink: 0;
+  border: none; padding: 0;
+  background: color-mix(in srgb, var(--textDim) 26%, transparent);
+  transition: background .18s ease;
+}
+.gnos-toggle.on { background: var(--accent); }
+.gnos-toggle:disabled { opacity: .4; cursor: default; }
+.gnos-toggle-knob {
+  position: absolute; top: 2px; left: 2px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  transition: transform .18s cubic-bezier(0.3, 0.9, 0.4, 1);
+}
+.gnos-toggle.on .gnos-toggle-knob { transform: translateX(16px); }
+
+/* Select: rounded native, custom chevron */
+.gnos-select {
+  -webkit-appearance: none; appearance: none;
+  background-color: var(--surfaceAlt);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'><path d='M1 1l4 4 4-4' stroke='%23888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  border: 1px solid var(--borderSubtle);
+  border-radius: 8px; padding: 6px 26px 6px 10px;
+  font-size: 12px; font-weight: 500;
+  color: var(--text); font-family: var(--font-ui, inherit); outline: none;
+  cursor: pointer;
+}
+.gnos-select:focus { border-color: var(--accent); }
+.gnos-select:disabled { opacity: .4; cursor: default; }
+.settings-panel .section-label {
+  font-size: 10px; font-weight: 700; letter-spacing: .08em;
+  color: var(--textDim); opacity: .65; margin-bottom: 10px;
+}
+
+/* 13. Inline notebook widgets — unified container language
+   (matches the /timer pill: surfaceAlt, hairline border, 12px radius) */
+.cm-habits-widget, .cm-calendar-widget, .cm-pomo-widget {
+  background: var(--surfaceAlt) !important;
+  border: 1px solid var(--borderSubtle) !important;
+  border-radius: 12px !important;
+  box-shadow: none !important;
+}
+.cm-task-col-w { border-radius: 9px !important; border-color: var(--borderSubtle) !important; background: var(--surfaceAlt); }
+.cm-task-card-w {
+  border-radius: 8px !important;
+  border-color: var(--borderSubtle) !important;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.08) !important;
+}
+.cm-task-card-w:hover { box-shadow: 0 3px 10px rgba(0,0,0,0.16) !important; }
+.cm-timer-prev, .cm-pomo-prev, .cm-mathzone-badge {
+  border-color: var(--borderSubtle) !important;
+}
+.cm-habits-widget .cm-habits-hdr, .cm-pomo-widget .cm-pomo-hdr { margin-bottom: 4px; }

@@ -7,8 +7,9 @@
 
 import { useState, useEffect, useRef, useCallback, useContext } from 'react'
 import useAppStore from '@/store/useAppStore'
-import { GnosNavButton } from '@/components/SideNav'
+import QuickAccess from '@/components/QuickAccess'
 import { PaneContext } from '@/lib/PaneContext'
+import { useIsMobile } from '@/lib/useIsMobile'
 import { saveNotebookImage } from '@/lib/storage'
 import JSZip from 'jszip'
 import initSqlJs from 'sql.js/dist/sql-asm.js'
@@ -43,7 +44,14 @@ const FLASHCARD_CSS = `
   }
   .fc-header {
     display: flex; align-items: center; gap: 12px;
-    padding: 12px 18px; border-bottom: 1px solid var(--border);
+    padding: 12px 18px; border-bottom: 1px solid var(--borderSubtle);
+    background: var(--headerBg);
+    flex-shrink: 0;
+  }
+  .fc-footer {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 18px; border-top: 1px solid var(--borderSubtle);
+    background: var(--surface);
     flex-shrink: 0;
   }
   .fc-header-title {
@@ -95,7 +103,7 @@ const FLASHCARD_CSS = `
     padding: 24px; border-radius: 16px;
     font-size: 18px; font-weight: 500; text-align: center;
     line-height: 1.5; word-break: break-word;
-    font-family: Georgia, serif;
+    font-family: 'Author', 'Satoshi', sans-serif;
     box-shadow: 0 4px 20px rgba(0,0,0,0.15);
     border: 1px solid var(--border);
   }
@@ -262,6 +270,7 @@ const FLASHCARD_CSS = `
     border: 1px solid transparent; background: transparent;
     color: var(--text); font-size: 14px; font-family: inherit;
     outline: none; resize: none; line-height: 1.5;
+    overflow: hidden; box-sizing: border-box;
     transition: background 0.1s, border-color 0.1s;
   }
   .fc-list-field:focus { background: var(--bg); border-color: var(--accent); }
@@ -475,15 +484,35 @@ export default function FlashcardView() {
   const flashcardDecks = useAppStore(s => s.flashcardDecks)
   const updateDeck = useAppStore(s => s.updateDeck)
   const persistFlashcardDecks = useAppStore(s => s.persistFlashcardDecks)
-  const setView = useAppStore(s => s.setView)
+  const setView = useAppStore(s => s.setView); void setView
   const activeTabId = useAppStore(s => s.activeTabId)
   const isActivePane = !paneTabId || paneTabId === activeTabId
 
-  const [mode, setMode] = useState('study') // 'study' | 'edit' | 'list'
+  const [mode, setMode] = useState(() => {
+    const c = (flashcardDecks.find(d => d.id === deck?.id) || deck)?.cards
+    return (!c || c.length === 0) ? 'list' : 'study'
+  }) // 'study' | 'edit' | 'list'
   const [flipped, setFlipped] = useState(false)
   const [currentIdx, setCurrentIdx] = useState(0)
   const [title, setTitle] = useState(deck?.title || 'Untitled Deck')
+  const [studySide, setStudySide] = useState('front') // 'front' | 'back' — which side shows first
+  const [editingDeckTitle, setEditingDeckTitle] = useState(false)
   const titleTimeout = useRef(null)
+
+  const isMobile = useIsMobile()
+
+  // Mobile event bridge
+  useEffect(() => {
+    if (!isMobile) return
+    const h = e => {
+      const { cmd } = e.detail || {}
+      if (cmd === 'studyside') { setStudySide(s => s === 'front' ? 'back' : 'front'); setFlipped(false) }
+      if (cmd === 'study') { setMode('study'); setFlipped(false); setCurrentIdx(0) }
+      if (cmd === 'list') setMode('list')
+    }
+    window.addEventListener('gnos:mobile-fc-cmd', h)
+    return () => window.removeEventListener('gnos:mobile-fc-cmd', h)
+  }, [isMobile])
 
   // Get the live deck from store (in case cards have been updated)
   const liveDeck = flashcardDecks.find(d => d.id === deck?.id) || deck
@@ -539,10 +568,12 @@ export default function FlashcardView() {
 
     updateDeck(liveDeck.id, { cards: newCards, updatedAt: new Date().toISOString(), streak, lastStudyDate: today })
     persistFlashcardDecks()
+    // Flip to the question side first (hide answer), then advance after animation completes
     setFlipped(false)
-    // Move to next due card — recalculate due list
-    const newDue = newCards.filter(c => !c.nextReview || c.nextReview <= now)
-    if (currentIdx >= newDue.length) setCurrentIdx(0)
+    setTimeout(() => {
+      const newDue = newCards.filter(c => !c.nextReview || c.nextReview <= now)
+      if (currentIdx >= newDue.length) setCurrentIdx(0)
+    }, 520) // slightly longer than the 0.5s CSS transition
   }
 
   function handleTitleChange(val) {
@@ -588,15 +619,54 @@ export default function FlashcardView() {
     // CSV/TSV fallback
     const { readTextFile } = await import('@tauri-apps/plugin-fs')
     const text = await readTextFile(path)
-    const sep = text.includes('\t') ? '\t' : ','
-    const rows = text.trim().split('\n').map(line => line.split(sep))
-    const start = rows[0]?.[0]?.toLowerCase().includes('front') || rows[0]?.[0]?.toLowerCase().includes('question') ? 1 : 0
-    const newCards = rows.slice(start).filter(r => r[0]?.trim()).map(r => ({
-      id: makeId('fc'),
-      front: r[0]?.trim() || '',
-      back: r[1]?.trim() || '',
-      nextReview: 0, interval: 1, ease: 2.5, repetitions: 0,
-    }))
+
+    // Detect separator: tab > semicolon > comma
+    const sep = text.includes('\t') ? '\t' : text.includes(';') ? ';' : ','
+
+    // Parse respecting quoted fields
+    const parseCSVLine = (line) => {
+      const fields = []; let cur = ''; let inQ = false
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i]
+        if (ch === '"') { inQ = !inQ; continue }
+        if (ch === sep && !inQ) { fields.push(cur.trim()); cur = ''; continue }
+        cur += ch
+      }
+      fields.push(cur.trim())
+      return fields
+    }
+    const rawLines = text.trim().split('\n')
+    const rows = rawLines.map(parseCSVLine)
+
+    // Detect header row and column mapping
+    const firstRow = rows[0] || []
+    const headerKeywords = { front: /front|question|term|word|q\b/i, back: /back|answer|definition|meaning|a\b/i }
+    let frontCol = 0, backCol = 1, dataStart = 0
+
+    const headerCandidates = firstRow.map((h, i) => ({ h: h.toLowerCase().trim(), i }))
+    const frontMatch = headerCandidates.find(({ h }) => headerKeywords.front.test(h))
+    const backMatch  = headerCandidates.find(({ h }) => headerKeywords.back.test(h))
+
+    if (frontMatch || backMatch) {
+      dataStart = 1
+      frontCol = frontMatch?.i ?? 0
+      backCol  = backMatch?.i  ?? (frontCol === 0 ? 1 : 0)
+    }
+
+    // If every data row has only one column, try splitting on " - " (dash separator)
+    const dataRows = rows.slice(dataStart).filter(r => r[0]?.trim())
+    const allSingleCol = dataRows.length > 0 && dataRows.every(r => r.length === 1)
+
+    const newCards = dataRows.filter(r => r[frontCol]?.trim()).map(r => {
+      if (allSingleCol) {
+        // "Term - Definition" single-column format
+        const dashIdx = r[0].indexOf(' - ')
+        if (dashIdx !== -1) {
+          return { id: makeId('fc'), front: r[0].slice(0, dashIdx).trim(), back: r[0].slice(dashIdx + 3).trim(), nextReview: 0, interval: 1, ease: 2.5, repetitions: 0 }
+        }
+      }
+      return { id: makeId('fc'), front: r[frontCol]?.trim() || '', back: r[backCol]?.trim() || '', nextReview: 0, interval: 1, ease: 2.5, repetitions: 0 }
+    })
     if (newCards.length) {
       updateDeck(liveDeck.id, { cards: [...cards, ...newCards], updatedAt: new Date().toISOString() })
       persistFlashcardDecks()
@@ -630,8 +700,7 @@ export default function FlashcardView() {
     return (
       <div className="fc-container">
         <style>{FLASHCARD_CSS}</style>
-        <div className="fc-header">
-          <GnosNavButton onClick={() => setView('library')} />
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <span style={{ color: 'var(--textDim)', fontSize: 14 }}>No deck selected</span>
         </div>
       </div>
@@ -673,59 +742,119 @@ export default function FlashcardView() {
     <div className="fc-container">
       <style>{FLASHCARD_CSS}</style>
 
-      {/* Header */}
-      <div className="fc-header">
-        <GnosNavButton onClick={() => setView('library')} />
-        <input
-          className="fc-header-title"
-          value={title}
-          onChange={e => handleTitleChange(e.target.value)}
-          onBlur={() => {
-            if (liveDeck && title !== liveDeck.title) {
-              updateDeck(liveDeck.id, { title, updatedAt: new Date().toISOString() })
-              persistFlashcardDecks()
+      {/* Mobile floating add card button (edit mode only) */}
+      {isMobile && (mode === 'edit' || mode === 'list') && (
+        <button onClick={addCard} className="mobile-add-card-btn">
+          <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+            <line x1="7" y1="1.5" x2="7" y2="12.5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/>
+            <line x1="1.5" y1="7" x2="12.5" y2="7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/>
+          </svg>
+          Add Card
+        </button>
+      )}
+
+      {/* Mobile floating deck info pill (replaces header on mobile) */}
+      {isMobile && (
+        <div className="mobile-view-title-pill">
+          <div className="mobile-view-title-btn" onClick={() => setEditingDeckTitle(true)}>
+            {editingDeckTitle ? (
+              <input
+                autoFocus
+                value={liveDeck?.title || ''}
+                onChange={e => handleTitleChange(e.target.value)}
+                onBlur={() => { updateDeck(liveDeck.id, { title, updatedAt: new Date().toISOString() }); persistFlashcardDecks(); setEditingDeckTitle(false) }}
+                onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                style={{ background: 'none', border: 'none', outline: 'none', fontWeight: 600, fontSize: 13,
+                  color: 'var(--text)', fontFamily: 'inherit', minWidth: 60, maxWidth: 180 }}
+              />
+            ) : (
+              <span className="mobile-view-title-name">{liveDeck?.title || 'Flashcards'}</span>
+            )}
+            <span className="mobile-view-title-meta">
+              {cards.length} cards · <span style={{ color: dueCards.length > 0 ? '#ff9800' : 'inherit' }}>{dueCards.length} due</span>{(liveDeck?.streak || 0) > 0 ? ` · 🔥${liveDeck.streak}d` : ''}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Header replaced: share lives in the title bar's quick-access strip;
+          stats + flip + Study/Edit live in the footer at the bottom. */}
+      <QuickAccess>
+        <button
+          className="gnos-settings-btn"
+          title="Share deck"
+          onClick={() => {
+            const rows = ['Front\tBack', ...cards.map(c => `${(c.front||'').replace(/\t/g,' ')}\t${(c.back||'').replace(/\t/g,' ')}`)]
+            const text = rows.join('\n')
+            const filename = (liveDeck?.title || 'flashcards') + '.tsv'
+            if (navigator.share) {
+              const file = new File([text], filename, { type: 'text/tab-separated-values' })
+              navigator.share({ files: [file], title: liveDeck?.title || 'Flashcards' }).catch(e => {
+                if (e.name === 'AbortError') return
+                const blob = new Blob([text], { type: 'text/tab-separated-values' })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a'); a.href = url; a.download = filename; a.click()
+                setTimeout(() => URL.revokeObjectURL(url), 1000)
+              })
+            } else {
+              const blob = new Blob([text], { type: 'text/tab-separated-values' })
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a'); a.href = url; a.download = filename; a.click()
+              setTimeout(() => URL.revokeObjectURL(url), 1000)
             }
           }}
-        />
-        <div className="fc-stats">
-          <span>{cards.length} cards</span>
-          <span style={{ color: dueCards.length > 0 ? '#ff9800' : 'var(--textDim)' }}>
-            {dueCards.length} due
-          </span>
-          {fcStreakDots}
-        </div>
-        <button className="fc-mode-btn" onClick={handleImport} title="Import CSV/TSV">Import</button>
-        <button className={`fc-mode-btn${mode === 'study' ? ' active' : ''}`} onClick={() => { setMode('study'); setFlipped(false); setCurrentIdx(0) }}>Study</button>
-        <button className={`fc-mode-btn${mode === 'list' ? ' active' : ''}`} onClick={() => setMode('list')}>List</button>
-        <button className={`fc-mode-btn${mode === 'edit' ? ' active' : ''}`} onClick={() => setMode('edit')}>Edit</button>
-      </div>
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path d="M8 11V3M5 6l3-3 3 3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M3 11v1a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+          </svg>
+        </button>
+      </QuickAccess>
 
       {/* Study Mode */}
       {mode === 'study' && (
         <div className="fc-study">
           {studyCard ? (
             <>
-              <div className="fc-card-wrapper" onClick={() => setFlipped(f => !f)}>
-                <div className={`fc-card-inner${flipped ? ' flipped' : ''}`}>
-                  <div className="fc-card-face fc-card-front" style={{ flexDirection: 'column', gap: 8, borderLeftColor: studyCard.color && studyCard.color !== 'transparent' ? studyCard.color : undefined, borderLeftWidth: studyCard.color && studyCard.color !== 'transparent' ? 4 : undefined }}>
-                    <div className="fc-card-label">Front</div>
-                    {studyCard.frontHtml
-                      ? <div className="fc-card-html" dangerouslySetInnerHTML={{ __html: studyCard.frontHtml }} />
-                      : studyCard.front || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>Empty card</span>}
-                    {!studyCard.frontHtml && studyCard.imageUrl && <img src={studyCard.imageUrl} alt="" style={{ maxWidth: '70%', maxHeight: 100, borderRadius: 8, objectFit: 'contain' }} />}
-                    {studyCard.sketchUrl && <img src={studyCard.sketchUrl} alt="" style={{ maxWidth: '80%', maxHeight: 80, borderRadius: 6 }} />}
-                    {studyCard.audioUrl && <AudioPlayBtn src={studyCard.audioUrl} />}
+              {/* studySide='front': front face shown first; studySide='back': back face shown first */}
+              {(() => {
+                // "question" = the side shown first; "answer" = the side revealed on flip
+                const qFront = studySide === 'front'
+                const qData = qFront
+                  ? { text: studyCard.front, html: studyCard.frontHtml, img: studyCard.imageUrl, sketch: studyCard.sketchUrl, audio: studyCard.audioUrl,    label: 'Front' }
+                  : { text: studyCard.back,  html: studyCard.backHtml,  img: studyCard.backImageUrl,                           audio: studyCard.backAudioUrl, label: 'Back'  }
+                const aData = qFront
+                  ? { text: studyCard.back,  html: studyCard.backHtml,  img: studyCard.backImageUrl,                           audio: studyCard.backAudioUrl, label: 'Back'  }
+                  : { text: studyCard.front, html: studyCard.frontHtml, img: studyCard.imageUrl, sketch: studyCard.sketchUrl, audio: studyCard.audioUrl,    label: 'Front' }
+                const colorStyle = studyCard.color && studyCard.color !== 'transparent'
+                  ? { borderLeftColor: studyCard.color, borderLeftWidth: 4 }
+                  : {}
+                return (
+                  <div className="fc-card-wrapper" onClick={() => setFlipped(f => !f)}>
+                    <div className={`fc-card-inner${flipped ? ' flipped' : ''}`}>
+                      {/* Question face (always visible when not flipped) */}
+                      <div className="fc-card-face fc-card-front" style={{ flexDirection: 'column', gap: 8, ...colorStyle }}>
+                        <div className="fc-card-label">{qData.label}</div>
+                        {qData.html
+                          ? <div className="fc-card-html" dangerouslySetInnerHTML={{ __html: qData.html }} />
+                          : qData.text || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>Empty card</span>}
+                        {!qData.html && qData.img && <img src={qData.img} alt="" style={{ maxWidth: '70%', maxHeight: 100, borderRadius: 8, objectFit: 'contain' }} />}
+                        {qData.sketch && <img src={qData.sketch} alt="" style={{ maxWidth: '80%', maxHeight: 80, borderRadius: 6 }} />}
+                        {qData.audio && <AudioPlayBtn src={qData.audio} />}
+                      </div>
+                      {/* Answer face — hidden until flipped to prevent sneak-peek */}
+                      <div className="fc-card-face fc-card-back" style={{ flexDirection: 'column', gap: 8, visibility: flipped ? 'visible' : 'hidden' }}>
+                        <div className="fc-card-label">{aData.label}</div>
+                        {aData.html
+                          ? <div className="fc-card-html" dangerouslySetInnerHTML={{ __html: aData.html }} />
+                          : aData.text || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>No answer</span>}
+                        {!aData.html && aData.img && <img src={aData.img} alt="" style={{ maxWidth: '70%', maxHeight: 100, borderRadius: 8, objectFit: 'contain' }} />}
+                        {aData.audio && <AudioPlayBtn src={aData.audio} />}
+                      </div>
+                    </div>
                   </div>
-                  <div className="fc-card-face fc-card-back" style={{ flexDirection: 'column', gap: 8 }}>
-                    <div className="fc-card-label">Back</div>
-                    {studyCard.backHtml
-                      ? <div className="fc-card-html" dangerouslySetInnerHTML={{ __html: studyCard.backHtml }} />
-                      : studyCard.back || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>No answer</span>}
-                    {!studyCard.backHtml && studyCard.backImageUrl && <img src={studyCard.backImageUrl} alt="" style={{ maxWidth: '70%', maxHeight: 100, borderRadius: 8, objectFit: 'contain' }} />}
-                    {studyCard.backAudioUrl && <AudioPlayBtn src={studyCard.backAudioUrl} />}
-                  </div>
-                </div>
-              </div>
+                )
+              })()}
               {flipped ? (
                 <div className="fc-rating-bar">
                   <button className="fc-rate-btn again" onClick={() => rateCard(1)}>Again <span style={{ fontSize: 10, opacity: 0.6 }}>(1)</span></button>
@@ -785,8 +914,10 @@ export default function FlashcardView() {
         return (
           <div className="fc-list">
             {cards.length === 0 && (
-              <div style={{ textAlign: 'center', color: 'var(--textDim)', paddingTop: 40, fontSize: 14 }}>
-                No cards yet. <button className="fc-mode-btn" style={{ marginLeft: 8 }} onClick={() => setMode('edit')}>Add cards</button>
+              <div style={{ textAlign: 'center', color: 'var(--textDim)', paddingTop: 40, fontSize: 14, display:'flex', flexDirection:'column', alignItems:'center', gap:10 }}>
+                No cards yet.
+                <button className="fc-add-btn" style={{ maxWidth:240 }} onClick={addCard}>+ Add Card</button>
+                <button className="fc-add-btn" style={{ maxWidth:240 }} onClick={handleImport}>↑ Import CSV / Anki deck</button>
               </div>
             )}
             {sections.map(({ label, items, badgeClass }) => (
@@ -807,19 +938,63 @@ export default function FlashcardView() {
                         value={card.front}
                         placeholder="Front…"
                         onChange={e => updateCard(card.id, { front: e.target.value })}
+                        ref={el => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' } }}
                         onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }}
                       />
-                      {card.imageUrl && <img className="fc-list-img" src={card.imageUrl} alt="" />}
-                      <div className="fc-list-field-label" style={{ marginTop: 2 }}>Back</div>
+                      {card.imageUrl && (
+                        <div style={{ position:'relative', display:'inline-block' }}>
+                          <img className="fc-list-img" src={card.imageUrl} alt="" />
+                          <button onClick={() => updateCard(card.id, { imageUrl: '' })}
+                            style={{ position:'absolute', top:2, right:2, width:16, height:16, borderRadius:8, background:'rgba(0,0,0,0.55)', border:'none', color:'#fff', cursor:'pointer', fontSize:10, lineHeight:1, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
+                        </div>
+                      )}
+                      {card.audioUrl && (
+                        <div className="fc-audio-row">
+                          <AudioPlayBtn src={card.audioUrl} />
+                          <span className="fc-audio-label">Front audio</span>
+                          <button className="fc-audio-remove" onClick={() => updateCard(card.id, { audioUrl: '' })}>×</button>
+                        </div>
+                      )}
+                      <div style={{ display:'flex', gap:4, marginTop:3 }}>
+                        <ImageUploadBtn label="Image" onUpload={url => updateCard(card.id, { imageUrl: url })} />
+                        <AudioUploadBtn label="Audio" onUpload={url => updateCard(card.id, { audioUrl: url })} />
+                      </div>
+                      <div className="fc-list-field-label" style={{ marginTop:6 }}>Back</div>
                       <textarea
                         className="fc-list-field"
                         rows={1}
                         value={card.back}
                         placeholder="Back…"
                         onChange={e => updateCard(card.id, { back: e.target.value })}
+                        ref={el => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' } }}
                         onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }}
                       />
-                      {card.backImageUrl && <img className="fc-list-img" src={card.backImageUrl} alt="" />}
+                      {card.backImageUrl && (
+                        <div style={{ position:'relative', display:'inline-block' }}>
+                          <img className="fc-list-img" src={card.backImageUrl} alt="" />
+                          <button onClick={() => updateCard(card.id, { backImageUrl: '' })}
+                            style={{ position:'absolute', top:2, right:2, width:16, height:16, borderRadius:8, background:'rgba(0,0,0,0.55)', border:'none', color:'#fff', cursor:'pointer', fontSize:10, lineHeight:1, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
+                        </div>
+                      )}
+                      {card.backAudioUrl && (
+                        <div className="fc-audio-row">
+                          <AudioPlayBtn src={card.backAudioUrl} />
+                          <span className="fc-audio-label">Back audio</span>
+                          <button className="fc-audio-remove" onClick={() => updateCard(card.id, { backAudioUrl: '' })}>×</button>
+                        </div>
+                      )}
+                      <div style={{ display:'flex', gap:4, marginTop:3 }}>
+                        <ImageUploadBtn label="Image" onUpload={url => updateCard(card.id, { backImageUrl: url })} />
+                        <AudioUploadBtn label="Audio" onUpload={url => updateCard(card.id, { backAudioUrl: url })} />
+                      </div>
+                      {/* Color picker */}
+                      <div style={{ display:'flex', gap:5, marginTop:6, alignItems:'center' }}>
+                        {CARD_COLORS.map(c => (
+                          <span key={c} className={`fc-color-dot${card.color === c ? ' active' : ''}`}
+                            style={{ background: c === 'transparent' ? 'var(--surfaceAlt)' : c, width:12, height:12 }}
+                            onClick={() => updateCard(card.id, { color: c })} />
+                        ))}
+                      </div>
                     </div>
                     <button className="fc-list-del" title="Delete card"
                       onClick={() => { deleteCard(card.id) }}>×</button>
@@ -827,7 +1002,7 @@ export default function FlashcardView() {
                 ))}
               </div>
             ))}
-            {cards.length > 0 && (
+            {cards.length > 0 && !isMobile && (
               <button className="fc-add-btn" style={{ marginTop: 8 }} onClick={addCard}>+ Add Card</button>
             )}
           </div>
@@ -860,7 +1035,7 @@ export default function FlashcardView() {
                     <div className="fc-card-label">Front</div>
                     <textarea className="fc-card-input" placeholder="Front (question)..."
                       value={card.front} onChange={e => updateCard(card.id, { front: e.target.value })}
-                      style={{ background: 'transparent', border: 'none', textAlign: 'center', fontSize: 18, fontWeight: 500, resize: 'none', minHeight: 80, fontFamily: 'Georgia, serif' }} />
+                      style={{ background: 'transparent', border: 'none', textAlign: 'center', fontSize: 18, fontWeight: 500, resize: 'none', minHeight: 80, fontFamily: "'Author', 'Satoshi', sans-serif" }} />
                     {card.imageUrl && (
                       <div style={{ position: 'relative', display: 'inline-block' }}>
                         <img src={card.imageUrl} alt="" style={{ maxWidth: '80%', maxHeight: 120, borderRadius: 8, objectFit: 'contain' }} />
@@ -888,7 +1063,7 @@ export default function FlashcardView() {
                     <div className="fc-card-label">Back</div>
                     <textarea className="fc-card-input" placeholder="Back (answer)..."
                       value={card.back} onChange={e => updateCard(card.id, { back: e.target.value })}
-                      style={{ background: 'transparent', border: 'none', textAlign: 'center', fontSize: 18, fontWeight: 500, resize: 'none', minHeight: 80, fontFamily: 'Georgia, serif' }} />
+                      style={{ background: 'transparent', border: 'none', textAlign: 'center', fontSize: 18, fontWeight: 500, resize: 'none', minHeight: 80, fontFamily: "'Author', 'Satoshi', sans-serif" }} />
                     {card.backImageUrl && (
                       <div style={{ position: 'relative', display: 'inline-block' }}>
                         <img src={card.backImageUrl} alt="" style={{ maxWidth: '80%', maxHeight: 120, borderRadius: 8, objectFit: 'contain' }} />
@@ -923,7 +1098,47 @@ export default function FlashcardView() {
               </>
             )
           })()}
-          <button className="fc-add-btn" style={{ maxWidth: 500 }} onClick={addCard}>+ Add Card</button>
+          {!isMobile && (
+            <button className="fc-add-btn" style={{ maxWidth: 500 }} onClick={addCard}>+ Add Card</button>
+          )}
+          {cards.length === 0 && (
+            <button className="fc-add-btn" style={{ maxWidth: 500 }} onClick={handleImport}>↑ Import CSV / Anki deck</button>
+          )}
+        </div>
+      )}
+
+      {/* ── Footer — stats, flip direction, mode switch ── */}
+      {!isMobile && (
+        <div className="fc-footer">
+          <div className="fc-stats">
+            <span>{cards.length} cards</span>
+            <span style={{ color: dueCards.length > 0 ? '#ff9800' : 'var(--textDim)' }}>
+              {dueCards.length} due
+            </span>
+            {fcStreakDots}
+          </div>
+          <div style={{ flex: 1 }} />
+          {mode === 'study' && (
+            <button
+              className="fc-mode-btn"
+              title={studySide === 'front' ? 'Studying Front→Back (click to flip to Back→Front)' : 'Studying Back→Front (click to flip to Front→Back)'}
+              onClick={() => { setStudySide(s => s === 'front' ? 'back' : 'front'); setFlipped(false) }}
+              style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              {studySide === 'front'
+                ? <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                    <rect x="1" y="3" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+                    <path d="M5 8h6M9 6l2 2-2 2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                : <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                    <rect x="1" y="3" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+                    <path d="M11 8H5M7 10L5 8l2-2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>}
+              {studySide === 'front' ? 'Front first' : 'Back first'}
+            </button>
+          )}
+          <button className={`fc-mode-btn${mode === 'study' ? ' active' : ''}`} onClick={() => { setMode('study'); setFlipped(false); setCurrentIdx(0) }}>Study</button>
+          <button className={`fc-mode-btn${mode === 'list' || mode === 'edit' ? ' active' : ''}`} onClick={() => setMode('list')}>Edit</button>
         </div>
       )}
     </div>

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useContext, useCallback } from 'react'
 import useAppStore from '@/store/useAppStore'
 import { PaneContext } from '@/lib/PaneContext'
 import { loadNotebookContent } from '@/lib/storage'
+import { Toggle, Slider, Select } from '@/components/Controls'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const LERP_RATE    = 0.035
@@ -40,19 +41,21 @@ const TYPE_LABELS = {
 }
 
 const DEFAULT_SETTINGS = {
-  orbitSpeed:       1.0,       // multiplier on ORBIT_SPEED
-  lerpRate:         1.0,       // multiplier on LERP_RATE
-  nodeSizeMul:      1.0,       // multiplier on base node radii
-  orbitRadiusMul:   1.0,       // multiplier on each node's orbit radius
-  hubOrbitR:        40,        // hub-to-hub orbit radius (px)
-  clusterSpacing:   28,        // stray cluster spiral step (px)
-  showLabels:      'linked',   // 'always' | 'linked' | 'hovered'
-  showEdges:        true,
-  showSectorLabels: true,
-  showLegend:       true,
-  edgeOpacityMul:   1.0,       // multiplier on edge alpha
-  glowEnabled:      true,
-  focusZoom:        true,      // animate camera to focused node
+  orbitSpeed:          1.0,       // multiplier on ORBIT_SPEED
+  lerpRate:            1.0,       // multiplier on LERP_RATE
+  nodeSizeMul:         1.0,       // multiplier on base node radii
+  orbitRadiusMul:      1.0,       // multiplier on each node's orbit radius
+  hubOrbitR:           40,        // hub-to-hub orbit radius (px)
+  clusterSpacing:      28,        // stray cluster spiral step (px)
+  showLabels:         'linked',   // 'always' | 'linked' | 'hovered'
+  showEdges:           true,
+  showCollectionEdges: true,      // dashed bonds between items in same collection
+  collectionEdgeOpacity: 1.0,
+  showSectorLabels:    true,
+  showLegend:          true,
+  edgeOpacityMul:      1.0,       // multiplier on edge alpha
+  glowEnabled:         true,
+  focusZoom:           true,      // animate camera to focused node
 }
 
 function nodeRadius(node, mul = 1) {
@@ -267,6 +270,24 @@ export default function GraphView() {
         } catch { /* content unavailable */ }
       }
 
+      // Weak bonds: items sharing a collection get dashed edges
+      for (const col of collections) {
+        const members = col.items.filter(id => nodesMap.has(id))
+        if (members.length < 2) continue
+        // ≤8 items → all pairs; >8 → ring to avoid O(N²) clutter
+        const pairs = members.length <= 8
+          ? members.flatMap((a, i) => members.slice(i + 1).map(b => [a, b]))
+          : members.map((id, i) => [id, members[(i + 1) % members.length]])
+        for (const [fromId, toId] of pairs) {
+          if (!edges.some(e =>
+            (e.fromId === fromId && e.toId === toId) ||
+            (e.fromId === toId   && e.toId === fromId)
+          )) {
+            edges.push({ fromId, toId, isWeak: true, color: col.color || null })
+          }
+        }
+      }
+
       if (cancelled) return
 
       // Compute link counts and hub status
@@ -334,7 +355,7 @@ export default function GraphView() {
 
     buildGraph()
     return () => { cancelled = true; clearTimeout(spawnRef.current) }
-  }, [notebooks, library, sketchbooks, flashcardDecks])
+  }, [notebooks, library, sketchbooks, flashcardDecks, collections])
 
   // Re-apply filters whenever any filter changes
   useEffect(() => {
@@ -492,9 +513,37 @@ export default function GraphView() {
         selNode.children.forEach(id => litIds.add(id))
       }
 
-      // Edges
+      // Pass 1: weak collection bonds (dashed, low alpha — drawn below strong edges)
+      if (cfg.showEdges && cfg.showCollectionEdges) {
+        ctx.setLineDash([3 / z, 4 / z])
+        for (const edge of sim.edges) {
+          if (!edge.isWeak) continue
+          const from = nodesMap.get(edge.fromId)
+          const to   = nodesMap.get(edge.toId)
+          if (!from || !to) continue
+          const edgeSp = Math.min(from.spawnProgress ?? 1, to.spawnProgress ?? 1)
+          if (edgeSp <= 0) continue
+          const isConnected = sel && (edge.fromId === sel || edge.toId === sel)
+          const isDimmed    = sel && !isConnected
+          let alpha = 0.10 * cfg.collectionEdgeOpacity * edgeSp
+          if (isConnected) alpha = 0.32 * edgeSp
+          if (isDimmed)    alpha *= 0.04
+          ctx.beginPath()
+          ctx.moveTo(from.x, from.y)
+          ctx.lineTo(to.x, to.y)
+          ctx.strokeStyle = edge.color
+            ? `${edge.color}${Math.round(alpha * 255).toString(16).padStart(2, '0')}`
+            : `rgba(180,160,255,${alpha})`
+          ctx.lineWidth = 0.9 / z
+          ctx.stroke()
+        }
+        ctx.setLineDash([])
+      }
+
+      // Pass 2: strong wikilink edges
       if (cfg.showEdges) {
         for (const edge of sim.edges) {
+          if (edge.isWeak) continue
           const from = nodesMap.get(edge.fromId)
           const to   = nodesMap.get(edge.toId)
           if (!from || !to) continue
@@ -1205,6 +1254,16 @@ function NebuliSettings({
             onChange={v => onChange({ edgeOpacityMul: v })}
           />
           <ToggleRow label="Show Edges"         value={settings.showEdges}        onChange={v => onChange({ showEdges: v })} />
+          <ToggleRow label="Collection Bonds"  value={settings.showCollectionEdges} onChange={v => onChange({ showCollectionEdges: v })} />
+          {settings.showCollectionEdges && (
+            <SliderRow
+              label="Bond Opacity"
+              value={settings.collectionEdgeOpacity}
+              min={0} max={3} step={0.05}
+              display={v => `${v.toFixed(2)}×`}
+              onChange={v => onChange({ collectionEdgeOpacity: v })}
+            />
+          )}
           <ToggleRow label="Hub Glow"            value={settings.glowEnabled}      onChange={v => onChange({ glowEnabled: v })} />
           <ToggleRow label="Focus Zoom"          value={settings.focusZoom}        onChange={v => onChange({ focusZoom: v })} />
           <ToggleRow label="Sector Labels"       value={settings.showSectorLabels} onChange={v => onChange({ showSectorLabels: v })} />
@@ -1287,19 +1346,17 @@ function NebuliSettings({
           {collections.length > 0 && (
             <div style={{ marginBottom: 10 }}>
               <span style={{ fontSize: 11, color: 'var(--text)', fontWeight: 500, display: 'block', marginBottom: 6 }}>Collection</span>
-              <select
+              <Select
                 value={filterCollection || ''}
-                onChange={e => onSetCollection(e.target.value || null)}
+                onChange={v => onSetCollection(v || null)}
                 style={{
-                  width: '100%', height: 28, padding: '0 6px', fontSize: 11, boxSizing: 'border-box',
-                  background: 'var(--surfaceAlt)', border: '1px solid var(--border)',
-                  borderRadius: 6, color: filterCollection ? 'var(--accent)' : 'var(--text)',
-                  cursor: 'pointer', fontFamily: 'inherit',
+                  width: '100%', fontSize: 11, boxSizing: 'border-box',
+                  color: filterCollection ? 'var(--accent)' : 'var(--text)',
                 }}
               >
                 <option value="">All Collections</option>
                 {collections.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+              </Select>
             </div>
           )}
 
@@ -1379,12 +1436,11 @@ function SliderRow({ label, value, min, max, step, display, onChange }) {
           {display ? display(value) : value}
         </span>
       </div>
-      <input
-        type="range"
+      <Slider
         min={min} max={max} step={step}
         value={value}
-        onChange={e => onChange(parseFloat(e.target.value))}
-        style={{ width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' }}
+        onChange={onChange}
+        style={{ width: '100%' }}
       />
     </div>
   )
@@ -1397,20 +1453,7 @@ function ToggleRow({ label, value, onChange }) {
       marginBottom: 8,
     }}>
       <span style={{ fontSize: 11, color: 'var(--text)', fontWeight: 500 }}>{label}</span>
-      <button
-        onClick={() => onChange(!value)}
-        style={{
-          width: 36, height: 20, borderRadius: 10, border: 'none', cursor: 'pointer',
-          background: value ? 'var(--accent)' : 'var(--border)',
-          position: 'relative', transition: 'background 0.15s', flexShrink: 0,
-        }}
-      >
-        <div style={{
-          position: 'absolute', top: 2, left: value ? 18 : 2,
-          width: 16, height: 16, borderRadius: '50%', background: '#fff',
-          transition: 'left 0.15s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
-        }} />
-      </button>
+      <Toggle on={!!value} onChange={onChange} />
     </div>
   )
 }
