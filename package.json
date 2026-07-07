@@ -10,8 +10,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "npm run tauri -- dev",
-    "tauri:build": "npm run download-piper && npm run tauri -- build",
-    "download-piper": "node scripts/download-piper.js"
+    "tauri:build": "npm run tauri -- build"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",
