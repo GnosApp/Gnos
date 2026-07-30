@@ -8,11 +8,11 @@ import OnboardingView from '@/views/OnboardingView'
 
 import { check } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
-import { PaneContext } from '@/lib/PaneContext'
+import { PaneContext, PaneChromeContext } from '@/lib/PaneContext'
 import pluginHost from '@/lib/PluginHost'
 import { loadPlugins } from '@/lib/loadPlugins'
 import LibraryView, { SearchDropdown, AddPopup } from '@/views/LibraryView'
-import { makeId } from '@/lib/utils'
+import { makeId, generateCoverColor } from '@/lib/utils'
 import ReaderView      from '@/views/ReaderView'
 import AudioPlayerView from '@/views/AudioPlayerView'
 import PdfView         from '@/views/PdfView'
@@ -61,6 +61,9 @@ function getTabLabel(tab, { notebooks = [], flashcardDecks = [], sketchbooks = [
 }
 
 export const TITLEBAR_H = 34
+// Mirrors SIDEBAR_WIDTH in SideNav.jsx (kept local to avoid a cross-module
+// import just for the header's animating lead-zone width).
+const SIDEBAR_WIDTH = 238
 
 // ── ViewPanel ─────────────────────────────────────────────────────────────────
 function ViewPanel({ view }) {
@@ -84,8 +87,13 @@ function ViewPanel({ view }) {
 // Lazily mounts on first activation and stays mounted for the tab's lifetime.
 // Visibility is controlled by display:flex/none so the view doesn't remount on
 // every tab switch, but the component does unmount when the tab is closed.
-function TabPane({ tabId, isActive, isLastActive, isSplit, onFocus }) {
+function TabPane({ tabId, isActive, isLastActive, isSplit, grow = 1, onFocus, onUnsplit, onSwapPanes, onClosePane }) {
   const tab = useAppStore(s => s.tabs.find(t => t.id === tabId))
+  // Store slices for the split-pane header label (title changes reflect live).
+  const notebooks      = useAppStore(s => s.notebooks)
+  const sketchbooks    = useAppStore(s => s.sketchbooks)
+  const flashcardDecks = useAppStore(s => s.flashcardDecks)
+  const library        = useAppStore(s => s.library)
   const shouldMount = isActive || isSplit || isLastActive
   const [everActive, setEverActive] = useState(shouldMount)
   useEffect(() => {
@@ -95,21 +103,54 @@ function TabPane({ tabId, isActive, isLastActive, isSplit, onFocus }) {
 
   if (!tab || !everActive) return null
 
+  const paneChrome = isSplit ? { qaHostId: `qa-${tabId}`, saveIconId: `nbsave-${tabId}` } : null
+  const paneLabel = getTabLabel(tab, { notebooks, flashcardDecks, sketchbooks, library })
+
   return (
     <PaneContext.Provider value={tabId}>
+     <PaneChromeContext.Provider value={paneChrome}>
       <div
+        className={isSplit ? 'pane-card' : undefined}
         onMouseDown={() => { if (isSplit && !isActive && onFocus) onFocus() }}
         onFocusCapture={() => { if (isSplit && !isActive && onFocus) onFocus() }}
         style={{
           ...(isSplit
-            ? { flex: 1, minWidth: 0, minHeight: 0, position: 'relative' }
+            ? { flex: `${grow} 1 0%`, minWidth: 0, minHeight: 0, position: 'relative' }
             : { position: 'absolute', inset: 0 }
           ),
           overflow: 'hidden',
           display: (isSplit || isActive) ? 'flex' : 'none',
           flexDirection: 'column',
         }}>
-        <SideNav isSplitPane={isSplit} />
+        {/* Split panes get NO sidebar — the sidebar belongs to the single-pane
+            layout only. In split you navigate via each pane's own header + the
+            tab manager. */}
+        {!isSplit && <SideNav isSplitPane={false} />}
+        {/* Per-pane header (split only) — carries this pane's own title + its
+            per-view actions (quick-access + save), so the global header stays
+            clean and just reflects the active tab. */}
+        {isSplit && (
+          <div className={`pane-header${isActive ? ' active' : ''}`}>
+            <span className="pane-header-title">{paneLabel}</span>
+            <div className="pane-header-actions">
+              {/* Window-manager chrome: swap sides · promote to full · close split */}
+              <button className="pane-wm-btn" title="Swap sides" onClick={e => { e.stopPropagation(); onSwapPanes?.() }}>
+                <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M4 2L1.5 4.5 4 7M8 5l2.5 2.5L8 10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/><path d="M1.5 4.5h6M10.5 7.5h-6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+              </button>
+              <button className="pane-wm-btn" title="Expand this pane (unsplit)" onClick={e => { e.stopPropagation(); onUnsplit?.() }}>
+                <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M7 1.5h3.5V5M5 10.5H1.5V7M10.5 1.5L7 5M1.5 10.5L5 7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </button>
+              <button className="pane-wm-btn pane-wm-close" title="Close this pane (keep the other)" onClick={e => { e.stopPropagation(); onClosePane?.() }}>
+                <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+              </button>
+              <div id={`qa-${tabId}`} className="gnos-tb-quick pane-qa" />
+              <svg id={`nbsave-${tabId}`} className="nb-save-icon" viewBox="0 0 18 18" fill="none">
+                <circle className="nb-save-ring" cx="9" cy="9" r="7.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+                <polyline className="nb-save-check" points="5.5,9 7.8,11.5 12.5,6.5" stroke="currentColor" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </div>
+          </div>
+        )}
         <ViewPanel view={tab.view} />
         {isSplit && isActive && (
           <div
@@ -117,6 +158,7 @@ function TabPane({ tabId, isActive, isLastActive, isSplit, onFocus }) {
           />
         )}
       </div>
+     </PaneChromeContext.Provider>
     </PaneContext.Provider>
   )
 }
@@ -254,16 +296,63 @@ function TabLayoutModal({ onClose, splitDir, splitPanes, setSplitDir, setSplitPa
 
 // ── Tab CSS ───────────────────────────────────────────────────────────────────
 const TAB_CSS = `
-  .gnos-titlebar {
-    position: fixed; top: 0; left: 0; right: 0;
-    height: ${TITLEBAR_H}px; z-index: 9999;
-    display: flex; align-items: center;
-    padding-left: 88px; padding-right: 12px;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    box-sizing: border-box; overflow: visible;
+  /* ── Content frame — the floating "card" that holds the titlebar + page
+     content, offset from the sidebar plane / window edges. Safari/Comet-style
+     two-plane layout: the sidebar owns the flush left column (see Sidenav.jsx
+     .sidenav-top-strip), this frame owns everything else. No radius/overflow
+     on THIS element on purpose — box-shadow still follows border-radius fine
+     without overflow:hidden, and skipping it means dropdowns/popovers/fixed
+     overlays anchored inside the header or page content are never clipped.
+     The rounded-corner *look* comes from radius on the frame itself plus its
+     two children (.gnos-titlebar top corners, page content bottom corners)
+     rather than from clipping. */
+  /* Root — flex column: full-width header on top, content card below.
+     Dark (var(--bg)) chrome field; the only lighter, floating element is
+     the content card. Margins/sidebar/header/footer all read as one dark
+     plane, the card as a distinct lighter window-within-the-window. */
+  #app {
+    display: flex; flex-direction: column;
+    height: 100vh; overflow: hidden;
+    background: var(--bg);
   }
-  /* Full-width drag layer behind the controls */
+  /* Full-width top header bar — chrome plane, pulled OUT of the content
+     card so it belongs to the dark margins, not the lighter page. */
+  .gnos-titlebar {
+    position: relative; flex-shrink: 0; z-index: 20;
+    height: ${TITLEBAR_H}px; margin: 0 6px;
+    display: flex; align-items: center;
+    padding: 6px 4px 0 0;
+    background: transparent;
+    box-sizing: border-box; overflow: visible;
+    transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  /* Content card — the lighter floating page. */
+  .gnos-content-frame {
+    flex: 1; min-height: 0;
+    display: flex; flex-direction: column; position: relative;
+    margin: 6px;
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.18), 0 1px 2px rgba(0,0,0,0.10);
+    background: var(--surface);
+    overflow: hidden;
+    transition: margin-left 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  /* Split — the frame becomes a transparent shell so each pane reads as its
+     own rounded card floating in the dark chrome, separated by a real gap. */
+  .gnos-content-frame.split {
+    background: transparent;
+    box-shadow: none;
+    overflow: visible;
+  }
+  .pane-card {
+    border-radius: 8px;
+    background: var(--surface);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.18), 0 1px 2px rgba(0,0,0,0.10);
+  }
+  /* Divider between panes → a transparent gap that's still the resize handle. */
+  .gnos-content-frame.split .gnos-split-divider.h { width: 7px; }
+  .gnos-content-frame.split .gnos-split-divider.v { height: 7px; }
+  /* Drag layer behind the controls, scoped to the card's header now */
   .gnos-titlebar-drag { position: absolute; inset: 0; z-index: 0; }
   /* Three sections; empty gaps fall through to the drag layer */
   .gnos-tb-left, .gnos-tb-center, .gnos-tb-right {
@@ -271,9 +360,37 @@ const TAB_CSS = `
     display: flex; align-items: center;
   }
   .gnos-tb-left > *, .gnos-tb-center > *, .gnos-tb-right > * { pointer-events: auto; }
-  .gnos-tb-left  { gap: 3px; }
-  .nb-save-indicator { display: flex; align-items: center; margin-left: 2px; }
-  .nb-save-icon { width: 16px; height: 16px; color: var(--accent); opacity: 0; transition: opacity 0.2s; }
+  /* Lead zone — a 72px padding-left keeps its contents strictly to the RIGHT
+     of the macOS traffic lights (which live at top-left), so toggle+Home never
+     sit under them even when the sidebar is closed. The zone width animates
+     132px→sidebar-width; the right-aligned buttons ride out to the sidebar's
+     right edge as it opens, and back to just past the traffic lights when it
+     closes. */
+  .gnos-tb-left {
+    box-sizing: border-box;
+    width: 172px; min-width: 172px; flex-shrink: 0;
+    padding-left: 88px;
+    justify-content: flex-end; gap: 3px;
+    transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .gnos-titlebar.pushed .gnos-tb-left { width: ${SIDEBAR_WIDTH}px; }
+  /* CTX zone — quick-open shortcuts; normal flow, sits right of the lead zone
+     so it never overflows into the traffic lights (the lead zone is fixed-width). */
+  .gnos-tb-ctx {
+    position: relative; z-index: 1; pointer-events: none;
+    /* No own margin — the lead zone's trailing flex gap (3px, includes the
+       collapsed save slot) already provides the same spacing as toggle↔home. */
+    display: flex; align-items: center; gap: 3px; flex-shrink: 0;
+  }
+  .gnos-tb-ctx > * { pointer-events: auto; }
+  /* Search-bar leading glyph — magnifier by default; the save flash swaps in
+     over it (same slot, no layout shift). */
+  .gnos-tbs-glyph { position: relative; display: flex; align-items: center; justify-content: center; width: 15px; height: 15px; flex-shrink: 0; }
+  .gnos-tbs-magnifier { opacity: .55; transition: opacity 0.15s; }
+  .gnos-tbs-glyph:has(.nb-save-icon.vis) .gnos-tbs-magnifier { opacity: 0; }
+  /* Absolute only inside the glyph slot — pane-header save icons (global.css) keep flow */
+  .gnos-tbs-glyph .nb-save-icon { position: absolute; inset: 0; width: 15px; height: 15px; }
+  .nb-save-icon { color: var(--accent); opacity: 0; transition: opacity 0.2s; }
   .nb-save-icon.vis { opacity: 1; }
   .nb-save-ring { stroke-dasharray: 47; stroke-dashoffset: 47; transition: stroke-dashoffset 0s; }
   .nb-save-icon.anim .nb-save-ring { stroke-dashoffset: 0; transition: stroke-dashoffset 0.3s ease; }
@@ -282,11 +399,38 @@ const TAB_CSS = `
   .nb-save-icon.closing .nb-save-check { stroke-dashoffset: 12; transition: stroke-dashoffset 0.15s ease; }
   .nb-save-icon.closing .nb-save-ring { stroke-dashoffset: 47; transition: stroke-dashoffset 0.3s ease 0.1s; }
   .nb-save-icon.closing { opacity: 0; transition: opacity 0.35s 0.25s; }
-  .gnos-tb-right { margin-left: auto; gap: 4px; }
+  .gnos-tb-right { flex-shrink: 0; gap: 4px; padding-right: 4px; margin-left: auto; }
+  /* Center — the arrows+search+add group, absolutely centered on the WINDOW
+     (not the leftover space between zones), so it reads as dead-center. Width
+     is capped so it can never reach the lead or right zones — at the min window
+     width it still leaves ~250px clearance each side. */
   .gnos-tb-center {
     position: absolute; left: 50%; transform: translateX(-50%);
-    gap: 6px; max-width: 46vw;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    /* --tb-clear is measured from the real left/right zone widths (see the
+       ResizeObserver in the titlebar) so the centered search can never slide
+       under the side zones no matter how many contextual buttons mount. */
+    width: min(560px, calc(100vw - 2 * var(--tb-clear, 260px)));
+    min-width: 0;
   }
+  .gnos-tb-center > * { min-width: 0; }
+  /* Per-pane header (split view only) — a slim local bar at the top of each
+     pane with that pane's title + its per-view actions. */
+  .pane-header {
+    flex-shrink: 0; display: flex; align-items: center; gap: 8px;
+    height: 34px; padding: 0 8px 0 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .pane-header-title {
+    flex: 1; min-width: 0;
+    font-size: 12px; font-weight: 600; color: var(--textDim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    letter-spacing: -0.01em;
+  }
+  .pane-header.active .pane-header-title { color: var(--text); }
+  .pane-header-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  .pane-qa { display: flex; align-items: center; gap: 3px; }
   .gnos-titlebar-settings {
     display: flex; align-items: center;
     align-self: center;
@@ -351,13 +495,29 @@ const TAB_CSS = `
     opacity: 1 !important; background: rgba(248,81,73,0.12) !important;
     color: #f85149 !important; border-color: rgba(248,81,73,0.35) !important;
   }
+  /* Divider — 7px grab area, 1px visible line (accent on hover/drag) */
   .gnos-split-divider {
-    flex-shrink: 0; background: var(--border);
-    transition: background 0.12s; z-index: 10;
+    flex-shrink: 0; background: transparent;
+    z-index: 10; position: relative; touch-action: none;
   }
-  .gnos-split-divider:hover { background: var(--accent); }
-  .gnos-split-divider.h { width: 1px; cursor: col-resize; align-self: stretch; }
-  .gnos-split-divider.v { height: 1px; cursor: row-resize; align-self: stretch; }
+  .gnos-split-divider::after {
+    content: ''; position: absolute; background: var(--border);
+    transition: background 0.12s;
+  }
+  .gnos-split-divider.h { width: 7px; cursor: col-resize; align-self: stretch; }
+  .gnos-split-divider.h::after { left: 3px; top: 0; bottom: 0; width: 1px; }
+  .gnos-split-divider.v { height: 7px; cursor: row-resize; align-self: stretch; }
+  .gnos-split-divider.v::after { top: 3px; left: 0; right: 0; height: 1px; }
+  .gnos-split-divider:hover::after, .gnos-split-divider:active::after { background: var(--accent); }
+  /* Pane window-manager buttons — visible on pane-header hover */
+  .pane-wm-btn {
+    width: 20px; height: 20px; border-radius: 5px; border: none; background: none;
+    color: var(--textDim); cursor: pointer; display: flex; align-items: center;
+    justify-content: center; padding: 0; opacity: 0; transition: opacity .12s, background .1s, color .1s;
+  }
+  .pane-header:hover .pane-wm-btn { opacity: .7; }
+  .pane-wm-btn:hover { background: var(--surfaceAlt); color: var(--text); opacity: 1; }
+  .pane-wm-close:hover { background: rgba(248,81,73,.14); color: #f85149; }
   @media all and (display-mode: fullscreen) {
     .gnos-titlebar { padding-left: 12px; }
   }
@@ -388,7 +548,9 @@ const TAB_CSS = `
   /* ── Titlebar controls (sidebar-tabs mode) ── */
   .gnos-titlebar-search {
     position: relative; display: flex; align-items: center; gap: 8px;
-    align-self: center; width: 38vw; max-width: 520px; min-width: 200px;
+    /* No overflow:hidden here — the chapter dropdown panel renders inside this
+       container and would be clipped. The input itself truncates via min-width:0. */
+    align-self: center; flex: 1 1 auto; width: auto; min-width: 64px; max-width: none;
     height: 27px; padding: 0 11px;
     background: var(--surfaceAlt); border: 1px solid var(--borderSubtle);
     border-radius: 8px; color: var(--textDim);
@@ -450,8 +612,9 @@ const TAB_CSS = `
 
   /* ── Tab overview — browser-style tab manager grid ── */
   .gnos-tab-overview {
-    position: fixed; top: 0; right: 0; bottom: 0; z-index: 9998;
-    padding-top: ${TITLEBAR_H}px;
+    /* Starts BELOW the app titlebar — the native header (sidebar toggle,
+       search, quick actions) stays visible and interactive above the switcher */
+    position: fixed; top: ${TITLEBAR_H}px; right: 0; bottom: 0; z-index: 8990;
     background: color-mix(in srgb, var(--bg) 86%, transparent);
     backdrop-filter: blur(16px) saturate(1.1); -webkit-backdrop-filter: blur(16px) saturate(1.1);
     display: flex; flex-direction: column;
@@ -490,9 +653,24 @@ const TAB_CSS = `
     border-color: var(--border);
   }
   .gnos-tab-overview-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .gnos-tab-overview-card.focused { border-color: var(--border); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
   .gnos-tab-overview-thumb {
-    height: 104px; display: flex; align-items: center; justify-content: center;
+    height: 128px; display: flex; align-items: center; justify-content: center;
     background: var(--surfaceAlt); opacity: .92;
+  }
+  /* Content covers — library-card language */
+  .gnos-tab-overview-cover {
+    height: 128px; overflow: hidden; display: flex; align-items: center; justify-content: center;
+    background: var(--surfaceAlt);
+  }
+  .gnos-tab-overview-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .gnos-tab-overview-cover-gen {
+    align-items: flex-start; padding: 12px 14px; box-sizing: border-box;
+  }
+  .gnos-tab-overview-cover-gen span {
+    font-size: 13px; font-weight: 800; color: #fff; line-height: 1.3;
+    letter-spacing: .02em; word-break: break-word; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
   }
   .gnos-tab-overview-meta {
     display: flex; align-items: center; gap: 6px;
@@ -525,6 +703,46 @@ const VIEW_PREVIEW = {
   pdf:          { color: '#f0883e', icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/><polyline points="14,2 14,8 20,8" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/></svg> },
   calendar:     { color: '#1a6b3a', icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="1.6"/><line x1="8" y1="2" x2="8" y2="6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/><line x1="16" y1="2" x2="16" y2="6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/><line x1="3" y1="10" x2="21" y2="10" stroke="currentColor" strokeWidth="1.6"/></svg> },
   kanban:       { color: '#7a1f6e', icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="5" height="14" rx="1" stroke="currentColor" strokeWidth="1.5"/><rect x="10" y="3" width="5" height="9" rx="1" stroke="currentColor" strokeWidth="1.5"/><rect x="17" y="3" width="5" height="18" rx="1" stroke="currentColor" strokeWidth="1.5"/></svg> },
+}
+
+// Content-first tab-card preview — reuses the library-card cover system so the
+// overview reads like the rest of the app (real covers, not generic icons).
+function tabCardPreview(tab, { notebooks = [], sketchbooks = [], library = [] } = {}) {
+  const generic = VIEW_PREVIEW[tab.view] || VIEW_PREVIEW.library
+  const coverImg = (src, bg) => (
+    <div className="gnos-tab-overview-cover" style={bg ? { background: bg } : undefined}>
+      <img src={src} alt="" draggable="false" loading="lazy" decoding="async" />
+    </div>
+  )
+  const titleBlock = (title, c1, c2) => (
+    <div className="gnos-tab-overview-cover gnos-tab-overview-cover-gen"
+      style={{ background: `linear-gradient(135deg, ${c1}, ${c2})` }}>
+      <span>{title}</span>
+    </div>
+  )
+  if ((tab.view === 'reader' || tab.view === 'pdf') && tab.activeBook) {
+    const b = library.find(x => x.id === tab.activeBook.id) || tab.activeBook
+    if (b.coverDataUrl) return coverImg(b.coverDataUrl)
+    const [c1, c2] = generateCoverColor(b.title || '')
+    return titleBlock(b.title, c1, c2)
+  }
+  if (tab.view === 'audio-player' && tab.activeAudioBook) {
+    const b = library.find(x => x.id === tab.activeAudioBook.id) || tab.activeAudioBook
+    if (b.coverDataUrl) return coverImg(b.coverDataUrl)
+    const [c1, c2] = generateCoverColor(b.title || '')
+    return titleBlock(b.title, c1, c2)
+  }
+  if (tab.view === 'notebook' && tab.activeNotebook) {
+    const nb = notebooks.find(x => x.id === tab.activeNotebook.id) || tab.activeNotebook
+    if (nb.coverDataUrl) return coverImg(nb.coverDataUrl)
+    const c = nb.coverColor || '#2d1b69'
+    return titleBlock(nb.title, c, c)
+  }
+  if (tab.view === 'sketchbook' && tab.activeSketchbook) {
+    const sb = sketchbooks.find(x => x.id === tab.activeSketchbook.id) || tab.activeSketchbook
+    if (sb.coverDataUrl) return coverImg(sb.coverDataUrl, sb.coverBgColor || '#ffffff')
+  }
+  return <div className="gnos-tab-overview-thumb" style={{ color: generic.color }}>{generic.icon}</div>
 }
 
 const LIB_TABS = [
@@ -1181,7 +1399,7 @@ const LOADING_THEMES = {
 }
 
 // ── Loading Screen ────────────────────────────────────────────────────────────
-function GnosLoadingScreen({ onDone }) {
+function GnosLoadingScreen({ onDone, initDone = false }) {
   const themeKey = useAppStore(s => s.themeKey) || 'sepia'
   const p = LOADING_THEMES[themeKey] || LOADING_THEMES.sepia
   const isLight = themeKey === 'sepia' || themeKey === 'light' || themeKey === 'moss'
@@ -1202,20 +1420,33 @@ function GnosLoadingScreen({ onDone }) {
     setTimeout(onDone, 400)
   }, [onDone])
 
+  // Lift the splash once disk hydration (initDone) is done, but never before a
+  // short brand-flash and never longer than a hard cap (so a stuck read still
+  // opens). Gating on initDone means the library grid is already mounted when
+  // the splash fades — no synchronous mount storm mid-interaction.
+  const MIN_SHOW = 260, MAX_SHOW = 2600
+  const mountedAtRef = useRef(performance.now())
+  useEffect(() => {
+    if (phase !== 'checking') return   // update prompt is showing — don't auto-dismiss
+    const elapsed = performance.now() - mountedAtRef.current
+    if (initDone) {
+      const wait = Math.max(0, MIN_SHOW - elapsed)
+      const t = setTimeout(() => { if (phase === 'checking') dismiss() }, wait)
+      return () => clearTimeout(t)
+    }
+    // init not done yet — hard cap so we never hang on a slow disk
+    const capT = setTimeout(() => { if (phase === 'checking') dismiss() }, Math.max(0, MAX_SHOW - elapsed))
+    return () => clearTimeout(capT)
+  }, [initDone, phase, dismiss])
+
   useEffect(() => {
     let cancelled = false
-    // Don't block launch on the network: dismiss after a brief brand flash and
-    // let the update check finish in the background. If an update lands before
-    // the splash fades we show the prompt; otherwise the app just opens.
-    const quickDismiss = setTimeout(() => { if (!cancelled && phase === 'checking') dismiss() }, 350)
-
     check().then(u => {
       if (cancelled) return
       if (u?.available) {
         if (!dismissedRef.current) {
-          clearTimeout(quickDismiss)
           setUpdate(u)
-          setPhase('idle')
+          setPhase('idle')   // 'idle' halts the auto-dismiss effect above
         } else {
           // Splash already gone — surface non-blockingly
           window.dispatchEvent(new CustomEvent('gnos:update-available', { detail: { version: u.version } }))
@@ -1223,7 +1454,7 @@ function GnosLoadingScreen({ onDone }) {
       }
     }).catch(() => { /* offline or check failed — app already opened */ })
 
-    return () => { cancelled = true; clearTimeout(quickDismiss) }
+    return () => { cancelled = true }
   }, []) // eslint-disable-line
 
   async function startUpdate() {
@@ -1283,10 +1514,24 @@ function GnosLoadingScreen({ onDone }) {
         fontFamily: 'Georgia, serif', fontSize: 36, fontWeight: 700,
         color: p.text, letterSpacing: '-1px', position: 'relative', zIndex: 1,
       }}>Gnos</div>
+      {/* Animated indeterminate loading bar (startup) */}
       <div style={{
-        width: 36, height: 2, borderRadius: 1,
-        background: p.dim, opacity: 0.5, position: 'relative', zIndex: 1,
-      }} />
+        width: 140, height: 3, borderRadius: 3,
+        background: `${p.dim}33`, overflow: 'hidden',
+        position: 'relative', zIndex: 1, marginTop: 2,
+      }}>
+        <div style={{
+          position: 'absolute', top: 0, left: 0, height: '100%', width: '40%',
+          borderRadius: 3, background: p.accent,
+          animation: 'gnos-splash-bar 1.15s ease-in-out infinite',
+        }} />
+      </div>
+      <style>{`
+        @keyframes gnos-splash-bar {
+          0%   { transform: translateX(-110%); }
+          100% { transform: translateX(360%); }
+        }
+      `}</style>
 
       {/* Update card — shown when update is available */}
       {update && (
@@ -1367,36 +1612,85 @@ function TabOverview({ onClose, onOpenLayout, leftOffset = 0 }) {
   const sketchbooks    = useAppStore(s => s.sketchbooks)
   const library        = useAppStore(s => s.library)
 
+  // Type-to-filter + keyboard navigation (arrows/Enter/⌘W), no header chrome.
+  const [query, setQuery]       = useState('')
+  const [focusIdx, setFocusIdx] = useState(() => Math.max(0, tabs.findIndex(t => t.id === activeTabId)))
+  const gridRef = useRef(null)
+
+  const q = query.trim().toLowerCase()
+  const visible = q
+    ? tabs.filter(t => getTabLabel(t, { notebooks, flashcardDecks, sketchbooks, library }).toLowerCase().includes(q))
+    : tabs
+
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); onClose() } }
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        if (query) setQuery('')
+        else onClose()
+        return
+      }
+      if (e.key === 'Enter') {
+        const t = visible[Math.min(focusIdx, visible.length - 1)]
+        if (t) { switchTab(t.id); onClose() }
+        return
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
+        const t = visible[Math.min(focusIdx, visible.length - 1)]
+        if (t && tabs.length > 1) { e.preventDefault(); closeTab(t.id) }
+        return
+      }
+      if (e.key.startsWith('Arrow')) {
+        e.preventDefault()
+        const cols = Math.max(1, Math.floor((gridRef.current?.clientWidth || 800) / 200))
+        const delta = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1
+          : e.key === 'ArrowUp' ? -cols : cols
+        setFocusIdx(i => Math.max(0, Math.min(visible.length - 1, i + delta)))
+        return
+      }
+      if (e.key === 'Backspace') { setQuery(s => s.slice(0, -1)); return }
+      if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        setQuery(s => s + e.key)
+        setFocusIdx(0)
+      }
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, query, visible, focusIdx, tabs.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="gnos-tab-overview" style={{ left: leftOffset }} onClick={onClose}>
+      {/* Header bar (restored by request) — count/filter state left, actions right */}
       <div className="gnos-tab-overview-head" onClick={e => e.stopPropagation()}>
-        <span className="gnos-tab-overview-title">{tabs.length} tab{tabs.length === 1 ? '' : 's'}</span>
+        <span className="gnos-tab-overview-title">
+          {(() => {
+            const activeTab = tabs.find(t => t.id === activeTabId)
+            const current = activeTab ? getTabLabel(activeTab, { notebooks, flashcardDecks, sketchbooks, library }) : ''
+            return query
+              ? `“${query}” · ${visible.length} match${visible.length === 1 ? '' : 'es'}`
+              : `${current} — ${tabs.length} tab${tabs.length === 1 ? '' : 's'} · type to filter`
+          })()}
+        </span>
         <div style={{ flex: 1 }} />
         {onOpenLayout && (
           <button className="gnos-tab-overview-act" onClick={() => { onClose(); onOpenLayout() }}>Split layout…</button>
         )}
         <button className="gnos-tab-overview-act" onClick={onClose}>Done</button>
       </div>
-      <div className="gnos-tab-overview-grid" onClick={e => e.stopPropagation()}>
-        {tabs.map(tab => {
-          const preview = VIEW_PREVIEW[tab.view] || VIEW_PREVIEW.library
+      <div ref={gridRef} className="gnos-tab-overview-grid" onClick={e => e.stopPropagation()}>
+        {visible.map((tab, i) => {
           const label = getTabLabel(tab, { notebooks, flashcardDecks, sketchbooks, library })
           const isActive = tab.id === activeTabId
+          const focused  = i === Math.min(focusIdx, visible.length - 1)
           return (
             <div
               key={tab.id}
-              className={`gnos-tab-overview-card${isActive ? ' active' : ''}`}
+              className={`gnos-tab-overview-card${isActive ? ' active' : ''}${focused ? ' focused' : ''}`}
               onClick={() => { switchTab(tab.id); onClose() }}
+              onAuxClick={e => { if (e.button === 1 && tabs.length > 1) { e.preventDefault(); closeTab(tab.id) } }}
+              onMouseEnter={() => setFocusIdx(i)}
             >
-              <div className="gnos-tab-overview-thumb" style={{ color: preview.color }}>
-                {preview.icon}
-              </div>
+              {tabCardPreview(tab, { notebooks, sketchbooks, library })}
               <div className="gnos-tab-overview-meta">
                 <span className="gnos-tab-overview-label">{label}</span>
                 {tabs.length > 1 && (
@@ -1412,15 +1706,17 @@ function TabOverview({ onClose, onOpenLayout, leftOffset = 0 }) {
             </div>
           )
         })}
-        <div
-          className="gnos-tab-overview-card gnos-tab-overview-new"
-          onClick={() => { openNewTab({ view: 'library', activeLibTab: 'library' }); onClose() }}
-        >
-          <div className="gnos-tab-overview-thumb">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+        {!q && (
+          <div
+            className="gnos-tab-overview-card gnos-tab-overview-new"
+            onClick={() => { openNewTab({ view: 'library', activeLibTab: 'library' }); onClose() }}
+          >
+            <div className="gnos-tab-overview-thumb">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+            </div>
+            <div className="gnos-tab-overview-meta"><span className="gnos-tab-overview-label">New tab</span></div>
           </div>
-          <div className="gnos-tab-overview-meta"><span className="gnos-tab-overview-label">New tab</span></div>
-        </div>
+        )}
       </div>
     </div>
   )
@@ -1452,10 +1748,18 @@ function TitlebarSearch() {
   const close = () => { setQuery(''); setFocused(false) }
   return (
     <div className={`gnos-titlebar-search${focused ? ' focused' : ''}`}>
-      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, opacity: .55 }}>
-        <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.8"/>
-        <path d="M11 11l3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-      </svg>
+      {/* Leading glyph slot — magnifier normally; save flash swaps in over it.
+          #nb-save-icon must stay in the DOM: notebook/sketchbook saves target it by id. */}
+      <span className="gnos-tbs-glyph">
+        <svg className="gnos-tbs-magnifier" width="13" height="13" viewBox="0 0 16 16" fill="none">
+          <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.8"/>
+          <path d="M11 11l3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+        </svg>
+        <svg id="nb-save-icon" className="nb-save-icon" viewBox="0 0 18 18" fill="none">
+          <circle className="nb-save-ring" cx="9" cy="9" r="7.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+          <polyline className="nb-save-check" points="5.5,9 7.8,11.5 12.5,6.5" stroke="currentColor" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </span>
       <input
         type="text"
         placeholder={focused ? 'Search library…' : (pageTitle || 'Search library…')}
@@ -1494,10 +1798,12 @@ function TitlebarSearch() {
             library={library}
             notebooks={notebooks}
             sketchbooks={sketchbooks}
+            flashcardDecks={flashcardDecks}
             onOpenBook={b => { navigate({ view: b.format === 'pdf' ? 'pdf' : 'reader', activeBook: b }); close() }}
             onOpenAudio={b => { navigate({ view: 'audio-player', activeAudioBook: b }); close() }}
             onOpenNotebook={nb => { navigate({ view: 'notebook', activeNotebook: nb }); close() }}
             onOpenSketchbook={sb => { navigate({ view: 'sketchbook', activeSketchbook: sb }); close() }}
+            onOpenDeck={d => { navigate({ view: 'flashcard', activeFlashcardDeck: d }); close() }}
             onOpenGraph={() => { openNewTab({ view: 'graph' }); close() }}
             onOpenCalendar={() => { navigate({ view: 'calendar' }); close() }}
             onOpenKanban={() => { navigate({ view: 'kanban' }); close() }}
@@ -1530,7 +1836,6 @@ function TitlebarAdd() {
         <div style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 10000 }} onMouseLeave={() => setOpen(false)}>
           <AddPopup
             onClose={() => setOpen(false)}
-            onOpenNebuli={() => useAppStore.getState().openNewTab({ view: 'graph' })}
             onAddBook={() => viaLibrary('import-books')}
             onAddAudio={() => viaLibrary('import-audio')}
             onNewNotebook={() => {
@@ -1578,7 +1883,6 @@ function TitlebarAdd() {
 // Pointer-based DnD (HTML5 DnD is unreliable in this webview).
 
 const TITLEBAR_CHIP_DEFS = {
-  home:        { label: 'Home' },
   save:        { label: 'Save indicator' },
   arrows:      { label: 'Back / Forward' },
   search:      { label: 'Search', fixed: true },
@@ -1591,13 +1895,12 @@ function chipIcon(id) {
   const s = { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none' }
   const st = { stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' }
   switch (id) {
-    case 'home':        return <svg {...s}><path d="M2 7.5L8 2l6 5.5" {...st}/><path d="M3.5 7v6a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V7" {...st}/></svg>
     case 'save':        return <svg {...s}><circle cx="8" cy="8" r="6" {...st} fill="none"/><polyline points="5,8 7.2,10.2 11,5.8" {...st} fill="none"/></svg>
     case 'arrows':      return <svg {...s}><path d="M7 3.5L3.5 8 7 12.5M9 3.5L12.5 8 9 12.5" {...st}/></svg>
     case 'search':      return <svg {...s}><circle cx="7" cy="7" r="4.5" {...st} fill="none"/><path d="M10.5 10.5L14 14" {...st}/></svg>
     case 'add':         return <svg {...s}><path d="M8 3v10M3 8h10" {...st}/></svg>
     case 'quickAccess': return <svg {...s}><path d="M8 2l1.7 3.6 3.9.5-2.9 2.7.8 3.9L8 10.8l-3.5 1.9.8-3.9L2.4 6.1l3.9-.5z" {...st} fill="none"/></svg>
-    case 'tabManager':  return <svg {...s}><rect x="2" y="2" width="5" height="5" rx="1.2" {...st}/><rect x="9" y="2" width="5" height="5" rx="1.2" {...st}/><rect x="2" y="9" width="5" height="5" rx="1.2" {...st}/><rect x="9" y="9" width="5" height="5" rx="1.2" {...st}/></svg>
+    case 'tabManager':  return <svg {...s}><path d="M6 6V3.6A1.6 1.6 0 0 1 7.6 2h4.8A1.6 1.6 0 0 1 14 3.6v4.8A1.6 1.6 0 0 1 12.4 10H10" {...st} fill="none"/><rect x="2" y="6" width="8" height="8" rx="1.6" {...st}/></svg>
     default:            return null
   }
 }
@@ -1650,9 +1953,11 @@ function CustomizeToolbarOverlay({ onClose }) {
   // rendered into the real title bar while customizing. The palette tray is the
   // one React-owned target (via ref).
   function hitTest(x, y, dragId) {
-    const tray = trayRef.current
-    if (tray) {
-      const r = tray.getBoundingClientRect()
+    // Anywhere on the palette removes (Firefox: drag out of the toolbar to
+    // remove); the labeled tray strip is just the visual affordance.
+    const palette = document.querySelector('.ct2-palette')
+    if (palette) {
+      const r = palette.getBoundingClientRect()
       if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return { zone: 'tray', index: 0 }
     }
     for (const zone of ['left', 'center', 'right']) {
@@ -1672,27 +1977,77 @@ function CustomizeToolbarOverlay({ onClose }) {
     return null
   }
 
-  function onChipPointerDown(e, id) {
+  function startDrag(e, id, rectEl) {
     if (e.button !== 0) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    e.currentTarget.setPointerCapture(e.pointerId)
+    const rect = rectEl.getBoundingClientRect()
     setDrag({ id, x: e.clientX, y: e.clientY, offX: e.clientX - rect.left, offY: e.clientY - rect.top, w: rect.width })
     setTarget(null)
   }
+  function onChipPointerDown(e, id) { startDrag(e, id, e.currentTarget) }
 
-  function onChipPointerMove(e, id) {
-    if (!drag || drag.id !== id) return
-    setDrag(d => ({ ...d, x: e.clientX, y: e.clientY }))
-    setTarget(hitTest(e.clientX, e.clientY, id))
-  }
+  // Window-level move/up while a drag is live — works for palette chips AND
+  // real toolbar items (which live outside this component's tree).
+  useEffect(() => {
+    if (!drag) return
+    const onMove = (e) => {
+      setDrag(d => (d ? { ...d, x: e.clientX, y: e.clientY } : d))
+      setTarget(hitTest(e.clientX, e.clientY, drag.id))
+    }
+    const onUp = (e) => {
+      const drop = hitTest(e.clientX, e.clientY, drag.id)
+      if (drop && !(drag.id === 'search' && drop.zone !== 'center')) moveItem(drag.id, drop.zone, drop.index)
+      setDrag(null)
+      setTarget(null)
+    }
+    const onKey = (e) => { if (e.key === 'Escape') { setDrag(null); setTarget(null) } }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('keydown', onKey, { capture: true })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag?.id])
 
-  function onChipPointerUp(e, id) {
-    if (!drag || drag.id !== id) return
-    const drop = hitTest(e.clientX, e.clientY, id)
-    if (drop && !(id === 'search' && drop.zone !== 'center')) moveItem(id, drop.zone, drop.index)
-    setDrag(null)
-    setTarget(null)
-  }
+  // Firefox parity: the REAL toolbar buttons are grabbable while customizing.
+  // Slots ([data-tb-id]) render in the title bar outside this component, so
+  // delegate their pointerdown from the window.
+  useEffect(() => {
+    const onDown = (e) => {
+      const slot = e.target.closest?.('.gnos-tb-slot[data-tb-id]')
+      if (!slot || e.button !== 0) return
+      e.preventDefault()
+      startDrag(e, slot.dataset.tbId, slot)
+    }
+    window.addEventListener('pointerdown', onDown, { capture: true })
+    return () => window.removeEventListener('pointerdown', onDown, { capture: true })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Live drop preview: accent caret at the insertion point + a gap opening in
+  // the toolbar, and the dragged item's own slot dimmed. Imperative DOM classes
+  // (the slots are rendered by the App, not by this component).
+  useEffect(() => {
+    document.querySelectorAll('.gnos-tb-slot.tb-gap').forEach(el => el.classList.remove('tb-gap'))
+    document.querySelectorAll('.gnos-tb-slot.tb-dragging').forEach(el => el.classList.remove('tb-dragging'))
+    document.querySelectorAll('.gnos-tb-caret').forEach(el => el.remove())
+    if (!drag) return
+    const own = document.querySelector(`.gnos-tb-slot[data-tb-id="${drag.id}"]`)
+    own?.classList.add('tb-dragging')
+    if (!target || target.zone === 'tray') return
+    const zoneEl = document.querySelector(`.gnos-tb-${target.zone}`)
+    if (!zoneEl) return
+    const slots = [...zoneEl.querySelectorAll('.gnos-tb-slot[data-tb-id]')].filter(s => s.dataset.tbId !== drag.id)
+    const caret = document.createElement('div')
+    caret.className = 'gnos-tb-caret'
+    const ref = slots[target.index]
+    if (ref) { ref.classList.add('tb-gap'); ref.parentNode.insertBefore(caret, ref) }
+    else if (slots.length) slots[slots.length - 1].after(caret)
+    else zoneEl.appendChild(caret)
+    return () => caret.remove()
+  }, [drag, target])
 
   function paletteChip(id) {
     const def = TITLEBAR_CHIP_DEFS[id]
@@ -1706,8 +2061,6 @@ function CustomizeToolbarOverlay({ onClose }) {
         className={`ct2-chip${placed ? ' ct2-chip-placed' : ''}${dragging ? ' ct2-chip-dragging' : ''}`}
         title={placed ? `${def.label} — drag to move, or drop below to hide` : `${def.label} — drag onto the toolbar`}
         onPointerDown={e => onChipPointerDown(e, id)}
-        onPointerMove={e => onChipPointerMove(e, id)}
-        onPointerUp={e => onChipPointerUp(e, id)}
       >
         {chipIcon(id)}
         <span>{def.label}</span>
@@ -1763,8 +2116,23 @@ const CUSTOMIZE_CSS = `
     z-index: 10001;
     box-shadow: 0 0 0 1px var(--accent), 0 10px 40px rgba(0,0,0,0.45);
   }
-  /* Slot wrappers rendered into the real toolbar while customizing (for hit-testing) */
-  .gnos-titlebar.customizing .gnos-tb-slot { display: inline-flex; align-items: center; }
+  /* Slot wrappers rendered into the real toolbar while customizing — directly
+     grabbable (Firefox parity) */
+  .gnos-titlebar.customizing .gnos-tb-slot {
+    display: inline-flex; align-items: center;
+    cursor: grab; border-radius: 7px;
+    transition: margin-left .12s ease, opacity .12s, box-shadow .12s;
+  }
+  .gnos-titlebar.customizing .gnos-tb-slot:hover { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent); }
+  .gnos-titlebar.customizing .gnos-tb-slot:active { cursor: grabbing; }
+  .gnos-titlebar.customizing .gnos-tb-slot > * { pointer-events: none; }
+  .gnos-tb-slot.tb-dragging { opacity: .25; }
+  .gnos-tb-slot.tb-gap { margin-left: 16px; }
+  .gnos-tb-caret {
+    width: 2px; height: 20px; border-radius: 1px; flex-shrink: 0;
+    background: var(--accent); margin: 0 1px;
+    box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent);
+  }
   .gnos-titlebar.customizing .gnos-tb-left,
   .gnos-titlebar.customizing .gnos-tb-center,
   .gnos-titlebar.customizing .gnos-tb-right {
@@ -1851,6 +2219,7 @@ export default function App() {
   const sidebarPinned = useAppStore(s => s.sidebarPinned)
 
   const [splitDir,        setSplitDir]        = useState(null)
+  const [splitRatio,      setSplitRatio]      = useState(0.5)
   const [splitPanes,      setSplitPanes]      = useState([])
   const [tabSettingsOpen,  setTabSettingsOpen]  = useState(false)
   const [tabOverviewOpen,  setTabOverviewOpen]  = useState(false)
@@ -1860,10 +2229,14 @@ export default function App() {
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false)
   const [showLoading, setShowLoading] = useState(true)
   const handleLoadingDone = useCallback(() => setShowLoading(false), [])
+  // Splash lifts only once init() (disk hydration) is done — so the whole
+  // library grid is already mounted, never mid-interaction after the splash.
+  const [initDone, setInitDone] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [prevActiveTabId, setPrevActiveTabId] = useState(null)
   const [zenMode, setZenMode] = useState(false)
   const [zenPeekLeft, setZenPeekLeft] = useState(false)
+  const [zenPeekTop, setZenPeekTop] = useState(false)
   const zenPeekTimerRef = useRef({})
   const contentRef = useRef(null)
   const leftDragRef = useRef(null)
@@ -1953,15 +2326,28 @@ export default function App() {
     return () => window.removeEventListener('gnos:zen-mode', h)
   }, [])
 
+  // Notebook conflict: an external/offline edit was preserved as its own note
+  // instead of being overwritten. Toast + refresh the list so the fork shows.
+  const [conflictNote, setConflictNote] = useState(null)
+  useEffect(() => {
+    const h = (e) => {
+      setConflictNote(e.detail || {})
+      useAppStore.getState().rescanNotebooks?.()
+      setTimeout(() => setConflictNote(null), 8000)
+    }
+    window.addEventListener('gnos:notebook-conflict', h)
+    return () => window.removeEventListener('gnos:notebook-conflict', h)
+  }, [])
+
   // Sync zen mode CSS class on body (hides view headers via global CSS)
   useEffect(() => {
     document.body.classList.toggle('zen-active', zenMode)
     return () => document.body.classList.remove('zen-active')
   }, [zenMode])
 
-  // Zen peek — track mouse near left edge to reveal sidenav
+  // Zen peek — reveal the sidenav (left edge) and the titlebar (top edge) on hover
   useEffect(() => {
-    if (!zenMode) { setZenPeekLeft(false); return }
+    if (!zenMode) { setZenPeekLeft(false); setZenPeekTop(false); return }
     const EDGE = 12
     const HIDE_DELAY = 600
     const onMove = (e) => {
@@ -1972,9 +2358,22 @@ export default function App() {
         clearTimeout(zenPeekTimerRef.current.left)
         zenPeekTimerRef.current.left = setTimeout(() => setZenPeekLeft(false), HIDE_DELAY)
       }
+      // Titlebar: slides down into view when the mouse nears the top edge,
+      // slides back up once the mouse drops below the titlebar zone.
+      if (e.clientY <= EDGE) {
+        clearTimeout(zenPeekTimerRef.current.top)
+        setZenPeekTop(true)
+      } else if (e.clientY > 72) {
+        clearTimeout(zenPeekTimerRef.current.top)
+        zenPeekTimerRef.current.top = setTimeout(() => setZenPeekTop(false), HIDE_DELAY)
+      }
     }
     window.addEventListener('mousemove', onMove)
-    return () => { window.removeEventListener('mousemove', onMove); clearTimeout(zenPeekTimerRef.current.left) }
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      clearTimeout(zenPeekTimerRef.current.left)
+      clearTimeout(zenPeekTimerRef.current.top)
+    }
   }, [zenMode])
 
   // Attach native mousedown once the titlebar is rendered (after loading screen).
@@ -2006,10 +2405,43 @@ export default function App() {
     window.addEventListener('resize', onResize)
     onResize()
 
+    // Re-scan notebook folders when the window regains focus, so markdown
+    // synced/edited on another device appears without restarting the app.
+    // Throttled — refocus fires often and the scan touches the archive dir.
+    let lastRescan = 0
+    const onFocus = () => {
+      const now = Date.now()
+      if (now - lastRescan < 5000) return
+      lastRescan = now
+      useAppStore.getState().rescanNotebooks?.()
+    }
+    window.addEventListener('focus', onFocus)
+
     init().then(() => {
+      setInitDone(true)   // splash can now lift onto a hydrated grid
       // Initialize plugin host after store is hydrated
       pluginHost.init(() => useAppStore.getState())
-      loadPlugins().catch(err => console.warn('[App] Plugin init failed:', err))
+      // Plugins load off the critical path — they were competing with the
+      // first sidebar open / scroll right after the splash.
+      const loadPluginsIdle = () => loadPlugins().catch(err => console.warn('[App] Plugin init failed:', err))
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(loadPluginsIdle, { timeout: 6000 })
+      else setTimeout(loadPluginsIdle, 2500)
+      // Pre-build the profile window hidden, once the main app is idle, so the
+      // first time the user opens Profile it's an instant native show() instead
+      // of a cold webview + React boot. Deferred so it never competes with launch.
+      const prewarm = () => import('@tauri-apps/api/core')
+        .then(({ invoke }) => invoke('prewarm_profile_window'))
+        .catch(() => { /* not in tauri, or already warm */ })
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(prewarm, { timeout: 4000 })
+      else setTimeout(prewarm, 2000)
+      // Downscale any cover that has no thumb yet (serial, low priority). One
+      // slow pass on the launch after a book is added; every later launch reads
+      // the small thumb instead of the full-size art.
+      const thumbs = () => import('@/lib/storage')
+        .then(m => m.generatePendingThumbs())
+        .catch(() => { /* non-fatal — covers still render full-size */ })
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(thumbs, { timeout: 8000 })
+      else setTimeout(thumbs, 4000)
     })
     const unlisten = listen('menu', (event) => {
       const id = event.payload
@@ -2094,11 +2526,11 @@ export default function App() {
         } catch (err) { console.error('Failed to read file:', path, err) }
       }
     })
-    return () => { unlisten.then(fn => fn()); unlistenPrefs.then(fn => fn()); unlistenQuickNote.then(fn => fn()); unlistenFiles.then(fn => fn()); window.removeEventListener('resize', onResize) }
+    return () => { unlisten.then(fn => fn()); unlistenPrefs.then(fn => fn()); unlistenQuickNote.then(fn => fn()); unlistenFiles.then(fn => fn()); window.removeEventListener('resize', onResize); window.removeEventListener('focus', onFocus) }
   }, [init])
 
   if (showLoading) {
-    return <GnosLoadingScreen onDone={handleLoadingDone} />
+    return <GnosLoadingScreen onDone={handleLoadingDone} initDone={initDone} />
   }
 
   if (!onboardingComplete) {
@@ -2111,13 +2543,32 @@ export default function App() {
     <div id="app">
       <style>{TAB_CSS}</style>
 
-      {/* ── Title bar (desktop only — hidden on mobile via CSS)
-             Right-click anywhere on it to customize which controls show. ── */}
+      {/* ── Full-width top header bar (desktop only — hidden on mobile via CSS).
+             Lives in the dark chrome plane, ABOVE the content card (no longer
+             nested inside it). `pushed` animates the lead zone out to the
+             sidebar edge. Right-click anywhere on it to customize. ── */}
       <div
-        className={`gnos-titlebar${isFullscreen ? ' is-fullscreen' : ''}${customizeOpen ? ' customizing' : ''}`}
+        className={`gnos-titlebar${isFullscreen ? ' is-fullscreen' : ''}${customizeOpen ? ' customizing' : ''}${(!isSplit && (sideNavOpen || sidebarPinned)) ? ' pushed' : ''}${zenMode && zenPeekTop ? ' zen-peek-top' : ''}`}
         onContextMenu={e => { e.preventDefault(); setCustomizeOpen(true) }}
+        ref={el => {
+          // Measure the side zones and publish the larger one as --tb-clear so
+          // the absolutely-centered search bar can never slide under them.
+          if (!el || el._tbObs) return
+          const update = () => {
+            const w = (sel) => el.querySelector(sel)?.getBoundingClientRect().width ?? 0
+            const clear = Math.max(w('.gnos-tb-left') + w('.gnos-tb-ctx'), w('.gnos-tb-right')) + 16
+            el.style.setProperty('--tb-clear', `${Math.max(200, Math.round(clear))}px`)
+          }
+          const obs = new ResizeObserver(update)
+          ;['.gnos-tb-left', '.gnos-tb-ctx', '.gnos-tb-right'].forEach(s => {
+            const zone = el.querySelector(s)
+            if (zone) obs.observe(zone)
+          })
+          update()
+          el._tbObs = obs
+        }}
       >
-        {/* Full-width drag layer sits behind the controls; empty gaps drag the window */}
+        {/* Drag layer sits behind the controls; empty gaps drag the window */}
         <div ref={leftDragRef} className="gnos-titlebar-drag" />
 
         {(() => {
@@ -2127,28 +2578,10 @@ export default function App() {
           // QuickAccess portals into #gnos-quick-access.
           const renderItem = (id, hidden = false) => {
             switch (id) {
-              case 'home': return (
-                <button key="home" className="gnos-settings-btn" title="Home"
-                  onClick={() => {
-                    const s = useAppStore.getState()
-                    s.setActiveCollectionId(null)
-                    s.navigate({ view: 'library', activeLibTab: 'library' })
-                  }}
-                >
-                  <svg width="17" height="16" viewBox="0 0 20 18" fill="none">
-                    <path d="M2.5 8.5L10 2l7.5 6.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                    <path d="M4.3 7.8V15a1 1 0 0 0 1 1h9.4a1 1 0 0 0 1-1V7.8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
-              )
-              case 'save': return (
-                <div key="save" className="nb-save-indicator" style={hidden ? { display: 'none' } : undefined}>
-                  <svg id="nb-save-icon" className="nb-save-icon" viewBox="0 0 18 18" fill="none">
-                    <circle className="nb-save-ring" cx="9" cy="9" r="7.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
-                    <polyline className="nb-save-check" points="5.5,9 7.8,11.5 12.5,6.5" stroke="currentColor" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </div>
-              )
+              // 'home' moved to the sidebar's own top strip (Sidenav.jsx).
+              // 'save' moved into the search bar's leading glyph slot (TitlebarSearch)
+              // so it never opens a gap in the lead zone. Slot renders nothing.
+              case 'save': return null
               case 'arrows': {
                 const hist = tabHistories[activeTabId] || { back: [], forward: [] }
                 const canBack = hist.back.length > 0
@@ -2179,10 +2612,8 @@ export default function App() {
                   onClick={() => setTabOverviewOpen(o => !o)}
                 >
                   <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                    <rect x="1.5" y="1.5" width="5.4" height="5.4" rx="1.4" stroke="currentColor" strokeWidth="1.7"/>
-                    <rect x="9.1" y="1.5" width="5.4" height="5.4" rx="1.4" stroke="currentColor" strokeWidth="1.7"/>
-                    <rect x="1.5" y="9.1" width="5.4" height="5.4" rx="1.4" stroke="currentColor" strokeWidth="1.7"/>
-                    <rect x="9.1" y="9.1" width="5.4" height="5.4" rx="1.4" stroke="currentColor" strokeWidth="1.7"/>
+                    <path d="M6 6V3.6A1.6 1.6 0 0 1 7.6 2h4.8A1.6 1.6 0 0 1 14 3.6v4.8A1.6 1.6 0 0 1 12.4 10H10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    <rect x="2" y="6" width="8" height="8" rx="1.6" stroke="currentColor" strokeWidth="1.5"/>
                   </svg>
                 </button>
               )
@@ -2197,29 +2628,86 @@ export default function App() {
             : renderItem(id)
           return (
             <>
-              {/* LEFT — sidebar toggle is fixed, then the layout's left items */}
+              {/* LEFT — traffic-light clearance, then sidebar toggle + Home.
+                  These ride the animating lead zone out to the sidebar's right
+                  edge when it opens; always visible so they feel attached to
+                  the sidebar's trailing edge. */}
               <div className="gnos-tb-left">
+                {/* Toggle + Home always sit in the header. In split there's no
+                    sidebar to reveal in the panes, so the toggle is a no-op
+                    there, but it stays put so the header reads the same. */}
                 <button
                   className="gnos-settings-btn"
                   title="Toggle sidebar (⌘\)"
-                  onClick={() => useAppStore.getState().toggleSideNav()}
+                  onClick={() => { if (!isSplit) useAppStore.getState().toggleSideNav() }}
                 >
                   <svg width="17" height="16" viewBox="0 0 20 18" fill="none">
                     <rect x="1" y="1" width="18" height="16" rx="3" stroke="currentColor" strokeWidth="2"/>
                     <line x1="7" y1="1" x2="7" y2="17" stroke="currentColor" strokeWidth="2"/>
-                    {sideNavOpen && <rect x="2.6" y="2.8" width="3" height="12.4" rx="1" fill="currentColor" opacity="0.5"/>}
+                    {(!isSplit && (sideNavOpen || sidebarPinned)) && <rect x="2.6" y="2.8" width="3" height="12.4" rx="1" fill="currentColor" opacity="0.5"/>}
+                  </svg>
+                </button>
+                <button
+                  className="gnos-settings-btn"
+                  title="Home"
+                  onClick={() => { useAppStore.getState().setActiveCollectionId(null); useAppStore.getState().navigate({ view: 'library', activeLibTab: 'library' }) }}
+                >
+                  <svg width="17" height="16" viewBox="0 0 20 18" fill="none">
+                    <path d="M2.5 8.5L10 2l7.5 6.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M4.3 7.8V15a1 1 0 0 0 1 1h9.4a1 1 0 0 0 1-1V7.8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                   </svg>
                 </button>
                 {layout.left.map(slot)}
               </div>
 
-              {/* CENTER — absolutely centered in the window */}
+              {/* CTX — quick-open shortcuts in normal flex flow just right of the
+                  lead zone (the lead zone is fixed-width; extra buttons there
+                  overflow into the traffic lights). Each hides while its view
+                  is already active. */}
+              <div className="gnos-tb-ctx">
+                {tabs.find(t => t.id === activeTabId)?.view !== 'calendar' && (
+                  <button className="gnos-settings-btn" title="Open Calendar"
+                    onClick={() => useAppStore.getState().navigate({ view: 'calendar' })}>
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                      <rect x="2" y="3" width="12" height="11" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+                      <path d="M5 1.6v2.2M11 1.6v2.2M2 6.3h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    </svg>
+                  </button>
+                )}
+                {tabs.find(t => t.id === activeTabId)?.view !== 'graph' && (
+                  <button className="gnos-settings-btn" title="Open Nebuli graph"
+                    onClick={() => useAppStore.getState().openNewTab({ view: 'graph' })}>
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                      <circle cx="8" cy="8" r="2" fill="currentColor"/>
+                      <circle cx="2.8" cy="4" r="1.4" stroke="currentColor" strokeWidth="1.4"/>
+                      <circle cx="13.2" cy="4" r="1.4" stroke="currentColor" strokeWidth="1.4"/>
+                      <circle cx="4" cy="13" r="1.4" stroke="currentColor" strokeWidth="1.4"/>
+                      <circle cx="12.4" cy="12" r="1.4" stroke="currentColor" strokeWidth="1.4"/>
+                      <path d="M6.4 6.6L3.7 4.9M9.6 6.6l2.4-1.5M6.8 9.4l-2 2.4M9.3 9.5l2.2 1.6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                    </svg>
+                  </button>
+                )}
+              </div>
+
+              {/* CENTER — search, centered between lead and right zones */}
               <div className="gnos-tb-center">
                 {layout.center.map(slot)}
               </div>
 
               {/* RIGHT */}
               <div className="gnos-tb-right">
+                {/* Contextual: Import .ics — calendar view only. Fires an event
+                    the mounted FullCalendar listens for. */}
+                {tabs.find(t => t.id === activeTabId)?.view === 'calendar' && (
+                  <button className="gnos-settings-btn" title="Import calendar (.ics)"
+                    onClick={() => window.dispatchEvent(new CustomEvent('gnos:import-ics'))}>
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                      <rect x="2" y="3" width="12" height="11" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+                      <path d="M5 1.6v2.2M11 1.6v2.2M2 6.3h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                      <path d="M8 8.6v3M6.4 10.2L8 11.8l1.6-1.6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </button>
+                )}
                 {layout.right.map(slot)}
                 {/* Trayed items that must stay mounted (hidden) */}
                 {layout.tray.includes('save') && renderItem('save', true)}
@@ -2230,15 +2718,17 @@ export default function App() {
         })()}
       </div>
 
-      {/* Customize Toolbar — right-click on the title bar or View menu */}
-      {customizeOpen && <CustomizeToolbarOverlay onClose={() => setCustomizeOpen(false)} />}
-
+      {/* ── Content card — lighter floating page. Pushed right by the sidebar
+             width when open; zen zeroes its margin/radius/shadow (global.css). ── */}
+      <div
+        className={`gnos-content-frame${(!isSplit && (sideNavOpen || sidebarPinned)) ? ' pushed pinned' : ''}${isSplit ? ' split' : ''}${zenMode && zenPeekLeft ? ' zen-force-nav' : ''}`}
+      >
       {/* ── Content ────────────────────────────────────────────────────────── */}
       <div
         ref={contentRef}
-        className={`sidenav-push-wrapper${(sideNavOpen || sidebarPinned) ? ' pushed' : ''}${sidebarPinned ? ' pinned' : ''}${zenMode && zenPeekLeft ? ' zen-force-nav' : ''}`}
+        className="sidenav-push-wrapper"
         style={{
-          paddingTop: TITLEBAR_H, height: '100vh',
+          flex: 1, minHeight: 0,
           boxSizing: 'border-box', display: 'flex',
           flexDirection: isSplit && splitDir === 'vertical' ? 'column' : 'row',
           overflow: 'hidden', position: 'relative',
@@ -2250,14 +2740,43 @@ export default function App() {
               tabId={splitPanes[0]}
               isActive={splitPanes[0] === activeTabId}
               isSplit={true}
+              grow={splitRatio}
               onFocus={() => switchTab(splitPanes[0])}
+              onUnsplit={() => { setSplitDir(null); setSplitPanes([]); switchTab(splitPanes[0]) }}
+              onSwapPanes={() => setSplitPanes(p => [p[1], p[0]])}
+              onClosePane={() => { setSplitDir(null); setSplitPanes([]); switchTab(splitPanes[1]) }}
             />
-            <div className={`gnos-split-divider ${splitDir === 'vertical' ? 'v' : 'h'}`} />
+            <div
+              className={`gnos-split-divider ${splitDir === 'vertical' ? 'v' : 'h'}`}
+              title="Drag to resize · double-click to reset"
+              onDoubleClick={() => setSplitRatio(0.5)}
+              onPointerDown={e => {
+                if (e.button !== 0) return
+                e.preventDefault()
+                const wrap = contentRef.current
+                const vertical = splitDir === 'vertical'
+                const onMove = (ev) => {
+                  const r = wrap.getBoundingClientRect()
+                  const frac = vertical ? (ev.clientY - r.top) / r.height : (ev.clientX - r.left) / r.width
+                  setSplitRatio(Math.min(0.8, Math.max(0.2, frac)))
+                }
+                const onUp = () => {
+                  window.removeEventListener('pointermove', onMove)
+                  window.removeEventListener('pointerup', onUp)
+                }
+                window.addEventListener('pointermove', onMove)
+                window.addEventListener('pointerup', onUp)
+              }}
+            />
             <TabPane
               tabId={splitPanes[1]}
               isActive={splitPanes[1] === activeTabId}
               isSplit={true}
+              grow={1 - splitRatio}
               onFocus={() => switchTab(splitPanes[1])}
+              onUnsplit={() => { setSplitDir(null); setSplitPanes([]); switchTab(splitPanes[1]) }}
+              onSwapPanes={() => setSplitPanes(p => [p[1], p[0]])}
+              onClosePane={() => { setSplitDir(null); setSplitPanes([]); switchTab(splitPanes[0]) }}
             />
           </>
         ) : (
@@ -2274,6 +2793,31 @@ export default function App() {
           </div>
         )}
       </div>
+      </div>
+
+      {/* Customize Toolbar — right-click on the title bar or View menu. Kept
+          outside .gnos-content-frame (it's a full-window overlay, not part of
+          the card). */}
+      {customizeOpen && <CustomizeToolbarOverlay onClose={() => setCustomizeOpen(false)} />}
+
+      {/* External-edit conflict notice — the offline version was kept as a new note, not overwritten */}
+      {conflictNote && (
+        <div style={{
+          position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)', zIndex: 99998,
+          maxWidth: 420, display: 'flex', alignItems: 'flex-start', gap: 10,
+          background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12,
+          padding: '12px 14px', boxShadow: '0 12px 40px rgba(0,0,0,0.45)', fontSize: 13, color: 'var(--text)',
+        }}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
+            <path d="M8 1.5L15 14H1L8 1.5z" stroke="#d29922" strokeWidth="1.4" strokeLinejoin="round"/>
+            <path d="M8 6v3.5M8 11.5v.5" stroke="#d29922" strokeWidth="1.4" strokeLinecap="round"/>
+          </svg>
+          <div style={{ flex: 1, lineHeight: 1.45 }}>
+            <strong>External edit kept separately.</strong> “{conflictNote.originalTitle}” changed on disk while open — the offline version was saved as “{conflictNote.forkTitle}” so nothing was lost.
+          </div>
+          <button onClick={() => setConflictNote(null)} style={{ border: 'none', background: 'none', color: 'var(--textDim)', cursor: 'pointer', fontSize: 15, lineHeight: 1, padding: '0 2px', flexShrink: 0 }}>×</button>
+        </div>
+      )}
 
       {/* Tab overview — browser-style grid of all tabs. Offset so it never covers the sidebar. */}
       {tabOverviewOpen && (

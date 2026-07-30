@@ -22,6 +22,7 @@
         "fullscreen": false,
         "decorations": true,
         "titleBarStyle": "Overlay",
+        "trafficLightPosition": { "x": 16, "y": 22 },
         "dragDropEnabled": true
       }
     ],

@@ -1,5 +1,6 @@
 import { readTextFile, writeTextFile, writeFile, readFile, remove, readDir, exists, mkdir, rename, stat } from '@tauri-apps/plugin-fs'
 import { appDataDir, join } from '@tauri-apps/api/path'
+import { convertFileSrc } from '@tauri-apps/api/core'
 
 // ── Base directory ────────────────────────────────────────────────────────────
 
@@ -262,6 +263,76 @@ export async function setJSON(key, value) {
   return storage.set(key, JSON.stringify(value))
 }
 
+// ── Binary helpers ────────────────────────────────────────────────────────────
+
+// The raw PDF for a book, stored beside meta.json/content.json in its folder.
+export const PDF_SOURCE_NAME = 'source.pdf'
+
+// base64 data: URL → Uint8Array. Returns null for anything that isn't one.
+export function dataUrlToBytes(dataUrl) {
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) return null
+  const comma = dataUrl.indexOf(',')
+  if (comma < 0) return null
+  const binaryStr = atob(dataUrl.slice(comma + 1))
+  const bytes = new Uint8Array(binaryStr.length)
+  for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
+  return bytes
+}
+
+// ── Cover thumbnails ──────────────────────────────────────────────────────────
+//
+// Cover files on disk are full-size art (often 1600x2400). The grid paints them
+// at 110x155, but the webview still decodes and holds the FULL bitmap for every
+// mounted cover. A few hundred of those blows past WebKit's bitmap budget, it
+// evicts backing store, and scrolling back up repaints blank until each cover
+// re-decodes — the "blank on the third scroll up" symptom.
+//
+// Fix: keep a `cover_thumb.jpg` next to each `cover.*`. Reads prefer it, so
+// steady-state decode is ~15KB/220px instead of megabytes. Generation is lazy
+// and self-healing: the first launch after a cover appears still uses the full
+// file, queues a downscale, and every launch after that is cheap. Nothing to
+// migrate; deleting the thumbs just regenerates them.
+const THUMB_NAME = 'cover_thumb.jpg'
+const THUMB_W = 220, THUMB_H = 310
+let _thumbQueue = []
+let _thumbRunning = false
+
+async function writeThumb(srcUrl, destPath) {
+  const img = new Image()
+  img.decoding = 'async'
+  await new Promise((res, rej) => {
+    img.onload = res
+    img.onerror = () => rej(new Error('cover decode failed'))
+    img.src = srcUrl
+  })
+  const canvas = document.createElement('canvas')
+  canvas.width = THUMB_W; canvas.height = THUMB_H
+  const ctx = canvas.getContext('2d')
+  // cover-fit crop, matching the grid's object-fit: cover
+  const scale = Math.max(THUMB_W / img.naturalWidth, THUMB_H / img.naturalHeight)
+  const w = img.naturalWidth * scale, h = img.naturalHeight * scale
+  ctx.drawImage(img, (THUMB_W - w) / 2, (THUMB_H - h) / 2, w, h)
+  const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.82))
+  if (!blob) throw new Error('thumb encode failed')
+  await writeFile(destPath, new Uint8Array(await blob.arrayBuffer()))
+  img.src = ''
+}
+
+// Serial on purpose: parallel decodes of full-size art are the exact spike this
+// is meant to remove. Runs off the critical path (see App's post-init idle call).
+export async function generatePendingThumbs() {
+  if (_thumbRunning) return
+  _thumbRunning = true
+  try {
+    while (_thumbQueue.length) {
+      const job = _thumbQueue.shift()
+      try { await writeThumb(job.srcUrl, job.destPath) } catch { /* skip this cover */ }
+      // yield between covers so the UI stays responsive
+      await new Promise(r => setTimeout(r, 30))
+    }
+  } finally { _thumbRunning = false }
+}
+
 // ── Library ───────────────────────────────────────────────────────────────────
 
 export async function loadLibrary() {
@@ -307,46 +378,101 @@ export async function loadLibrary() {
     async function loadCoverFromFolder(baseDir, folder) {
       for (const ext of ['jpg', 'jpeg', 'png', 'webp']) {
         const coverPath = await join(baseDir, folder, `cover.${ext}`)
-        if (await exists(coverPath)) {
-          try {
-            const data = await readFile(coverPath)
-            let binary = ''
-            const chunkSize = 8192
-            for (let i = 0; i < data.length; i += chunkSize) {
-              binary += String.fromCharCode(...data.subarray(i, Math.min(i + chunkSize, data.length)))
-            }
-            const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
-            return `data:${mime};base64,${btoa(binary)}`
-          } catch { /* skip */ }
-          break
-        }
+        if (!(await exists(coverPath))) continue
+        // Return an asset:// URL, NOT base64. The webview streams + decodes
+        // the file natively and CACHES it across scroll — vs a giant base64
+        // string that lived in the store JSON and was re-decoded on every
+        // paint. Runtime-only; saveLibrary strips non-data URLs so JSON stays
+        // small and covers re-derive from the folder each launch.
+        try {
+          const thumbPath = await join(baseDir, folder, THUMB_NAME)
+          // Prefer the thumb, but only if it's at least as new as the cover —
+          // otherwise the user replaced the art and the thumb is stale.
+          if (await exists(thumbPath)) {
+            let fresh = true
+            try {
+              const [c, t] = await Promise.all([stat(coverPath), stat(thumbPath)])
+              if (c.mtime && t.mtime && new Date(t.mtime) < new Date(c.mtime)) fresh = false
+            } catch { /* stat unavailable — trust the thumb */ }
+            if (fresh) return convertFileSrc(thumbPath)
+          }
+          const srcUrl = convertFileSrc(coverPath)
+          // loadLibrary runs more than once per session (fast pass + reconcile)
+          if (!_thumbQueue.some(j => j.destPath === thumbPath)) {
+            _thumbQueue.push({ srcUrl, destPath: thumbPath })
+          }
+          return srcUrl
+        } catch { break }
       }
       return null
     }
 
+    // Attach the on-disk PDF as an asset:// URL, and rescue books whose bytes
+    // still live as base64 in library.json (everything imported before
+    // source.pdf existed). The rescue writes the file once, then the field is
+    // dropped by saveLibrary and never round-trips through JSON again.
+    async function attachPdf(book, folder) {
+      if (book.format !== 'pdf' || !folder) return null
+      const sourcePath = await join(booksDir, folder, PDF_SOURCE_NAME)
+      if (!(await exists(sourcePath))) {
+        const legacy = book.pdfDataUrl || book.rawDataUrl
+        if (!legacy?.startsWith('data:')) return null
+        try {
+          const bytes = dataUrlToBytes(legacy)
+          if (!bytes) return null
+          await writeFile(sourcePath, bytes)
+          console.info('[Gnos] migrated PDF out of library.json:', book.title)
+        } catch { return null }
+      }
+      try { return convertFileSrc(sourcePath) } catch { return null }
+    }
+
     return await Promise.all(library.map(async (book) => {
-      if (book.coverDataUrl) return book
       const bookFolder = folderById[book.id]
-      if (bookFolder) {
-        const cover = await loadCoverFromFolder(booksDir, bookFolder)
-        if (cover) return { ...book, coverDataUrl: cover }
-      }
       const audioEntry = audioFolderById[book.id]
-      if (audioEntry) {
-        const cover = await loadCoverFromFolder(audioEntry.dir, audioEntry.folder)
-        if (cover) return { ...book, coverDataUrl: cover }
+      let next = book
+
+      const pdfUrl = await attachPdf(book, bookFolder)
+      // Drop the base64 regardless — it's either on disk now or unrecoverable,
+      // and either way it must not keep bloating the store.
+      if (pdfUrl || next.pdfDataUrl || next.rawDataUrl) {
+        next = { ...next, pdfUrl: pdfUrl || null, pdfDataUrl: null, rawDataUrl: null }
       }
-      return book
+
+      if (!next.coverDataUrl) {
+        if (bookFolder) {
+          const cover = await loadCoverFromFolder(booksDir, bookFolder)
+          if (cover) return { ...next, coverDataUrl: cover }
+        }
+        if (audioEntry) {
+          const cover = await loadCoverFromFolder(audioEntry.dir, audioEntry.folder)
+          if (cover) return { ...next, coverDataUrl: cover }
+        }
+      }
+      return next
     }))
   } catch { return library }
 }
 
 export async function saveLibrary(library) {
-  // coverDataUrl is kept in the JSON as a reliable fallback.
-  // Covers are also written as cover.jpg files in each book's folder,
-  // but the folder-based reload can silently fail for books not yet migrated
-  // or whose cover file write failed. Keeping it in JSON prevents any stripping.
-  return setJSON('library', library)
+  // Persist only base64 (data:) covers as the reliable fallback. asset:// URLs
+  // (from loadCoverFromFolder) are runtime-only + path-dependent — never store
+  // them; the folder scan re-derives them each launch. This keeps library.json
+  // small (covers were the bulk) and avoids stale asset paths if the archive
+  // moves. Books whose cover exists only as a folder file simply carry no
+  // coverDataUrl in JSON and get re-scanned on load.
+  // pdfDataUrl/rawDataUrl are NEVER persisted. They used to be — a data: URL
+  // slipped past the cover check above, so library.json carried ~1.37x the
+  // bytes of every imported PDF and paid for it on every launch parse. The
+  // real file lives at <bookDir>/source.pdf; pdfUrl is a runtime asset:// URL
+  // re-derived by loadLibrary, so it's path-dependent and dropped too.
+  // eslint-disable-next-line no-unused-vars
+  const slim = library.map(({ pdfDataUrl, rawDataUrl, pdfUrl, ...b }) =>
+    (b.coverDataUrl && !b.coverDataUrl.startsWith('data:'))
+      ? { ...b, coverDataUrl: null }
+      : b
+  )
+  return setJSON('library', slim)
 }
 
 // ── Notebooks (named-folder format) ──────────────────────────────────────────
@@ -395,7 +521,104 @@ export async function getNotebookFolderPath(notebook) {
   } catch { return null }
 }
 
+/** Derive display metadata from raw markdown (title = leading `# `, word count). */
+function _deriveMetaFromMd(md, fallbackTitle) {
+  const text = typeof md === 'string' ? md : ''
+  const h1 = text.match(/^#\s+(.+)\s*$/m)
+  const body = h1 ? text.slice(text.indexOf(h1[0]) + h1[0].length) : text
+  return {
+    title: (h1?.[1] || fallbackTitle || 'Untitled').trim(),
+    wordCount: (body.match(/\b[\w'’-]+\b/g) || []).length,
+  }
+}
+
+function _mtimeMs(st) {
+  const m = st?.mtime
+  if (!m) return 0
+  const t = m instanceof Date ? m.getTime() : (typeof m === 'number' ? m : Date.parse(m))
+  return Number.isFinite(t) ? t : 0
+}
+
+/**
+ * Reconcile notebook folders with what's actually on disk so that markdown
+ * edited OUTSIDE the app (synced from another device, edited in Obsidian/vim,
+ * dropped in by hand) is picked up.
+ *
+ * Two jobs per folder:
+ *  1. ADOPT — a folder holding a .md but no meta.json is invisible to the app.
+ *     Write a meta.json for it so it shows in the library.
+ *  2. REFRESH — if the .md's mtime is newer than the last time we synced it
+ *     (`contentSyncedAt`), re-derive title/wordCount/updatedAt from the file
+ *     and rewrite meta.json. Without this the card keeps showing stale
+ *     title/date even though the content changed.
+ *
+ * Safe to call repeatedly (startup, window focus); it only writes when a file
+ * is genuinely newer than the recorded sync stamp.
+ */
+export async function syncNotebooksFromDisk() {
+  const changed = []
+  try {
+    const notebooksDir = await getNotebooksDir()
+    const entries = await readDir(notebooksDir)
+    await Promise.all(entries
+      .filter(e => e.name && !e.name.startsWith('.'))
+      .map(async entry => {
+        try {
+          const folder = await join(notebooksDir, entry.name)
+          const folderEntries = await readDir(folder).catch(() => [])
+          if (!Array.isArray(folderEntries)) return
+          // Prefer <folder>.md, else the first .md in the folder
+          const preferred = folderEntries.find(f => f.name === `${entry.name}.md`)
+          const anyMd     = folderEntries.find(f => f.name?.endsWith('.md'))
+          const mdEntry   = preferred || anyMd
+          if (!mdEntry) return
+          const mdPath  = await join(folder, mdEntry.name)
+          const st      = await stat(mdPath).catch(() => null)
+          const mtime   = _mtimeMs(st)
+          const metaPath = await join(folder, 'meta.json')
+          const hasMeta  = await exists(metaPath)
+
+          if (!hasMeta) {
+            // ── ADOPT an externally-created notebook ──
+            const md = await readTextFile(mdPath).catch(() => '')
+            const d  = _deriveMetaFromMd(md, entry.name)
+            const now = new Date(mtime || Date.now()).toISOString()
+            const meta = {
+              id: `nb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              title: d.title, wordCount: d.wordCount,
+              createdAt: now, updatedAt: now,
+              contentSyncedAt: mtime,
+              adoptedFromDisk: true,
+            }
+            await writeTextFile(metaPath, JSON.stringify(meta, null, 2))
+            changed.push(meta.id)
+            return
+          }
+
+          // ── REFRESH if the markdown is newer than our last sync ──
+          const meta = JSON.parse(await readTextFile(metaPath))
+          if (!mtime || mtime <= (meta.contentSyncedAt || 0)) return
+          const md = await readTextFile(mdPath).catch(() => null)
+          if (md == null) return
+          const d = _deriveMetaFromMd(md, meta.title || entry.name)
+          const next = {
+            ...meta,
+            title: d.title || meta.title,
+            wordCount: d.wordCount,
+            updatedAt: new Date(mtime).toISOString(),
+            contentSyncedAt: mtime,
+          }
+          await writeTextFile(metaPath, JSON.stringify(next, null, 2))
+          changed.push(meta.id)
+        } catch { /* skip this folder */ }
+      }))
+  } catch { /* notebooks dir missing — nothing to sync */ }
+  return changed
+}
+
 export async function loadNotebooksMeta() {
+  // Pick up markdown edited/added outside the app before reading meta.
+  await syncNotebooksFromDisk()
   // First try to reconstruct from on-disk named folders
   try {
     const notebooksDir = await getNotebooksDir()
@@ -524,6 +747,52 @@ export async function saveNotebooksMeta(notebooks) {
   return setJSON('notebooks_meta', notebooks)
 }
 
+/**
+ * Resolve the markdown file inside a known notebook folder.
+ * Prefers `<folder>/<folder>.md`, else the first `.md` in the folder.
+ * Returns an absolute path or null.
+ */
+export async function resolveNotebookMdPath(folderPath) {
+  if (!folderPath) return null
+  try {
+    const folderName = folderPath.split(/[/\\]/).filter(Boolean).pop()
+    const preferred = await join(folderPath, `${folderName}.md`)
+    if (await exists(preferred)) return preferred
+    const entries = await readDir(folderPath).catch(() => [])
+    const md = (Array.isArray(entries) ? entries : []).find(e => e.name?.endsWith('.md'))
+    return md ? await join(folderPath, md.name) : null
+  } catch { return null }
+}
+
+/** mtime (ms) of any file, 0 when missing/unreadable. Cheap — used for polling. */
+export async function getFileMtimeMs(path) {
+  if (!path) return 0
+  try { return _mtimeMs(await stat(path)) } catch { return 0 }
+}
+
+/** Read a notebook's markdown straight off disk along with its mtime. */
+export async function readNotebookMdAt(path) {
+  if (!path) return null
+  try {
+    const text = await readTextFile(path)
+    return { text, mtimeMs: await getFileMtimeMs(path) }
+  } catch { return null }
+}
+
+/** Stamp `contentSyncedAt` on a notebook's meta.json without touching the .md.
+ *  Used after the editor adopts an external edit, so the next disk scan doesn't
+ *  see the file as newer than what the app already holds. */
+export async function stampNotebookSynced(folderPath, mtimeMs) {
+  if (!folderPath || !mtimeMs) return false
+  try {
+    const metaPath = await join(folderPath, 'meta.json')
+    if (!(await exists(metaPath))) return false
+    const meta = JSON.parse(await readTextFile(metaPath))
+    await writeTextFile(metaPath, JSON.stringify({ ...meta, contentSyncedAt: mtimeMs }, null, 2))
+    return true
+  } catch { return false }
+}
+
 export async function loadNotebookContent(id) {
   // Try named folder first
   try {
@@ -555,6 +824,43 @@ export async function loadNotebookContent(id) {
   return typeof raw === 'string' ? raw : (raw?.content ?? '')
 }
 
+/** Preserve an external/offline edit that would otherwise be overwritten:
+ *  write the disk version into a brand-new notebook folder ("<title> (offline
+ *  edit <date>)") with its own id, so nothing is lost. Fires
+ *  `gnos:notebook-conflict` so the UI can toast + refresh the list. */
+async function _forkExternalConflict(notebooksDir, meta, diskText, diskMtime) {
+  try {
+    const stamp = new Date(diskMtime || Date.now())
+      .toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    const baseTitle = (meta.title || 'Untitled')
+    let folderName = sanitizeFolderName(`${baseTitle} (offline edit ${stamp})`)
+    let dir = await join(notebooksDir, folderName)
+    // Guarantee uniqueness if a fork with the same name already exists.
+    let n = 2
+    while (await exists(dir)) { folderName = sanitizeFolderName(`${baseTitle} (offline edit ${stamp}) ${n++}`); dir = await join(notebooksDir, folderName) }
+    await mkdir(dir, { recursive: true })
+    const d = _deriveMetaFromMd(diskText, folderName)
+    const now = new Date().toISOString()
+    const forkMeta = {
+      id: `nb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      title: d.title, wordCount: d.wordCount,
+      createdAt: now, updatedAt: new Date(diskMtime || Date.now()).toISOString(),
+      contentSyncedAt: 0, // will be stamped when the fork's own file is written below
+      forkedFrom: meta.id, forkedFromTitle: baseTitle,
+    }
+    const mdPath = await join(dir, `${folderName}.md`)
+    await writeTextFile(mdPath, diskText)
+    try { forkMeta.contentSyncedAt = _mtimeMs(await stat(mdPath)) } catch { /* non-fatal */ }
+    await writeTextFile(await join(dir, 'meta.json'), JSON.stringify(forkMeta, null, 2))
+    try {
+      window.dispatchEvent(new CustomEvent('gnos:notebook-conflict', {
+        detail: { originalTitle: baseTitle, forkTitle: forkMeta.title, forkId: forkMeta.id },
+      }))
+    } catch { /* non-window env */ }
+    return forkMeta.id
+  } catch (err) { console.warn('[Gnos] conflict fork failed', err); return null }
+}
+
 export async function saveNotebookContent(notebookOrId, content) {
   const id = typeof notebookOrId === 'string' ? notebookOrId : notebookOrId?.id
   const notebook = typeof notebookOrId === 'object' ? notebookOrId : null
@@ -570,7 +876,33 @@ export async function saveNotebookContent(notebookOrId, content) {
         const meta = JSON.parse(await readTextFile(metaPath))
         if (meta.id === id) {
           const mdPath = await join(notebooksDir, entry.name, `${entry.name}.md`)
+          // ── Conflict-safe save ──────────────────────────────────────────
+          // If the .md changed on disk since we last synced (external/offline
+          // edit while this note was open) AND that disk text differs from what
+          // we're about to write, NEVER overwrite blindly — preserve BOTH: the
+          // external version is split off into its own new notebook, our edits
+          // go to the original file.
+          try {
+            if (await exists(mdPath)) {
+              const st = await stat(mdPath)
+              const diskMtime = _mtimeMs(st)
+              const synced = meta.contentSyncedAt || 0
+              if (diskMtime > synced + 1000) {  // 1s slack for FS mtime granularity
+                const diskText = await readTextFile(mdPath).catch(() => null)
+                if (diskText != null && diskText !== mdContent) {
+                  await _forkExternalConflict(notebooksDir, meta, diskText, diskMtime)
+                }
+              }
+            }
+          } catch { /* detection failed — fall through to a normal save */ }
+
           await writeTextFile(mdPath, mdContent)
+          // Stamp our own write so syncNotebooksFromDisk doesn't mistake it for
+          // an external edit on the next scan.
+          try {
+            const st = await stat(mdPath)
+            await writeTextFile(metaPath, JSON.stringify({ ...meta, contentSyncedAt: _mtimeMs(st) }, null, 2))
+          } catch { /* non-fatal — worst case one redundant refresh */ }
           return true
         }
       }
@@ -580,9 +912,12 @@ export async function saveNotebookContent(notebookOrId, content) {
     const dir = await join(notebooksDir, folderName)
     if (!(await exists(dir))) await mkdir(dir, { recursive: true })
     const metaToWrite = notebook ?? { id, title: folderName }
-    await writeTextFile(await join(dir, 'meta.json'), JSON.stringify(metaToWrite, null, 2))
+    const newMetaPath = await join(dir, 'meta.json')
     const mdPath = await join(dir, `${folderName}.md`)
     await writeTextFile(mdPath, mdContent)
+    let syncedAt = 0
+    try { syncedAt = _mtimeMs(await stat(mdPath)) } catch { /* non-fatal */ }
+    await writeTextFile(newMetaPath, JSON.stringify({ ...metaToWrite, contentSyncedAt: syncedAt }, null, 2))
     return true
   } catch (err) { console.debug('[Gnos] saveNotebookContent named folder failed', err) }
   return setJSON(`notebook_${id}`, content)
@@ -713,10 +1048,21 @@ export async function saveBookContent(book, chapters) {
   // Write content
   await writeTextFile(await join(bookDir, 'content.json'), JSON.stringify(chapters))
 
-  // Write meta (strip large binary fields)
-  // eslint-disable-next-line no-unused-vars
+  // Write meta (strip large binary fields — each is written as a real file below)
   const { coverDataUrl, pdfDataUrl, rawDataUrl, ...meta } = book
   await writeTextFile(await join(bookDir, 'meta.json'), JSON.stringify(meta, null, 2))
+
+  // Write the source PDF as a real file. Without this the bytes existed ONLY as
+  // base64 on the book object — stripped from meta.json here, but saveLibrary
+  // happily persisted them into library.json, which then had to be parsed on
+  // every launch. Now the file lives on disk and the viewer streams it.
+  const pdfSrc = pdfDataUrl || rawDataUrl
+  if (pdfSrc && book.format === 'pdf') {
+    try {
+      const bytes = dataUrlToBytes(pdfSrc)
+      if (bytes) await writeFile(await join(bookDir, PDF_SOURCE_NAME), bytes)
+    } catch { /* non-fatal — viewer falls back to the in-memory copy this session */ }
+  }
 
   // Write cover image as a binary file so it persists independently of library.json
   if (coverDataUrl) {

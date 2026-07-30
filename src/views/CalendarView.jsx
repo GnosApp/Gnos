@@ -1,4 +1,4 @@
-import { FullCalendar } from './LibraryView'
+import { FullCalendar } from '@/components/Calendar'
 
 export default function CalendarView() {
   return (

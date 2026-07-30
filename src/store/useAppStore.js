@@ -23,11 +23,17 @@ const SEED_SKETCHBOOKS = [
 // Ordered zones. Ids are rendered from a registry in App.jsx. 'search' must stay
 // in center; anything in `tray` is hidden from the title bar.
 
-export const TITLEBAR_MOVABLE_IDS = ['home', 'save', 'arrows', 'add', 'quickAccess', 'tabManager']
+// 'home' lives in the sidebar's own top strip now (Sidenav.jsx), not as a
+// customizable titlebar chip — dropped from this list so migrateTitlebarLayout
+// strips it out of any layout persisted before that change (no duplicates).
+export const TITLEBAR_MOVABLE_IDS = ['save', 'arrows', 'add', 'quickAccess', 'tabManager']
 
 export function defaultTitlebarLayout() {
   return {
-    left:   ['home', 'save'],
+    // 'home' moved to the sidebar's own top strip (see Sidenav.jsx) — it's no
+    // longer a titlebar item by default. Still a valid customizable item id
+    // for anyone who explicitly re-adds it via Customize Toolbar.
+    left:   ['save'],
     center: ['arrows', 'search', 'add'],
     right:  ['quickAccess', 'tabManager'],
     tray:   [],
@@ -659,6 +665,17 @@ const useAppStore = create((set, get) => ({
     migrateSketchbooksToFolders(sketchbooks ?? []).catch(err => console.warn('[Gnos] Sketchbook migration error:', err))
     migrateAudiobooksToFolders(library ?? []).catch(err => console.warn('[Gnos] Audio migration error:', err))
     cleanupTrash().catch(err => console.debug('[Gnos] Trash cleanup error:', err))
+  },
+
+  /** Re-scan notebook folders so markdown edited outside the app (synced from
+   *  another device, edited in another editor) shows up without a restart.
+   *  Cheap: syncNotebooksFromDisk only rewrites meta for files whose mtime is
+   *  newer than the recorded sync stamp. */
+  async rescanNotebooks() {
+    try {
+      const notebooks = await loadNotebooksMeta()
+      if (notebooks?.length) set({ notebooks })
+    } catch (err) { console.debug('[Gnos] rescanNotebooks failed', err) }
   },
 
   async persistLibrary() {

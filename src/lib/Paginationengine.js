@@ -94,6 +94,10 @@ export function buildPageStyles(prefs) {
       color: var(--readerText);
       text-rendering: optimizeLegibility;
       hyphens: auto;
+      -webkit-hyphenate-limit-before: 3;
+      -webkit-hyphenate-limit-after: 3;
+      -webkit-hyphenate-limit-lines: 2;
+      font-kerning: normal;
       box-sizing: border-box;
     }
     .col-container > * {
@@ -115,14 +119,16 @@ export function buildPageStyles(prefs) {
       font-feature-settings: "kern" 1, "liga" 1, "onum" 1;
       orphans: 2; widows: 2;
       text-indent: 2em;
+      text-wrap: pretty;
     }
     .col-container h2 + p,
     .col-container h3 + p { text-indent: 0; }
     .col-container h2 {
       font-family: Georgia, serif;
-      font-size: ${Math.round(fs * 1.65)}px;
-      font-weight: 700; line-height: 1.2;
-      margin: 1.2em 0 0.5em; text-indent: 0;
+      font-size: ${Math.round(fs * 1.45)}px;
+      font-weight: 600; line-height: 1.25;
+      text-align: center; letter-spacing: 0.05em;
+      margin: 1.8em 0 0.9em; text-indent: 0;
       break-before: auto; break-inside: auto; break-after: avoid;
     }
     .col-container h3 {
@@ -190,6 +196,9 @@ export function ensurePageStyle(prefs) {
 // Top gap between the header border and the first line of text on every page.
 const COL_TOP_PAD = 20
 
+// Bottom gap reserving room for the on-paper page numbers (Books-style furniture).
+const COL_BOTTOM_PAD = 28
+
 // Extra pixels subtracted from strip column height vs wrapper height.
 // CSS columns break this many pixels before the wrapper's edge, preventing
 // last-line clipping when content renders fractionally taller.
@@ -216,7 +225,7 @@ export function setupColumns(cardEl, prefs) {
   cardEl.innerHTML = ''
 
   const w   = cardEl.clientWidth
-  const h   = cardEl.clientHeight - COL_TOP_PAD
+  const h   = cardEl.clientHeight - COL_TOP_PAD - COL_BOTTOM_PAD
   const gap = prefs.twoPage ? 64 : 0
 
   _colW    = prefs.twoPage ? Math.floor((w - gap) / 2) : w
@@ -225,15 +234,23 @@ export function setupColumns(cardEl, prefs) {
   _colH    = h
 
   _wrapper = document.createElement('div')
-  _wrapper.style.cssText = `overflow:hidden;width:100%;height:100%;position:relative;padding-top:${COL_TOP_PAD}px;box-sizing:border-box;`
+  // contain isolates the reader's (huge) column layout from the rest of the app —
+  // strip re-layouts never invalidate outside the wrapper.
+  _wrapper.style.cssText = `overflow:hidden;width:100%;height:100%;position:relative;padding-top:${COL_TOP_PAD}px;box-sizing:border-box;contain:layout style paint;`
+  // Correct lang enables WebKit's real hyphenation dictionaries (hyphens:auto
+  // is a no-op without it).
+  if (prefs.lang) _wrapper.lang = prefs.lang
 
   // The strip: ONE multi-column render of the chapter. Visible. Paging is a
   // translateX of this element inside the clipped wrapper.
   const stripH = h - BOTTOM_SAFETY
   _strip = document.createElement('div')
   _strip.className = 'col-container page-content'
-  _strip.style.cssText = _columnCSS(stripH, MAX_COLS * (_colW + _colGap)) +
-    ';will-change:transform'
+  // NO permanent will-change: the strip is the whole chapter (tens of thousands
+  // of px wide). A permanent compositor layer of that size holds cold tiles that
+  // stall the first flip into never-shown columns. Instead we promote only while
+  // the user is actively flipping (promoteStrip) and drop it when idle.
+  _strip.style.cssText = _columnCSS(stripH, MAX_COLS * (_colW + _colGap))
   _strip.style.setProperty('--col-h', stripH + 'px')
 
   // Hidden measuring container for the background scan — same column geometry,
@@ -266,6 +283,51 @@ export function renderChapterContent(blocks) {
   // Full width for accurate column layout; trimContainerWidth narrows afterwards.
   _strip.style.width = (MAX_COLS * (_colW + _colGap)) + 'px'
   _strip.innerHTML = blocksToDisplayHTML(blocks)
+}
+
+// ── Double-buffered chapter swaps ─────────────────────────────────────────────
+// Chapter transitions used to raise a solid overlay while the new chapter laid
+// out in the visible strip — a jarring blank flash. Instead: render the new
+// chapter into the hidden buffer (identical column geometry), then atomically
+// swap the two elements' roles. The old page stays on screen until the exact
+// frame the new one is ready; layout is never repeated on swap.
+
+// Render blocks (or prebuilt cached HTML) into the hidden buffer.
+export function renderChapterIntoBuffer(blocks, cachedHtml = null) {
+  _scanAbort = true    // the buffer doubles as the scan container — take it over
+  if (!_scanEl) return false
+  _scanEl.style.width = (MAX_COLS * (_colW + _colGap)) + 'px'
+  _scanEl.innerHTML = cachedHtml ?? blocksToDisplayHTML(blocks)
+  return true
+}
+
+// Measure the buffer, swap it in as the visible strip, translate to pageIdx.
+// The old strip becomes the next buffer. Returns the page count.
+export function swapBufferToStrip(pageIdx) {
+  if (!_scanEl || !_strip) return null
+  const count = _measurePagesIn(_scanEl)
+  const next = _scanEl, prev = _strip
+
+  // Promote buffer → strip (visible, interactive, translated to the target page)
+  next.className = 'col-container page-content'
+  next.style.opacity = '1'
+  next.style.pointerEvents = ''
+  next.style.willChange = ''   // promoted only during active flipping (promoteStrip)
+  next.style.transition = 'none'
+  next.style.transform = `translateX(${-pageIdx * (_colW + _colGap)}px)`
+
+  // Demote strip → buffer (hidden, inert, emptied)
+  prev.className = 'col-container'
+  prev.style.opacity = '0'
+  prev.style.pointerEvents = 'none'
+  prev.style.transition = 'none'
+  prev.style.transform = 'none'
+  prev.innerHTML = ''
+
+  _strip = next
+  _scanEl = prev
+  trimContainerWidth(count)
+  return count
 }
 
 export function raiseOverlay() {
@@ -310,6 +372,12 @@ export function cacheCurrentChapter(chIdx, count) {
   _chapterCache[chIdx] = { count, html: _strip.innerHTML }
 }
 
+// Read-only cache lookup — callers route cached HTML through the buffer swap
+// so the old page never blanks.
+export function getCachedChapter(chIdx) {
+  return _chapterCache[chIdx] || null
+}
+
 // Restore a previously-cached chapter into the strip.
 // Returns the page count, or null on miss.
 export function loadCachedChapter(chIdx) {
@@ -331,10 +399,31 @@ export function getActivePage() {
   return _strip
 }
 
+// Layout metrics that define a pagination result — used to key the persistent
+// page index (a stored index is only valid while these match).
+export function getLayoutMetrics() {
+  return { colW: Math.round(_colW), colH: Math.round(_colH), twoPage: _twoPage }
+}
+
 // ── Navigation ────────────────────────────────────────────────────────────────
 // showPage translates the strip to column `pageIdx`. 'slide' animates the
 // transform (direction falls out of the delta); 'fade' blinks the overlay;
 // rapid successive calls (< 120 ms) skip animations to prevent backlog.
+
+// Promote the strip to a compositor layer for the duration of an active flip
+// session, then drop it when reading goes idle so the huge layer isn't held.
+// Warming it once per session means tiles rasterize once and stay cached across
+// that burst of turns; idle reading pays no layer-memory cost.
+let _depromoteTimer = null
+function promoteStrip() {
+  if (!_strip) return
+  if (_strip.style.willChange !== 'transform') _strip.style.willChange = 'transform'
+  if (_depromoteTimer) clearTimeout(_depromoteTimer)
+  _depromoteTimer = setTimeout(() => {
+    _depromoteTimer = null
+    if (_strip) _strip.style.willChange = ''
+  }, 600)
+}
 
 export function showPage(pageIdx, transition) {
   if (!_strip) return
@@ -342,6 +431,7 @@ export function showPage(pageIdx, transition) {
   const now   = Date.now()
   const rapid = now - _lastNavTime < 120
   _lastNavTime = now
+  promoteStrip()
 
   if (_fadeTimer !== null) { clearTimeout(_fadeTimer); _fadeTimer = null }
 
@@ -372,6 +462,36 @@ export function showPage(pageIdx, transition) {
   _strip.style.transform  = target
 }
 
+// ── Position anchoring ────────────────────────────────────────────────────────
+// Page indices don't survive layout changes (font size, resize, two-page); the
+// index of the first visible block element does. Record it before a rebuild,
+// resolve it back to a page after — the reader reopens on the same paragraph.
+
+export function getVisibleChildIndex(pageIdx) {
+  if (!_strip) return 0
+  const kids = _strip.children
+  if (!kids.length) return 0
+  const unit      = _colW + _colGap
+  const stripRect = _strip.getBoundingClientRect()
+  for (let i = 0; i < kids.length; i++) {
+    const r   = kids[i].getBoundingClientRect()
+    const col = Math.floor(((r.left + r.right) / 2 - stripRect.left) / unit)
+    if (col >= pageIdx) return i
+  }
+  return kids.length - 1
+}
+
+export function pageOfChild(childIdx) {
+  if (!_strip) return 0
+  const kids = _strip.children
+  if (!kids.length) return 0
+  const el        = kids[Math.max(0, Math.min(childIdx, kids.length - 1))]
+  const unit      = _colW + _colGap
+  const stripRect = _strip.getBoundingClientRect()
+  const r         = el.getBoundingClientRect()
+  return Math.max(0, Math.floor(((r.left + r.right) / 2 - stripRect.left) / unit))
+}
+
 // ── Container width trimming ──────────────────────────────────────────────────
 // Narrows the strip to the real column count so it doesn't keep a 100-column
 // layout box around.
@@ -392,6 +512,7 @@ export function invalidateCache() {
   _colW = 0; _colGap = 0
   _strip = null; _wrapper = null; _overlay = null; _scanEl = null
   if (_fadeTimer !== null) { clearTimeout(_fadeTimer); _fadeTimer = null }
+  if (_depromoteTimer !== null) { clearTimeout(_depromoteTimer); _depromoteTimer = null }
   _lastNavTime = 0
 }
 
@@ -410,30 +531,92 @@ const _idle = typeof requestIdleCallback === 'function'
   ? (fn) => requestIdleCallback(fn, { timeout: 2000 })
   : (fn) => setTimeout(fn, 200)
 
-export function scanAllChapters(chapters, onChapterDone) {
+// How many chapters either side of the current one keep their PRE-RENDERED HTML
+// in the chapter cache (prewarm). Counts are kept for every chapter regardless.
+const PREWARM_RADIUS = 2
+
+// Scan order: neighbors of `around` (±1, ±2, …). With `neighborsOnly` this is
+// the WHOLE scan — full-book scans laid out every chapter (a multi-hundred-ms
+// synchronous column layout each) and froze the first page flips after open.
+// Global page totals were dropped from the UI, so nothing needs far counts.
+function _scanOrder(n, around, neighborsOnly = false) {
+  const order = []
+  if (around != null && around >= 0) {
+    for (let d = 1; d <= PREWARM_RADIUS; d++) {
+      if (around + d < n) order.push(around + d)
+      if (around - d >= 0) order.push(around - d)
+    }
+  }
+  if (!neighborsOnly) {
+    for (let i = 0; i < n; i++) {
+      if (i !== around && !order.includes(i)) order.push(i)
+    }
+  }
+  return order
+}
+
+export function scanAllChapters(chapters, onChapterDone, opts = {}) {
   _scanAbort = false
   if (!_scanEl || _colW <= 0 || !chapters.length) return
 
+  const around = opts.around ?? null
+  const order  = _scanOrder(chapters.length, around, opts.neighborsOnly)
   let i = 0
 
   function step() {
-    if (_scanAbort || !_scanEl || i >= chapters.length) {
+    if (_scanAbort || !_scanEl || i >= order.length) {
       if (_scanEl) _scanEl.innerHTML = ''   // free the scan DOM when done
       return
     }
 
-    const chIdx = i++
+    // Back off while the user is reading/paging — a chapter layout here is a
+    // guaranteed dropped frame. 3s covers a normal reading cadence (a flip every
+    // 1.5–3s) so scan steps never collide with the next turn.
+    if (Date.now() - _lastNavTime < 3000) {
+      setTimeout(step, 3000)
+      return
+    }
+
+    const chIdx = order[i++]
+    // Skip chapters whose count is already known (persisted index / earlier
+    // scan) so a full-index build never re-lays-out what it already measured —
+    // this makes the builder resilient to the _scanAbort restarts that chapter
+    // navigation triggers.
+    if (opts.hasCount && opts.hasCount(chIdx)) { _idle(step); return }
+    // Already prewarmed (e.g. re-scan after returning to a chapter) — skip the
+    // expensive layout entirely and reuse the cached count.
+    const cached = _chapterCache[chIdx]
+    if (cached) {
+      onChapterDone(chIdx, cached.count)
+      _idle(step)
+      return
+    }
+
     _scanEl.innerHTML = blocksToDisplayHTML(chapters[chIdx].blocks)
 
     requestAnimationFrame(() => {
       if (_scanAbort || !_scanEl) return
       const count = _measurePagesIn(_scanEl)
+      // Prewarm: the scan container has IDENTICAL column geometry to the strip,
+      // so its rendered HTML is a valid cache entry — first visit to a nearby
+      // chapter becomes an instant cache hit instead of a full re-layout.
+      if (around != null && Math.abs(chIdx - around) <= PREWARM_RADIUS) {
+        _chapterCache[chIdx] = { count, html: _scanEl.innerHTML }
+      }
       onChapterDone(chIdx, count)
       _idle(step)   // yield — only continue when the main thread is free
     })
   }
 
   _idle(step)
+}
+
+// Evict prewarmed HTML far from the current chapter (counts live elsewhere;
+// this only bounds memory held by big HTML strings).
+export function prunePrewarm(around) {
+  for (const k of Object.keys(_chapterCache)) {
+    if (Math.abs(Number(k) - around) > PREWARM_RADIUS) delete _chapterCache[k]
+  }
 }
 
 // ── Global page-count estimation ─────────────────────────────────────────────

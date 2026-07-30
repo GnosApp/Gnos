@@ -13,6 +13,21 @@ export default defineConfig({
 
   resolve: {
     alias: { '@': path.resolve(__dirname, './src') },
+    // CM6 breaks hard ("Config merge conflict for field override", blank
+    // editor) when two module copies of any @codemirror package end up in the
+    // graph — facets/fields are identity-based. Force a single copy.
+    dedupe: [
+      '@codemirror/state',
+      '@codemirror/view',
+      '@codemirror/language',
+      '@codemirror/autocomplete',
+      '@codemirror/commands',
+      '@codemirror/search',
+      '@codemirror/lang-markdown',
+      '@lezer/common',
+      '@lezer/highlight',
+      '@lezer/markdown',
+    ],
   },
 
   server: {
@@ -29,6 +44,16 @@ export default defineConfig({
       'roughjs',
       'roughjs/bin/rough',
       'roughjs/bin/generator',
+      // Pre-bundle the whole CM6 family together — dynamically-imported entry
+      // points otherwise get their own optimizer graphs and duplicate
+      // @codemirror/state (identity-based facets → merge-conflict crash).
+      '@codemirror/state',
+      '@codemirror/view',
+      '@codemirror/language',
+      '@codemirror/autocomplete',
+      '@codemirror/commands',
+      '@codemirror/search',
+      '@codemirror/lang-markdown',
     ],
     esbuildOptions: { target: 'esnext' },
   },

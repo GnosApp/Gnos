@@ -71,6 +71,15 @@ const NAV_ITEMS = [
     ),
   },
   {
+    id: 'flashcards', label: 'Flashcards',
+    icon: (
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+        <rect x="1.5" y="4.5" width="10" height="9" rx="1.4" stroke="currentColor" strokeWidth="1.3"/>
+        <path d="M5 3.2A1.4 1.4 0 0 1 6.3 2.5h6.3A1.4 1.4 0 0 1 14 3.9v7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+      </svg>
+    ),
+  },
+  {
     id: 'collections', label: 'Collections',
     icon: (
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -134,8 +143,8 @@ function MiniCover({ item }) {
     <div style={{
       width: 20, height: isMobile ? 34 : 28, borderRadius: 4, flexShrink: 0,
       overflow: 'hidden', position: 'relative',
-      background: item._isNotebook || item._isSketchbook
-        ? (item.coverColor || '#1a1a2e')
+      background: item._isNotebook || item._isSketchbook || item._isDeck
+        ? (item.coverColor || (item._isDeck ? '#7a3b8f' : '#1a1a2e'))
         : `linear-gradient(135deg,${c1},${c2})`,
       boxShadow: '0 1px 5px rgba(0,0,0,0.4)',
     }}>
@@ -222,7 +231,7 @@ function NavDropdown({ items, onOpen, onMenu, onReorder, activeId }) {
   }
 
   return (
-    <div style={{ paddingBottom: 2 }}>
+    <div className="nav-dropdown-scroll" style={{ paddingBottom: 2 }}>
       {items.map((item, i) => (
         <div key={item.id}
           data-nav-item={item.id} data-nav-idx={i}
@@ -234,13 +243,14 @@ function NavDropdown({ items, onOpen, onMenu, onReorder, activeId }) {
           } : undefined}
           style={{
             display:'flex', alignItems:'center', position:'relative',
+            margin: '0 8px 1px', borderRadius: 8,
             opacity: draggingId === item.id ? 0.4 : 1,
-            background: dropId === item.id ? 'var(--accent)18' : activeId === item.id ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'none',
-            borderLeft: dropId === item.id ? '2px solid var(--accent)' : activeId === item.id ? '2px solid var(--accent)' : '2px solid transparent',
+            background: activeId === item.id ? 'var(--surfaceAlt)' : 'none',
+            boxShadow: dropId === item.id ? 'inset 0 0 0 1.5px var(--accent)' : 'none',
             cursor: onReorder ? 'grab' : undefined,
           }}
           onMouseEnter={e => { if (dropId !== item.id && activeId !== item.id) e.currentTarget.style.background='var(--hover)' }}
-          onMouseLeave={e => { if (dropId !== item.id) e.currentTarget.style.background= activeId === item.id ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'none' }}
+          onMouseLeave={e => { if (dropId !== item.id) e.currentTarget.style.background= activeId === item.id ? 'var(--surfaceAlt)' : 'none' }}
         >
           <button
             onClick={() => onOpen(item)}
@@ -1328,12 +1338,13 @@ export function GnosNavButton() {
 // ─────────────────────────────────────────────────────────────────────────────
 // SideNavSearch — mini search bar above Library section
 // ─────────────────────────────────────────────────────────────────────────────
-function SideNavSearch({ library, notebooks, sketchbooks, onOpen }) {
+function SideNavSearch({ library, notebooks, sketchbooks, flashcardDecks, onOpen }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const inputRef = useRef(null)
 
   const fmtLabel = (item) => {
+    if (item._isDeck)       return 'DECK'
     if (item._isSketchbook) return 'SKETCH'
     if (item._isNotebook)   return 'NOTE'
     if (item.type === 'audio') return 'AUDIO'
@@ -1350,11 +1361,16 @@ function SideNavSearch({ library, notebooks, sketchbooks, onOpen }) {
       ...(library || []),
       ...(notebooks || []).map(n => ({ ...n, _isNotebook: true })),
       ...(sketchbooks || []).map(s => ({ ...s, _isSketchbook: true })),
+      ...(flashcardDecks || []).map(d => ({ ...d, _isDeck: true })),
     ]
     setResults(
       all.filter(item =>
         item.title?.toLowerCase().includes(lower) ||
-        item.author?.toLowerCase().includes(lower)
+        item.author?.toLowerCase().includes(lower) ||
+        // Decks also match on card content, so a term you remember from a card
+        // finds its deck
+        (item._isDeck && (item.cards || []).some(c =>
+          c.front?.toLowerCase().includes(lower) || c.back?.toLowerCase().includes(lower)))
       ).slice(0, 8)
     )
   }
@@ -1614,7 +1630,7 @@ export default function SideNav({ isSplitPane = false }) {
     return null
   })()
 
-  const VIEW_TO_TAB = { reader:'books', pdf:'books', 'audio-player':'audiobooks', notebook:'notebooks', sketchbook:'notebooks' }
+  const VIEW_TO_TAB = { reader:'books', pdf:'books', 'audio-player':'audiobooks', notebook:'notebooks', sketchbook:'notebooks', flashcard:'flashcards' }
 
   // User-controlled expand/collapse state. Auto-expansion of the active section
   // is derived at render time (see isOpen below) so no effect is needed.
@@ -1661,7 +1677,18 @@ export default function SideNav({ isSplitPane = false }) {
       if (setLibSubFilter) setLibSubFilter('all')
     }
   }
-  function toggleExpanded(id, e) { e.stopPropagation(); setExpanded(p => ({ ...p, [id]: !p[id] })) }
+  function toggleExpanded(id, e) {
+    e.stopPropagation()
+    setExpanded(p => {
+      const willOpen = !p[id]
+      // Accordion: opening one nav group collapses the others. Collection
+      // sub-expansion state (col_*) is preserved.
+      const next = { ...p }
+      NAV_ITEMS.forEach(it => { if (it.id !== id) next[it.id] = false })
+      next[id] = willOpen
+      return next
+    })
+  }
   // Zen-style: switching tabs keeps the sidebar open
   function handleTabSwitch(tabId) { switchTab(tabId) }
   function handleTabClose(e, tabId) { e.stopPropagation(); closeTab(tabId) }
@@ -1671,6 +1698,7 @@ export default function SideNav({ isSplitPane = false }) {
     let audios = library.filter(b => b.type === 'audio')
     let nbs    = (notebooks  || []).map(n => ({ ...n, _isNotebook:   true }))
     let sbs    = (sketchbooks|| []).map(s => ({ ...s, _isSketchbook: true }))
+    let fds    = (flashcardDecks || []).map(d => ({ ...d, _isDeck: true }))
     // When a collection workspace is active, sections only list that collection's items
     const activeCol = activeCollectionId ? (collections || []).find(c => c.id === activeCollectionId) : null
     if (activeCol) {
@@ -1686,17 +1714,20 @@ export default function SideNav({ isSplitPane = false }) {
         })
         if (field === 'type' && v === 'notebook')   (notebooks   || []).forEach(n => ids.add(n.id))
         if (field === 'type' && v === 'sketchbook') (sketchbooks || []).forEach(s => ids.add(s.id))
+        if (field === 'type' && v === 'flashcard')  (flashcardDecks || []).forEach(d => ids.add(d.id))
       }
       books  = books.filter(b => ids.has(b.id))
       audios = audios.filter(b => ids.has(b.id))
       nbs    = nbs.filter(n => ids.has(n.id))
       sbs    = sbs.filter(s => ids.has(s.id))
+      fds    = fds.filter(d => ids.has(d.id))
     }
     switch (id) {
-      case 'library':     return [...books, ...audios, ...nbs, ...sbs]
+      case 'library':     return [...books, ...audios, ...nbs, ...sbs, ...fds]
       case 'books':       return books
       case 'audiobooks':  return audios
       case 'notebooks':   return [...nbs, ...sbs]
+      case 'flashcards':  return fds
       case 'collections': return collections || []
       default:            return []
     }
@@ -1709,6 +1740,7 @@ export default function SideNav({ isSplitPane = false }) {
     for (const b of library) allItems.set(b.id, b.type === 'audio' ? b : b)
     for (const n of (notebooks || [])) allItems.set(n.id, { ...n, _isNotebook: true })
     for (const s of (sketchbooks || [])) allItems.set(s.id, { ...s, _isSketchbook: true })
+    for (const d of (flashcardDecks || [])) allItems.set(d.id, { ...d, _isDeck: true })
     return col.items.map(id => allItems.get(id)).filter(Boolean)
   }
 
@@ -1721,6 +1753,9 @@ export default function SideNav({ isSplitPane = false }) {
     if (item._isNotebook) {
       store.setActiveNotebook(item)
       openNewTab({ view: 'notebook', activeNotebook: item })
+    } else if (item._isDeck) {
+      store.setActiveFlashcardDeck(item)
+      openNewTab({ view: 'flashcard', activeFlashcardDeck: item })
     } else if (item._isSketchbook) {
       store.setActiveSketchbook(item)
       openNewTab({ view: 'sketchbook', activeSketchbook: item })
@@ -1739,6 +1774,7 @@ export default function SideNav({ isSplitPane = false }) {
     let newView, patch
     const store = useAppStore.getState()
     if (item._isNotebook)           { store.setActiveNotebook(item);   newView = 'notebook';     patch = { view: newView, activeNotebook: item } }
+    else if (item._isDeck)          { store.setActiveFlashcardDeck(item); newView = 'flashcard'; patch = { view: newView, activeFlashcardDeck: item } }
     else if (item._isSketchbook)    { store.setActiveSketchbook(item); newView = 'sketchbook';   patch = { view: newView, activeSketchbook: item } }
     else if (item.type === 'audio') { store.setActiveAudioBook(item);  newView = 'audio-player'; patch = { view: newView, activeAudioBook: item } }
     else { store.setActiveBook(item); newView = item.format === 'pdf' ? 'pdf' : 'reader'; patch = { view: newView, activeBook: item } }
@@ -1868,15 +1904,27 @@ export default function SideNav({ isSplitPane = false }) {
                       top 0.22s cubic-bezier(0.4, 0, 0.2, 1);
           will-change: transform;
         }
-        /* Pinned (always present) — native flush panel, no float, no shadow */
+        /* Pinned (flush) — dead flat, Safari/Comet style: the sidebar tone
+           equals the content (var(--bg)) with no border, no shadow, no
+           elevation. Sidebar + content read as one continuous monotone canvas;
+           hierarchy comes from the section labels, row weight, and the single
+           neutral active pill — not from any surface/border treatment.
+           top:0 (not 34px) — the sidebar now owns its own top strip (traffic
+           lights + toggle + Home) instead of that space being reserved by a
+           separate global titlebar above it. */
         .sidenav-panel.pinned {
-          top: 34px; left: 0; bottom: 0;
+          top: 52px; left: 0; bottom: 0;
+          width: ${SIDEBAR_WIDTH}px;
+          background: var(--bg);
           border-radius: 0;
-          border-right: 1px solid var(--borderSubtle);
+          border-right: none;
           transform: translateX(0) !important;
           box-shadow: none !important;
         }
-        .sidenav-push-wrapper.pinned.pushed { margin-left: ${SIDEBAR_WIDTH}px !important; }
+        /* Pushes the lighter content card right by the sidebar width + a 6px
+           dark gap when the sidebar is flush/open, so the card floats clear of
+           the chrome plane. */
+        .gnos-content-frame.pinned.pushed { margin-left: ${SIDEBAR_WIDTH + 6}px !important; }
         .sidenav-panel.open {
           transform: translateX(0);
           box-shadow: 0 8px 32px rgba(0,0,0,0.22), 0 2px 8px rgba(0,0,0,0.12);
@@ -1919,10 +1967,37 @@ export default function SideNav({ isSplitPane = false }) {
         .sidenav-panel.open      .sidenav-close-chevron { transform: rotate(0deg); }
 
         /* ── Scroll area ───────────────────────────────────────────────────── */
+        /* Overlay scrollbar so the outer area never reserves a gutter that
+           shoves every row left. The real scrolling happens per-group below. */
         .sidenav-scroll {
           flex: 1; overflow-y: auto;
           padding-bottom: 8px;
+          scrollbar-width: none;           /* Firefox — hide outer bar */
         }
+        .sidenav-scroll::-webkit-scrollbar { width: 0; height: 0; }
+
+        /* Each expanded group scrolls WITHIN its own box (capped height) instead
+           of scrolling the whole sidebar — section labels + other groups stay
+           put. Thin overlay scrollbar sits inside the group's own width. */
+        .nav-dropdown-scroll {
+          max-height: 42vh;
+          overflow-y: auto;
+          overscroll-behavior: contain;
+          scrollbar-width: thin;
+          scrollbar-color: var(--border) transparent;
+          animation: navGroupIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        @keyframes navGroupIn {
+          from { opacity: 0; transform: translateY(-5px); }
+          to   { opacity: 1; transform: none; }
+        }
+        .nav-dropdown-scroll::-webkit-scrollbar { width: 7px; }
+        .nav-dropdown-scroll::-webkit-scrollbar-track { background: transparent; }
+        .nav-dropdown-scroll::-webkit-scrollbar-thumb {
+          background: var(--border); border-radius: 4px;
+          border: 2px solid transparent; background-clip: content-box;
+        }
+        .nav-dropdown-scroll::-webkit-scrollbar-thumb:hover { background: var(--textDim); background-clip: content-box; }
 
         /* ── Docked tabs — fixed above footer, not in scroll flow ────────── */
         .sidenav-tabs-docked {
@@ -1979,18 +2054,25 @@ export default function SideNav({ isSplitPane = false }) {
         .sidenav-tab-new:hover { background: var(--hover); color: var(--text); }
 
         /* ── Nav items — 10% shorter v-padding ───────────────────────────── */
+        /* Rounded rows to match the Tabs section + the app's pill language
+           (was flat full-bleed rows, which read as unfinished). Side margin +
+           reduced left padding keeps the icon aligned with the section label. */
         .sidenav-nav-item {
           display: flex; align-items: center; gap: 9px;
-          padding: 6px 9px 6px 16px;
-          border: none; background: none; width: 100%;
+          padding: 7px 8px 7px 8px; margin: 0 8px 1px;
+          border: none; background: none; width: calc(100% - 16px);
+          border-radius: 8px;
           color: var(--textDim); cursor: pointer; text-align: left;
-          font-size: 12px; font-weight: 500;
+          font-size: 12.5px; font-weight: 600;
           transition: background 0.1s, color 0.1s;
         }
         .sidenav-nav-item:hover { background: var(--hover); color: var(--text); }
-        .sidenav-nav-item.active { color: var(--accent); background: rgba(56,139,253,0.08); }
+        /* Active = neutral gray pill (matches the Tabs section + the reference
+           browsers) with a full-strength label; the accent lives only on the
+           icon as a small brand cue, not the whole pill. */
+        .sidenav-nav-item.active { color: var(--text); background: var(--surfaceAlt); }
         .sidenav-nav-icon { display: flex; align-items: center; flex-shrink: 0; opacity: 0.8; }
-        .sidenav-nav-item.active .sidenav-nav-icon { opacity: 1; }
+        .sidenav-nav-item.active .sidenav-nav-icon { opacity: 1; color: var(--accent); }
         .sidenav-nav-expand {
           padding: 3px; border-radius: 4px; display: flex; align-items: center;
           color: var(--textDim); opacity: 0; transition: opacity 0.1s, background 0.1s;
@@ -2020,26 +2102,8 @@ export default function SideNav({ isSplitPane = false }) {
           border-color: var(--accent); transform: scale(1.05);
         }
 
-        /* Push wrapper — snaps immediately; only sidebar panel animates */
-        .sidenav-push-wrapper { min-height: 100vh; }
-        .sidenav-push-wrapper.pushed { margin-left: ${SIDEBAR_WIDTH + 12}px; }
-
-        /* Header + footer bleed behind sidebar — bg extends full width,
-           padding-left keeps content from going under the sidebar panel */
-        .sidenav-push-wrapper.pushed .app-header,
-        .sidenav-push-wrapper.pushed .reader-header,
-        .sidenav-push-wrapper.pushed .gnos-header,
-        .sidenav-push-wrapper.pushed .nb-header,
-        .sidenav-push-wrapper.pushed .fc-header {
-          margin-left: -${SIDEBAR_WIDTH + 12}px;
-          width: calc(100% + ${SIDEBAR_WIDTH + 12}px);
-          padding-left: ${SIDEBAR_WIDTH + 12}px !important;
-        }
-        .sidenav-push-wrapper.pushed .library-footer {
-          margin-left: -${SIDEBAR_WIDTH + 12}px;
-          width: calc(100% + ${SIDEBAR_WIDTH + 12}px);
-          padding-left: ${SIDEBAR_WIDTH + 12 + 32}px;
-        }
+        /* (Removed old header/footer bleed compensation — those view headers
+           are gone and the library footer is now a fixed-position pill.) */
 
         /* The sidebar close button is shown inside the panel */
         .sidenav-close-btn { display: flex; }
@@ -2049,25 +2113,21 @@ export default function SideNav({ isSplitPane = false }) {
       <input ref={fileInputRef}  type="file" accept=".epub,.txt" multiple style={{ display: 'none' }} onChange={handleBookFiles} />
       <input ref={audioInputRef} type="file" accept="audio/*"   multiple style={{ display: 'none' }} onChange={handleAudioFiles} />
 
-      {/* Backdrop — click to close (not in pinned mode) */}
-      {!sidebarPinned && (
-        <div className={`sidenav-backdrop${sideNavOpen ? ' open' : ''}${isSplitPane ? ' split-pane' : ''}`} onClick={closeSideNav} />
+      {/* Backdrop — only for split-pane float. The main sidebar is now flush +
+          pushes content (Arc/Dia-style), so nothing to dim. In zen mode it
+          overlays on hover, and zen peek hides the backdrop anyway. */}
+      {isSplitPane && (
+        <div className={`sidenav-backdrop${sideNavOpen ? ' open' : ''} split-pane`} onClick={closeSideNav} />
       )}
 
-      {/* Gutter fill — covers the strip left of the panel when pushed */}
-      {sideNavOpen && !isSplitPane && !sidebarPinned && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, bottom: 0,
-          width: SIDEBAR_WIDTH + 12,
-          background: 'var(--surface)',
-          zIndex: 7998,
-          pointerEvents: 'none',
-        }} />
-      )}
+      {/* Panel — flush ("pinned" visual) whenever open on the main window, so the
+          sidebar reads as part of the window chrome. `body.zen-active` overrides
+          this back to a hover overlay (see global.css). */}
+      <div className={`sidenav-panel${sideNavOpen ? ' open' : ''}${isSplitPane ? ' split-pane' : ''}${(sidebarPinned || sideNavOpen) && !isSplitPane ? ' pinned' : ''}`} role="navigation" aria-label="Main navigation">
 
-
-      {/* Panel */}
-      <div className={`sidenav-panel${sideNavOpen ? ' open' : ''}${isSplitPane ? ' split-pane' : ''}${sidebarPinned && !isSplitPane ? ' pinned' : ''}`} role="navigation" aria-label="Main navigation">
+        {/* Sidebar toggle + Home now live in the global full-width header
+            (App.jsx), animating out to the sidebar's right edge, so the panel
+            no longer carries its own top strip. */}
 
         {/* Header */}
         <div className="sidenav-header">
@@ -2095,6 +2155,7 @@ export default function SideNav({ isSplitPane = false }) {
             library={library}
             notebooks={notebooks}
             sketchbooks={sketchbooks}
+            flashcardDecks={flashcardDecks}
             onOpen={item => { openItem(item) }}
           />
 
@@ -2147,7 +2208,8 @@ export default function SideNav({ isSplitPane = false }) {
                             data-collection-id={col.id}
                             style={{
                               display: 'flex', alignItems: 'center', gap: 6,
-                              padding: `3px 6px 3px ${indent}px`, cursor: 'pointer',
+                              padding: `4px 6px 4px ${indent}px`, cursor: 'pointer',
+                              margin: '0 8px 1px', borderRadius: 8,
                               transition: 'background 0.1s',
                             }}
                             onMouseEnter={e => e.currentTarget.style.background='var(--hover)'}

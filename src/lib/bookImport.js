@@ -5,6 +5,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import JSZip from 'jszip'
+import { openPdf } from '@/lib/pdfjs'
 import storage, { saveBookContent, saveAudiobookMeta, writeAudioFile } from '@/lib/storage'
 import { readFileAsDataURL } from '@/lib/utils'
 
@@ -202,8 +203,10 @@ export async function parseEpub(file) {
 
   const titleM   = opfXml.match(/<dc:title[^>]*>([\s\S]*?)<\/dc:title>/i)
   const authorM  = opfXml.match(/<dc:creator[^>]*>([\s\S]*?)<\/dc:creator>/i)
+  const langM    = opfXml.match(/<dc:language[^>]*>([\s\S]*?)<\/dc:language>/i)
   const epubTitle  = titleM  ? decodeEntities(titleM[1].trim())  : file.name.replace(/\.epub3?$/i, '')
   const epubAuthor = authorM ? decodeEntities(authorM[1].trim()) : ''
+  const epubLang   = langM   ? langM[1].trim().toLowerCase() : ''
 
   // Build manifest
   const manifest = {}
@@ -481,7 +484,7 @@ export async function parseEpub(file) {
   }
 
   if (chapters.length === 0) throw new Error('Could not extract any text')
-  return { title: epubTitle, author: epubAuthor, chapters, coverDataUrl }
+  return { title: epubTitle, author: epubAuthor, language: epubLang, chapters, coverDataUrl }
 }
 
 // ── Book ID generator ─────────────────────────────────────────────────────────
@@ -510,13 +513,14 @@ export async function importBooks(files) {
       const isEpub = /\.epub3?$/i.test(file.name) || mimeIsEpub
       const isMd   = /\.md$/i.test(file.name)
       const isPdf  = /\.pdf$/i.test(file.name)
-      let bookTitle, bookAuthor = '', chapters, format, coverDataUrl = null, pdfDataUrl = null
+      let bookTitle, bookAuthor = '', chapters, format, coverDataUrl = null, pdfDataUrl = null, bookLanguage = ''
 
       if (isEpub) {
         format = 'epub'
         const parsed = await parseEpub(file)
         bookTitle    = parsed.title
         bookAuthor   = parsed.author
+        bookLanguage = parsed.language || ''
         chapters     = parsed.chapters
         coverDataUrl = parsed.coverDataUrl || null
       } else if (isPdf) {
@@ -527,22 +531,7 @@ export async function importBooks(files) {
         chapters    = [{ title: bookTitle, blocks: [{ type: 'para', text: bookTitle }] }]
         // Generate cover thumbnail from first page
         try {
-          let pdfjsLib = window.pdfjsLib
-          if (!pdfjsLib) {
-            await new Promise((res, rej) => {
-              const s = document.createElement('script')
-              s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
-              s.onload = () => {
-                window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-                  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
-                res()
-              }
-              s.onerror = rej
-              document.head.appendChild(s)
-            })
-            pdfjsLib = window.pdfjsLib
-          }
-          const pdfDoc = await pdfjsLib.getDocument({ url: pdfDataUrl }).promise
+          const pdfDoc = await openPdf({ url: pdfDataUrl })
           const firstPage = await pdfDoc.getPage(1)
           const rawVp = firstPage.getViewport({ scale: 1 })
           const dpr = window.devicePixelRatio || 1
@@ -552,7 +541,7 @@ export async function importBooks(files) {
           offscreen.width  = thumbVp.width
           offscreen.height = thumbVp.height
           const octx = offscreen.getContext('2d')
-          await firstPage.render({ canvasContext: octx, viewport: thumbVp }).promise
+          await firstPage.render({ canvas: offscreen, canvasContext: octx, viewport: thumbVp }).promise
           coverDataUrl = offscreen.toDataURL('image/jpeg', 0.9)
           pdfDoc.destroy()
         } catch { /* non-fatal — cover stays null */ }
@@ -566,6 +555,7 @@ export async function importBooks(files) {
       const id = makeBookId('book')
       const bookEntry = {
         id, title: bookTitle, author: bookAuthor, format,
+        language: bookLanguage || null,
         totalChapters: chapters.length,
         currentChapter: 0, currentPage: 0,
         addedAt: new Date().toISOString(),

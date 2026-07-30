@@ -4,10 +4,10 @@
  * New in this version:
  * ────────────────────
  * • PDF import button in the header — opens a file picker for .pdf files.
- *   Each PDF page is rasterized via a hidden <canvas> (using pdf.js loaded
- *   from CDN) and added to the Excalidraw canvas as an image element.
- *   Pages are placed in a vertical column so they don't overlap.
- * • pdf.js is loaded lazily from the cdnjs CDN so it doesn't add to the
+ *   Each PDF page is rasterized via a hidden <canvas> (using the bundled
+ *   pdf.js, see lib/pdfjs.js) and added to the Excalidraw canvas as an image
+ *   element. Pages are placed in a vertical column so they don't overlap.
+ * • pdf.js is imported lazily by that shared loader, so it stays out of the
  *   main bundle.
  * • A subtle import progress toast shows while pages are being rasterized.
  * • All other Excalidraw / storage / save behaviour is unchanged.
@@ -15,11 +15,13 @@
 
 import { useEffect, useRef, useState, useCallback, useContext } from 'react'
 import useAppStore from '@/store/useAppStore'
-import { PaneContext } from '@/lib/PaneContext'
+import { PaneContext, PaneChromeContext } from '@/lib/PaneContext'
 import { useIsActiveTab } from '@/lib/useIsActiveTab'
+import { openPdf } from '@/lib/pdfjs'
 import { loadSketchbookContent, saveSketchbookContent } from '@/lib/storage'
 import QuickAccess, { useTitlebarMeta } from '@/components/QuickAccess'
 import { useIsMobile } from '@/lib/useIsMobile'
+import { paintSurfaceBackground, hexLuminance } from '@/lib/canvasSurface'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-theme Excalidraw configuration
@@ -35,16 +37,21 @@ const THEME_CONFIG = {
 
 function getThemeConfig(themeKey) {
   if (THEME_CONFIG[themeKey]) return THEME_CONFIG[themeKey]
-  // Unknown (custom) theme — derive light/dark from the actual background color
-  // instead of assuming dark, which produced unreadable canvases on light themes.
+  // Unknown (custom) theme — derive from live theme vars. Canvas uses --surface
+  // (not --bg) so the sketch surface keeps the app's content-card contrast
+  // against the chrome; stroke follows --text so shapes stay readable.
   try {
-    const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()
-    const m = bg.match(/^#([0-9a-f]{6})$/i)
-    if (m) {
-      const n = parseInt(m[1], 16)
-      const lum = 0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)
-      if (lum > 128) return { mode: 'light', canvasBg: bg, strokeColor: '#1f2328' }
-      return { mode: 'dark', canvasBg: bg, strokeColor: '#e6edf3' }
+    const css = getComputedStyle(document.documentElement)
+    const surface = css.getPropertyValue('--surface').trim()
+    const text    = css.getPropertyValue('--text').trim()
+    const lum = hexLuminance(surface)
+    if (lum != null) {
+      const light = lum > 128
+      return {
+        mode: light ? 'light' : 'dark',
+        canvasBg: surface,
+        strokeColor: /^#[0-9a-f]{6}$/i.test(text) ? text : (light ? '#1f2328' : '#e6edf3'),
+      }
     }
   } catch { /* fall through */ }
   return THEME_CONFIG.dark
@@ -83,7 +90,27 @@ function buildExcalidrawStyles(isDark = false) {
     --button-border:           var(--border);
     --overlay-bg-color:        rgba(0,0,0,0.55);
     --select-highlight-color:  color-mix(in srgb, var(--accent, #388bfd) 18%, transparent);
+
+    /* ── Icon/button internals (names verified against @excalidraw 0.18.0 dist
+       CSS). theme="light" defaults leave these near-black — glyphs were
+       invisible on dark Gnos surfaces. ── */
+    --icon-fill-color:                 var(--text);
+    --color-on-surface:                var(--text);
+    --color-on-primary-container:      var(--accent);
+    --color-surface-primary-container: color-mix(in srgb, var(--accent, #388bfd) 16%, var(--surface));
+    --dropdown-icon:                   var(--textDim);
+    --button-hover-bg:                 var(--hover, var(--border));
+    --button-hover-border:             var(--border);
+    --button-hover-color:              var(--text);
+    --button-active-bg:                color-mix(in srgb, var(--accent, #388bfd) 18%, transparent);
+    --button-active-border:            var(--accent, #388bfd);
+    --button-selected-bg:              color-mix(in srgb, var(--accent, #388bfd) 18%, transparent);
+    --button-selected-border:          var(--accent, #388bfd);
+    --button-selected-hover-bg:        color-mix(in srgb, var(--accent, #388bfd) 26%, transparent);
   }
+  /* Glyph fallback: most 0.18 icons stroke/fill with currentColor — make sure
+     buttons that miss the vars above still inherit a visible color. */
+  .excalidraw-wrapper .excalidraw button svg { color: var(--text); }
 
   /* ── Structural rules ── */
   .excalidraw { font-family: var(--font-ui, system-ui, -apple-system, sans-serif) !important; }
@@ -270,6 +297,43 @@ function buildExcalidrawStyles(isDark = false) {
     box-shadow: none !important;
   }
 
+  /* ── Remaining chrome holes: hints, tooltips, modals, sidebar/library ── */
+  .excalidraw-wrapper .excalidraw .HintViewer,
+  .excalidraw-wrapper .excalidraw .HintViewer span {
+    color: var(--textDim) !important;
+  }
+  .excalidraw-wrapper .excalidraw .Tooltip,
+  .excalidraw-wrapper .excalidraw .Tooltip__label {
+    background: var(--surfaceAlt) !important;
+    color: var(--text) !important;
+    border: 1px solid var(--border) !important;
+  }
+  .excalidraw-wrapper .excalidraw .Modal__content,
+  .excalidraw-wrapper .excalidraw .ExportDialog,
+  .excalidraw-wrapper .excalidraw .HelpDialog,
+  .excalidraw-wrapper .excalidraw .sidebar,
+  .excalidraw-wrapper .excalidraw .layer-ui__sidebar,
+  .excalidraw-wrapper .excalidraw .library-menu-items-container {
+    background: var(--surface) !important;
+    color: var(--text) !important;
+    border-color: var(--border) !important;
+  }
+  .excalidraw-wrapper .excalidraw .Modal__background {
+    background: rgba(0,0,0,0.55) !important;
+  }
+  /* Color-picker popover interior (hex input row, custom picker) */
+  .excalidraw-wrapper .excalidraw .color-picker-container,
+  .excalidraw-wrapper .excalidraw .color-picker-content,
+  .excalidraw-wrapper .excalidraw .color-picker {
+    background: var(--surface) !important;
+    border-color: var(--border) !important;
+    color: var(--text) !important;
+  }
+  /* Range sliders follow the accent in all themes */
+  .excalidraw-wrapper .excalidraw input[type="range"] {
+    accent-color: var(--accent) !important;
+  }
+
   ${isDark ? `
   /* ── Dark-mode specific: ensure panel/popup backgrounds are surface, not black ── */
   .excalidraw-wrapper .excalidraw .Island,
@@ -331,36 +395,12 @@ function loadExcalidraw() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Lazy-load pdf.js from CDN
-// ─────────────────────────────────────────────────────────────────────────────
-let _pdfJsPromise = null
-function loadPdfJs() {
-  if (_pdfJsPromise) return _pdfJsPromise
-  _pdfJsPromise = loadPdfJsAsync()
-  return _pdfJsPromise
-}
-
-async function loadPdfJsAsync() {
-  if (window.pdfjsLib) return window.pdfjsLib
-  await new Promise((res, rej) => {
-    const s = document.createElement('script')
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
-    s.onload = res; s.onerror = rej
-    document.head.appendChild(s)
-  })
-  window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
-  return window.pdfjsLib
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // PDF → Excalidraw image elements
 // Scale 1 pdf unit ≈ 1.5 px for decent resolution on canvas
 // ─────────────────────────────────────────────────────────────────────────────
 async function pdfToExcalidrawImages(file, onProgress) {
-  const pdfjsLib = await loadPdfJs()
   const arrayBuffer = await file.arrayBuffer()
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+  const pdf = await openPdf({ data: arrayBuffer })
   const numPages = pdf.numPages
 
   // Target render width in px (Excalidraw scene units)
@@ -381,7 +421,7 @@ async function pdfToExcalidrawImages(file, onProgress) {
     const ctx = canvas.getContext('2d')
     ctx.fillStyle = '#ffffff'
     ctx.fillRect(0, 0, canvas.width, canvas.height)
-    await page.render({ canvasContext: ctx, viewport: scaledViewport }).promise
+    await page.render({ canvas, canvasContext: ctx, viewport: scaledViewport }).promise
     images.push({ dataUrl: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height })
   }
 
@@ -489,6 +529,7 @@ async function generateSketchbookThumbnail(api, files) {
 // ─────────────────────────────────────────────────────────────────────────────
 export default function SketchbookView() {
   const paneTabId           = useContext(PaneContext)
+  const paneChrome          = useContext(PaneChromeContext)
   const isActive            = useIsActiveTab()
   const sketchbook          = useAppStore(useCallback(
     s => {
@@ -559,60 +600,30 @@ export default function SketchbookView() {
   const paintDotGrid = useCallback((appState) => {
     const el = dotGridRef.current
     if (!el || !appState) return
-    const zoom = appState.zoom?.value ?? 1
-    const dark = themeConfig.mode === 'dark'
-    if (sketchBgStyle === 'dots') {
-      const BASE = 22
-      const S = BASE * zoom
-      const r = Math.max(0.5, 1.2 * zoom)
-      const bx = (((appState.scrollX % BASE) + BASE) % BASE) * zoom
-      const by = (((appState.scrollY % BASE) + BASE) % BASE) * zoom
-      el.style.backgroundImage = dark
-        ? `radial-gradient(circle, rgba(255,255,255,0.18) ${r}px, transparent ${r}px)`
-        : `radial-gradient(circle, rgba(0,0,0,0.18) ${r}px, transparent ${r}px)`
-      el.style.backgroundSize     = `${S}px ${S}px`
-      el.style.backgroundPosition = `${bx}px ${by}px`
-    } else if (sketchBgStyle === 'lines') {
-      const BASE = 28
-      const S = BASE * zoom
-      const by = (((appState.scrollY % BASE) + BASE) % BASE) * zoom
-      const lineColor = dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)'
-      el.style.backgroundImage    = `repeating-linear-gradient(to bottom, ${lineColor} 0px, ${lineColor} 1px, transparent 1px, transparent ${S}px)`
-      el.style.backgroundSize     = `100% ${S}px`
-      el.style.backgroundPosition = `0px ${by}px`
-    } else if (sketchBgStyle === 'grid') {
-      const BASE       = appState.gridSize ?? 20   // minor cell — matches Excalidraw's gridSize
-      const MAJOR      = BASE * 5                  // major cell = 5 minor cells
-      const S_minor    = BASE * zoom
-      const S_major    = MAJOR * zoom
-      // Offset aligned to major grid (minor offsets are baked into the SVG tile)
-      const bx = (((appState.scrollX % MAJOR) + MAJOR) % MAJOR) * zoom
-      const by = (((appState.scrollY % MAJOR) + MAJOR) % MAJOR) * zoom
-      const minorC = dark ? 'rgba(255,255,255,0.13)' : 'rgba(0,0,0,0.10)'
-      const majorC = dark ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.18)'
-      // SVG tile: one major cell with 4 minor dividers (dashed) + major border (solid)
-      const lines = []
-      for (let i = 1; i < 5; i++) {
-        const p = i * S_minor
-        lines.push(
-          `<line x1="${p}" y1="0" x2="${p}" y2="${S_major}" stroke="${minorC}" stroke-width="0.6" stroke-dasharray="4 3"/>`,
-          `<line x1="0" y1="${p}" x2="${S_major}" y2="${p}" stroke="${minorC}" stroke-width="0.6" stroke-dasharray="4 3"/>`
-        )
-      }
-      lines.push(
-        `<line x1="0" y1="0" x2="${S_major}" y2="0" stroke="${majorC}" stroke-width="1"/>`,
-        `<line x1="0" y1="0" x2="0" y2="${S_major}" stroke="${majorC}" stroke-width="1"/>`
-      )
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${S_major}" height="${S_major}">${lines.join('')}</svg>`
-      el.style.backgroundImage    = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`
-      el.style.backgroundSize     = `${S_major}px ${S_major}px`
-      el.style.backgroundPosition = `${bx}px ${by}px`
-    } else {
-      el.style.backgroundImage    = 'none'
-      el.style.backgroundSize     = 'auto'
-      el.style.backgroundPosition = '0 0'
-    }
+    // Shared painter (canvasSurface.js) — same dot/line/grid language as the
+    // Nebuli graph, with offsets snapped to device pixels to avoid shimmer.
+    paintSurfaceBackground(el, sketchBgStyle, {
+      zoom:    appState.zoom?.value ?? 1,
+      scrollX: appState.scrollX ?? 0,
+      scrollY: appState.scrollY ?? 0,
+      gridSize: appState.gridSize ?? undefined,
+    }, themeConfig.mode === 'dark')
   }, [sketchBgStyle, themeConfig.mode])
+
+  // Keep the grid synced when the viewport changes WITHOUT an onChange event:
+  // programmatic scroll/zoom (onScrollChange) and container resizes (no
+  // Excalidraw event at all) — both previously left the grid offset stale.
+  useEffect(() => {
+    const repaint = () => paintDotGrid(excalidrawApiRef.current?.getAppState?.())
+    const unsub = excalidrawApiRef.current?.onScrollChange?.(repaint)
+    let ro
+    const host = dotGridRef.current?.parentElement
+    if (host) {
+      ro = new ResizeObserver(repaint)
+      ro.observe(host)
+    }
+    return () => { unsub?.(); ro?.disconnect() }
+  }, [paintDotGrid, sketchState.loaded, sketchbook?.id])
 
   // Repaint immediately when style or theme changes using last known appState
   useEffect(() => {
@@ -718,7 +729,7 @@ export default function SketchbookView() {
       ? elements.map(e => `${e.id}:${e.versionNonce ?? e.version ?? 0}`).join(',')
       : '[]'
     setSaving(false)
-    const el = document.getElementById('nb-save-icon')
+    const el = document.getElementById(paneChrome?.saveIconId || 'nb-save-icon')
     if (el) {
       el.classList.remove('anim', 'vis', 'closing'); void el.offsetWidth
       el.classList.add('anim', 'vis')

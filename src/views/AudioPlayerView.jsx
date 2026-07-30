@@ -472,9 +472,13 @@ export default function AudioPlayerView() {
         {/* ── Chapters sidebar — toggled from the quick-access strip ── */}
         {chapOpen && (
           <aside style={{
-            position: 'fixed', left: 0, top: TITLEBAR_H, bottom: 0, width: 270, zIndex: 1100,
-            background: 'var(--surface)', borderRight: '1px solid var(--borderSubtle)',
-            display: 'flex', flexDirection: 'column',
+            // Zen-sidebar language: floating rounded card inset from the left
+            // edge (matches body.zen-active .sidenav-panel.pinned)
+            position: 'fixed', left: 8, top: TITLEBAR_H + 6, bottom: 8, width: 270, zIndex: 1100,
+            background: 'var(--surface)', border: '1px solid var(--borderSubtle)',
+            borderRadius: 12,
+            boxShadow: '8px 0 32px rgba(0,0,0,0.22)',
+            display: 'flex', flexDirection: 'column', overflow: 'hidden',
             animation: 'ap-slide-in 0.2s ease',
           }}>
             {/* Integrated header row */}

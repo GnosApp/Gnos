@@ -27,9 +27,10 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useContext, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import useAppStore from '@/store/useAppStore'
-import { PaneContext } from '@/lib/PaneContext'
+import { PaneContext, PaneChromeContext } from '@/lib/PaneContext'
 import { useIsActiveTab } from '@/lib/useIsActiveTab'
-import { loadNotebookContent, saveNotebookContent, saveNotebookImage, getNotebookFolderPath, addReadingMinutes } from '@/lib/storage'
+import { loadNotebookContent, saveNotebookContent, saveNotebookImage, getNotebookFolderPath, addReadingMinutes,
+         resolveNotebookMdPath, getFileMtimeMs, readNotebookMdAt, stampNotebookSynced } from '@/lib/storage'
 import QuickAccess, { useTitlebarMeta } from '@/components/QuickAccess'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { Slider } from '@/components/Controls'
@@ -99,18 +100,16 @@ function getKaTeX() {
   if (_ktP) return _ktP
   _ktP = (async () => {
     try {
-      // Load KaTeX from npm package (bundled, no CDN needed)
-      const katex = await import('katex')
-      // Inject KaTeX CSS if not already present
-      if (!document.getElementById('katex-css')) {
-        const css = await import('katex/dist/katex.min.css?inline').catch(() => null)
-        if (css?.default) {
-          const style = document.createElement('style')
-          style.id = 'katex-css'
-          style.textContent = css.default
-          document.head.appendChild(style)
-        }
-      }
+      // Load KaTeX from the npm package (bundled, no CDN needed).
+      // The stylesheet is imported as a normal side-effect import, NOT `?inline`:
+      // KaTeX's CSS references its glyph fonts as relative `url(fonts/KaTeX_*)`,
+      // and injecting the raw text into a <style> resolved those against the
+      // document root instead of the stylesheet, so every font 404'd. A plain
+      // import lets Vite rewrite the URLs and emit the font files.
+      const [katex] = await Promise.all([
+        import('katex'),
+        import('katex/dist/katex.min.css'),
+      ])
       return katex.default || katex
     } catch (e) {
       console.warn('[KaTeX] failed to load:', e)
@@ -137,26 +136,19 @@ function getMQ() {
   _mqP = (async () => {
     try {
       if (window.MathQuill) return window.MathQuill.getInterface(2)
-      if (!window.jQuery) {
-        await new Promise((res, rej) => {
-          const s = document.createElement('script')
-          s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js'
-          s.onload = res; s.onerror = rej
-          document.head.appendChild(s)
-        })
-      }
-      if (!document.getElementById('mathquill-css')) {
-        const link = document.createElement('link')
-        link.id = 'mathquill-css'; link.rel = 'stylesheet'
-        link.href = 'https://cdnjs.cloudflare.com/ajax/libs/mathquill/0.10.1/mathquill.min.css'
-        document.head.appendChild(link)
-      }
-      await new Promise((res, rej) => {
-        const s = document.createElement('script')
-        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/mathquill/0.10.1/mathquill.min.js'
-        s.onload = res; s.onerror = rej
-        document.head.appendChild(s)
-      })
+
+      // Both were <script> tags from cdnjs, so math zones broke with no network.
+      // Now bundled. MathQuill 0.10.1's build is a plain IIFE that reads
+      // `window.jQuery` at execution time — it has no require()/exports — so the
+      // global MUST be set before its module is imported, and importing it does
+      // NOT pull in the stale jquery@1.12.4 that its package.json asks for.
+      const [{ default: jQuery }] = await Promise.all([
+        import('jquery'),
+        import('mathquill/build/mathquill.css'),
+      ])
+      window.jQuery = window.$ = jQuery
+      await import('mathquill/build/mathquill.js')
+
       return window.MathQuill?.getInterface(2) ?? null
     } catch (e) {
       console.warn('[MathQuill] failed to load:', e)
@@ -175,6 +167,9 @@ function inlineToHtml(text, notebooks = [], library = [], sketchbooks = [], flas
   const ph = html => { const k = `\x02${buckets.length}\x03`; buckets.push(html); return k }
 
   let s = esc(text)
+
+  // Obsidian comments %%…%% — stripped from rendered output
+  s = s.replace(/%%[\s\S]*?%%/g, '')
 
   // Images  ![alt](src)
   s = s.replace(/!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)/g, (_, alt, src, title) =>
@@ -281,11 +276,39 @@ function blockToHtml(raw, notebooks, library, footnotesBuf, sketchbooks = [], fl
   const hm = first.match(/^(#{1,6})\s+(.+?)(?:\s+\{#([^}]+)\})?$/)
   if (hm) {
     const lv = hm[1].length
-    const id = hm[3] ? ` id="${esc(hm[3])}"` : ''
+    const id = ` id="${esc(hm[3] || _slugify(hm[2]))}"`
     return `<h${lv}${id}>${il(hm[2])}</h${lv}>`
   }
 
   if (/^(---+|\*\*\*+|___+)$/.test(first.trim())) return '<hr>'
+
+  // /toc — table of contents (regenerated from the doc's headings at render)
+  if (/^\s*(?:\/toc|\[toc\]|\{toc\})\s*$/i.test(first.trim())) {
+    const heads = (_tocHeadings || []).filter(h => h.level >= 1 && h.level <= 6)
+    if (!heads.length) return '<div class="nb-toc nb-toc-empty">No headings yet</div>'
+    const items = heads.map(h =>
+      `<a class="nb-toc-item" style="padding-left:${(h.level - 1) * 14}px" href="#${esc(h.slug)}">${il(h.text)}</a>`
+    ).join('')
+    return `<div class="nb-toc"><div class="nb-toc-head">Contents</div>${items}</div>`
+  }
+
+  // progress:: 7/10  →  labeled progress bar
+  const progM = first.trim().match(/^progress::\s*(\d+)\s*\/\s*(\d+)(?:\s+(.+))?$/i)
+  if (progM) {
+    const cur = +progM[1], max = Math.max(1, +progM[2])
+    const pct = Math.max(0, Math.min(100, Math.round((cur / max) * 100)))
+    const label = progM[3] ? esc(progM[3]) : ''
+    return `<div class="nb-progress"><div class="nb-progress-top"><span>${label}</span><span class="nb-progress-num">${cur}/${max}</span></div><div class="nb-progress-track"><div class="nb-progress-fill" style="width:${pct}%"></div></div></div>`
+  }
+
+  // rating:: 4/5  →  stars
+  const rateM = first.trim().match(/^rating::\s*(\d+(?:\.\d+)?)\s*(?:\/\s*(\d+))?$/i)
+  if (rateM) {
+    const val = +rateM[1], out = rateM[2] ? +rateM[2] : 5
+    let stars = ''
+    for (let i = 1; i <= out; i++) stars += `<span class="nb-star${i <= val ? ' on' : ''}">${i <= val ? '★' : '☆'}</span>`
+    return `<div class="nb-rating">${stars}</div>`
+  }
 
   if (/^(`{3,}|~{3,})/.test(first)) {
     const lang = first.replace(/^`{3,}|^~{3,}/, '').trim()
@@ -518,10 +541,61 @@ function parseBlocks(text) {
   return blocks
 }
 
+// Parse a leading YAML-ish frontmatter block (--- … ---) into ordered
+// key/value pairs. Values may be comma lists or `[a, b]`. Returns
+// { props:[{key,values}], bodyStart } or null. Deliberately tiny (no yaml dep).
+function parseFrontmatter(text) {
+  const m = text.match(/^---[ \t]*\n([\s\S]*?)\n---[ \t]*(?:\n|$)/)
+  if (!m) return null
+  const props = []
+  for (const line of m[1].split('\n')) {
+    const kv = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/)
+    if (!kv) continue
+    let raw = kv[2].trim()
+    let values
+    if (/^\[.*\]$/.test(raw)) values = raw.slice(1, -1).split(',').map(s => s.trim()).filter(Boolean)
+    else if (raw.includes(',')) values = raw.split(',').map(s => s.trim()).filter(Boolean)
+    else values = raw ? [raw] : []
+    props.push({ key: kv[1], values })
+  }
+  return { props, length: m[0].length }
+}
+
+function frontmatterHtml(props) {
+  if (!props.length) return ''
+  const rows = props.map(p => {
+    const isTag = /^tags?$/i.test(p.key)
+    const vals = p.values.length
+      ? p.values.map(v => isTag
+          ? `<span class="nb-prop-tag">#${esc(v.replace(/^#/, ''))}</span>`
+          : `<span class="nb-prop-val">${esc(v)}</span>`).join(' ')
+      : '<span class="nb-prop-empty">—</span>'
+    return `<div class="nb-prop-row"><span class="nb-prop-key">${esc(p.key)}</span><span class="nb-prop-vals">${vals}</span></div>`
+  }).join('')
+  return `<div class="nb-props">${rows}</div>`
+}
+
+// Populated by renderMarkdown before block rendering so a /toc block can list
+// the document's headings (blockToHtml sees one block at a time).
+let _tocHeadings = []
+function _slugify(t) {
+  return String(t).toLowerCase().replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-').slice(0, 64)
+}
+
 function renderMarkdown(text, notebooks = [], library = [], sketchbooks = [], flashcardDecks = []) {
   if (!text?.trim()) return ''
   const footnotes = []
+  // Leading YAML frontmatter → properties card, stripped before block parsing
+  let fmHtml = ''
+  const fm = parseFrontmatter(text)
+  if (fm) { fmHtml = frontmatterHtml(fm.props); text = text.slice(fm.length) }
   const blocks = parseBlocks(text)
+  // Collect headings for /toc (level + visible text + slug for anchors)
+  _tocHeadings = []
+  for (const b of blocks) {
+    const hm = b.match(/^(#{1,6})\s+(.+?)(?:\s+\{#([^}]+)\})?\s*$/)
+    if (hm) _tocHeadings.push({ level: hm[1].length, text: hm[2], slug: hm[3] || _slugify(hm[2]) })
+  }
   // Merge standalone [caption] blocks with adjacent table blocks
   for (let ci = 0; ci < blocks.length; ci++) {
     if (!/^\[[^\]]+\]$/.test(blocks[ci].trim())) continue
@@ -533,7 +607,7 @@ function renderMarkdown(text, notebooks = [], library = [], sketchbooks = [], fl
       blocks.splice(ci, 1); ci--
     }
   }
-  const html = blocks.map((raw, i) =>
+  const html = fmHtml + blocks.map((raw, i) =>
     blockToHtml(raw, notebooks, library, footnotes, sketchbooks, flashcardDecks)
       .replace(/^(<\w+)/, `$1 data-bi="${i}"`)
   ).join('\n')
@@ -1020,6 +1094,67 @@ function makeTableCommand(cm) {
       return true
     },
   }]))
+}
+
+// ─── Slash-command menu (Notion-style autocomplete) ──────────────────────────
+// Typing `/` opens a menu of every command. Two kinds of entries:
+//  • snippets — apply inserts the markdown directly
+//  • machinery commands (/table, /todo, /math, …) — apply inserts the command
+//    text; the existing Enter-keymap machinery expands it (menu = discovery
+//    layer, expansion logic stays in one place)
+// Returns a completion SOURCE, not an autocompletion() extension — CM6 allows
+// exactly one autocompletion() config per editor ("Config merge conflict for
+// field override" otherwise). The single instance lives in makeMathCalcPlugin;
+// this source is passed into it. Future widget plugins must follow the same
+// pattern: contribute sources, never call autocompletion() themselves.
+function makeSlashSource() {
+  const machinery = (label, detail) =>
+    ({ label, detail: `${detail} — press Enter`, type: 'keyword', apply: `${label} ` })
+  const snippet = (label, detail, insert, cursorBack = 0) => ({
+    label, detail, type: 'text',
+    apply: (view, _c, from, to) => {
+      view.dispatch({
+        changes: { from, to, insert },
+        selection: { anchor: from + insert.length - cursorBack },
+      })
+    },
+  })
+
+  const OPTIONS = [
+    machinery('/table', 'Insert a table (or /table 4x3)'),
+    machinery('/todo',  'To-do list block'),
+    machinery('/task',  'Task with date'),
+    machinery('/math',  'Math zone (calculator)'),
+    machinery('/timer', 'Countdown timer'),
+    machinery('/linkf', 'Link a file'),
+    machinery('/linkw', 'Link a webpage'),
+    machinery('/linkv', 'Embed a video'),
+    snippet('/h1', 'Heading 1', '# '),
+    snippet('/h2', 'Heading 2', '## '),
+    snippet('/h3', 'Heading 3', '### '),
+    snippet('/bullet',   'Bulleted list',  '- '),
+    snippet('/numbered', 'Numbered list',  '1. '),
+    snippet('/check',    'Checkbox',       '- [ ] '),
+    snippet('/quote',    'Quote block',    '> '),
+    snippet('/callout',  'Callout (note)', '> [!note] Title\n> ', 0),
+    snippet('/divider',  'Horizontal rule', '---\n'),
+    snippet('/toc',      'Table of contents', '/toc\n'),
+    snippet('/progress', 'Progress bar',    'progress:: 7/10 Label\n'),
+    snippet('/rating',   'Star rating',     'rating:: 4/5\n'),
+    snippet('/code',     'Code block',     '```\n\n```', 5),
+    snippet('/mermaid',  'Mermaid diagram', '```mermaid\nflowchart TD\n  A --> B\n```\n', 0),
+    snippet('/date',     "Today's date",   new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })),
+    snippet('/wiki',     'Wiki link',      '[[', 0),
+  ]
+
+  return (ctx) => {
+    // Trigger on "/" at line start or after whitespace
+    const word = ctx.matchBefore(/\/[\w-]*$/)
+    if (!word) return null
+    const before = ctx.state.doc.sliceString(Math.max(0, word.from - 1), word.from)
+    if (before && !/\s/.test(before)) return null
+    return { from: word.from, options: OPTIONS, validFor: /^\/[\w-]*$/ }
+  }
 }
 
 // ─── Widgets ─────────────────────────────────────────────────────────────────
@@ -2842,6 +2977,23 @@ class SupWidget {
   coordsAt() { return null }
 }
 
+// Generic block widget rendering pre-built HTML for the live editor (progress
+// bar, rating, callout, toc). `key` makes eq() cheap + correct.
+class HtmlBlockWidget {
+  constructor(html, key) { this.html = html; this.key = key }
+  toDOM() {
+    const el = document.createElement('div')
+    el.className = 'nb-live-widget'
+    el.innerHTML = this.html
+    return el
+  }
+  eq(o) { return o instanceof HtmlBlockWidget && o.key === this.key }
+  compare(o) { return this.eq(o) }
+  destroy() {}
+  ignoreEvent() { return false }
+  coordsAt() { return null }
+}
+
 class SubWidget {
   constructor(text) { this.text = text }
   toDOM() {
@@ -3997,6 +4149,12 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
     const inlines  = []
     const lineDecs = []
 
+    // Frontmatter range (chars) — computed up front so the HR handler skips the
+    // opening/closing `---` (they'd otherwise render as horizontal rules and
+    // overlap the properties-card decoration).
+    const _fm = parseFrontmatter(fullDoc)
+    const fmEnd = _fm && _fm.props.length ? _fm.length : 0
+
     try {
       syntaxTree(state).iterate({
         enter(node) {
@@ -4016,6 +4174,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
           // ── Horizontal rule ─────────────────────────────────────────────
           if (name === 'HorizontalRule') {
             const ln = doc.lineAt(from)
+            if (ln.from < fmEnd) return false   // inside frontmatter — not an HR
             if (!inCur(ln.from, ln.to)) {
               inlines.push({ from: ln.from, to: ln.to, deco: Decoration.replace({ widget: new HRWidget() }) })
             }
@@ -4411,6 +4570,82 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
         const sbf = sbm.index, sbt = sbm.index + sbm[0].length
         if (!inCur(sbf, sbt)) {
           inlines.push({ from: sbf, to: sbt, deco: Decoration.replace({ widget: new SubWidget(sbm[1]) }) })
+        }
+      }
+    } catch { /**/ }
+
+    // ── YAML frontmatter --- … --- at doc start → properties card ──────────
+    try {
+      if (fmEnd && !inCur(0, fmEnd)) {
+        // Replace through the last char of the closing --- line (exclude the
+        // trailing newline so the following block keeps its own line).
+        let to = fmEnd
+        while (to > 0 && (fullDoc[to - 1] === '\n')) to--
+        const html = frontmatterHtml(_fm.props)
+        const key = 'fm:' + _fm.props.map(p => p.key + '=' + p.values.join(',')).join('|')
+        inlines.push({ from: 0, to, deco: Decoration.replace({ widget: new HtmlBlockWidget(html, key) }) })
+      }
+    } catch { /**/ }
+
+    // ── Highlight ==text== → <mark> (mark, keeps text editable) ────────────
+    try {
+      const reHl = /==([^=\n]+)==/g
+      let hm2
+      while ((hm2 = reHl.exec(fullDoc)) !== null) {
+        const hf = hm2.index, ht = hm2.index + hm2[0].length
+        if (inCur(hf, ht)) continue
+        // hide the == markers, mark the inner text
+        inlines.push({ from: hf, to: hf + 2, deco: Decoration.mark({ class: 'cm-lv-hidden' }) })
+        inlines.push({ from: hf + 2, to: ht - 2, deco: Decoration.mark({ class: 'nb-hl' }) })
+        inlines.push({ from: ht - 2, to: ht, deco: Decoration.mark({ class: 'cm-lv-hidden' }) })
+      }
+    } catch { /**/ }
+
+    // ── Comment %%text%% → dimmed (kept in source, muted in live) ──────────
+    try {
+      const reCm = /%%[\s\S]*?%%/g
+      let cm2
+      while ((cm2 = reCm.exec(fullDoc)) !== null) {
+        const cf = cm2.index, ct = cm2.index + cm2[0].length
+        if (!inCur(cf, ct)) inlines.push({ from: cf, to: ct, deco: Decoration.mark({ class: 'cm-lv-comment' }) })
+      }
+    } catch { /**/ }
+
+    // ── progress:: / rating:: / /toc — block widgets (revert to raw on cursor) ──
+    try {
+      for (let n = 1; n <= doc.lines; n++) {
+        const ln = doc.line(n)
+        const t  = ln.text.trim()
+        if (inCur(ln.from, ln.to)) continue
+        let html = null, key = null
+        const pM = t.match(/^progress::\s*(\d+)\s*\/\s*(\d+)(?:\s+(.+))?$/i)
+        const rM = t.match(/^rating::\s*(\d+(?:\.\d+)?)\s*(?:\/\s*(\d+))?$/i)
+        if (pM) {
+          const cur2 = +pM[1], max = Math.max(1, +pM[2])
+          const pct = Math.max(0, Math.min(100, Math.round((cur2 / max) * 100)))
+          const label = pM[3] ? esc(pM[3]) : ''
+          html = `<div class="nb-progress"><div class="nb-progress-top"><span>${label}</span><span class="nb-progress-num">${cur2}/${max}</span></div><div class="nb-progress-track"><div class="nb-progress-fill" style="width:${pct}%"></div></div></div>`
+          key = `p:${t}`
+        } else if (rM) {
+          const val = +rM[1], out = rM[2] ? +rM[2] : 5
+          let stars = ''
+          for (let i = 1; i <= out; i++) stars += `<span class="nb-star${i <= val ? ' on' : ''}">${i <= val ? '★' : '☆'}</span>`
+          html = `<div class="nb-rating">${stars}</div>`
+          key = `r:${t}`
+        } else if (/^(?:\/toc|\[toc\]|\{toc\})$/i.test(t)) {
+          const heads = []
+          for (let h = 1; h <= doc.lines; h++) {
+            const hmm = doc.line(h).text.match(/^(#{1,6})\s+(.+?)(?:\s+\{#([^}]+)\})?\s*$/)
+            if (hmm) heads.push({ level: hmm[1].length, text: hmm[2] })
+          }
+          const items = heads.length
+            ? heads.map(h => `<div class="nb-toc-item" style="padding-left:${(h.level - 1) * 14}px">${esc(h.text)}</div>`).join('')
+            : '<div class="nb-toc-empty">No headings yet</div>'
+          html = `<div class="nb-toc"><div class="nb-toc-head">Contents</div>${items}</div>`
+          key = `t:${heads.map(h => h.level + h.text).join('|')}`
+        }
+        if (html) {
+          try { inlines.push({ from: ln.from, to: ln.to, deco: Decoration.replace({ widget: new HtmlBlockWidget(html, key) }) }) } catch { /**/ }
         }
       }
     } catch { /**/ }
@@ -5625,6 +5860,7 @@ function NbShareMenu({ noteTitle, notebookTitle, contentRef, previewHtml }) {
 export default function NotebookView() {
   const themeKey        = useAppStore(s => s.themeKey ?? 'dark')
   const paneTabId      = useContext(PaneContext)
+  const paneChrome     = useContext(PaneChromeContext)
   const isActive       = useIsActiveTab()
   const notebook       = useAppStore(useCallback(
     s => {
@@ -5653,6 +5889,9 @@ export default function NotebookView() {
   const [content,   setContent]  = useState('')
   const [noteTitle, setTitle]    = useState('')
   const [loaded,    setLoaded]   = useState(false)
+  // Non-fatal editor problems (load failure, widget extension crash → safe
+  // mode). Rendered as a banner instead of the historical blank page.
+  const [nbError,   setNbError]  = useState(null)
   const [coverImage,  setCoverImage]  = useState(null)
   const [coverPos,    setCoverPos]    = useState({ x: 50, y: 50 })
   const [coverScale,  setCoverScale]  = useState(1)   // zoom factor ≥ 1
@@ -5688,6 +5927,18 @@ export default function NotebookView() {
   const loadedFor  = useRef(null)
   const wikiNavRef = useRef(null)
   const notebookDirRef = useRef(null)
+  // ── External-edit sync ──
+  // mdPathRef: absolute path of this notebook's .md on disk.
+  // diskMtimeRef: mtime of the last content this editor is in sync with (set on
+  // load and after every save). A file mtime newer than this means someone else
+  // — another device syncing, Obsidian, vim — wrote the file.
+  const mdPathRef    = useRef(null)
+  const diskMtimeRef = useRef(0)
+  // Body text as of the last time editor and disk agreed — anything else in the
+  // editor means unsaved local edits, which must not be silently replaced.
+  const syncedTextRef = useRef('')
+  const flushSaveRef = useRef(null) // set to flushSave; lets the disk watcher save without a forward ref
+  const [extConflict, setExtConflict] = useState(null) // { text, title, mtimeMs } — legacy banner, unused since auto-fork
   // Timestamp set by DOM drop handler when it inserts an image; checked by the
   // Tauri drag-drop handler to skip processing if DOM already handled the drop.
   const domDropRef = useRef(0)
@@ -5751,6 +6002,7 @@ export default function NotebookView() {
     if (!notebookId) return
     let gone = false
     setLoaded(false)
+    setNbError(null)
     const nb = notebook
     Promise.all([
       loadNotebookContent(notebookId),
@@ -5758,12 +6010,22 @@ export default function NotebookView() {
     ]).then(([raw, folderPath]) => {
       if (gone) return
       notebookDirRef.current = folderPath
+      // Baseline for external-change detection — resolved async, doesn't block load
+      mdPathRef.current = null
+      diskMtimeRef.current = 0
+      setExtConflict(null)
+      resolveNotebookMdPath(folderPath).then(async p => {
+        if (gone) return
+        mdPathRef.current = p
+        diskMtimeRef.current = await getFileMtimeMs(p)
+      }).catch(() => {})
       let text  = typeof raw === 'string' ? raw : ''
       let title = notebookTitle
       const hm  = text.match(/^# (.+)\n/)
       if (hm) { title = hm[1]; text = text.slice(hm[0].length) }
       titleRef.current = title; setTitle(title)
       contentRef.current = text; setContent(text)
+      syncedTextRef.current = text
       // Restore cover image if one was saved with this notebook
       const savedCover = nb?.coverImage || null
       if (savedCover && _convertFileSrc && folderPath) {
@@ -5778,9 +6040,111 @@ export default function NotebookView() {
       setCoverScale(nb?.coverScale ?? 1)
       setLoaded(true)
       loadedFor.current = notebookId
+    }).catch(err => {
+      // A rejected load used to leave the view blank FOREVER (setLoaded never
+      // fired). Fail into an empty editor + visible banner instead.
+      if (gone) return
+      console.error('[Notebook] content load failed:', err)
+      titleRef.current = notebookTitle; setTitle(notebookTitle)
+      contentRef.current = ''; setContent('')
+      setCoverImage(null)
+      setNbError(`Couldn't load this notebook's content (${err?.message || err}). Editing a blank copy — saving may fail.`)
+      setLoaded(true)
+      loadedFor.current = notebookId
     })
     return () => { gone = true }
   }, [notebookId, notebookTitle]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── External edit sync ────────────────────────────────────────────────────
+  // Adopt text written to this notebook's .md by something other than this
+  // editor (another device syncing, Obsidian, vim). Cursor position is kept so
+  // an incoming change doesn't yank the caret.
+  const applyExternal = useCallback((text, title, mtimeMs) => {
+    titleRef.current = title; setTitle(title)
+    contentRef.current = text; setContent(text)
+    syncedTextRef.current = text
+    lastSavedTextRef.current = text
+    diskMtimeRef.current = mtimeMs
+    if (cmRef.current) {
+      const view = cmRef.current
+      const current = view.state.doc.toString()
+      if (current !== text) {
+        const head = Math.min(view.state.selection.main.head, text.length)
+        view.dispatch({
+          changes: { from: 0, to: current.length, insert: text },
+          selection: { anchor: head },
+          scrollIntoView: false,
+        })
+      }
+    }
+    // Refresh the card + let other tabs on this notebook pull the same text
+    if (notebook) {
+      const wc = (text.match(/\b\w+\b/g) || []).length
+      const patch = { updatedAt: new Date(mtimeMs || Date.now()).toISOString(), wordCount: wc }
+      if (title && title !== notebook.title) patch.title = title
+      updateNotebook(notebook.id, patch)
+      useAppStore.getState().persistNotebooks?.()
+      useAppStore.getState().setNotebookContentCache?.(notebook.id, text)
+    }
+    // meta.json already matches disk now — stop the next scan re-deriving it
+    stampNotebookSynced(notebookDirRef.current, mtimeMs).catch(() => {})
+  }, [notebook, updateNotebook])
+
+  const splitTitle = useCallback((raw) => {
+    let text = typeof raw === 'string' ? raw : ''
+    let title = titleRef.current
+    const hm = text.match(/^# (.+)\n/)
+    if (hm) { title = hm[1]; text = text.slice(hm[0].length) }
+    return { text, title }
+  }, [])
+
+  useEffect(() => {
+    if (!isLoaded || !notebookId) return
+    let stopped = false
+    let busy = false
+
+    const check = async () => {
+      if (stopped || busy) return
+      if (typeof document !== 'undefined' && document.hidden) return
+      const p = mdPathRef.current
+      if (!p) return
+      busy = true
+      try {
+        const mt = await getFileMtimeMs(p)
+        if (!mt || mt <= diskMtimeRef.current) return
+        const disk = await readNotebookMdAt(p)
+        if (!disk || stopped) return
+        const { text, title } = splitTitle(disk.text)
+        // Same bytes we already hold (our own write, or a touch) — just re-baseline
+        if (text === contentRef.current && title === titleRef.current) {
+          diskMtimeRef.current = disk.mtimeMs
+          return
+        }
+        // Unsaved local edits + an external change = both are real. Don't prompt
+        // and don't lose either: persist local now (doSave → saveNotebookContent
+        // forks the external/offline version into its own note), keeping local as
+        // this note. No overwrite, no dialog.
+        if (contentRef.current !== syncedTextRef.current) {
+          flushSaveRef.current?.()
+        } else {
+          applyExternal(text, title, disk.mtimeMs)
+        }
+      } catch { /* transient FS error — next tick retries */ }
+      finally { busy = false }
+    }
+
+    const iv = setInterval(check, 1500)
+    const onWake = () => check()
+    window.addEventListener('focus', onWake)
+    document.addEventListener('visibilitychange', onWake)
+    check()
+    return () => {
+      stopped = true
+      clearInterval(iv)
+      window.removeEventListener('focus', onWake)
+      document.removeEventListener('visibilitychange', onWake)
+    }
+  }, [isLoaded, notebookId, applyExternal, splitTitle])
 
   // ── Wikilink navigation ───────────────────────────────────────────────────
   const handleWikiNav = useCallback((title, type, id) => {
@@ -5933,7 +6297,25 @@ export default function NotebookView() {
       const isPreview = viewMode === 'preview'
       const gfmExts = lezerMd?.GFM ? [lezerMd.GFM] : [lezerMd?.Strikethrough, lezerMd?.Table, lezerMd?.TaskList].filter(Boolean)
 
+      // Widget-extension guard. Historically ONE throwing widget factory killed
+      // the whole EditorView mount → permanently blank page. Each optional
+      // widget loads independently; a failure logs loudly, surfaces in the
+      // banner, and is skipped. This is also the contract for future
+      // third-party widget plugins: they may fail, the editor may not.
+      const failedExts = []
+      const safeExt = (name, make) => {
+        try {
+          const e = make()
+          return Array.isArray(e) ? e : [e]
+        } catch (err) {
+          console.error(`[Notebook] widget extension "${name}" failed — skipped:`, err)
+          failedExts.push(name)
+          return []
+        }
+      }
+
       const extensions = [
+        // Core (not guarded — if these fail, safe mode below catches it)
         makeTheme(cm),
         syntaxHighlighting(makeHighlight(cm)),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
@@ -5941,36 +6323,37 @@ export default function NotebookView() {
         indentOnInput(), bracketMatching(), history(),
         langMd.markdown({ extensions: gfmExts }),
         // Wikilink dropdown (custom React-driven — bypasses CM6 autocompletion)
-        ...makeWikiDropdownPlugin(cm, notebooks, library, sketchbooks, flashcardDecks, setWikiDrop),
+        ...safeExt('wiki-dropdown', () => makeWikiDropdownPlugin(cm, notebooks, library, sketchbooks, flashcardDecks, setWikiDrop)),
         searchExt({ top: false }),
-        makeFormatKeys(cm),
+        ...safeExt('format-keys', () => makeFormatKeys(cm)),
         // /table, /linkf, /linkw, /linkv slash commands (must be before smartEnter)
-        makeTableCommand(cm),
-        makeLinkCommands(cm, linkPickRef),
+        ...safeExt('table-command', () => makeTableCommand(cm)),
+        ...safeExt('link-commands', () => makeLinkCommands(cm, linkPickRef)),
         // /color, /font, /spacing, /size inline command keymap
-        makeInlineCmdPlugin(cm, inlineCmdNavRef),
+        ...safeExt('inline-cmd', () => makeInlineCmdPlugin(cm, inlineCmdNavRef)),
         // {//} auto-close for inline-cmd spans
-        makeInlineCmdCloseHandler(cm),
-        makeSmartEnter(cm),
+        ...safeExt('inline-cmd-close', () => makeInlineCmdCloseHandler(cm)),
+        ...safeExt('smart-enter', () => makeSmartEnter(cm)),
         // Pair auto-wrap via input handler
-        makePairInputHandler(cm),
+        ...safeExt('pair-input', () => makePairInputHandler(cm)),
         // Ghost hint — Tab to accept, any other key dismisses
-        ...makeGhostHintPlugin(cm),
-        // Math.js inline calculator — shows result after `expr=`
-        ...makeMathCalcPlugin(cm),
+        ...safeExt('ghost-hint', () => makeGhostHintPlugin(cm)),
+        // Math.js inline calculator — shows result after `expr=`. Owns the
+        // editor's SINGLE autocompletion(); the slash menu rides in as a source.
+        ...safeExt('math-calc', () => makeMathCalcPlugin(cm, viewMode === 'live' ? [makeSlashSource()] : [])),
         // Live decorations (widgets, hiding syntax) — shared between live + preview
-        ...(isLive ? makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks, flashcardDecks, notebookDirRef.current, viewMode === 'preview') : []),
+        ...(isLive ? safeExt('live-decorations', () => makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks, flashcardDecks, notebookDirRef.current, viewMode === 'preview')) : []),
         // Interaction handlers — live mode only (preview is read-only)
-        ...(viewMode === 'live' ? [
+        ...(viewMode === 'live' ? safeExt('interaction-handlers', () => [
           makeCheckboxHandler(cm),
           makeWikiHandler(cm, wikiNavRef),
           makeMathClickHandler(cm),
           makeTodoHandler(cm),
           makeTaskHandler(cm),
           makeLinkHandler(cm),
-        ] : []),
+        ]) : []),
         // Source mode: style-only formatting (bold/italic/etc.) without hiding syntax or expanding widgets
-        ...(viewMode === 'source' ? [makeSourcePlugin(cm)] : []),
+        ...(viewMode === 'source' ? safeExt('source-mode', () => makeSourcePlugin(cm)) : []),
         // Let macOS window management shortcuts pass through to the OS.
         // ctrl+arrow = switch spaces; fn+ctrl+arrow = window tiling (Ctrl-Home/End/PageUp/PageDown)
         Prec.highest(keymap.of([
@@ -6115,8 +6498,36 @@ export default function NotebookView() {
       ]
 
       if (cmRef.current) { cmRef.current.destroy(); cmRef.current = null }
-      const state = EditorState.create({ doc: contentRef.current, extensions })
-      const view  = new EditorView({ state, parent: editorRef.current })
+
+      // SAFE MODE: if the full extension set still fails to mount (a core
+      // extension threw, or EditorState rejected the config), fall back to a
+      // minimal-but-working editor instead of the historical blank page.
+      let view
+      try {
+        const state = EditorState.create({ doc: contentRef.current, extensions })
+        view = new EditorView({ state, parent: editorRef.current })
+        if (failedExts.length) setNbError(`Some editor widgets failed to load and were disabled: ${failedExts.join(', ')}.`)
+      } catch (err) {
+        console.error('[Notebook] editor failed to start with full extensions — SAFE MODE:', err)
+        setNbError(`Editor started in safe mode (widgets disabled): ${err?.message || err}`)
+        const safeState = EditorState.create({
+          doc: contentRef.current,
+          extensions: [
+            makeTheme(cm),
+            syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+            drawSelection(), history(),
+            langMd.markdown({ extensions: gfmExts }),
+            keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+            EditorView.updateListener.of(upd => {
+              if (dead || !upd.docChanged) return
+              const t = upd.state.doc.toString()
+              contentRef.current = t
+              scheduleSave(t)
+            }),
+          ],
+        })
+        view = new EditorView({ state: safeState, parent: editorRef.current })
+      }
       cmRef.current = view
       if (!isPreview) view.focus()
     })
@@ -6159,7 +6570,8 @@ export default function NotebookView() {
 
   // ── Save ──────────────────────────────────────────────────────────────────
   const animateSave = useCallback(() => {
-    const el = document.getElementById('nb-save-icon')
+    // Split mode: target this pane's own save icon; else the global one.
+    const el = document.getElementById(paneChrome?.saveIconId || 'nb-save-icon')
     if (!el) return
     el.classList.remove('anim', 'vis', 'closing'); void el.offsetWidth
     el.classList.add('anim', 'vis')
@@ -6169,12 +6581,40 @@ export default function NotebookView() {
       el.classList.add('closing')
       saveVisT.current = setTimeout(() => el.classList.remove('vis', 'closing'), 450)
     }, 600)
-  }, [])
+  }, [paneChrome])
 
   const doSave = useCallback(async (text, title) => {
     if (!notebook) return
+    // Conflict guard — if the file changed on disk under us we do NOT overwrite
+    // and we do NOT prompt: saveNotebookContent auto-forks the external/offline
+    // version into its own note, then writes our edits here. Both are kept. We
+    // only fast-path the "disk already equals what we're writing" case so an
+    // identical save doesn't spuriously fork.
+    const mdPath = mdPathRef.current
+    if (mdPath) {
+      const mt = await getFileMtimeMs(mdPath)
+      if (mt && mt > diskMtimeRef.current) {
+        const disk = await readNotebookMdAt(mdPath)
+        if (disk) {
+          const ext = splitTitle(disk.text)
+          if (ext.text === text && ext.title === title) {
+            diskMtimeRef.current = disk.mtimeMs   // identical — nothing to fork
+          }
+          // else: fall through — saveNotebookContent forks the external copy.
+        }
+      }
+    }
     setSaving(true)
     await saveNotebookContent(notebook, title ? `# ${title}\n${text}` : text)
+    syncedTextRef.current = text
+    if (mdPathRef.current) diskMtimeRef.current = await getFileMtimeMs(mdPathRef.current)
+    else {
+      // First save created the folder — resolve the path now so the watcher works
+      resolveNotebookMdPath(notebookDirRef.current).then(async p => {
+        mdPathRef.current = p
+        diskMtimeRef.current = await getFileMtimeMs(p)
+      }).catch(() => {})
+    }
     const wc = (text.match(/\b\w+\b/g) || []).length
     // Extract earliest due date from content
     const duRe = /::(\d{4}-\d{2}-\d{2}(?:,\d{1,2}:\d{2})?|\d{2}-\d{2}-(?:\d{4}|\d{2})(?:,\d{1,2}:\d{2})?|\d{1,2}:\d{2}|\+\d+[dh])/g
@@ -6217,23 +6657,24 @@ export default function NotebookView() {
     lastSavedTextRef.current = text
     useAppStore.getState().setNotebookContentCache?.(notebook.id, text)
     setSaving(false); animateSave()
-  }, [notebook, updateNotebook, animateSave])
+  }, [notebook, updateNotebook, animateSave, splitTitle])
 
   const scheduleSave = useCallback(text => {
     clearTimeout(saveTimer.current)
     // Show save icon immediately so the user gets instant feedback
-    const el = document.getElementById('nb-save-icon')
+    const el = document.getElementById(paneChrome?.saveIconId || 'nb-save-icon')
     if (el && !el.classList.contains('vis')) {
       el.classList.remove('anim', 'closing'); void el.offsetWidth
       el.classList.add('vis')
     }
     saveTimer.current = setTimeout(() => doSave(text, titleRef.current), 800)
-  }, [doSave])
+  }, [doSave, paneChrome])
 
   const flushSave = useCallback(() => {
     clearTimeout(saveTimer.current)
     doSave(contentRef.current, titleRef.current)
   }, [doSave])
+  flushSaveRef.current = flushSave
 
   // ── /linkf and /linkv — open Tauri dialog from React effect (NOT from CM handler) ──
   useEffect(() => {
@@ -6563,7 +7004,7 @@ export default function NotebookView() {
     .nb-root {
       --nb-fs:   15px;
       --nb-lh:   1.8;
-      --nb-ff:   'Switzer', 'Satoshi', sans-serif;
+      --nb-ff:   'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif;
       --nb-max:  780px;
       --nb-px:   48px;
       --nb-py:   28px;
@@ -6627,12 +7068,12 @@ export default function NotebookView() {
     .nb-preview .cm-selectionBackground { display: none !important; }
 
     /* ── Source mode — same visual classes as live, no hiding ── */
-    .nb-source .cm-lv-h1 { font-size: var(--nb-h1); font-weight: 600; line-height: 1.25; font-family: 'Switzer', 'Satoshi', sans-serif; color: var(--nb-h1-color); padding-top: 0.4em; padding-bottom: 0.1em; letter-spacing: -0.3px; }
-    .nb-source .cm-lv-h2 { font-size: var(--nb-h2); font-weight: 600; line-height: 1.3; font-family: 'Switzer', 'Satoshi', sans-serif; color: var(--nb-h2-color); padding-top: 0.35em; padding-bottom: 0.1em; letter-spacing: -0.2px; }
-    .nb-source .cm-lv-h3 { font-size: var(--nb-h3); font-weight: 600; line-height: 1.4; color: var(--nb-h3-color); font-family: 'Satoshi', 'Switzer', sans-serif; padding-top: 0.3em; }
-    .nb-source .cm-lv-h4 { font-size: var(--nb-h4); font-weight: 600; color: var(--nb-h4-color); font-family: 'Satoshi', 'Switzer', sans-serif; }
-    .nb-source .cm-lv-h5 { font-size: var(--nb-h5); font-weight: 600; color: var(--nb-h5-color); font-family: 'Satoshi', 'Switzer', sans-serif; }
-    .nb-source .cm-lv-h6 { font-size: var(--nb-h6); font-weight: 600; opacity:.65; color: var(--nb-h6-color); font-family: 'Satoshi', 'Switzer', sans-serif; }
+    .nb-source .cm-lv-h1 { font-size: var(--nb-h1); font-weight: 600; line-height: 1.25; font-family: 'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif; color: var(--nb-h1-color); padding-top: 0.4em; padding-bottom: 0.1em; letter-spacing: -0.3px; }
+    .nb-source .cm-lv-h2 { font-size: var(--nb-h2); font-weight: 600; line-height: 1.3; font-family: 'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif; color: var(--nb-h2-color); padding-top: 0.35em; padding-bottom: 0.1em; letter-spacing: -0.2px; }
+    .nb-source .cm-lv-h3 { font-size: var(--nb-h3); font-weight: 600; line-height: 1.4; color: var(--nb-h3-color); font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif; padding-top: 0.3em; }
+    .nb-source .cm-lv-h4 { font-size: var(--nb-h4); font-weight: 600; color: var(--nb-h4-color); font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif; }
+    .nb-source .cm-lv-h5 { font-size: var(--nb-h5); font-weight: 600; color: var(--nb-h5-color); font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif; }
+    .nb-source .cm-lv-h6 { font-size: var(--nb-h6); font-weight: 600; opacity:.65; color: var(--nb-h6-color); font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif; }
     .nb-source .cm-lv-b   { font-weight:700; color: var(--nb-bold-color); }
     .nb-source .cm-lv-i   { font-style:italic; color: var(--nb-italic-color); }
     .nb-source .cm-lv-s   { text-decoration:line-through; opacity:.75; color: var(--nb-strike-color); }
@@ -6662,24 +7103,24 @@ export default function NotebookView() {
     /* Headings — weight, size, rhythm identical to preview */
     .nb-live .cm-lv-h1 {
       font-size: var(--nb-h1); font-weight: 600; line-height: 1.25;
-      font-family: 'Switzer', 'Satoshi', sans-serif; color: var(--nb-h1-color);
+      font-family: 'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif; color: var(--nb-h1-color);
       margin-top: 0; padding-top: 0.4em; padding-bottom: 0.1em;
       letter-spacing: -0.3px;
     }
     .nb-live .cm-lv-h2 {
       font-size: var(--nb-h2); font-weight: 600; line-height: 1.3;
-      font-family: 'Switzer', 'Satoshi', sans-serif; color: var(--nb-h2-color);
+      font-family: 'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif; color: var(--nb-h2-color);
       padding-top: 0.35em; padding-bottom: 0.1em;
       letter-spacing: -0.2px;
     }
     .nb-live .cm-lv-h3 {
       font-size: var(--nb-h3); font-weight: 600; line-height: 1.4; color: var(--nb-h3-color);
-      font-family: 'Satoshi', 'Switzer', sans-serif;
+      font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif;
       padding-top: 0.3em;
     }
-    .nb-live .cm-lv-h4 { font-size: var(--nb-h4); font-weight: 600; color: var(--nb-h4-color); font-family: 'Satoshi', 'Switzer', sans-serif; }
-    .nb-live .cm-lv-h5 { font-size: var(--nb-h5); font-weight: 600; color: var(--nb-h5-color); font-family: 'Satoshi', 'Switzer', sans-serif; }
-    .nb-live .cm-lv-h6 { font-size: var(--nb-h6); font-weight: 600; opacity:.65; color: var(--nb-h6-color); font-family: 'Satoshi', 'Switzer', sans-serif; }
+    .nb-live .cm-lv-h4 { font-size: var(--nb-h4); font-weight: 600; color: var(--nb-h4-color); font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif; }
+    .nb-live .cm-lv-h5 { font-size: var(--nb-h5); font-weight: 600; color: var(--nb-h5-color); font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif; }
+    .nb-live .cm-lv-h6 { font-size: var(--nb-h6); font-weight: 600; opacity:.65; color: var(--nb-h6-color); font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif; }
 
     /* Inline formats — exact match to preview */
     .nb-live .cm-lv-b  { font-weight:700; color: var(--nb-bold-color); }
@@ -6865,7 +7306,7 @@ export default function NotebookView() {
     .cm-todo-title {
       font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer;
       padding: 1px 3px; border-radius: 3px; transition: background .1s;
-      font-family: 'Satoshi', 'Switzer', sans-serif;
+      font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif;
     }
     .cm-todo-title:hover { background: rgba(128,128,128,.08); }
     .cm-todo-title-inp {
@@ -6963,7 +7404,7 @@ export default function NotebookView() {
     }
     .cm-task-title-w {
       font-size: 13px; font-weight: 600; color: var(--text);
-      font-family: 'Switzer', 'Satoshi', sans-serif; letter-spacing: -0.1px;
+      font-family: 'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif; letter-spacing: -0.1px;
     }
     .cm-task-cols-w {
       display: flex; gap: 6px; padding: 0 8px 10px;
@@ -6980,7 +7421,7 @@ export default function NotebookView() {
       padding: 6px 8px 5px; position: relative;
       font-size: 10px; font-weight: 600; text-transform: uppercase;
       letter-spacing: .05em; color: var(--text);
-      font-family: 'Switzer', system-ui, sans-serif;
+      font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
       border-bottom: 1px solid var(--borderSubtle);
     }
     .cm-task-col-title { cursor: pointer; }
@@ -7010,7 +7451,7 @@ export default function NotebookView() {
       border: 1px solid var(--border);
       font-size: 12px; color: var(--text); transition: box-shadow .12s, opacity .15s;
       cursor: grab; user-select: none;
-      font-family: 'Switzer', system-ui, sans-serif;
+      font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
       box-shadow: 0 1px 3px rgba(0,0,0,.06);
     }
     .cm-task-card-w:hover { box-shadow: 0 2px 8px rgba(0,0,0,.12); }
@@ -7038,7 +7479,7 @@ export default function NotebookView() {
     .cm-task-card-date-badge {
       font-size: 10px; color: var(--accent); cursor: pointer;
       background: rgba(var(--accentRgb, 99,102,241),.1);
-      border-radius: 4px; padding: 1px 6px; font-family: 'Switzer', system-ui, sans-serif;
+      border-radius: 4px; padding: 1px 6px; font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
     }
     .cm-task-card-date-badge:hover { opacity: .8; }
     .cm-task-card-date-clear {
@@ -7051,7 +7492,7 @@ export default function NotebookView() {
     .cm-task-card-add-date {
       background: none; border: none; color: var(--textDim); cursor: pointer;
       font-size: 10px; padding: 0; opacity: 0; transition: opacity .1s;
-      font-family: 'Switzer', system-ui, sans-serif;
+      font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
     }
     .cm-task-card-w:hover .cm-task-card-add-date { opacity: 0.45; }
     .cm-task-card-add-date:hover { opacity: 1 !important; color: var(--accent); }
@@ -7067,7 +7508,7 @@ export default function NotebookView() {
       text-align: center; height: 28px; line-height: 28px; font-size: 11px;
       color: var(--text); cursor: pointer; border-radius: 0;
       transition: background .1s; background: var(--surface);
-      font-family: 'Satoshi', 'Switzer', sans-serif;
+      font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif;
     }
     .cm-task-date-cell:hover { background: var(--surfaceAlt); }
     .cm-task-date-today { color: var(--accent); font-weight: 700; }
@@ -7076,7 +7517,7 @@ export default function NotebookView() {
     .cm-task-add-input {
       width: 100%; background: transparent; border: 1px dashed var(--borderSubtle);
       border-radius: 5px; outline: none; font-size: 11px; color: var(--text);
-      padding: 5px 8px; font-family: 'Switzer', system-ui, sans-serif; box-sizing: border-box;
+      padding: 5px 8px; font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif; box-sizing: border-box;
       transition: border-color .15s, background .15s;
     }
     .cm-task-add-input:focus { border-color: var(--accent); border-style: solid; background: var(--bg); }
@@ -7105,7 +7546,7 @@ export default function NotebookView() {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 12px; padding: 12px;
       box-shadow: 0 8px 32px rgba(0,0,0,.22), 0 2px 8px rgba(0,0,0,.12);
-      font-family: 'Switzer', system-ui, sans-serif; font-size: 13px;
+      font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif; font-size: 13px;
       color: var(--text); min-width: 240px; user-select: none;
     }
     .gnos-dtp-nav {
@@ -7267,7 +7708,7 @@ export default function NotebookView() {
     }
     .cm-pomo-title {
       font-size: 13px; font-weight: 700; color: var(--text);
-      font-family: 'Satoshi', 'Switzer', sans-serif;
+      font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif;
     }
     .cm-pomo-sessions {
       font-size: 10px; font-weight: 600; color: var(--textDim);
@@ -7364,7 +7805,7 @@ export default function NotebookView() {
     .cm-cal-main-title {
       font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer;
       padding: 2px 4px; border-radius: 3px; transition: background .1s;
-      font-family: 'Satoshi', 'Switzer', sans-serif;
+      font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif;
     }
     .cm-cal-main-title:hover { background: rgba(128,128,128,.08); }
     .cm-cal-title-input {
@@ -7397,7 +7838,7 @@ export default function NotebookView() {
     .cm-cal-nav:hover { background: var(--surfaceAlt); color: var(--text); }
     .cm-cal-month {
       font-size: 12px; font-weight: 600; color: var(--text);
-      font-family: 'Satoshi', 'Switzer', sans-serif;
+      font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif;
     }
 
     /* ── Calendar month grid ── */
@@ -7444,7 +7885,7 @@ export default function NotebookView() {
     }
     .cm-cal-event-panel-hdr {
       font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 4px;
-      font-family: 'Satoshi', 'Switzer', sans-serif;
+      font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif;
     }
 
     /* ── Calendar event rows (shared across views) ── */
@@ -7476,7 +7917,7 @@ export default function NotebookView() {
     .cm-cal-time-label {
       width: 48px; flex-shrink: 0; font-size: 9px; color: var(--textDim);
       text-align: right; padding: 2px 6px 0 0; font-weight: 500;
-      font-family: 'Switzer', system-ui, sans-serif;
+      font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
     }
     .cm-cal-time-slot {
       flex: 1; min-height: 28px; cursor: pointer; padding: 1px 4px;
@@ -7506,7 +7947,7 @@ export default function NotebookView() {
     .cm-cal-week-col-hdr {
       flex: 1; text-align: center; font-size: 9px; font-weight: 600;
       color: var(--textDim); text-transform: uppercase; letter-spacing: .05em;
-      padding: 4px 0; font-family: 'Switzer', system-ui, sans-serif;
+      padding: 4px 0; font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
     }
     .cm-cal-week-col-hdr.cm-cal-week-today { color: var(--accent); }
     .cm-cal-week-body {
@@ -7550,12 +7991,12 @@ export default function NotebookView() {
       box-sizing: border-box;
     }
     /* Headings — match live exactly */
-    .nb-prev h1 { font-size:var(--nb-h1); font-weight:600; margin:1.15em 0 .45em; font-family:'Switzer','Satoshi',sans-serif; color:var(--nb-h1-color); line-height:1.25; letter-spacing:-0.3px; }
-    .nb-prev h2 { font-size:var(--nb-h2); font-weight:600; margin:1.1em 0 .4em;  font-family:'Switzer','Satoshi',sans-serif; color:var(--nb-h2-color); line-height:1.3; letter-spacing:-0.2px; }
-    .nb-prev h3 { font-size:var(--nb-h3); font-weight:600; margin:1em 0 .35em;   font-family:'Satoshi','Switzer',sans-serif; color:var(--nb-h3-color); line-height:1.4; }
-    .nb-prev h4 { font-size:var(--nb-h4); font-weight:600; margin:.9em 0 .3em;   font-family:'Satoshi','Switzer',sans-serif; color:var(--nb-h4-color); }
-    .nb-prev h5 { font-size:var(--nb-h5); font-weight:600; margin:.85em 0 .25em; font-family:'Satoshi','Switzer',sans-serif; color:var(--nb-h5-color); }
-    .nb-prev h6 { font-size:var(--nb-h6); font-weight:600; margin:.8em 0 .25em;  font-family:'Satoshi','Switzer',sans-serif; color:var(--nb-h6-color); opacity:.65; }
+    .nb-prev h1 { font-size:var(--nb-h1); font-weight:600; margin:1.15em 0 .45em; font-family:'Stack Sans Text','Switzer','Satoshi',sans-serif; color:var(--nb-h1-color); line-height:1.25; letter-spacing:-0.3px; }
+    .nb-prev h2 { font-size:var(--nb-h2); font-weight:600; margin:1.1em 0 .4em;  font-family:'Stack Sans Text','Switzer','Satoshi',sans-serif; color:var(--nb-h2-color); line-height:1.3; letter-spacing:-0.2px; }
+    .nb-prev h3 { font-size:var(--nb-h3); font-weight:600; margin:1em 0 .35em;   font-family:'Stack Sans Text','Satoshi','Switzer',sans-serif; color:var(--nb-h3-color); line-height:1.4; }
+    .nb-prev h4 { font-size:var(--nb-h4); font-weight:600; margin:.9em 0 .3em;   font-family:'Stack Sans Text','Satoshi','Switzer',sans-serif; color:var(--nb-h4-color); }
+    .nb-prev h5 { font-size:var(--nb-h5); font-weight:600; margin:.85em 0 .25em; font-family:'Stack Sans Text','Satoshi','Switzer',sans-serif; color:var(--nb-h5-color); }
+    .nb-prev h6 { font-size:var(--nb-h6); font-weight:600; margin:.8em 0 .25em;  font-family:'Stack Sans Text','Satoshi','Switzer',sans-serif; color:var(--nb-h6-color); opacity:.65; }
     .nb-prev p  { margin: 0 0 var(--nb-para-gap); }
     .nb-prev blockquote {
       border-left: 3px solid var(--nb-quote-border); margin: .8em 0; padding: 8px 14px;
@@ -7603,14 +8044,14 @@ export default function NotebookView() {
     .nb-math-mq .mq-root-block { color: var(--text) !important; }
     /* Preview-mode calendar block */
     .cm-cal-prev-block { border: 1px solid var(--borderSubtle); border-radius: 8px; overflow: hidden; margin: .6em 0; }
-    .cm-cal-prev-title { font-size: 11px; font-weight: 600; padding: 6px 10px; background: var(--surface); color: var(--text); border-bottom: 1px solid var(--borderSubtle); font-family: 'Switzer','Satoshi',sans-serif; }
+    .cm-cal-prev-title { font-size: 11px; font-weight: 600; padding: 6px 10px; background: var(--surface); color: var(--text); border-bottom: 1px solid var(--borderSubtle); font-family: 'Stack Sans Text','Switzer','Satoshi',sans-serif; }
     .cm-cal-prev-day { display: flex; align-items: baseline; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--borderSubtle); flex-wrap: wrap; }
     .cm-cal-prev-day:last-child { border-bottom: none; }
-    .cm-cal-prev-date { font-size: 10px; font-weight: 600; color: var(--textDim); min-width: 80px; font-family: 'Switzer',system-ui,sans-serif; }
+    .cm-cal-prev-date { font-size: 10px; font-weight: 600; color: var(--textDim); min-width: 80px; font-family: 'Stack Sans Text','Switzer',system-ui,sans-serif; }
     .cm-cal-prev-evt { font-size: 11px; color: var(--text); background: rgba(56,139,253,.08); border-left: 2px solid var(--accent); border-radius: 2px; padding: 1px 6px; }
     /* Preview-mode timer block */
     .cm-timer-prev { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid var(--borderSubtle); border-radius: 8px; margin: .4em 0; background: var(--surfaceAlt); }
-    .cm-timer-prev-time { font-size: 18px; font-weight: 600; color: var(--text); font-family: 'Satoshi','Switzer',sans-serif; font-variant-numeric: tabular-nums; }
+    .cm-timer-prev-time { font-size: 18px; font-weight: 600; color: var(--text); font-family: 'Stack Sans Text','Satoshi','Switzer',sans-serif; font-variant-numeric: tabular-nums; }
     .cm-timer-prev-label { font-size: 11px; color: var(--textDim); }
     .nb-fn-ref sup { font-size:.75em; }
     .nb-fn-ref a { color:var(--accent); text-decoration:none; }
@@ -7619,10 +8060,10 @@ export default function NotebookView() {
     .nb-fns { margin-top:2em; }
     /* Definition lists */
     .nb-dl { margin: 0 0 .75em; padding: 0; }
-    .nb-dt { font-weight: 600; color: var(--text); margin-top: .6em; font-family: 'Satoshi','Switzer',sans-serif; letter-spacing: .01em; }
+    .nb-dt { font-weight: 600; color: var(--text); margin-top: .6em; font-family: 'Stack Sans Text','Satoshi','Switzer',sans-serif; letter-spacing: .01em; }
     .nb-dd { margin-left: 1.6em; color: var(--textDim); margin-bottom: .25em; padding-left: .4em; border-left: 2px solid var(--borderSubtle); }
     /* Live view definition list line classes */
-    .nb-live .cm-lv-dt { font-weight: 600; color: var(--text); font-family: 'Satoshi','Switzer',sans-serif; margin-top: .5em; }
+    .nb-live .cm-lv-dt { font-weight: 600; color: var(--text); font-family: 'Stack Sans Text','Satoshi','Switzer',sans-serif; margin-top: .5em; }
     .nb-live .cm-lv-dd { padding-left: 1.6em; color: var(--textDim); border-left: 2px solid var(--borderSubtle); }
     .nb-live .cm-lv-fn-def { font-size: .88em; color: var(--textDim); border-top: 1px solid var(--borderSubtle); padding-top: 2px; }
     /* Footnote ref widget in live mode */
@@ -7630,7 +8071,7 @@ export default function NotebookView() {
       font-size: .72em; vertical-align: super; color: var(--accent);
       background: rgba(56,139,253,.08); border-radius: 3px;
       padding: 0 3px; cursor: default; font-weight: 600;
-      font-family: 'Switzer', system-ui, sans-serif;
+      font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
     }
     mark.nb-fhl { background:rgba(210,153,34,.4); border-radius:2px; padding:0 1px; }
     /* ── Ghost hint ─────────────────────────────────────── */
@@ -8206,7 +8647,7 @@ export default function NotebookView() {
   `
 
   return (
-    <div className="nb-root" style={{ display:'flex', flexDirection:'column', height:'100vh', overflow:'hidden', background:'var(--readerBg, var(--bg))', color:'var(--text)', position:'relative', '--nb-fs': `${nbFontSize}px` }}>
+    <div className="nb-root" style={{ display:'flex', flexDirection:'column', height:'100vh', overflow:'hidden', background:'var(--readerBg, var(--bg))', color:'var(--text)', position:'relative', '--nb-fs': `${(nbFontSize * 0.9).toFixed(2)}px` }}>
       <style>{CSS}</style>
       <style>{THEME_CSS}</style>
 
@@ -8368,7 +8809,7 @@ export default function NotebookView() {
               )}
               {viewMode === 'preview' ? (
                 noteTitle && (
-                  <div style={{ fontFamily:"'Switzer','Satoshi',sans-serif", fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2 }}>
+                  <div style={{ fontFamily:"'Stack Sans Text','Switzer','Satoshi',sans-serif", fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.2 }}>
                     {noteTitle}
                   </div>
                 )
@@ -8376,7 +8817,7 @@ export default function NotebookView() {
                 <input value={noteTitle}
                   onChange={e => { const t=e.target.value; setTitle(t); titleRef.current=t; scheduleSave(contentRef.current) }}
                   placeholder="Title…"
-                  style={{ width:'100%', background:'none', border:'none', outline:'none', fontFamily:"'Switzer','Satoshi',sans-serif", fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.1, padding:0, caretColor:'var(--accent)' }}
+                  style={{ width:'100%', background:'none', border:'none', outline:'none', fontFamily:"'Stack Sans Text','Switzer','Satoshi',sans-serif", fontSize:'1.7em', fontWeight:700, color:'var(--text)', lineHeight:1.1, padding:0, caretColor:'var(--accent)' }}
                   onKeyDown={e => { if(e.key==='Enter'){e.preventDefault();cmRef.current?.focus()} }}
                 />
               )}
@@ -8389,6 +8830,51 @@ export default function NotebookView() {
             </div>
           )}
           {/* CodeMirror — mounted in all modes; read-only + live decorations in preview */}
+          {nbError && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
+              margin: '0 0 8px', padding: '7px 12px', borderRadius: 9,
+              background: 'color-mix(in srgb, #f0883e 12%, var(--surface))',
+              border: '1px solid color-mix(in srgb, #f0883e 40%, transparent)',
+              fontSize: 12, color: 'var(--text)', lineHeight: 1.4,
+            }}>
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+                <path d="M8 1.5L15 14H1L8 1.5z" stroke="#f0883e" strokeWidth="1.4" strokeLinejoin="round"/>
+                <path d="M8 6v3.5M8 11.5v.5" stroke="#f0883e" strokeWidth="1.4" strokeLinecap="round"/>
+              </svg>
+              <span style={{ flex: 1 }}>{nbError}</span>
+              <button onClick={() => setNbError(null)} style={{ border: 'none', background: 'none', color: 'var(--textDim)', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: '0 2px' }}>×</button>
+            </div>
+          )}
+          {/* External edit landed while this note had unsaved local changes —
+              never resolved silently, either side would lose text. */}
+          {extConflict && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, flexWrap: 'wrap',
+              margin: '0 0 8px', padding: '7px 12px', borderRadius: 9,
+              background: 'color-mix(in srgb, var(--accent) 12%, var(--surface))',
+              border: '1px solid color-mix(in srgb, var(--accent) 40%, transparent)',
+              fontSize: 12, color: 'var(--text)', lineHeight: 1.4,
+            }}>
+              <span style={{ flex: 1, minWidth: 180 }}>
+                This note changed on disk while you had unsaved edits.
+              </span>
+              <button
+                onClick={() => { applyExternal(extConflict.text, extConflict.title, extConflict.mtimeMs); setExtConflict(null) }}
+                style={{ border: '1px solid var(--border)', background: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', borderRadius: 7, padding: '4px 10px' }}
+              >Load from disk</button>
+              <button
+                onClick={() => {
+                  // Keep what's in the editor: re-baseline to the disk stamp so
+                  // the next save is allowed to overwrite, then flush it.
+                  diskMtimeRef.current = extConflict.mtimeMs
+                  setExtConflict(null)
+                  doSave(contentRef.current, titleRef.current)
+                }}
+                style={{ border: 'none', background: 'var(--accent)', color: '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', borderRadius: 7, padding: '4px 10px' }}
+              >Keep mine</button>
+            </div>
+          )}
           <div ref={editorRef} className={`nb-cm${(viewMode==='live'||viewMode==='preview')?' nb-live':''}${viewMode==='preview'?' nb-preview':''}${viewMode==='source'?' nb-source':''}`} style={{ flex:1, overflow:'hidden', minHeight:0 }} />
           {/* Wiki-link dropdown */}
           {wikiDrop && wikiDrop.coords && (

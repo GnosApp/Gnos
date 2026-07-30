@@ -28,11 +28,11 @@ body {
   --addBookText: #8b949e;
   --tagBg: #21262d;
 
-  --font-ui: 'Satoshi', 'Switzer', system-ui, -apple-system, sans-serif;
+  --font-ui: 'Stack Sans Text', 'Satoshi', system-ui, -apple-system, sans-serif;
   --font-logo: 'Lora', Georgia, serif;
-  --font-title: 'Clash Display', 'Satoshi', system-ui, sans-serif;
-  --font-sub: 'Satoshi', system-ui, sans-serif;
-  --font-body: 'Satoshi', 'Switzer', system-ui, -apple-system, sans-serif;
+  --font-title: 'Clash Display', 'Stack Sans Text', system-ui, sans-serif;
+  --font-sub: 'Stack Sans Text', 'Satoshi', system-ui, sans-serif;
+  --font-body: 'Stack Sans Text', 'Satoshi', system-ui, -apple-system, sans-serif;
   --font-prose: 'Lora', Georgia, serif;
   --font-serif: 'Lora', Georgia, serif;
 
@@ -246,10 +246,17 @@ button { font-family: inherit; }
 .empty-state span { font-size: 12px; color: var(--textDim); }
 
 /* === LIBRARY FOOTER: STREAK === */
+/* Footer → dark squared pill spanning the content card's width (in-flow at the
+   bottom of the .view flex column, so it aligns with the card and gets pushed
+   with it when the sidebar opens). Dark tone like the header; sits inset from
+   the card edges with the same rounded-square corners as the item cards. */
 .library-footer {
-  flex-shrink: 0; padding: 10px 32px;
-  border-top: 1px solid var(--borderSubtle);
-  background: var(--headerBg);
+  flex-shrink: 0;
+  margin: 6px 8px 8px;
+  padding: 7px 20px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 .streak-section { display: flex; align-items: center; gap: 9px; justify-content: center; }
 .streak-label { font-size: 10px; font-weight: 400; color: var(--textDim); }
@@ -280,8 +287,16 @@ button { font-family: inherit; }
   background: linear-gradient(145deg, var(--c1), var(--c2));
   box-shadow: 0 2px 10px rgba(0,0,0,0.22);
   transition: transform 0.18s ease, box-shadow 0.18s ease;
+  /* NO content-visibility:auto here. WKWebView renders skipped subtrees
+     synchronously as they scroll into view; while the main thread is busy
+     (first ~10s after launch) it can't keep up and the grid scrolls in blank.
+     Offscreen cost is already handled by loading="lazy" + the grid window. */
 }
 .book-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 0; }
+/* Covers mount on idle (see useIdleReady) — fade in so the swap from the
+   gradient placeholder is smooth, not a hard pop. */
+.cover-img-fade { animation: coverFade 0.28s ease; }
+@keyframes coverFade { from { opacity: 0; } to { opacity: 1; } }
 .book-card-container:hover .book-cover {
   transform: translateY(-4px);
   box-shadow: 0 8px 22px rgba(0,0,0,0.35);
@@ -616,9 +631,8 @@ button { font-family: inherit; }
   background: var(--readerCard);
   border-radius: 0;
   padding: 0;
+  /* No side rules — the paper reads as one clean sheet (Books-style) */
   border: none;
-  border-left: 1px solid var(--borderSubtle);
-  border-right: 1px solid var(--borderSubtle);
   color: var(--readerText);
   /* Fill exactly the space between header (52px) and footer (64px) */
   height: 100%;
@@ -629,9 +643,32 @@ button { font-family: inherit; }
   margin: 0 auto;
 }
 
-/* Two-page widens the card */
+/* Page furniture — quiet Books-style numbers on the paper */
+.reader-pagenum {
+  position: absolute; bottom: 8px; transform: translateX(-50%);
+  font-size: 11px; color: var(--textDim); cursor: pointer;
+  font-variant-numeric: tabular-nums; z-index: 5; user-select: none;
+  white-space: nowrap;
+}
+.reader-pagesleft {
+  position: absolute; right: 18px; bottom: 8px;
+  font-size: 10.5px; color: var(--textDim); opacity: 0.75;
+  z-index: 5; pointer-events: none; white-space: nowrap;
+}
+
+/* Two-page widens the card — but always leaves side gutters for the hover
+   chevrons so arrows never sit on top of the text columns. */
 .reader-card.two-page {
-  max-width: 1400px;
+  max-width: min(1400px, calc(100% - 150px));
+}
+/* Faint spread gutter between the two columns */
+.reader-card.two-page::after {
+  content: '';
+  position: absolute; left: 50%; top: 20px; bottom: 28px;
+  width: 64px; transform: translateX(-50%);
+  background: linear-gradient(to right,
+    transparent, rgba(0,0,0,0.035) 42%, rgba(0,0,0,0.07) 50%, rgba(0,0,0,0.035) 58%, transparent);
+  pointer-events: none; z-index: 2;
 }
 
 /*
@@ -699,11 +736,14 @@ button { font-family: inherit; }
 }
 
 /* Footer */
+/* Matches .library-footer — dark squared pill inset at the bottom of the card. */
 .reader-footer {
   flex-shrink: 0;
-  background: var(--headerBg);
-  border-top: 1px solid var(--borderSubtle);
-  padding: 10px 24px 14px;
+  margin: 6px 8px 8px;
+  padding: 8px 20px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
   z-index: 40;
 }
 .footer-nav {
@@ -1040,14 +1080,15 @@ mark.reader-note-highlight {
 .lib-context-menu.hidden { display: none; }
 .lib-ctx-item {
   width: 100%; background: none; border: none;
-  color: var(--text); font-family: var(--font-ui); font-size: 13px;
+  color: var(--text); font-family: var(--font-ui); font-size: 13px; font-weight: 600;
   padding: 8px 12px; border-radius: 6px;
   cursor: pointer; display: flex; align-items: center; gap: 9px;
   text-align: left; transition: background .1s;
 }
-.lib-ctx-item svg { color: var(--textMuted); flex-shrink: 0; }
+/* Icon color tracks the row's text color (currentColor) — so a normal row's
+   icon matches its label, and a danger row's icon goes red with its label. */
+.lib-ctx-item svg { color: currentColor; flex-shrink: 0; }
 .lib-ctx-item:hover { background: var(--hover); }
-.lib-ctx-item:hover svg { color: var(--accent); }
 
 /* === COLLECTIONS === */
 .collection-card {
@@ -1140,9 +1181,7 @@ mark.reader-note-highlight {
 }
 .add-choice-btn:hover { background: var(--hover); }
 .add-choice-btn svg { color: var(--accent); flex-shrink: 0; width: 16px; height: 16px; }
-.add-choice-text { display: flex; flex-direction: column; gap: 0px; }
-.add-choice-text span { font-size: 11.5px; font-weight: 600; }
-.add-choice-text small { font-size: 9px; color: var(--textDim); letter-spacing: 0.02em; }
+.add-choice-label { font-size: 13px; font-weight: 600; }
 
 
 /* === NOTEBOOK CARD === */
@@ -1338,6 +1377,49 @@ mark.reader-note-highlight {
 
 /* Find-in-page highlights */
 mark.nb-hl { background: rgba(255, 220, 0, 0.35); color: inherit; border-radius: 2px; padding: 0 1px; }
+
+/* ── Notebook widget blocks: toc / progress / rating ─────────────────────── */
+.nb-toc {
+  border: 1px solid var(--borderSubtle); border-radius: 10px;
+  padding: 10px 14px; margin: .7em 0; background: var(--surfaceAlt);
+}
+.nb-toc-head {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--textDim); margin-bottom: 6px;
+}
+.nb-toc-item { display: block; color: var(--accent); text-decoration: none; font-size: 13px; padding: 2px 0; }
+.nb-toc-item:hover { text-decoration: underline; }
+.nb-toc-empty { color: var(--textDim); font-size: 12px; font-style: italic; }
+.nb-progress { margin: .7em 0; }
+.nb-progress-top { display: flex; justify-content: space-between; font-size: 12px; color: var(--textDim); margin-bottom: 4px; }
+.nb-progress-num { font-variant-numeric: tabular-nums; }
+.nb-progress-track { height: 8px; background: var(--surfaceAlt); border-radius: 4px; overflow: hidden; }
+.nb-progress-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width .3s ease; }
+.nb-rating { font-size: 18px; letter-spacing: 2px; margin: .3em 0; }
+.nb-star { color: var(--border); }
+.nb-star.on { color: #f5b301; }
+/* Live-editor block widgets (progress/rating/toc/callout rendered inline while writing) */
+.nb-live-widget { display: block; }
+.nb-live-widget .nb-toc, .nb-live-widget .nb-progress, .nb-live-widget .nb-rating { margin: .3em 0; }
+.cm-lv-comment { color: var(--textDim); opacity: 0.5; font-style: italic; }
+/* YAML frontmatter → properties card */
+.nb-props {
+  border: 1px solid var(--borderSubtle); border-radius: 10px;
+  margin: 0 0 1em; padding: 6px 4px; background: var(--surfaceAlt);
+}
+.nb-prop-row { display: flex; gap: 12px; padding: 4px 10px; align-items: baseline; }
+.nb-prop-row + .nb-prop-row { border-top: 1px solid var(--borderSubtle); }
+.nb-prop-key {
+  flex: 0 0 120px; font-size: 11px; font-weight: 600; color: var(--textDim);
+  text-transform: capitalize; letter-spacing: .01em;
+}
+.nb-prop-vals { flex: 1; display: flex; flex-wrap: wrap; gap: 5px; font-size: 13px; color: var(--text); }
+.nb-prop-tag {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent); border-radius: 20px; padding: 1px 9px; font-size: 12px; font-weight: 500;
+}
+.nb-prop-val { color: var(--text); }
+.nb-prop-empty { color: var(--textDim); }
 
 mark.nb-find-mark {
   background: rgba(255, 200, 0, 0.3);
@@ -1611,19 +1693,30 @@ mark.nb-find-mark-active {
   pointer-events: all;
   box-shadow: 0 4px 20px rgba(0,0,0,0.18);
 }
-/* In zen mode, sidenav adjusts its top since titlebar is gone */
+/* In zen mode, sidenav clears the top so it never sits under the traffic
+   lights (the header is hidden). */
 body.zen-active .sidenav-panel {
-  top: 0;
+  top: 40px;
 }
+/* ── Zen mode: sidebar OVERLAYS instead of pushing ──────────────────────────
+   Normally an open sidebar is flush ("pinned") and pushes content. In zen we
+   want a clean, chromeless canvas: the sidebar hides off-screen and floats in
+   only when the mouse peeks the left edge — a distinct floating card
+   ("plateau"), not the flush canvas colour. `top: 44px` keeps it clear of the
+   macOS traffic lights so it sits underneath them instead of clipping through. */
+body.zen-active .sidenav-panel.pinned {
+  top: 40px; left: 8px; bottom: 8px;
+  background: var(--surface) !important; /* floating card, distinct from content */
+  border-radius: 12px; border-right: none;
+  transform: translateX(calc(-100% - 16px)) !important; /* beats .pinned's !important */
+  box-shadow: none !important;
+}
+body.zen-active .gnos-content-frame.pushed { margin-left: 0 !important; }
 /* Force sidenav visible on zen-force-nav (mouse near left edge) */
-.sidenav-push-wrapper.zen-force-nav .sidenav-panel {
+.gnos-content-frame.zen-force-nav .sidenav-panel,
+body.zen-active .gnos-content-frame.zen-force-nav .sidenav-panel.pinned {
   transform: translateX(0) !important;
   box-shadow: 8px 0 32px rgba(0,0,0,0.22) !important;
-}
-/* Hide backdrop in zen peek (don't dim the content) */
-.sidenav-push-wrapper.zen-force-nav .sidenav-backdrop.open {
-  opacity: 0 !important;
-  pointer-events: none !important;
 }
 
 /* ── Zen mode — hide all view headers while active ───────────────────────── */
@@ -1643,6 +1736,49 @@ body.zen-active .fc-header {
   padding-top: 0 !important;
   padding-bottom: 0 !important;
 }
+/* Zen: the content frame goes fully back to a chromeless, full-bleed canvas —
+   no margin/radius/shadow. (Non-zen is the only place the "floating card"
+   look applies; see .gnos-content-frame in App.jsx's TAB_CSS.) */
+body.zen-active .gnos-content-frame {
+  margin: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+/* Zen has no header, so page content runs to y0 — reserve a top strip so the
+   library grid (and the peeking sidebar) clear the macOS traffic lights. */
+body.zen-active .lib-tab-panel { padding-top: 46px; }
+/* Zen: the full-width header is pulled out of flow (position:absolute) so the
+   content card fills the whole canvas, then hidden by sliding up. It slides
+   back down as a full-width floating bar the moment the mouse nears the top
+   edge (.zen-peek-top, set by the mousemove handler in App.jsx). A solid
+   surface + radius + shadow makes it read as a floating bar over the page. */
+body.zen-active .gnos-titlebar {
+  position: absolute; top: 0; left: 6px; right: 6px; z-index: 50;
+  /* Sit higher when dropped down so the (fixed) traffic lights land centered
+     in the capsule rather than low. */
+  margin: 2px 0 0 0;
+  /* Reset the non-zen padding-top (which drops the row into the dark gap) so
+     the capsule's contents are centered in the floating bar. */
+  padding: 0 10px;
+  align-items: center;
+  background: var(--surface);
+  border-radius: 8px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.28);
+  transform: translateY(-160%);
+  pointer-events: none;
+}
+body.zen-active .gnos-titlebar.zen-peek-top {
+  transform: translateY(0);
+  pointer-events: auto;
+}
+/* Cmd+\ in zen: sideNavOpen adds `.open`, so the sidebar shows persistently
+   (as the floating card) instead of only peeking on hover. */
+body.zen-active .sidenav-panel.pinned.open {
+  transform: translateX(0) !important;
+  box-shadow: 8px 0 32px rgba(0,0,0,0.22) !important;
+}
+/* Smooth transition for the per-view headers' zen show/hide (see the
+   max-height/opacity block above). */
 .gnos-header,
 .app-header,
 .app-header-top,
@@ -2274,6 +2410,37 @@ body.zen-active .nb-content-wrap {
 .ap-chap-bar:nth-child(3) { height: 7px; animation-delay: 0.3s; }
 @keyframes apBarBounce { from { transform: scaleY(0.4); } to { transform: scaleY(1); } }
 @keyframes ap-slide-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+
+/* ── Slash-command menu (CM6 autocomplete tooltip, app language) ─────────── */
+.cm-tooltip.cm-tooltip-autocomplete {
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.35) !important;
+  padding: 4px !important;
+  overflow: hidden;
+}
+.cm-tooltip-autocomplete > ul {
+  font-family: var(--font-ui) !important;
+  max-height: 260px !important;
+}
+.cm-tooltip-autocomplete > ul > li {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 5px 9px !important; border-radius: 7px;
+  color: var(--text);
+}
+.cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: color-mix(in srgb, var(--accent) 16%, transparent) !important;
+  color: var(--text) !important;
+}
+.cm-tooltip-autocomplete .cm-completionLabel { font-size: 12.5px; font-weight: 600; }
+.cm-tooltip-autocomplete .cm-completionDetail {
+  font-size: 11px; color: var(--textDim); font-style: normal; margin-left: auto;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;
+}
+.cm-tooltip-autocomplete .cm-completionMatchedText {
+  text-decoration: none; color: var(--accent);
+}
 
 /* ── Main Player ── */
 .ap-main {
@@ -3321,7 +3488,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* 11. Typography — softer academic sans; prose no longer serif */
 :root {
-  --font-prose: 'Switzer', 'Satoshi', system-ui, sans-serif;
+  --font-prose: 'Stack Sans Text', 'Switzer', 'Satoshi', system-ui, sans-serif;
 }
 
 /* 12. Unified controls — the ONLY toggle/slider/select styling.

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useContext } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useContext, useMemo } from 'react'
 import useAppStore, { useAppStoreShallow } from '@/store/useAppStore'
 import { PaneContext } from '@/lib/PaneContext'
 import { useIsActiveTab } from '@/lib/useIsActiveTab'
@@ -7,11 +7,14 @@ import { loadBookContent, addReadingMinutes, loadNotebookContent, saveNotebookCo
 import QuickAccess, { useTitlebarMeta } from '@/components/QuickAccess'
 import { generateCoverColor } from '@/lib/utils'
 import {
-  ensurePageStyle, setupColumns, renderChapterContent, revealContent, raiseOverlay,
+  ensurePageStyle, setupColumns, renderChapterContent, revealContent,
   measurePageCount, showPage, trimContainerWidth, invalidateCache,
-  getTotalPages, setWordWrapEnabled, getActivePage,
+  setWordWrapEnabled, getActivePage,
   scanAllChapters, cancelScan,
-  cacheCurrentChapter, loadCachedChapter, clearChapterCache,
+  cacheCurrentChapter, clearChapterCache,
+  getVisibleChildIndex, pageOfChild, prunePrewarm,
+  getCachedChapter, renderChapterIntoBuffer, swapBufferToStrip,
+  getTotalPages, getLayoutMetrics,
 } from '@/lib/Paginationengine'
 
 // ── SettingsPanel ─────────────────────────────────────────────────────────────
@@ -152,11 +155,36 @@ const HL_COLORS = {
 }
 const HL_COLOR_KEYS = Object.keys(HL_COLORS)
 
-function ReviewPanel({ highlights, bookmarks, chapters, onJump, onClose, onDeleteHighlight, onDeleteBookmark, onSaveNote, onSendToNotebook, onExportMarkdown, onToggleBookmark, isBookmarked }) {
+function ReviewPanel({ highlights, bookmarks, chapters, onJump, onLocate, onClose, onDeleteHighlight, onDeleteBookmark, onSaveNote, onSendToNotebook, onExportMarkdown, onToggleBookmark, isBookmarked }) {
   const [tab, setTab] = useState('highlights')
   const [editingNoteId, setEditingNoteId] = useState(null)
   const [noteText, setNoteText] = useState('')
   const [sending, setSending] = useState(false)
+  const [searchQ, setSearchQ] = useState('')
+
+  // In-book full-text search — chapters are already in memory as text blocks.
+  const searchResults = useMemo(() => {
+    const q = searchQ.trim().toLowerCase()
+    if (q.length < 2) return []
+    const out = []
+    for (let ci = 0; ci < chapters.length; ci++) {
+      const blocks = chapters[ci]?.blocks || []
+      for (let bi = 0; bi < blocks.length; bi++) {
+        const text = blocks[bi]?.text || ''
+        const at = text.toLowerCase().indexOf(q)
+        if (at === -1) continue
+        const start = Math.max(0, at - 40)
+        out.push({
+          chIdx: ci, blockIdx: bi,
+          before: (start > 0 ? '…' : '') + text.slice(start, at),
+          match: text.slice(at, at + q.length),
+          after: text.slice(at + q.length, at + q.length + 60) + (at + q.length + 60 < text.length ? '…' : ''),
+        })
+        if (out.length >= 100) return out
+      }
+    }
+    return out
+  }, [searchQ, chapters])
 
   // Group highlights by chapter index
   const grouped = {}
@@ -198,7 +226,44 @@ function ReviewPanel({ highlights, bookmarks, chapters, onJump, onClose, onDelet
       <div style={{ display: 'flex', marginBottom: 12, borderBottom: '1px solid var(--borderSubtle)' }}>
         <button style={tabStyle(tab === 'highlights')} onClick={() => setTab('highlights')}>Highlights</button>
         <button style={tabStyle(tab === 'bookmarks')} onClick={() => setTab('bookmarks')}>Bookmarks</button>
+        <button style={tabStyle(tab === 'search')} onClick={() => setTab('search')}>Search</button>
       </div>
+
+      {tab === 'search' && (
+        <div style={{ display: 'flex', flexDirection: 'column', maxHeight: 'calc(100vh - 180px)' }}>
+          <input value={searchQ} onChange={e => setSearchQ(e.target.value)} autoFocus
+            placeholder="Search in book…"
+            style={{ background: 'var(--surfaceAlt)', border: '1px solid var(--border)', borderRadius: 8,
+              color: 'var(--text)', fontSize: 12, padding: '7px 10px', fontFamily: 'inherit',
+              outline: 'none', marginBottom: 10, flexShrink: 0 }} />
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+            {searchQ.trim().length >= 2 && searchResults.length === 0 && (
+              <div style={{ fontSize: 12, color: 'var(--textDim)', textAlign: 'center', padding: '20px 0' }}>No matches</div>
+            )}
+            {searchQ.trim().length >= 2 && searchResults.length > 0 && (
+              <div style={{ fontSize: 10, color: 'var(--textDim)', marginBottom: 8 }}>
+                {searchResults.length >= 100 ? '100+ matches' : `${searchResults.length} match${searchResults.length !== 1 ? 'es' : ''}`}
+              </div>
+            )}
+            {searchResults.map((r, i) => (
+              <div key={i}
+                onClick={() => { onLocate?.(r.chIdx, r.blockIdx); onClose() }}
+                style={{ padding: '7px 9px', borderRadius: 8, cursor: 'pointer', marginBottom: 4,
+                  background: 'var(--surfaceAlt)', border: '1px solid transparent',
+                  transition: 'border-color 0.1s' }}
+                onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--accent)'}
+                onMouseLeave={e => e.currentTarget.style.borderColor = 'transparent'}>
+                <div style={{ fontSize: 9.5, fontWeight: 700, color: 'var(--textDim)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>
+                  {chapters[r.chIdx]?.title || `Chapter ${r.chIdx}`}
+                </div>
+                <div style={{ fontSize: 11.5, color: 'var(--text)', lineHeight: 1.45 }}>
+                  {r.before}<mark style={{ background: 'color-mix(in srgb, var(--accent) 30%, transparent)', color: 'inherit', borderRadius: 2, padding: '0 1px' }}>{r.match}</mark>{r.after}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {tab === 'highlights' && (
         <div style={{ display: 'flex', flexDirection: 'column', maxHeight: 'calc(100vh - 180px)' }}>
@@ -323,15 +388,6 @@ function ChapterDropdown({ chapters, currentChapter, chapterPageCounts, onJump, 
     if (externalSearch !== undefined) setSearch(externalSearch)
   }, [externalSearch])
 
-  // Build global page start map
-  let globalPageStart = 0
-  const chapterStartPages = chapters.map((_, i) => {
-    const pg = globalPageStart
-    const count = chapterPageCounts[i]
-    if (count != null) globalPageStart += count
-    return count != null ? pg : null
-  })
-
   const q = search.trim().toLowerCase()
   const pageNumMatch = q.match(/^p(?:age)?\s*(\d+)$|^(\d+)$/)
   const isPureNumber = pageNumMatch && /^\d+$/.test(q)
@@ -368,45 +424,18 @@ function ChapterDropdown({ chapters, currentChapter, chapterPageCounts, onJump, 
           if (isPureNumber && queryNum !== null) {
             if (i !== queryNum && !ch.title.toLowerCase().includes(q)) return null
           }
-          const pgStart = chapterStartPages[i]
-          const pgLabel = pgStart != null ? `p. ${pgStart + 1}` : ''
+          {/* No global page labels: only ±3 neighbor chapters are ever measured
+              (full-book layout froze the UI), so global offsets would be wrong. */}
           return (
             <div key={i} className={`chapter-item${i === currentChapter ? ' active' : ''}`}
               onClick={() => { onJump(i, 0); onClose() }}>
               <div className="ch-flex">
                 <div className="ch-title">{ch.title}</div>
-                {pgLabel && <div style={{ fontSize: 11, color: 'var(--textDim)', marginLeft: 8, flexShrink: 0 }}>{pgLabel}</div>}
               </div>
               <div className="ch-sub">Chapter {i}</div>
             </div>
           )
         })}
-        {pageNumMatch && (() => {
-          const pageNum = parseInt(pageNumMatch[1] || pageNumMatch[2], 10) - 1
-          const lastIdx = chapters.length - 1
-          const knownTotal = chapterStartPages[lastIdx] != null
-            ? (chapterStartPages[lastIdx] || 0) + (chapterPageCounts[lastIdx] || 1)
-            : null
-          if (!knownTotal || pageNum < 0 || pageNum >= knownTotal) return null
-          return (
-            <div key="page-jump">
-              <div style={{ height: 1, background: 'var(--borderSubtle)', margin: '4px 12px' }} />
-              <div className="chapter-item" onClick={() => {
-                let remaining = pageNum
-                for (let i = 0; i < chapters.length; i++) {
-                  const chPgs = chapterPageCounts[i] || 1
-                  if (remaining < chPgs) { onJump(i, remaining); onClose(); return }
-                  remaining -= chPgs
-                }
-              }}>
-                <div className="ch-flex">
-                  <div className="ch-title" style={{ color: 'var(--accent)' }}>Go to page {pageNum + 1}</div>
-                </div>
-                <div className="ch-sub">of {knownTotal} pages total</div>
-              </div>
-            </div>
-          )
-        })()}
       </div>
     </div>
   )
@@ -475,10 +504,21 @@ export default function ReaderView() {
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [reviewOpen,   setReviewOpen]   = useState(false)
   const [pageCount,    setPageCount]    = useState(1)  // pages in current chapter
-  const [pageInput,    setPageInput]    = useState(null)
+  const [pagenumHover, setPagenumHover] = useState(false) // furniture: number vs "N of total"
 
   const chapterPageCountsRef = useRef({}) // { [chapterIdx]: pageCount }
   const [scanTick, setScanTick] = useState(0) // incremented when background scan updates a count
+
+  // Persistent pagination index (Apple-Books-style): once every chapter is
+  // measured for the current layout, exact global "page X of N" is shown and the
+  // counts are cached to disk keyed by layout, so reopening at the same font/size
+  // is instant and never re-measures. Layout change → rebuild at deep idle.
+  const [indexComplete, setIndexComplete] = useState(false)
+  const indexCompleteRef  = useRef(false)
+  const [indexBuilding, setIndexBuilding] = useState(false)
+  const layoutKeyRef      = useRef('')
+  const indexBuildTimerRef = useRef(null)
+  useEffect(() => { indexCompleteRef.current = indexComplete }, [indexComplete])
 
   // Rapid-nav scrubber: during bursts of taps only the footer counter updates.
   // 180ms after the last tap a single showPage() renders the settled page.
@@ -634,6 +674,10 @@ export default function ReaderView() {
     async function load() {
       setLoading(true)
       invalidateCache()
+      // Set early — the page-index store key needs it before the neighbor/index
+      // scan kicks off (this load effect runs before the bookIdRef effect).
+      bookIdRef.current = activeBook.id
+      setIndexComplete(false)
 
       const rawChapters = await loadBookContent(activeBook.id)
       if (cancelled) return
@@ -669,7 +713,7 @@ export default function ReaderView() {
       cardRef.current.classList.toggle('underline-line', p.underlineLine)
 
       invalidateCache()
-      setupColumns(cardRef.current, p)
+      setupColumns(cardRef.current, { ...p, lang: activeBook?.language || 'en' })
       chapterPageCountsRef.current = {}
       renderChapterContent(allChapters[resumeChapter].blocks, resumePage)
 
@@ -689,7 +733,7 @@ export default function ReaderView() {
     }
 
     load()
-    return () => { cancelled = true; cancelScan(); clearTimeout(rapidNavTimerRef.current); clearTimeout(persistTimerRef.current) }
+    return () => { cancelled = true; cancelScan(); clearTimeout(rapidNavTimerRef.current); clearTimeout(persistTimerRef.current); clearTimeout(indexBuildTimerRef.current) }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBook?.id])
 
@@ -732,41 +776,40 @@ export default function ReaderView() {
     prevChapterRef.current = curChapter
     const chapterAtRender = curChapter
 
-    // Check cache first — if we've already extracted this chapter the render pipeline
-    // is skipped entirely: instant chapter load.
-    const cachedCount = loadCachedChapter(chapterAtRender)
-    if (cachedCount !== null) {
-      const pageAtRender = curPageRef.current
-      chapterPageCountsRef.current[chapterAtRender] = cachedCount
-      setPageCount(cachedCount)
-      showPage(pageAtRender, false)   // strip is restored from cache; translate is instant
-      revealContent()                 // overlay is already transparent, this is a no-op
-      requestAnimationFrame(() => applyHighlightsToCard(cardRef.current, bookIdRef.current, chapterAtRender))
+    // Both paths render into the hidden buffer and atomically swap it in —
+    // the old page stays on screen until the new chapter is fully laid out.
+    // No overlay, no blank flash.
+
+    // Cache hit (visited or prewarmed): buffer gets the prebuilt HTML.
+    const cached = getCachedChapter(chapterAtRender)
+    if (cached) {
+      renderChapterIntoBuffer(null, cached.html)
+      requestAnimationFrame(() => {
+        if (prevChapterRef.current !== chapterAtRender) return
+        const count = swapBufferToStrip(curPageRef.current) ?? cached.count
+        chapterPageCountsRef.current[chapterAtRender] = count
+        setPageCount(count)
+        resolvePendingLocate(chapterAtRender)
+        applyHighlightsToCard(cardRef.current, bookIdRef.current, chapterAtRender)
+      })
       return
     }
 
-    // Cache miss: raise overlay immediately so the in-progress render is hidden.
-    // renderChapterContent() also raises it, but doing it here prevents a flash of
-    // the previous chapter's content during the 20ms debounce window.
-    raiseOverlay()
-
-    // Cache miss — run the full render pipeline.
+    // Cache miss — full build, still buffered.
     // Debounce so rapid chapter-boundary crossings skip intermediate renders
     // and only commit the chapter the user actually lands on.
     clearTimeout(chapterRenderRef.current)
     chapterRenderRef.current = setTimeout(() => {
       if (prevChapterRef.current !== chapterAtRender) return
-      const pageAtRender = curPageRef.current  // read ref — always current even in closure
-      renderChapterContent(chapters[chapterAtRender].blocks, pageAtRender)
+      renderChapterIntoBuffer(chapters[chapterAtRender].blocks)
       requestAnimationFrame(() => requestAnimationFrame(() => {
         if (prevChapterRef.current !== chapterAtRender) return
-        const count = measurePageCount()
+        const count = swapBufferToStrip(curPageRef.current)
+        if (count == null) return
         chapterPageCountsRef.current[chapterAtRender] = count
         setPageCount(count)
-        trimContainerWidth(count)
         cacheCurrentChapter(chapterAtRender, count)
-        showPage(pageAtRender, false)
-        revealContent()
+        resolvePendingLocate(chapterAtRender)
         applyHighlightsToCard(cardRef.current, bookIdRef.current, chapterAtRender)
         startBackgroundScan(chapterAtRender)
       }))
@@ -798,33 +841,66 @@ export default function ReaderView() {
 
   // ── Nav helpers ───────────────────────────────────────────────────────────
   // Use store.getState() to avoid stale closure issues with Zustand async actions
+  // Store writes are debounced: updateBookProgress rewrites the library array,
+  // which re-renders every subscriber (incl. the kept-alive LibraryView grid) —
+  // doing that per page flip was the main source of flip lag. Local refs/state
+  // stay current; the store catches up 400ms after the user pauses.
+  const progressWriteRef = useRef(null)
   function saveProgress(chapter, page) {
-    const book = useAppStore.getState().activeBook
-    if (!book) return
-    const savedChapter = Math.max(0, chapter - 1)
-    const savedPage    = chapter === 0 ? 0 : page
-    useAppStore.getState().updateBookProgress(book.id, savedChapter, savedPage)
-    // Debounce the localStorage write — updateBookProgress keeps state current,
-    // persistLibrary only needs to flush once the user pauses.
-    clearTimeout(persistTimerRef.current)
-    persistTimerRef.current = setTimeout(() => {
-      useAppStore.getState().persistLibrary()
-    }, 500)
+    clearTimeout(progressWriteRef.current)
+    progressWriteRef.current = setTimeout(() => {
+      const book = useAppStore.getState().activeBook
+      if (!book) return
+      const savedChapter = Math.max(0, chapter - 1)
+      const savedPage    = chapter === 0 ? 0 : page
+      useAppStore.getState().updateBookProgress(book.id, savedChapter, savedPage)
+      // Debounce the localStorage write — updateBookProgress keeps state current,
+      // persistLibrary only needs to flush once the user pauses.
+      clearTimeout(persistTimerRef.current)
+      persistTimerRef.current = setTimeout(() => {
+        useAppStore.getState().persistLibrary()
+      }, 500)
+    }, 400)
   }
+
+  // Flush any pending (debounced) progress write on unmount so closing the tab
+  // right after a flip can't lose the last position.
+  useEffect(() => () => {
+    if (progressWriteRef.current == null) return
+    clearTimeout(progressWriteRef.current)
+    const id = bookIdRef.current
+    if (!id) return
+    const ch = curChapterRef.current, pg = curPageRef.current
+    useAppStore.getState().updateBookProgress(id, Math.max(0, ch - 1), ch === 0 ? 0 : pg)
+    useAppStore.getState().persistLibrary()
+  }, [])
 
   // Schedules the settle render: 180ms after the last rapid tap, show the page
   // the user landed on with no animation and save progress.
+  // During a rapid burst the strip is already translated per-tap (showPage is
+  // cheap — a compositor transform); we only DEFER the React number update to
+  // avoid re-rendering the whole view every keypress. Settle just commits the
+  // final page number + progress.
   function scheduleSettle() {
     clearTimeout(rapidNavTimerRef.current)
     rapidNavTimerRef.current = setTimeout(() => {
       const ch = curChapterRef.current
       const pg = curPageRef.current
-      showPage(pg, false)   // instant — no animation after a scrub
-      requestAnimationFrame(() => {
-        saveProgress(ch, pg)
-        applyHighlightsToCard(cardRef.current, bookIdRef.current, ch)
-      })
+      setCurPage(pg)
+      saveProgress(ch, pg)
     }, 120)
+  }
+
+  // One flip step. Always translates the strip (cheap); animates only when not
+  // rapid. Number update is immediate when slow, deferred to settle when rapid.
+  function flipTo(np, ch, trans, rapid) {
+    curPageRef.current = np
+    showPage(np, rapid ? false : trans)  // showPage also self-detects rapid → instant
+    if (rapid) {
+      scheduleSettle()
+    } else {
+      requestAnimationFrame(() => { setCurPage(np); saveProgress(ch, np) })
+    }
   }
 
   function nextPage() {
@@ -841,35 +917,13 @@ export default function ReaderView() {
     lastNavTimeRef.current = now
 
     if (pg + step <= total - 1) {
-      const np = pg + step
-      curPageRef.current = np
-      if (!rapid) {
-        showPage(np, trans)
-        requestAnimationFrame(() => {
-          setCurPage(np); saveProgress(ch, np)
-          applyHighlightsToCard(cardRef.current, bookIdRef.current, ch)
-        })
-      } else {
-        // Rapid: update footer counter only — no DOM/layout work at all.
-        // scheduleSettle() will render the final page once the burst stops.
-        setCurPage(np)
-        scheduleSettle()
-      }
+      flipTo(pg + step, ch, trans, rapid)
     } else if (pg < total - 1) {
-      const np = total - 1
-      curPageRef.current = np
-      if (!rapid) {
-        showPage(np, trans)
-        requestAnimationFrame(() => {
-          setCurPage(np); saveProgress(ch, np)
-          applyHighlightsToCard(cardRef.current, bookIdRef.current, ch)
-        })
-      } else {
-        setCurPage(np)
-        scheduleSettle()
-      }
+      flipTo(total - 1, ch, trans, rapid)
     } else if (ch < chaps.length - 1) {
-      // Chapter boundary: cancel any pending settle and do a full chapter transition.
+      // Chapter boundary: commit the settle first (so the current chapter's last
+      // page is saved), then do a full chapter transition. Not per-tap-guarded by
+      // rapid — the double-buffer swap keeps the old page visible until ready.
       clearTimeout(rapidNavTimerRef.current)
       const nc = ch + 1
       curChapterRef.current = nc; curPageRef.current = 0
@@ -889,30 +943,9 @@ export default function ReaderView() {
     lastNavTimeRef.current = now
 
     if (pg >= step) {
-      const np = pg - step
-      curPageRef.current = np
-      if (!rapid) {
-        showPage(np, trans)
-        requestAnimationFrame(() => {
-          setCurPage(np); saveProgress(ch, np)
-          applyHighlightsToCard(cardRef.current, bookIdRef.current, ch)
-        })
-      } else {
-        setCurPage(np)
-        scheduleSettle()
-      }
+      flipTo(pg - step, ch, trans, rapid)
     } else if (pg > 0) {
-      curPageRef.current = 0
-      if (!rapid) {
-        showPage(0, trans)
-        requestAnimationFrame(() => {
-          setCurPage(0); saveProgress(ch, 0)
-          applyHighlightsToCard(cardRef.current, bookIdRef.current, ch)
-        })
-      } else {
-        setCurPage(0)
-        scheduleSettle()
-      }
+      flipTo(0, ch, trans, rapid)
     } else if (ch > 0) {
       clearTimeout(rapidNavTimerRef.current)
       const nc = ch - 1
@@ -925,20 +958,86 @@ export default function ReaderView() {
     }
   }
 
-  // ── Background book scan ──────────────────────────────────────────────────
-  // Scans all chapters except the currently-displayed one to populate
-  // chapterPageCountsRef, then triggers a re-render so totalPages updates.
-  function startBackgroundScan(currentChapterIdx) {
+  // ── Persistent pagination index ───────────────────────────────────────────
+  const pageIndexStoreKey = () => `reader_pageindex_${bookIdRef.current}`
+  function computeLayoutKey() {
+    const p = prefsRef.current
+    const m = getLayoutMetrics()
+    return [p.fontSize, p.lineSpacing, p.fontFamily, p.justifyText !== false ? 1 : 0,
+      p.fontWeight || 400, m.twoPage ? 2 : 1, `${m.colW}x${m.colH}`].join('|')
+  }
+
+  // Try to restore a complete index for the current layout; else schedule a
+  // deep-idle build. Called once the current chapter has been measured.
+  async function ensurePageIndex(currentChapterIdx) {
+    const bookId = bookIdRef.current
+    if (!bookId) return
+    const key = computeLayoutKey()
+    layoutKeyRef.current = key
+    const nCh = chaptersRef.current.length
+    const store = (await getJSON(pageIndexStoreKey(), {})) || {}
+    const stored = store[key]
+    if (Array.isArray(stored) && stored.length === nCh && layoutKeyRef.current === key) {
+      for (let i = 0; i < nCh; i++) {
+        if (i !== currentChapterIdx) chapterPageCountsRef.current[i] = stored[i]
+      }
+      setIndexComplete(true)
+      setScanTick(t => t + 1)
+      // Still warm neighbor HTML for instant chapter switches.
+      startNeighborPrewarm(currentChapterIdx)
+      return
+    }
+    setIndexComplete(false)
+    // Deep idle before building — never compete with the opening read.
+    clearTimeout(indexBuildTimerRef.current)
+    indexBuildTimerRef.current = setTimeout(() => runIndexBuild(key, currentChapterIdx), 4000)
+  }
+
+  // Full-book measure that also prewarms neighbors. Idempotent + resumable:
+  // hasCount skips chapters already measured, so _scanAbort restarts (from
+  // chapter navigation) are cheap. Persists + flips indexComplete when done.
+  function runIndexBuild(key, currentChapterIdx) {
+    const chapters = chaptersRef.current
+    const nCh = chapters.length
+    if (!nCh) return
+    prunePrewarm(currentChapterIdx)
+    setIndexBuilding(true)
+    scanAllChapters(chapters, (chIdx, count) => {
+      chapterPageCountsRef.current[chIdx] = count
+      setScanTick(t => t + 1)
+      // All chapters known for THIS layout? persist + mark complete.
+      if (layoutKeyRef.current !== key) return
+      const counts = new Array(nCh)
+      for (let i = 0; i < nCh; i++) {
+        const c = chapterPageCountsRef.current[i]
+        if (c == null) return   // not finished yet
+        counts[i] = c
+      }
+      setIndexBuilding(false)
+      setIndexComplete(true)
+      getJSON(pageIndexStoreKey(), {}).then(s => {
+        const store = s || {}
+        store[key] = counts
+        setJSON(pageIndexStoreKey(), store).catch(() => {})
+      })
+    }, { around: currentChapterIdx, hasCount: (i) => chapterPageCountsRef.current[i] != null })
+  }
+
+  // Warm only ±neighbor HTML (no counts needed) for instant chapter switches.
+  function startNeighborPrewarm(currentChapterIdx) {
     const chapters = chaptersRef.current
     if (!chapters.length) return
-    scanAllChapters(chapters, (chIdx, count) => {
-      // Don't overwrite the count for the current chapter — it was just measured
-      // accurately by the full render pipeline and trimContainerWidth.
-      if (chIdx !== currentChapterIdx) {
-        chapterPageCountsRef.current[chIdx] = count
-        setScanTick(t => t + 1)
-      }
-    })
+    prunePrewarm(currentChapterIdx)
+    scanAllChapters(chapters, () => {},
+      { around: currentChapterIdx, neighborsOnly: true, hasCount: () => false })
+  }
+
+  // ── Background book scan entry ────────────────────────────────────────────
+  // Complete index → just warm neighbors. Incomplete → build/continue the index
+  // (which also warms neighbors first via scan order).
+  function startBackgroundScan(currentChapterIdx) {
+    if (indexCompleteRef.current) startNeighborPrewarm(currentChapterIdx)
+    else ensurePageIndex(currentChapterIdx)
   }
 
   function jumpToChapter(chIdx, pgIdx = 0) {
@@ -948,6 +1047,33 @@ export default function ReaderView() {
     if (sameChapter) showPage(pgIdx, false)
     setCurChapter(chIdx); setCurPage(pgIdx)
     saveProgress(chIdx, pgIdx)
+  }
+
+  // ── Locate a specific block (in-book search results) ─────────────────────
+  // Same chapter: resolve block → page immediately. Cross-chapter: stash the
+  // block index; the chapter-render effect resolves it once the strip exists.
+  const pendingLocateRef = useRef(null)
+  function locateBlock(chIdx, blockIdx) {
+    const snap = (pg) => prefsRef.current.twoPage ? pg - (pg % 2) : pg
+    if (chIdx === curChapterRef.current) {
+      const pg = snap(pageOfChild(blockIdx))
+      jumpToChapter(chIdx, pg)
+    } else {
+      pendingLocateRef.current = { chIdx, blockIdx }
+      jumpToChapter(chIdx, 0)
+    }
+  }
+  // Resolve a stashed locate after the target chapter's strip is in the DOM.
+  function resolvePendingLocate(chIdx) {
+    const p = pendingLocateRef.current
+    if (!p || p.chIdx !== chIdx) return
+    pendingLocateRef.current = null
+    let pg = pageOfChild(p.blockIdx)
+    if (prefsRef.current.twoPage) pg -= pg % 2
+    curPageRef.current = pg
+    setCurPage(pg)
+    showPage(pg, false)
+    saveProgress(chIdx, pg)
   }
 
   // ── Prefs ─────────────────────────────────────────────────────────────────
@@ -975,8 +1101,10 @@ export default function ReaderView() {
       setPref('fontSize', next)
       clearTimeout(persistDebounceRef.current)
       persistDebounceRef.current = setTimeout(() => persistPreferences(), 400)
-      // Trigger a re-render then rebuild pagination with new size
-      setTimeout(() => handleRebuildRef.current?.(), 0)
+      // Trigger a re-render then rebuild pagination with new size (coalesced —
+      // holding ⌘+ repeats fast and should relayout once, not per keypress)
+      clearTimeout(rebuildDebounceRef.current)
+      rebuildDebounceRef.current = setTimeout(() => handleRebuildRef.current?.(), 250)
     }
     window.addEventListener('keydown', handler, { capture: true })
     return () => window.removeEventListener('keydown', handler, { capture: true })
@@ -989,6 +1117,10 @@ export default function ReaderView() {
     const ch    = curChapterRef.current
     const pg    = curPageRef.current
 
+    // Anchor the reading position to the first visible block — page indices
+    // don't survive layout changes (font size, resize, two-page toggle).
+    const anchorChild = getVisibleChildIndex(pg)
+
     setWordWrapEnabled(p.highlightWords || p.underlineLine)
     ensurePageStyle(p)
     cardEl.classList.toggle('two-page', p.twoPage)
@@ -997,8 +1129,13 @@ export default function ReaderView() {
 
     invalidateCache()       // also clears _chapterCache via PaginationEngine
     clearChapterCache()     // ensure stale layout params don't survive
-    setupColumns(cardEl, p)
+    setupColumns(cardEl, { ...p, lang: activeBook?.language || 'en' })
     chapterPageCountsRef.current = {}
+    // Layout changed → the stored page index for the old layout no longer
+    // applies; ensurePageIndex (via startBackgroundScan) restores or rebuilds
+    // for the new layout key.
+    setIndexComplete(false)
+    clearTimeout(indexBuildTimerRef.current)
     prevChapterRef.current = ch  // prevent re-render effect from double-rendering
 
     renderChapterContent(chaptersRef.current[ch].blocks, pg)
@@ -1006,18 +1143,27 @@ export default function ReaderView() {
       const count = measurePageCount()
       chapterPageCountsRef.current[ch] = count
       setPageCount(count)
-      const clampedPg = Math.min(pg, Math.max(0, count - 1))
+      // Resolve the anchored block back to a page in the NEW layout.
+      let restoredPg = Math.min(pageOfChild(anchorChild), Math.max(0, count - 1))
+      if (p.twoPage) restoredPg -= restoredPg % 2   // land on a spread boundary
       trimContainerWidth(count)
       cacheCurrentChapter(ch, count)
-      showPage(clampedPg, false)
+      showPage(restoredPg, false)
       revealContent()
-      if (clampedPg !== pg) { setCurPage(clampedPg); saveProgress(ch, clampedPg) }
+      if (restoredPg !== pg) { setCurPage(restoredPg); saveProgress(ch, restoredPg) }
       requestAnimationFrame(() => applyHighlightsToCard(cardEl, bookIdRef.current, ch))
       // Scan all other chapters with the new layout settings so totalPages stays accurate.
       startBackgroundScan(ch)
     }))
   }
   handleRebuildRef.current = handleRebuild
+
+  // Coalesced rebuild — settings toggles fire this; rapid changes collapse to one relayout.
+  const rebuildDebounceRef = useRef(null)
+  function requestRebuild() {
+    clearTimeout(rebuildDebounceRef.current)
+    rebuildDebounceRef.current = setTimeout(() => handleRebuildRef.current?.(), 250)
+  }
 
   // ── Auto-rebuild when container height changes (e.g. window resize) ───────
   useEffect(() => {
@@ -1035,26 +1181,6 @@ export default function ReaderView() {
     ro.observe(el)
     return () => { ro.disconnect(); clearTimeout(resizeDebounceRef.current) }
   }, []) // refs only — stable
-
-  // ── Page jump ─────────────────────────────────────────────────────────────
-  function handlePageJump(val) {
-    const target = parseInt(val, 10)
-    const total  = getTotalPages(chapterPageCountsRef.current, chaptersRef.current.length)
-    const p      = prefsRef.current
-    // target is entered as a display page (spread number in two-page mode).
-    // Convert back to raw column index so chapter lookup works correctly.
-    const dispTotal = p.twoPage ? Math.ceil(total / 2) : total
-    setPageInput(null)
-    if (isNaN(target) || target < 1 || target > dispTotal) return
-    const rawTarget = p.twoPage ? (target - 1) * 2 : target - 1
-    let remaining = rawTarget
-    for (let i = 0; i < chaptersRef.current.length; i++) {
-      const chPgs = chapterPageCountsRef.current[i] || 1
-      if (remaining < chPgs) { jumpToChapter(i, remaining); return }
-      remaining -= chPgs
-    }
-    jumpToChapter(chaptersRef.current.length - 1, 0)
-  }
 
   // ── TTS (Text-To-Speech) state ─────────────────────────────────────────────
   const [ttsActive,   setTtsActive]   = useState(false)
@@ -1693,27 +1819,31 @@ export default function ReaderView() {
 
   // ── Derived state ─────────────────────────────────────────────────────────
   const totalInChapter = pageCount
-  // scanTick is read here so that background-scan updates trigger a re-render
-  // and totalPages recomputes from the freshly-updated chapterPageCountsRef.
+  // scanTick is read here so background-scan updates (neighbor counts feeding
+  // the chapter dropdown) trigger a re-render.
   void scanTick
-  const totalPages     = getTotalPages(chapterPageCountsRef.current, chapters.length)
-  let globalPage = curPage
-  for (let _i = 0; _i < curChapter; _i++) globalPage += chapterPageCountsRef.current[_i] || 1
 
   // In two-page mode each "page entry" is one CSS column; navigation steps by 2
   // so the reader sees spreads.  Convert raw column counts to spread counts for
   // all display values so the footer reads naturally.
   const navStep        = prefs.twoPage ? 2 : 1
-  const displayPage    = prefs.twoPage ? Math.floor(globalPage  / 2) : globalPage
-  const displayTotal   = prefs.twoPage ? Math.ceil(totalPages   / 2) : totalPages
   const displayInChap  = prefs.twoPage ? Math.ceil(totalInChapter / 2) : totalInChapter
 
-  const pct = displayTotal > 1 ? (displayPage / (displayTotal - 1)) * 100 : 0
-  const atStart        = curChapter === 0 && curPage === 0
-  // Disable Next when we are on the last valid spread (can't step navStep forward).
-  const atEnd          = curChapter >= chapters.length - 1 && curPage >= totalInChapter - navStep
   const pagesLeft      = displayInChap - Math.floor(curPage / navStep) - 1
   const curPageInChap  = Math.floor(curPage / navStep) + 1
+
+  // Global page numbers only once the persistent index is complete for this
+  // layout — no estimates, no per-flip recompute (counts come from refs/disk).
+  let globalRawPage = curPage
+  for (let _i = 0; _i < curChapter; _i++) globalRawPage += chapterPageCountsRef.current[_i] || 0
+  const totalRawPages  = indexComplete ? getTotalPages(chapterPageCountsRef.current, chapters.length) : 0
+  const globalPageNum  = prefs.twoPage ? Math.floor(globalRawPage / 2) + 1 : globalRawPage + 1
+  const globalPageTot  = prefs.twoPage ? Math.ceil(totalRawPages / 2) : totalRawPages
+
+  // Progress: global when the index is ready, else chapter-local (both exact).
+  const pct = indexComplete && globalPageTot > 1
+    ? ((globalPageNum - 1) / (globalPageTot - 1)) * 100
+    : (displayInChap > 1 ? ((curPageInChap - 1) / (displayInChap - 1)) * 100 : 0)
   const isCover        = chapters[curChapter]?.title === '_cover_'
   const chapterTitle   = isCover ? 'Cover' : (chapters[curChapter]?.title || '')
   const [c1, c2]       = activeBook ? generateCoverColor(activeBook.title) : ['#1a1a2e', '#16213e']
@@ -2022,7 +2152,7 @@ export default function ReaderView() {
       {/* Settings panel */}
       {settingsOpen && (
         <SettingsPanel prefs={prefs} piperVoices={piperVoices}
-          onPrefChange={handlePrefChange} onRebuild={handleRebuild} onClose={() => setSettingsOpen(false)} />
+          onPrefChange={handlePrefChange} onRebuild={requestRebuild} onClose={() => setSettingsOpen(false)} />
       )}
 
       {/* Review panel */}
@@ -2037,7 +2167,7 @@ export default function ReaderView() {
             onExportMarkdown={exportHighlightsMarkdown}
             onToggleBookmark={toggleBookmark}
             isBookmarked={isCurrentPageBookmarked()}
-            onJump={jumpToChapter} onClose={() => setReviewOpen(false)}
+            onJump={jumpToChapter} onLocate={locateBlock} onClose={() => setReviewOpen(false)}
             onDeleteHighlight={hlId => {
               const bId = bookIdRef.current
               if (!bId) return
@@ -2090,8 +2220,8 @@ export default function ReaderView() {
           onDoubleClick={isMobile ? e => { if (!e.target.closest('button')) setFocusMode(m => !m) } : undefined}
           onContextMenu={handleCardContextMenu}
         />
-        {/* Left margin tap/hover zone — only when tap-to-turn is enabled */}
-        {tapToTurnLive && (
+        {/* Left margin hover chevron — always available (footer nav buttons are gone) */}
+        {!loading && (
           <div
             onClick={prevPage}
             className="reader-margin-zone reader-margin-zone--left"
@@ -2103,8 +2233,8 @@ export default function ReaderView() {
             </svg>
           </div>
         )}
-        {/* Right margin tap/hover zone — only when tap-to-turn is enabled */}
-        {tapToTurnLive && (
+        {/* Right margin hover chevron — always available */}
+        {!loading && (
           <div
             onClick={nextPage}
             className="reader-margin-zone reader-margin-zone--right"
@@ -2115,6 +2245,28 @@ export default function ReaderView() {
               <path d="M6 4l10 14-10 14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </div>
+        )}
+
+        {/* Page furniture — just the page number; hover reveals "N of total".
+            Number is the absolute page once the persistent index is complete,
+            else the chapter-local page (both exact). */}
+        {!loading && !isCover && (
+          <>
+            <span className="reader-pagenum" style={{ left: '50%', cursor: 'default' }}
+              onMouseEnter={() => setPagenumHover(true)}
+              onMouseLeave={() => setPagenumHover(false)}>
+              {indexComplete && globalPageTot > 0
+                ? (pagenumHover ? `${globalPageNum} of ${globalPageTot}` : `${globalPageNum}`)
+                : (pagenumHover ? `${curPageInChap} of ${displayInChap} in chapter` : `${curPageInChap}`)}
+            </span>
+            <span className="reader-pagesleft">
+              {indexBuilding && !indexComplete
+                ? 'calculating pages…'
+                : pagesLeft <= 0 ? 'last page in chapter'
+                : pagesLeft === 1 ? '1 page left'
+                : `${pagesLeft} pages left`}
+            </span>
+          </>
         )}
 
         {loading && (
@@ -2138,40 +2290,8 @@ export default function ReaderView() {
       </main>
 
 
-      {/* Footer */}
-      <footer className="reader-footer">
-        <div className="footer-nav">
-          <button className="btn outline" disabled={atStart} onClick={prevPage}>← Prev</button>
-
-          <span className="page-indicator">
-            {'Page '}
-            {pageInput !== null
-              ? <input type="number" min={1} max={displayTotal} value={pageInput}
-                  autoFocus
-                  style={{ width: Math.max(36, String(displayTotal).length * 10 + 16), background: 'transparent', border: 'none', borderBottom: '1px solid var(--textDim)', color: 'var(--text)', fontSize: 'inherit', fontFamily: 'inherit', textAlign: 'center', padding: '0 2px', outline: 'none' }}
-                  onChange={e => setPageInput(e.target.value)}
-                  onBlur={e => handlePageJump(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') handlePageJump(e.target.value); if (e.key === 'Escape') setPageInput(null) }}
-                  onClick={e => e.target.select()} />
-              : <span style={{ cursor: 'pointer' }} onClick={() => setPageInput(displayPage + 1)}>
-                  {displayPage + 1}
-                </span>
-            }
-            {` of ${displayTotal} · ${Math.round(pct)}%`}
-            {!isCover && (pagesLeft <= 0
-              ? ' · last page'
-              : pagesLeft === 1
-                ? ' · 1 pg left'
-                : ` · ${pagesLeft} pgs left`
-            )}
-          </span>
-
-          <button className="btn outline" disabled={atEnd} onClick={nextPage}>Next →</button>
-        </div>
-        <div className="progress-track">
-          <div className="progress-bar" style={{ width: `${pct}%` }} />
-        </div>
-      </footer>
+      {/* Page furniture — Books-style quiet numbers on the paper, no footer bar.
+          Nav = margin zones, keys, trackpad; jump = click the page number. */}
 
       {/* Focus mode floating footer — thin overlay with nav + info + progress */}
       {focusMode && (
@@ -2193,7 +2313,7 @@ export default function ReaderView() {
                 {activeBook?.title || ''}
               </div>
               <div style={{ fontSize: 10, color: 'var(--textDim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {[chapterTitle, `page ${displayPage + 1}/${displayTotal}`, pagesLeft <= 0 ? 'last page' : `${pagesLeft} left`].filter(Boolean).join(' · ')}
+                {[chapterTitle, `page ${curPageInChap}/${displayInChap}`, pagesLeft <= 0 ? 'last page' : `${pagesLeft} left`].filter(Boolean).join(' · ')}
               </div>
             </div>
           </div>

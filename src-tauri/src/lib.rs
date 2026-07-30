@@ -5,6 +5,8 @@ use tauri::Emitter;
 use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
 
+mod eventkit;
+
 fn set_app_icon(window: &tauri::WebviewWindow, theme: tauri::Theme) {
     let icon_bytes: &[u8] = match theme {
         tauri::Theme::Light => include_bytes!("../icons/icon-light.png"),
@@ -397,28 +399,65 @@ async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 /// Profile window (label "profile") — stats, streak, reading log.
-#[tauri::command]
-async fn open_profile_window(app: tauri::AppHandle) -> Result<(), String> {
+///
+/// Builds the window if it doesn't exist yet. `visible` controls whether it's
+/// shown immediately (a real user open) or created hidden (pre-warm at idle).
+/// Closing the window HIDES it instead of destroying it, so it stays warm —
+/// every open after the first is a native show()/focus() with zero webview
+/// or JS reload. Without this, the native title-bar close button destroyed the
+/// window and every reopen paid a full cold WebKit + React + vendor boot.
+fn build_or_show_profile_window(app: &tauri::AppHandle, visible: bool) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("profile") {
-        win.show().map_err(|e| e.to_string())?;
-        win.set_focus().map_err(|e| e.to_string())?;
+        if visible {
+            win.show().map_err(|e| e.to_string())?;
+            win.set_focus().map_err(|e| e.to_string())?;
+            // The window may have been pre-warmed (or last shown) with stale data;
+            // tell the view to re-read the library/notebooks/log before it appears.
+            let _ = win.emit("profile:refresh", ());
+        }
         return Ok(());
     }
     let builder = tauri::WebviewWindowBuilder::new(
-        &app,
+        app,
         "profile",
         tauri::WebviewUrl::App("index.html".into()),
     )
     .title("Profile")
-    .inner_size(560.0, 640.0)
-    .min_inner_size(440.0, 480.0);
+    .inner_size(600.0, 720.0)
+    .resizable(false)
+    .visible(visible);
     #[cfg(target_os = "macos")]
     let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true);
     let win = builder.build().map_err(|e| e.to_string())?;
-    let _ = win.set_focus();
+
+    // Hide instead of destroy on close so the window stays warm for next time.
+    let win_for_close = win.clone();
+    win.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = win_for_close.hide();
+        }
+    });
+
+    if visible {
+        let _ = win.set_focus();
+    }
     Ok(())
+}
+
+#[tauri::command]
+async fn open_profile_window(app: tauri::AppHandle) -> Result<(), String> {
+    build_or_show_profile_window(&app, true)
+}
+
+/// Pre-build the profile window hidden so the first user open is instant.
+/// Called from the frontend once the main app has finished its own boot, so
+/// it never competes with initial launch.
+#[tauri::command]
+async fn prewarm_profile_window(app: tauri::AppHandle) -> Result<(), String> {
+    build_or_show_profile_window(&app, false)
 }
 
 /// Open a folder in the system file manager (Finder on macOS, Explorer on Windows, etc.)
@@ -752,11 +791,12 @@ pub fn run() {
 
       let window = app.get_webview_window("main").unwrap();
 
-      #[cfg(target_os = "macos")]
-      {
-        use tauri::TitleBarStyle;
-        window.set_title_bar_style(TitleBarStyle::Overlay)?;
-      }
+      // macOS: the title bar style + traffic-light position are set once via
+      // tauri.conf.json (titleBarStyle: Overlay + trafficLightPosition). We do
+      // NOT re-apply the title bar style here — a runtime re-style forces a
+      // titlebar relayout on every launch (startup lag) and, combined with the
+      // traffic-light inset, could re-fire the inset in a loop (window-server
+      // freeze). Config-only keeps it a one-shot at window creation.
 
       #[cfg(any(target_os = "windows", target_os = "linux"))]
       {
@@ -792,12 +832,15 @@ pub fn run() {
       quick_note_set_size,
       open_settings_window,
       open_profile_window,
+      prewarm_profile_window,
       create_inline_webview,
       reposition_inline_webview,
       close_inline_webview,
       fetch_og_image,
       check_for_updates,
       download_and_install_update,
+      eventkit::eventkit_fetch,
+      eventkit::eventkit_status,
     ])
     .on_menu_event(|app, event| {
       let id = event.id().as_ref();

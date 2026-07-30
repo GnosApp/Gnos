@@ -209,7 +209,7 @@ export default function QuickNoteView() {
         '&': { height: '100%', background: 'transparent', fontSize: '15px' },
         '&.cm-focused': { outline: 'none' },
         '.cm-scroller': {
-          fontFamily: "'Satoshi', 'Switzer', -apple-system, system-ui, sans-serif",
+          fontFamily: "'Stack Sans Text', 'Satoshi', 'Switzer', -apple-system, system-ui, sans-serif",
           lineHeight: '1.65', overflow: 'auto',
         },
         '.cm-content': { padding: '0 16px 14px 16px', caretColor: 'var(--accent, #388bfd)' },
@@ -561,7 +561,7 @@ const QN_CSS = `
   .qn-root {
     height: 100vh; box-sizing: border-box; position: relative;
     background: transparent; color: var(--text, #eee);
-    font-family: 'Satoshi', 'Switzer', -apple-system, system-ui, sans-serif;
+    font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', -apple-system, system-ui, sans-serif;
   }
   .qn-root *:focus, .qn-root *:focus-visible { outline: none !important; }
   .qn-drag { height: 16px; flex-shrink: 0; cursor: default; }

@@ -3,6 +3,9 @@ import useAppStore from '@/store/useAppStore'
 import { PaneContext } from '@/lib/PaneContext'
 import { loadNotebookContent } from '@/lib/storage'
 import { Toggle, Slider, Select } from '@/components/Controls'
+import QuickAccess from '@/components/QuickAccess'
+import SegmentedControl from '@/components/SegmentedControl'
+import { hexLuminance, isThemeDark, DOT_BASE, DOT_RADIUS, DOT_ALPHA } from '@/lib/canvasSurface'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const LERP_RATE    = 0.035
@@ -28,6 +31,29 @@ const NODE_COLORS = {
   audio:      '#F472B6',
   sketchbook: '#FB923C',
   flashcard:  '#FACC15',
+}
+
+// Light themes get a darkened palette — the raw hues (esp. yellow) wash out
+// on light backgrounds.
+function darkenHex(hex, f = 0.72) {
+  const n = parseInt(hex.slice(1), 16)
+  return `#${[(n >> 16) & 255, (n >> 8) & 255, n & 255]
+    .map(c => Math.round(c * f).toString(16).padStart(2, '0')).join('')}`
+}
+const LIGHT_NODE_COLORS = Object.fromEntries(
+  Object.entries(NODE_COLORS).map(([k, v]) => [k, darkenHex(v)])
+)
+// Module-level active palette: tick() refreshes it each frame from the live
+// theme; React chrome reads it via activePalette().
+let ACTIVE_COLORS = NODE_COLORS
+function activePalette() { return isThemeDark() ? NODE_COLORS : LIGHT_NODE_COLORS }
+
+// #rrggbb + alpha 0..1 → rgba() string; falls back to a neutral gray.
+function hexWithAlpha(hex, a) {
+  const m = (hex || '').match(/^#([0-9a-f]{6})$/i)
+  if (!m) return `rgba(128,128,128,${a})`
+  const n = parseInt(m[1], 16)
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`
 }
 
 const ALL_TYPES = ['notebook','book','audio','sketchbook','flashcard']
@@ -185,10 +211,6 @@ export default function GraphView() {
     })
   }
 
-  function goBack() {
-    if (paneTabId) { setView('library') }
-    else navigate({ view: 'library' })
-  }
 
   // ── Graph builder ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -400,9 +422,14 @@ export default function GraphView() {
     const ro = new ResizeObserver(resizeCanvas)
     ro.observe(canvas.parentElement)
 
+    // Sleep instead of spinning: when the canvas is hidden (inactive tab —
+    // TabPane keeps views mounted with display:none), the window is
+    // backgrounded, or the Tags tab is showing, drop from 60fps rAF to a 300ms
+    // poll. A hidden graph used to burn CPU/GPU forever.
+    let sleepTimer = null
     function tick() { try {
-      if (graphTabRef.current === 'tags') {
-        rafRef.current = requestAnimationFrame(tick)
+      if (document.hidden || canvas.offsetWidth === 0 || graphTabRef.current === 'tags') {
+        sleepTimer = setTimeout(() => { rafRef.current = requestAnimationFrame(tick) }, 300)
         return
       }
       const sim  = simRef.current
@@ -431,6 +458,9 @@ export default function GraphView() {
       const style     = getComputedStyle(document.documentElement)
       const textColor = style.getPropertyValue('--text').trim()    || '#1a1a1a'
       const bgColor   = style.getPropertyValue('--bg').trim()      || '#f5f0e8'
+      const borderCol = style.getPropertyValue('--border').trim()  || 'rgba(128,128,128,0.3)'
+      const accentCol = style.getPropertyValue('--accent').trim()  || '#388bfd'
+      ACTIVE_COLORS   = (hexLuminance(bgColor) ?? 0) <= 128 ? NODE_COLORS : LIGHT_NODE_COLORS
 
       sim.clock += 1
 
@@ -512,6 +542,11 @@ export default function GraphView() {
         selNode.parents.forEach(id => litIds.add(id))
         selNode.children.forEach(id => litIds.add(id))
       }
+      // Hover context (no selection): softly dim non-neighbors of the hovered node
+      const hovNode = !sel && sim.hovered ? nodesMap.get(sim.hovered) : null
+      const hovIds  = hovNode ? new Set([hovNode.id, ...hovNode.parents, ...hovNode.children]) : null
+      // Labels fade in with zoom so the zoomed-out view stays clean
+      const labelFade = Math.max(0, Math.min(1, (z - 0.45) / 0.3))
 
       // Pass 1: weak collection bonds (dashed, low alpha — drawn below strong edges)
       if (cfg.showEdges && cfg.showCollectionEdges) {
@@ -533,7 +568,7 @@ export default function GraphView() {
           ctx.lineTo(to.x, to.y)
           ctx.strokeStyle = edge.color
             ? `${edge.color}${Math.round(alpha * 255).toString(16).padStart(2, '0')}`
-            : `rgba(180,160,255,${alpha})`
+            : hexWithAlpha(textColor, alpha * 0.6)
           ctx.lineWidth = 0.9 / z
           ctx.stroke()
         }
@@ -569,14 +604,20 @@ export default function GraphView() {
           let alpha = (0.55 + (stretchRatio - 1) * 0.35) * cfg.edgeOpacityMul * edgeSp
           if (isConnected) alpha = Math.max(alpha, 0.75 * edgeSp)
           if (isDimmed)    alpha *= 0.06
+          // Hover: boost edges touching the hovered node, soften the rest
+          if (hovIds) {
+            const touchesHover = edge.fromId === sim.hovered || edge.toId === sim.hovered
+            if (touchesHover) alpha = Math.max(alpha, 0.7 * edgeSp)
+            else alpha *= 0.3
+          }
           alpha = Math.min(alpha, 0.92)
 
           ctx.beginPath()
           ctx.moveTo(from.x, from.y)
           ctx.quadraticCurveTo(cpx, cpy, to.x, to.y)
           ctx.strokeStyle = isConnected
-            ? `rgba(220,200,255,${alpha})`
-            : `rgba(170,150,255,${alpha})`
+            ? hexWithAlpha(accentCol, Math.min(alpha, 0.9))
+            : hexWithAlpha(textColor, alpha * 0.45)
           ctx.lineWidth = (isConnected ? 2.8 : (from.isHub || to.isHub ? 2.0 : 1.4)) / z
           ctx.stroke()
         }
@@ -587,13 +628,14 @@ export default function GraphView() {
       const nMul   = cfg.nodeSizeMul
 
       for (const node of sorted) {
-        const color      = NODE_COLORS[node.type] || '#888'
+        const color      = ACTIVE_COLORS[node.type] || '#888'
         const sp         = node.spawnProgress ?? 1
         const r          = nodeRadius(node, nMul) * sp
         const hovered    = sim.hovered === node.id
         const isSelected = node.id === sel
         const isLit      = !sel || litIds.has(node.id)
-        const dimAlpha   = (isLit ? 1 : 0.1) * sp
+        const hoverDim   = hovIds && !hovIds.has(node.id) ? 0.35 : 1
+        const dimAlpha   = (isLit ? 1 : 0.1) * hoverDim * sp
 
         ctx.globalAlpha = dimAlpha
 
@@ -619,11 +661,8 @@ export default function GraphView() {
 
         ctx.beginPath()
         ctx.arc(node.x, node.y, r, 0, Math.PI * 2)
-        ctx.fillStyle   = (hovered || isSelected) ? color : `${color}CC`
+        ctx.fillStyle = (hovered || isSelected) ? color : `${color}E6`
         ctx.fill()
-        ctx.strokeStyle = `${color}55`
-        ctx.lineWidth   = 1 / z
-        ctx.stroke()
 
         // Labels — always show for selected/connected nodes, otherwise respect setting
         const sl = cfg.showLabels
@@ -632,9 +671,12 @@ export default function GraphView() {
           || (sl === 'always')
           || (sl === 'linked' && (node.isHub || (node.linkCount > 0 && z >= 0.65)))
         )
-        if (showLabel && isLit) {
+        // Ambient labels (not selected/hovered/hub) fade in with zoom
+        const ambient    = !isSelected && !hovered && !node.isHub
+        const labelAlpha = ambient ? labelFade : 1
+        if (showLabel && isLit && labelAlpha > 0.02) {
           const fSize = (isSelected ? 11.5 : node.isHub ? 10.5 : 8.5) / z
-          ctx.font    = `${(isSelected || node.isHub) ? 700 : 500} ${fSize}px system-ui, -apple-system, sans-serif`
+          ctx.font    = `${(isSelected || node.isHub) ? 700 : 500} ${fSize}px 'Stack Sans Text', system-ui, -apple-system, sans-serif`
           ctx.textAlign = 'center'
 
           // Pill background so the label is readable on any theme
@@ -650,15 +692,19 @@ export default function GraphView() {
           const pw      = tw + padding * 3
 
           // Semi-transparent background pill using theme bg color
-          ctx.globalAlpha = dimAlpha * 0.85
+          ctx.globalAlpha = dimAlpha * labelAlpha * 0.85
           ctx.fillStyle   = bgColor
           ctx.beginPath()
           ctx.roundRect?.(lx - pw / 2, ly - ph * 0.78, pw, ph, ph / 2)
             ?? ctx.rect(lx - pw / 2, ly - ph * 0.78, pw, ph)
           ctx.fill()
+          // Hairline border so pills read as chips, not smudges
+          ctx.strokeStyle = borderCol
+          ctx.lineWidth   = 1 / z
+          ctx.stroke()
 
           // Text in theme text color
-          ctx.globalAlpha = dimAlpha
+          ctx.globalAlpha = dimAlpha * labelAlpha
           ctx.fillStyle   = isSelected ? color : textColor
           ctx.fillText(label, lx, ly)
         }
@@ -668,14 +714,14 @@ export default function GraphView() {
 
       // Sector anchor labels
       if (cfg.showSectorLabels && z < 0.9) {
-        ctx.font      = `600 ${11 / z}px system-ui, sans-serif`
+        ctx.font      = `600 ${11 / z}px 'Stack Sans Text', system-ui, sans-serif`
         ctx.textAlign = 'center'
         for (const [type, sector] of Object.entries(SECTORS)) {
           const ax = Math.cos(sector.angle) * sector.dist
           const ay = Math.sin(sector.angle) * sector.dist
           const hasStrays = sim.nodes.some(n => n.sectorType === type && n.linkCount === 0)
           if (!hasStrays) continue
-          ctx.fillStyle = `${NODE_COLORS[type]}55`
+          ctx.fillStyle = `${ACTIVE_COLORS[type]}55`
           ctx.fillText(TYPE_LABELS[type] + 's', ax, ay - 28 / z)
         }
       }
@@ -691,6 +737,7 @@ export default function GraphView() {
     rafRef.current = requestAnimationFrame(tick)
     return () => {
       cancelAnimationFrame(rafRef.current)
+      clearTimeout(sleepTimer)
       ro.disconnect()
     }
   }, [])   // canvas is stable — no deps needed
@@ -975,74 +1022,54 @@ export default function GraphView() {
   return (
     <div style={{ display:'flex', flexDirection:'column', height:'100%', background:'var(--bg)', userSelect:'none' }}>
 
-      {/* Header */}
-      <div style={{
-        display:'flex', alignItems:'center', gap:8, padding:'0 12px',
-        height:46, borderBottom:'1px solid var(--border)', flexShrink:0,
-        background:'var(--surface)', boxSizing:'border-box',
-      }}>
-        <button onClick={goBack} style={{ ...headerBtn(), paddingLeft:8 }}>
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-            <path d="M6 1L2 5l4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-          Library
-        </button>
+      {/* Actions — portaled into the global header (view-level headers are gone) */}
+      <QuickAccess>
+        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+          {/* Reset camera — reload glyph */}
+          <button onClick={resetCamera} style={{ ...headerBtn(), padding:'0 8px' }} title="Reset camera">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              <path d="M12.5 1.5v3h-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
 
-        <div style={{ width:1, height:20, background:'var(--border)', flexShrink:0 }} />
+          {/* Settings — gear */}
+          <button onClick={() => setSettingsOpen(o => !o)} style={{ ...headerBtn(settingsOpen), padding:'0 8px' }} title="Nebuli settings">
+            <svg width="13" height="13" viewBox="0 0 12 12" fill="none">
+              <circle cx="6" cy="6" r="2" stroke="currentColor" strokeWidth="1.3"/>
+              <path d="M6 1v1M6 10v1M1 6h1M10 6h1M2.4 2.4l.7.7M8.9 8.9l.7.7M9.6 2.4l-.7.7M3.1 8.9l-.7.7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+            </svg>
+          </button>
 
-        <span style={{ fontSize:13, fontWeight:800, color:'var(--accent)', flexShrink:0, letterSpacing:'0.04em' }}>
-          Nebuli
-        </span>
-
-        {!loading && (
-          <span style={{ fontSize:11, color:'var(--textDim)', marginLeft:4 }}>
-            {nodeCount} nodes · {edgeCount} links
-          </span>
-        )}
-
-        <div style={{ flex:1 }} />
-
-        {/* Reset camera */}
-        <button onClick={resetCamera} style={headerBtn()}>
-          <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-            <circle cx="5.5" cy="5.5" r="4.5" stroke="currentColor" strokeWidth="1.4"/>
-            <circle cx="5.5" cy="5.5" r="1.5" fill="currentColor"/>
-          </svg>
-          Reset
-        </button>
-
-        {/* Settings */}
-        <button onClick={() => setSettingsOpen(o => !o)} style={headerBtn(settingsOpen)}>
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <circle cx="6" cy="6" r="2" stroke="currentColor" strokeWidth="1.3"/>
-            <path d="M6 1v1M6 10v1M1 6h1M10 6h1M2.4 2.4l.7.7M8.9 8.9l.7.7M9.6 2.4l-.7.7M3.1 8.9l-.7.7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-          </svg>
-          Settings
-        </button>
-
-        {/* Tab switcher */}
-        <div style={{ display:'flex', gap:3, background:'var(--surfaceAlt)', border:'1px solid var(--border)', borderRadius:9, padding:3 }}>
-          {[['connections','Connections'],['tags','Tags']].map(([k,l]) => (
-            <button key={k} onClick={() => setGraphTab(k)} style={{
-              height:22, padding:'0 10px', fontSize:11, fontWeight:600, border:'none',
-              borderRadius:6, cursor:'pointer', fontFamily:'inherit',
-              background: graphTab===k ? 'var(--surface)' : 'none',
-              color: graphTab===k ? 'var(--text)' : 'var(--textDim)',
-              boxShadow: graphTab===k ? '0 1px 4px rgba(0,0,0,0.2)' : 'none',
-              transition:'background 0.12s,color 0.12s',
-            }}>{l}</button>
-          ))}
+          <SegmentedControl
+            value={graphTab} onChange={setGraphTab}
+            options={[
+              { value:'connections', label:'Connections', icon:(
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                  <circle cx="4" cy="12" r="2" stroke="currentColor" strokeWidth="1.4"/>
+                  <circle cx="12" cy="11" r="2" stroke="currentColor" strokeWidth="1.4"/>
+                  <circle cx="8" cy="4" r="2" stroke="currentColor" strokeWidth="1.4"/>
+                  <path d="M6.9 5.6L5 10.2M9.1 5.6l1.9 3.7M6 11.7l4-.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                </svg>
+              )},
+              { value:'tags', label:'Tags', icon:(
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                  <path d="M2 2h5.2a1 1 0 0 1 .7.3l6 6a1 1 0 0 1 0 1.4l-4.2 4.2a1 1 0 0 1-1.4 0l-6-6A1 1 0 0 1 2 7.2V2z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
+                  <circle cx="5.2" cy="5.2" r="1.1" fill="currentColor"/>
+                </svg>
+              )},
+            ]} />
         </div>
-      </div>
+      </QuickAccess>
 
       {/* Canvas container */}
       <div ref={containerRef} style={{ flex:1, position:'relative', overflow:'hidden', background:'radial-gradient(ellipse at 50% 40%, color-mix(in srgb, var(--surfaceAlt) 55%, var(--bg)) 0%, var(--bg) 70%)' }}>
 
-        {/* Dot-grid background */}
+        {/* Dot-grid background — shared canvas-surface constants (matches sketchbook) */}
         <div style={{
           position:'absolute', inset:0, pointerEvents:'none',
-          backgroundImage:'radial-gradient(circle, var(--border) 0.8px, transparent 0.8px)',
-          backgroundSize:'26px 26px', opacity:0.18,
+          backgroundImage:`radial-gradient(circle, var(--border) ${DOT_RADIUS}px, transparent ${DOT_RADIUS}px)`,
+          backgroundSize:`${DOT_BASE}px ${DOT_BASE}px`, opacity:DOT_ALPHA,
         }} />
 
         <canvas
@@ -1058,7 +1085,8 @@ export default function GraphView() {
         {/* Tags — full-area separate view, not an overlay on the canvas */}
         {graphTab === 'tags' && !loading && (
           <div style={{ position:'absolute', inset:0, overflow:'auto' }}>
-            <TagsHeatmap tagFrequencies={tagFrequencies} />
+            <TagsHeatmap tagFrequencies={tagFrequencies}
+              onTagClick={tag => { setFilterTags(new Set([tag])); setGraphTab('connections') }} />
           </div>
         )}
 
@@ -1105,7 +1133,7 @@ export default function GraphView() {
                 borderRadius:10, padding:'8px 12px', display:'flex', gap:10,
                 flexWrap:'wrap', pointerEvents:'none',
               }}>
-                {Object.entries(NODE_COLORS).map(([type, color]) => (
+                {Object.entries(activePalette()).map(([type, color]) => (
                   <div key={type} style={{ display:'flex', alignItems:'center', gap:5 }}>
                     <div style={{ width:8, height:8, borderRadius:'50%', background:color, flexShrink:0 }} />
                     <span style={{ fontSize:10, color:'var(--textDim)', fontWeight:500 }}>
@@ -1125,6 +1153,7 @@ export default function GraphView() {
             fontSize:10, color:'var(--textDim)', textAlign:'right',
             lineHeight:1.6, pointerEvents:'none',
           }}>
+            {nodeCount} nodes · {edgeCount} links<br/>
             Scroll to zoom · Drag to pan · Click node to focus
           </div>
         )}
@@ -1201,6 +1230,26 @@ function NebuliSettings({
       <div style={{ flex: 1, overflowY: 'auto', padding: '10px 14px 20px' }}>
 
         <SettingsSection label="Simulation">
+          {/* Motion presets — one-tap orbitSpeed + lerpRate combos */}
+          <div style={{ display: 'flex', gap: 4, marginBottom: 10 }}>
+            {[
+              ['Calm',      { orbitSpeed: 0.4, lerpRate: 0.6 }],
+              ['Default',   { orbitSpeed: 1.0, lerpRate: 1.0 }],
+              ['Energetic', { orbitSpeed: 1.8, lerpRate: 1.6 }],
+            ].map(([label, vals]) => {
+              const active = settings.orbitSpeed === vals.orbitSpeed && settings.lerpRate === vals.lerpRate
+              return (
+                <button key={label} onClick={() => onChange(vals)} style={{
+                  flex: 1, height: 26, borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
+                  fontSize: 11, fontWeight: active ? 600 : 400,
+                  background: active ? 'var(--accent)18' : 'var(--surfaceAlt)',
+                  border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                  color: active ? 'var(--accent)' : 'var(--textDim)',
+                  transition: 'all 0.1s',
+                }}>{label}</button>
+              )
+            })}
+          </div>
           <SliderRow
             label="Orbit Speed"
             value={settings.orbitSpeed}
@@ -1292,7 +1341,7 @@ function NebuliSettings({
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
               {ALL_TYPES.map(type => {
                 const active = filterTypes.has(type)
-                const color  = NODE_COLORS[type]
+                const color  = activePalette()[type]
                 return (
                   <button key={type} onClick={() => onToggleType(type)} style={{
                     height: 22, padding: '0 8px', fontSize: 10, fontWeight: 600, cursor: 'pointer',
@@ -1459,7 +1508,7 @@ function ToggleRow({ label, value, onChange }) {
 }
 
 function NodeChip({ node }) {
-  const c = NODE_COLORS[node.type] || '#888'
+  const c = activePalette()[node.type] || '#888'
   const raw = node.title || ''
   const t = raw.length > 18 ? raw.slice(0, 17) + '…' : raw
   return (
@@ -1473,7 +1522,7 @@ function NodeChip({ node }) {
 
 // ── Node info panel ────────────────────────────────────────────────────────────
 function NodeInfoPanel({ node, allNodes, onOpen, onUnpin, onClose }) {
-  const color       = NODE_COLORS[node.type] || '#888'
+  const color       = activePalette()[node.type] || '#888'
   const typeLabel   = TYPE_LABELS[node.type]  || node.type
   const totalConns  = node.parents.length + node.children.length
 
@@ -1618,9 +1667,17 @@ function NodeInfoPanel({ node, allNodes, onOpen, onUnpin, onClose }) {
 }
 
 // ── Tags heatmap overlay ───────────────────────────────────────────────────────
-function TagsHeatmap({ tagFrequencies }) {
-  const entries = Object.entries(tagFrequencies).sort((a, b) => b[1] - a[1])
-  if (entries.length === 0) {
+function TagsHeatmap({ tagFrequencies, onTagClick }) {
+  const [sortMode, setSortMode] = useState('count')  // 'count' | 'alpha'
+  const [minCount, setMinCount] = useState(1)
+  const [search,   setSearch]   = useState('')
+  const allEntries = Object.entries(tagFrequencies).sort((a, b) => b[1] - a[1])
+  const maxCount = allEntries.length ? allEntries[0][1] : 1
+  const q = search.trim().toLowerCase()
+  const entries = allEntries
+    .filter(([tag, count]) => count >= minCount && (!q || tag.toLowerCase().includes(q)))
+    .sort((a, b) => sortMode === 'alpha' ? a[0].localeCompare(b[0]) : b[1] - a[1])
+  if (allEntries.length === 0) {
     return (
       <div style={{
         position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center',
@@ -1630,43 +1687,67 @@ function TagsHeatmap({ tagFrequencies }) {
       </div>
     )
   }
-  const maxFreq = entries[0][1]
-  // Heatmap accent colours: low → dim, high → accent with glow
+  const maxFreq = maxCount
   const HEAT_COLORS = ['#6366f1','#818cf8','#a78bfa','#c084fc','#e879f9','#f472b6']
+  const inputStyle = {
+    background:'var(--surface)', border:'1px solid var(--border)', borderRadius:8,
+    color:'var(--text)', fontSize:12, padding:'6px 10px', fontFamily:'inherit', outline:'none',
+  }
   return (
     <div style={{
       position:'absolute', inset:0, overflowY:'auto',
       background:'radial-gradient(ellipse at 50% 40%, color-mix(in srgb, var(--surfaceAlt) 55%, var(--bg)) 0%, var(--bg) 70%)',
-      padding:'32px 40px',
-      display:'flex', flexDirection:'column', gap:20,
+      padding:'24px 40px 32px',
+      display:'flex', flexDirection:'column', gap:18,
     }}>
-      <div style={{ fontSize:11, fontWeight:700, color:'var(--textDim)', textTransform:'uppercase', letterSpacing:'0.08em' }}>
-        Tag Frequency
+      {/* Controls row */}
+      <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Filter tags…"
+          style={{ ...inputStyle, width:180 }} />
+        <SegmentedControl
+          options={[{ value:'count', label:'Count' }, { value:'alpha', label:'A–Z' }]}
+          value={sortMode} onChange={setSortMode} />
+        {maxCount > 1 && (
+          <label style={{ display:'flex', alignItems:'center', gap:7, fontSize:11, color:'var(--textDim)' }}>
+            Min uses
+            <input type="range" min="1" max={maxCount} value={minCount}
+              onChange={e=>setMinCount(Number(e.target.value))}
+              style={{ width:110, accentColor:'var(--accent)' }} />
+            <span style={{ fontVariantNumeric:'tabular-nums', width:16 }}>{minCount}</span>
+          </label>
+        )}
+        <span style={{ fontSize:11, color:'var(--textDim)', marginLeft:'auto' }}>
+          {entries.length} of {allEntries.length} tags
+        </span>
       </div>
-      <div style={{ display:'flex', flexWrap:'wrap', gap:'10px 12px', alignItems:'flex-end' }}>
+      {/* Tinted chips — size by frequency bucket; click filters the graph */}
+      <div style={{ display:'flex', flexWrap:'wrap', gap:8, alignItems:'center' }}>
         {entries.map(([tag, count]) => {
           const ratio = count / maxFreq   // 0..1
           const tier  = Math.floor(ratio * (HEAT_COLORS.length - 1))
           const color = HEAT_COLORS[tier]
-          // Font size: 11px (rare) → 26px (most frequent)
-          const fs    = 11 + Math.round(ratio * 15)
-          const opacity = 0.45 + ratio * 0.55
+          const fs    = 11 + Math.round(ratio * 6)   // 11 → 17px, bucketed
           return (
-            <span key={tag} title={`${count} file${count !== 1 ? 's' : ''}`} style={{
-              fontSize: fs,
-              fontWeight: ratio > 0.6 ? 700 : ratio > 0.3 ? 600 : 500,
-              color,
-              opacity,
-              lineHeight: 1.2,
-              cursor: 'default',
-              textShadow: ratio > 0.7 ? `0 0 12px ${color}88` : 'none',
-              transition: 'opacity 0.1s',
-            }}>
+            <button key={tag} title={`${count} file${count !== 1 ? 's' : ''} — click to filter the graph`}
+              onClick={() => onTagClick?.(tag)}
+              style={{
+                fontSize: fs, fontWeight: ratio > 0.5 ? 700 : 600, fontFamily:'inherit',
+                color: `color-mix(in srgb, ${color} 70%, var(--text))`,
+                background: `color-mix(in srgb, ${color} 14%, var(--surface))`,
+                border: `1px solid color-mix(in srgb, ${color} 35%, transparent)`,
+                borderRadius: 999, padding: '3px 11px', lineHeight: 1.4,
+                cursor: 'pointer', transition: 'transform 0.1s, border-color 0.1s',
+              }}
+              onMouseEnter={e=>{ e.currentTarget.style.transform='scale(1.06)'; e.currentTarget.style.borderColor=color }}
+              onMouseLeave={e=>{ e.currentTarget.style.transform='scale(1)'; e.currentTarget.style.borderColor=`color-mix(in srgb, ${color} 35%, transparent)` }}>
               {tag}
-              <sup style={{ fontSize: 8, opacity: 0.7, marginLeft: 2, fontWeight: 500 }}>{count}</sup>
-            </span>
+              <sup style={{ fontSize: 8, opacity: 0.7, marginLeft: 3, fontWeight: 500 }}>{count}</sup>
+            </button>
           )
         })}
+        {entries.length === 0 && (
+          <span style={{ fontSize:12, color:'var(--textDim)' }}>No tags match.</span>
+        )}
       </div>
       {/* Bar chart for top 20 */}
       {entries.length > 1 && (

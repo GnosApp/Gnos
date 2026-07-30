@@ -465,7 +465,10 @@ function substAggregates(expr, agg) {
   return { out, used }
 }
 
-export function makeMathCalcPlugin(cm) {
+// extraCompletionSources: completion sources from OTHER widgets (e.g. the
+// slash-command menu) — merged into this plugin's single autocompletion()
+// instance. See the comment at varAutocompletion.
+export function makeMathCalcPlugin(cm, extraCompletionSources = []) {
   const { ViewPlugin, Decoration, WidgetType, EditorView } = cm.view
 
   // Right-column result chip (numi-style). Click copies the value.
@@ -534,7 +537,7 @@ export function makeMathCalcPlugin(cm) {
   function evalExprFull(expr, scope = {}) {
     const now = Date.now()
     if (now - _evalCacheTime > 30000 || _evalCache.size > 400) { _evalCache = new Map(); _evalCacheTime = now }
-    const key = expr + ' ' + Object.keys(scope).map(k => k + ':' + String(scope[k])).join(',')
+    const key = expr + '\u0000' + Object.keys(scope).map(k => k + ':' + String(scope[k])).join(',')
     if (_evalCache.has(key)) return _evalCache.get(key)
     const r = _evalExprFull(expr, scope)
     _evalCache.set(key, r)
@@ -960,10 +963,17 @@ export function makeMathCalcPlugin(cm) {
     return { from: word.from, options, validFor: /^[a-zA-Z][a-zA-Z0-9 ]*$/ }
   }
 
+  // ONE autocompletion() per editor — CM6 throws "Config merge conflict for
+  // field override" (→ historically a blank notebook) if two extensions each
+  // call autocompletion() with their own `override`. Widgets therefore
+  // contribute completion SOURCES here via `extraCompletionSources` instead of
+  // creating their own instance. Sources run in order; return null to pass.
   const varAutocompletion = cm.autocomplete.autocompletion({
-    override: [varCompleteSource],
+    override: [...extraCompletionSources, varCompleteSource],
     icons: false,
     closeOnBlur: true,
+    activateOnTyping: true,
+    selectOnOpen: true,
   })
 
   // ─── Update animation ────────────────────────────────────────────────────

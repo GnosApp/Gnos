@@ -31,3 +31,4 @@ src-tauri/piper/models/*.onnx.json
 
 # Local Claude Code agent settings
 .claude/
+/public/pdfjs/

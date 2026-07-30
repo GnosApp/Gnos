@@ -1,7 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useContext, useEffect, useState } from 'react'
+import { useContext, useEffect, useReducer, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { PaneContext } from '@/lib/PaneContext'
+import { PaneContext, PaneChromeContext } from '@/lib/PaneContext'
 import useAppStore from '@/store/useAppStore'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -27,17 +27,33 @@ export function useIsActivePane() {
 
 export default function QuickAccess({ children }) {
   const isActive = useIsActivePane()
+  // Split mode: portal into THIS pane's own local header instead of the global
+  // strip, and render regardless of active-pane state (both panes show their
+  // own actions). Single mode: global strip, active pane only (as before).
+  const chrome = useContext(PaneChromeContext)
+  const targetId = chrome?.qaHostId || 'gnos-quick-access'
   // Re-resolve when the titlebar layout changes — moving the quick-access strip
   // between zones remounts #gnos-quick-access and detaches the old host node.
   const titlebarLayout = useAppStore(s => s.titlebarLayout)
-  const [host, setHost] = useState(() => document.getElementById('gnos-quick-access'))
+  const [, force] = useReducer(x => x + 1, 0)
+  // Resolve the host node at render time (portals may target any live node).
+  // Reading the DOM in render is safe here — it's a read-only lookup of an
+  // element React itself renders elsewhere in the same tree.
+  const host = typeof document !== 'undefined' ? document.getElementById(targetId) : null
+  // If the host isn't in the DOM yet (it can mount a commit later — e.g. the
+  // per-pane header appears the same frame the split turns on), retry on the
+  // next few frames until it resolves. Capped so a permanently-missing target
+  // (e.g. a trayed strip) doesn't spin forever.
+  const retries = useRef(0)
+  useEffect(() => { retries.current = 0 }, [targetId, titlebarLayout])
   useEffect(() => {
-    if (host && host.isConnected) return
-    // Title bar mounts in the same commit — resolve the portal target just after
-    const raf = requestAnimationFrame(() => setHost(document.getElementById('gnos-quick-access')))
+    if (host || retries.current > 20) return
+    retries.current += 1
+    const raf = requestAnimationFrame(force)
     return () => cancelAnimationFrame(raf)
-  }, [host, titlebarLayout])
-  if (!host || !host.isConnected || !isActive) return null
+  }, [host, targetId, titlebarLayout])
+  if (!host || !host.isConnected) return null
+  if (!chrome && !isActive) return null
   return createPortal(children, host)
 }
 

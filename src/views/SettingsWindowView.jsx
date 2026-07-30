@@ -29,6 +29,39 @@ const SECTIONS = [
   { id: 'calendar',   label: 'Calendar',   icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.3"/><line x1="5" y1="1.5" x2="5" y2="4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/><line x1="11" y1="1.5" x2="11" y2="4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/><line x1="2" y1="6.5" x2="14" y2="6.5" stroke="currentColor" strokeWidth="1.3"/></svg> },
   { id: 'archive',    label: 'Archive',    icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.6l1.8 1.8h5.6a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-8z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/></svg> },
   { id: 'plugins',    label: 'Plugins',    icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M6 2v3H3a1 1 0 0 0-1 1v3h3a2 2 0 1 1 0 4h11-8v-3h3V7a1 1 0 0 0-1-1H7V3a2 2 0 1 0-4 0" stroke="currentColor" strokeWidth="0"/><rect x="2.5" y="5.5" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3"/><path d="M6.5 5.5V3.8a1.3 1.3 0 1 1 2.6 0v1.7M10.5 9.5h1.7a1.3 1.3 0 1 1 0 2.6h-1.7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg> },
+  { id: 'shortcuts',  label: 'Shortcuts',  icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="3.5" width="13" height="9" rx="1.8" stroke="currentColor" strokeWidth="1.3"/><path d="M4 6h.01M6.3 6h.01M8.6 6h.01M10.9 6h.01M4 8.3h.01M6.3 8.3h.01M8.6 8.3h.01M10.9 8.3h.01M5.3 10.4h5.4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg> },
+]
+
+// Keyboard shortcut reference — grouped. `keys` render as individual <kbd> chips.
+const SHORTCUT_GROUPS = [
+  { title: 'Windows & Navigation', items: [
+    { keys: ['⌘', '\\'],       label: 'Toggle sidebar' },
+    { keys: ['⌘', '⇧', 'F'],   label: 'Toggle zen mode' },
+    { keys: ['⌘', '⌃', 'F'],   label: 'Toggle fullscreen' },
+    { keys: ['⌘', 'M'],        label: 'Minimize window' },
+    { keys: ['⌥', 'N'],        label: 'Quick note (works anywhere)' },
+    { keys: ['⌘', ','],        label: 'Open settings' },
+  ]},
+  { title: 'Tabs', items: [
+    { keys: ['⌘', 'T'],        label: 'New tab' },
+    { keys: ['⌘', 'W'],        label: 'Close tab' },
+    { keys: ['⌘', '⇧', ']'],   label: 'Next tab' },
+    { keys: ['⌘', '⇧', '['],   label: 'Previous tab' },
+  ]},
+  { title: 'Library', items: [
+    { keys: ['⌘', '1'],        label: 'Library' },
+    { keys: ['⌘', '2'],        label: 'Books' },
+    { keys: ['⌘', '3'],        label: 'Audiobooks' },
+    { keys: ['⌘', '4'],        label: 'Notebooks' },
+    { keys: ['⌘', '5'],        label: 'Collections' },
+    { keys: ['⌘', '⌥', '0–5'], label: 'Filter by type' },
+    { keys: ['⌘', '⇧', 'M'],   label: 'Manage collections' },
+  ]},
+  { title: 'Editing', items: [
+    { keys: ['⌘', 'F'],        label: 'Find in notebook' },
+    { keys: ['⌘', '⌥', ','],   label: 'Page settings' },
+    { keys: ['Esc'],           label: 'Close dialog / menu' },
+  ]},
 ]
 
 function Row({ label, desc, children, last }) {
@@ -481,6 +514,18 @@ export default function SettingsWindowView() {
             ))}
           </Group>
         )}
+
+        {section === 'shortcuts' && SHORTCUT_GROUPS.map(group => (
+          <Group key={group.title} title={group.title}>
+            {group.items.map((sc, i) => (
+              <Row key={sc.label} label={sc.label} last={i === group.items.length - 1}>
+                <div className="sw-kbd-combo">
+                  {sc.keys.map((k, j) => <span key={j} className="sw-kbd">{k}</span>)}
+                </div>
+              </Row>
+            ))}
+          </Group>
+        ))}
       </main>
     </div>
   )
@@ -491,7 +536,7 @@ const SW_CSS = `
   .sw-root {
     display: flex; height: 100vh; overflow: hidden; position: relative;
     background: var(--bg); color: var(--text);
-    font-family: 'Satoshi', 'Switzer', -apple-system, system-ui, sans-serif;
+    font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', -apple-system, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
   .sw-drag { position: absolute; top: 0; left: 0; right: 0; height: 34px; z-index: 10; }
@@ -553,7 +598,9 @@ const SW_CSS = `
     font-size: 11.5px; font-weight: 600; color: var(--textDim);
     background: var(--surfaceAlt); border: 1px solid var(--border); border-bottom-width: 2px;
     border-radius: 6px; padding: 3px 8px;
+    font-variant-numeric: tabular-nums; min-width: 20px; text-align: center; box-sizing: border-box;
   }
+  .sw-kbd-combo { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
   .sw-stepper {
     display: flex; align-items: center; gap: 0;
     border: 1px solid var(--border); border-radius: 7px; overflow: hidden;

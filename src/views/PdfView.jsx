@@ -1,33 +1,26 @@
 import { useEffect, useRef, useState } from 'react'
 import useAppStore from '@/store/useAppStore'
+import { loadPdfJs, openPdf } from '@/lib/pdfjs'
+import { dataUrlToBytes } from '@/lib/storage'
 import { generateCoverColor } from '@/lib/utils'
 import QuickAccess from '@/components/QuickAccess'
 
-// ── Load PDF.js from CDN ───────────────────────────────────────────────────────
-
-async function loadPdfJs() {
-  if (window.pdfjsLib) return window.pdfjsLib
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script')
-    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
-    script.onload = () => {
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
-      resolve(window.pdfjsLib)
-    }
-    script.onerror = reject
-    document.head.appendChild(script)
-  })
+// ── Debounced progress persistence ─────────────────────────────────────────────
+// persistLibrary() writes the entire library JSON. Page turns are rapid, so
+// coalesce them and flush on unmount so the last page still sticks.
+let _flushTimer = null
+function queueProgressFlush() {
+  clearTimeout(_flushTimer)
+  _flushTimer = setTimeout(() => {
+    _flushTimer = null
+    useAppStore.getState().persistLibrary()
+  }, 1000)
 }
-
-// ── Load PDF.js text layer CSS ─────────────────────────────────────────────────
-function ensureTextLayerCss() {
-  if (document.getElementById('pdfjs-text-layer-css')) return
-  const link = document.createElement('link')
-  link.id = 'pdfjs-text-layer-css'
-  link.rel = 'stylesheet'
-  link.href = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf_viewer.min.css'
-  document.head.appendChild(link)
+function flushProgressNow() {
+  if (!_flushTimer) return
+  clearTimeout(_flushTimer)
+  _flushTimer = null
+  useAppStore.getState().persistLibrary()
 }
 
 export default function PdfView() {
@@ -47,6 +40,7 @@ export default function PdfView() {
   const canvasRef    = useRef()
   const textLayerRef = useRef()
   const renderTask   = useRef(null)
+  const textLayer    = useRef(null)
   const pdfRef       = useRef(null)
 
   const [c1, c2] = generateCoverColor(activeBook?.title || '')
@@ -56,25 +50,27 @@ export default function PdfView() {
   useEffect(() => {
     if (!activeBook) return
     let cancelled = false
-    ensureTextLayerCss()
 
     async function load() {
       setLoading(true)
       setError(null)
       try {
-        const pdfjsLib = await loadPdfJs()
-
-        const src = activeBook.pdfDataUrl || activeBook.rawDataUrl || null
+        // pdfUrl is an asset:// URL for <bookDir>/source.pdf (see loadLibrary).
+        // pdfDataUrl only exists for a book imported earlier in this session,
+        // before the next loadLibrary swaps it for the file.
+        const src = activeBook.pdfUrl || activeBook.pdfDataUrl || activeBook.rawDataUrl || null
 
         if (!src) {
-          setError('PDF source not found. Please re-import this file.')
+          setError('This PDF was imported before Gnos began saving the original file, so only its text was kept. Re-import the PDF to view its pages.')
           setLoading(false)
           return
         }
 
-        // data: URIs must be passed as `data`, http(s) URLs as `url`
-        const pdfDocSource = src.startsWith('data:') ? { data: atob(src.split(',')[1]) } : { url: src }
-        const pdfDoc = await pdfjsLib.getDocument(pdfDocSource).promise
+        // pdf.js streams from a URL; only a session-local data: URL needs `data`.
+        // Never atob() the whole document — that was a second full copy in memory.
+        const pdfDoc = await openPdf(
+          src.startsWith('data:') ? { data: dataUrlToBytes(src) } : { url: src }
+        )
         if (cancelled) return
 
         pdfRef.current = pdfDoc
@@ -106,7 +102,7 @@ export default function PdfView() {
           offscreen.width  = thumbVp.width
           offscreen.height = thumbVp.height
           const octx = offscreen.getContext('2d')
-          await firstPage.render({ canvasContext: octx, viewport: thumbVp }).promise
+          await firstPage.render({ canvas: offscreen, canvasContext: octx, viewport: thumbVp }).promise
           const thumbUrl = offscreen.toDataURL('image/jpeg', 0.9)
           setCoverDataUrl(thumbUrl)
           if (!activeBook.coverDataUrl) {
@@ -170,32 +166,39 @@ export default function PdfView() {
         canvas.style.height = viewport.height + 'px'
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
-        renderTask.current = page.render({ canvasContext: ctx, viewport })
+        renderTask.current = page.render({ canvas, canvasContext: ctx, viewport })
         await renderTask.current.promise
         renderTask.current = null
 
         // ── Text layer for copy-paste ────────────────────────────────────
-        if (textLayerRef.current && window.pdfjsLib) {
-          const textContent = await page.getTextContent()
+        if (textLayerRef.current) {
+          const pdfjsLib = await loadPdfJs()
           if (cancelled) return
 
           const tl = textLayerRef.current
           tl.innerHTML = ''
           tl.style.width  = viewport.width  + 'px'
           tl.style.height = viewport.height + 'px'
-          // PDF.js 3.x requires --scale-factor to match viewport.scale
-          tl.style.setProperty('--scale-factor', viewport.scale)
+          // v5 names this --total-scale-factor (was --scale-factor in 3.x)
+          tl.style.setProperty('--total-scale-factor', viewport.scale)
 
-          window.pdfjsLib.renderTextLayer({
-            textContentSource: textContent,
+          // v5: TextLayer class replaces the old renderTextLayer() function.
+          // It streams the text content itself, so no getTextContent() here.
+          textLayer.current?.cancel()
+          const layer = new pdfjsLib.TextLayer({
+            textContentSource: page.streamTextContent(),
             container: tl,
             viewport,
-            textDivs: [],
           })
+          textLayer.current = layer
+          await layer.render()
+          if (cancelled) layer.cancel()
         }
 
         useAppStore.getState().updateBookProgress(bookId, pageNum - 1, 0)
-        useAppStore.getState().persistLibrary()
+        // Debounced: persistLibrary serializes the WHOLE library to disk, and
+        // this used to fire on every single page turn.
+        queueProgressFlush()
       } catch (err) {
         if (err?.name !== 'RenderingCancelledException') {
           console.warn('[PdfView] render error:', err)
@@ -207,8 +210,12 @@ export default function PdfView() {
     return () => {
       cancelled = true
       if (renderTask.current) { renderTask.current.cancel(); renderTask.current = null }
+      if (textLayer.current)  { textLayer.current.cancel();  textLayer.current  = null }
     }
   }, [pdf, pageNum, scale, bookId, loading])
+
+  // Flush any pending progress write when the viewer closes.
+  useEffect(() => flushProgressNow, [])
 
   // ── Keyboard nav ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -267,20 +274,11 @@ export default function PdfView() {
         {!loading && !error && (
           <div style={{ position: 'relative', boxShadow:'0 8px 40px rgba(0,0,0,0.4)', borderRadius:2, overflow:'hidden', background:'#fff', display:'inline-block' }}>
             <canvas ref={canvasRef} style={{ display: 'block' }} />
-            {/* Text layer for copy-paste — positioned exactly over canvas */}
-            <div
-              ref={textLayerRef}
-              className="textLayer"
-              style={{
-                position: 'absolute',
-                top: 0, left: 0,
-                overflow: 'hidden',
-                opacity: 0.2,
-                lineHeight: 1,
-                userSelect: 'text',
-                pointerEvents: 'auto',
-              }}
-            />
+            {/* Text layer for copy-paste — positioned exactly over the canvas.
+                Positioning and the transparent text come from the bundled
+                pdf_viewer.css; the old inline opacity:0.2 was a stand-in for
+                that stylesheet and left ghost text visible over the page. */}
+            <div ref={textLayerRef} className="textLayer" />
           </div>
         )}
       </main>
