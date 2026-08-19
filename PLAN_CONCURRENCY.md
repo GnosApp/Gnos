@@ -878,6 +878,52 @@ placeholder. Clicked "Leave the room" from inside the popover — landed on the 
 
 `npm run build` and `npm run build:collab` both pass clean.
 
+### 6.11 Live at join.getgnos.com (2026-08-19)
+
+Task #6 (§6.9) is done, not just prepped — deployed to Cloudflare Workers (assets-only, no
+Worker script), custom domain `join.getgnos.com` attached, DNS on Cloudflare so the CNAME was
+automatic. Three real, distinct bugs surfaced getting there, each one only found by actually
+deploying and checking real response headers/bodies — not by reasoning about the config:
+
+1. **`_redirects` was the true root cause of the "MIME type" bug**, not the `html_handling`
+   theory §6.9 shipped with. An earlier `public-collab/_redirects` (written for a classic-Pages
+   deploy that was never actually used) had a catch-all `/* /collab.html 200` rule. Wrangler
+   honors `_redirects` for Workers-assets deploys too, and `/*` matched every path, including
+   `/assets/*.js`/`.css` — rewriting real asset requests to serve `collab.html`'s HTML instead.
+   After the rename to `index.html` (below), the same rule pointed at nothing — 404 on
+   everything. Deleted the file entirely; `not_found_handling: "single-page-application"` is
+   the correct, asset-aware equivalent and the only routing this target needs.
+2. **`collab.html` copied to `index.html` (kept both, byte-identical) caused a genuine
+   redirect-loop** — Cloudflare's default asset canonicalization picked one URL for the shared
+   content hash and 307'd everything else to it, including itself. Fixed by renaming instead
+   of copying (`postbuild:collab`), so only one file/hash ever exists in the artifact.
+3. **Edge-cache propagation lag after a purge** — a real, expected wait (a couple of minutes for
+   "Purge Everything" to reach every PoP), not a bug, but worth recording: verification has to
+   distinguish "origin is fixed" (checked via a cache-busting query string) from "the edge has
+   caught up" (bare URLs) — conflating the two burned real time here.
+
+Also picked up two things worth keeping: `wrangler` as a devDependency (`.wrangler/`
+gitignored) so this whole class of bug is testable via `wrangler dev` before burning a real
+deploy cycle, not just guessed at — the final fix was verified locally checking actual
+`Content-Type` response headers on the JS/CSS asset requests specifically, which is exactly
+the check the FIRST "fix" skipped (it only checked HTTP status codes and body presence, not
+headers, and missed the bug it was supposedly verifying).
+
+**Verified live, full round trip, real infrastructure — not a proof rig talking to itself:**
+hosted a note from `src/dev/YjsRelayHarness.jsx` running locally, opened the ACTUAL
+`https://join.getgnos.com/join/<roomId>#key=<key>` URL, joined as a guest, approved as editor
+from the host side, typed `PRODUCTION-DEPLOY-VERIFIED` in the deployed page — landed on the
+host's canonical doc over a real WebRTC connection between genuinely separate processes. This
+is the first time anything in PLAN_CONCURRENCY.md ran against real, deployed infrastructure
+rather than two local dev servers.
+
+**What's genuinely left:** `NoteCollabPanel.jsx`'s `shareUrl` still points at
+`getgnos.com/join/...` (the placeholder domain from before deployment); flip it to
+`join.getgnos.com` now that the real subdomain is live. Everything else in §6/§7/§14 that was
+already marked open (fallback WS relay, production signaling server, per-guest star-topology
+rooms, host session lifecycle) is unaffected by this — deployment doesn't change what those
+items need.
+
 ---
 
 ## 7. Resolved: collaborators do NOT need Gnos (2026-08-17)

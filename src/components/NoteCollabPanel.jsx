@@ -81,7 +81,9 @@ export default function NoteCollabPanel({ notebookId, noteTitle, notebookDir, se
   const [name] = useState(() => {
     try { return localStorage.getItem('gnos-collab-name') || 'Host' } catch { return 'Host' }
   })
-  const shareUrl = useMemo(() => `https://getgnos.com/join/${room}#key=${key}`, [room, key])
+  // join.getgnos.com is the real, live deploy (PLAN_CONCURRENCY.md §6.11) —
+  // its own Cloudflare Workers project, independent of gnos-landing.
+  const shareUrl = useMemo(() => `https://join.getgnos.com/join/${room}#key=${key}`, [room, key])
 
   const peer = usePeer(room, key, true, name, PALETTE[0])
   const access = useAccessControl(peer.accessMap, peer.awareness?.clientID)
