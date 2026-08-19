@@ -15,6 +15,13 @@
   --text: #e6edf3;
   --textDim: #6e7681;
   --accent: #388bfd;
+  /* Genuinely inert — never read anywhere. Exists only to change this
+   * stylesheet's emitted bytes (a comment alone survives minification
+   * removal and wouldn't move the content hash) so its content-hashed URL
+   * changes and escapes a Cloudflare edge-cache entry poisoned by the
+   * pre-fix deploy's redirect loop. See collab-main.jsx's matching marker
+   * for the full explanation — one-time fix, not a pattern to repeat. */
+  --gnos-collab-cache-bust: 1;
 }
 
 * { box-sizing: border-box; }

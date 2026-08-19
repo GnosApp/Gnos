@@ -1,6 +1,6 @@
 // Cloudflare Workers static-assets config for the PLAN_CONCURRENCY.md §7/§15
-// web guest client — this repo's newer Cloudflare project type ("Workers",
-// not classic "Pages") deploys via `npx wrangler deploy`, which reads THIS
+// web guest client — this repo's Cloudflare project type is "Workers", not
+// classic "Pages", so it deploys via `npx wrangler deploy`, which reads THIS
 // file. Pure static assets, no actual Worker script — `assets` alone is
 // enough, no `main` entry needed.
 //
@@ -8,30 +8,44 @@
 // NOT the desktop app's own `dist/` — that build bundles the entire Tauri
 // app (Excalidraw, mermaid, pdf.js, algebrite, KaTeX...), none of which a
 // guest joining a note needs or should ever download.
+//
+// The actual bug this deploy target hit, for the record (worth keeping —
+// took several real diagnostic passes to find): an EARLIER version of this
+// setup also had a `public-collab/_redirects` file (Cloudflare Pages'
+// rewrite-rule convention) with a catch-all `/* /collab.html 200` rule.
+// Wrangler turned out to honor `_redirects` for Workers-assets deploys too,
+// not just classic Pages — and a bare `/*` pattern in that syntax matches
+// EVERY path, including `/assets/*.js`/`.css`. That rewrote every asset
+// request to serve `/collab.html`'s HTML content instead of the actual
+// JS/CSS, which is exactly what "the page loads but nothing renders, and
+// devtools shows a MIME-type error on the module script" looks like. Once
+// `collab.html` got renamed to `index.html` (see build:collab), the same
+// rule pointed at a target that no longer existed at all — 404 on
+// everything. `_redirects` has been deleted entirely; `not_found_handling`
+// below is the correct, asset-aware equivalent (it only ever applies to
+// paths that don't match a real file, unlike a blind regex rewrite) and is
+// the ONLY routing mechanism this deploy target needs.
 {
   "name": "gnos-collab",
   "compatibility_date": "2024-09-23",
   "assets": {
     "directory": "./dist-collab",
     // Cloudflare's static-assets serving looks for exactly "index.html" —
-    // both at the bare root AND as the SPA fallback target below — it does
-    // not know about collab.html by name. build:collab RENAMES
-    // collab.html -> index.html as its last step specifically for this;
-    // the file's real identity/name everywhere else in the repo stays
-    // collab.html, this is a deploy-artifact-only rename for this one
-    // target, not a duplicate — see the html_handling note below for why
-    // that distinction mattered in practice, not just in theory.
+    // both at the bare root AND as the SPA fallback target below. It does
+    // not know about collab.html by name; build:collab RENAMES
+    // collab.html -> index.html as its last step specifically for this.
+    // The file's real identity/name everywhere else in the repo stays
+    // collab.html — this is a deploy-artifact-only rename for this one
+    // target.
     "not_found_handling": "single-page-application",
-    // Learned the hard way: Cloudflare's default ("auto-trailing-slash")
-    // canonicalizes asset URLs by content hash. The first version of this
-    // config COPIED collab.html to index.html (kept both, byte-identical)
-    // — Cloudflare saw one content hash under two paths, picked one
-    // canonical URL for it, and 307-redirected every other path to that
-    // URL, including a self-redirect loop on the canonical path itself.
-    // Nothing was ever served — everything just bounced. `"none"` turns
-    // off that canonicalization entirely, which a single-page app with its
-    // own client-side path parsing (GuestApp.jsx reads
-    // window.location.pathname itself) never wanted in the first place.
+    // A guest link is always some /join/<roomId> path GuestApp.jsx parses
+    // client-side (window.location.pathname) — there's no server-side
+    // route table to match, so every unmatched path should fall through
+    // to index.html and let the app's own JS sort out what it means.
+    // "none" disables Cloudflare's separate default asset-URL
+    // canonicalization (auto-trailing-slash / extension redirects) — not
+    // what actually caused the bug above, but still not something this
+    // single-page app benefits from having on.
     "html_handling": "none"
   }
 }
