@@ -1305,4 +1305,194 @@ Ship Tier 1 first (it's the demo-able one), Tier 2 as a follow-on for power user
 
 1. Should the host be able to **re-open a previous session** with the same guests (a
    "resume" link), or is every session strictly new? (Strictly-new is simpler and safer.)
-2. Guest download: markdown only, or markdown + assets as a zip when images are present?
+2. ~~Guest download: markdown only, or markdown + assets as a zip when images are present?~~
+   Resolved 2026-08-19 — both, see §6.8: markdown-only when no images, `.zip` when there are.
+
+---
+
+## 18. Full editor parity for the browser guest — plan for a fresh session (2026-08-19)
+
+Written to be picked up cold, in a new session with none of this conversation's context. Every
+file/line reference below was read directly off the current tree, not recalled — re-verify
+them if much time has passed, since `NotebookView.jsx` moves fast (this session watched a
+concurrent session edit it live throughout).
+
+**The ask:** the web guest client (`collab.html`/`src/collab/GuestApp.jsx`,
+PLAN_CONCURRENCY.md §7, deployed and live per §6.11) should render and behave **exactly** like
+the real notebook editor — every widget, Live/Source/Preview modes, all of it — not the
+deliberately-plain CM6 markdown editor it ships with today (`src/lib/collab/CollabEditor.jsx`,
+which explicitly documents this gap in its own header comment).
+
+### 18.0 Why this is a real project, not a follow-up patch
+
+`NotebookView.jsx` is 10,512 lines. The widget/handler zoo alone — every class and `make*`
+function `makeLivePlugin` depends on or that depends on it — spans roughly lines 218–6478,
+**over half the file**. `makeLivePlugin` itself is ~1,365 lines (4781–6146). None of it is
+extracted into a standalone module today except the math-calculator
+(`src/lib/notebookEditor.js`, 1099 lines, already fully separate — a real precedent for how
+this should look, not a starting point that covers any of the hard part). Budget this as a
+multi-session project, not a single sitting.
+
+### 18.1 Exact current-state map (read directly from `src/views/NotebookView.jsx`)
+
+| What | Lines | Notes |
+|---|---|---|
+| `inlineToHtml` (Preview mode's real HTML renderer) | 218–772 | Takes `notebooks, library, sketchbooks, flashcardDecks` for wikilink/embed resolution |
+| `renderMarkdown` (wraps `inlineToHtml`, block-level) | 773–826 | Also takes `notebookDir` for image path resolution |
+| `resolveImgSrc` | 1478–1491 | `convertFileSrc` + `notebookDir` — the exact thing `hostAssets.js`/`assetsPlugin.js` already had to route around differently for the guest |
+| All widget classes (`FoldArrowWidget` … `VideoLinkWidget`) | 1369–4529 | ~28 widgets — see the full audit table in §2.5.1 for what each one does and how it resolves positions (still accurate; re-confirm under §18.9 below, don't just trust it) |
+| `makeLinkCommands`, `makeInlineCmdPlugin`, `makeInlineCmdCloseHandler` | 4530–4780 | `/table`, `/linkf`, `/linkw`, `/linkv`, `/color`, `/font`, etc. slash commands |
+| `makeLivePlugin` | 4781–6146 | The big one — builds every widget's decorations from `state.doc`/syntax tree on every relevant transaction |
+| Interaction handlers (`makeCheckboxHandler` … `makeMathClickHandler`) | 6147–6477 | Global `EditorView.domEventHandlers`-style click/interaction wiring, reads live DOM (§2.5.1's documented safety pattern) |
+| `makeSourcePlugin` | 6478+ | Source mode's style-only formatting (no syntax hiding) |
+| The actual extensions array (mount effect) | ~6924–7115 (line numbers drift — grep `safeExt(` in the CM6 mount `useEffect`) | The authoritative list of what's live vs source vs both — read this fresh, don't trust a stale line range |
+| `ViewModeBtn`, `MODE_META` (Live=quill/Source=pencil/Preview=eye) | ~6345–6420 (grep `MODE_META`) | Exact icon↔mode mapping already ported once for GuestApp's 2-mode toggle (§6.10) — extend, don't reinvent |
+
+### 18.2 What's explicitly OUT of scope already — don't "fix" these, they're a decision, not a gap
+
+- **Wikilinks/embeds resolving across the vault.** §11 already decided: **ship per-note, guest
+  sees dead `[[links]]`**. A guest has no `notebooks`/`library`/`sketchbooks`/`flashcardDecks`
+  array to resolve against — that's per-collection sharing, a bigger, separate, undecided
+  feature. "Exactly the same" here means: the SAME widget renders, in its ALREADY-EXISTING
+  unresolved/dead-link visual state (confirm `WikiWidget`, ~line 2105, actually has one — if it
+  doesn't, that's a small real gap to close, just not "make wikilinks work") — not that
+  wikilinks start resolving for guests.
+- **Link-picker / wiki-navigation UI** (`linkPickRef`, `wikiNavRef` in `NotebookView.jsx`) —
+  these open OTHER app views (browse the library, jump to another note). A guest has no other
+  views to open. Clicking should be a clean no-op or a small "not available in a shared note"
+  hint, never an attempt to call a ref that doesn't exist.
+- **Sketchbook/flashcard embeds** — same vault-access reasoning as wikilinks.
+
+### 18.3 Phase A — Extraction
+
+Pull the widget zoo, `makeLivePlugin`, and everything in the table above (except the handful
+of app-navigation-only pieces from §18.2) out of `NotebookView.jsx` into a shared module —
+extend `src/lib/notebookEditor.js` rather than inventing a second location. Every function
+that currently takes `notebooks, library, sketchbooks, flashcardDecks, notebookDir` needs those
+params to keep working with **empty arrays / `null`** — audit each widget for what it actually
+does when they're empty (most should just naturally degrade; a few may need an explicit guard
+that doesn't exist today, since no one has ever called them that way before). This is the
+single highest-value, most mechanical phase — get it landed and BOTH `NotebookView.jsx` and
+the guest client import from the same source, no drift possible by construction.
+
+**Do this before anything else** — every later phase assumes it's done.
+
+### 18.4 Phase B — Asset-map-backed resolution (extends §6.7, don't rebuild it)
+
+`hostAssets.js`/`assetsPlugin.js` already solved this for plain markdown images
+(`![alt](src)`). `ImgWidget` (the REAL widget, line 1492) needs the same treatment: accept an
+alternate resolve path (asset-map bytes → blob URL) instead of `resolveImgSrc`+`convertFileSrc`
+when `notebookDir` is null. Same for `VideoLinkWidget` (4470), `FileLinkWidget` (4270),
+`WebLinkWidget` (4300 — likely already fine, it's a URL, no filesystem involved). **Open
+decision for the user, not something to guess at:** video/file assets are typically much bigger
+than images — does the existing 2MB-ish cap (`hostAssets.js`) apply per-asset-type, or does
+video need its own (probably larger, or excluded entirely with a clear "video not available in
+shared notes yet" placeholder rather than trying to ship multi-MB video over a P2P data
+channel)? Don't default this silently — ask.
+
+### 18.5 Phase C — Wikilink/embed degrade, done right
+
+Confirm (or build, if missing) a clean "unresolved" visual state for `WikiWidget` and any embed
+widgets, and confirm their click handlers no-op safely for a guest (no `wikiNavRef`/
+`linkPickRef` calls that assume an app shell that isn't there). This is a small, contained
+phase — the actual "wikilinks work" feature is explicitly not being built (§18.2).
+
+### 18.6 Phase D — CM6 extension-set port
+
+Bring the rest of the extensions list into `CollabEditor.jsx` (or a new shared builder both
+`NotebookView.jsx` and `CollabEditor.jsx` call, post-Phase-A — prefer this, avoids a second
+hand-maintained extensions array drifting from the real one): GFM markdown extensions, search,
+`makeFormatKeys`, `makeTableCommand`, `makeLinkCommands` (guest-safe subset — `/linkf`
+(browse-and-link-a-file) probably degrades or gets its own guest-appropriate picker, `/linkw`
+(wikilink) still inserts the syntax even though resolution is dead per §18.2), `makeInlineCmdPlugin`
++ `makeMathCalcPlugin` (already ported once, reuse), `makePairInputHandler`, `makeGhostHintPlugin`,
+code-folding, the interaction-handlers set, `makeSourcePlugin`, and the image drag/drop/paste
+handlers — these currently call `saveNotebookImage` (Tauri fs); for a guest they need to publish
+into the assets map instead (mirrors what `hostAssets.js` does on share-start, but triggered by
+a live paste/drop instead of the initial scan). Preserve the `safeExt` per-extension
+failure-isolation wrapper (NotebookView.jsx ~line 6913) — it already exists specifically because
+one throwing widget factory used to blank the whole page; the guest client needs that same
+insurance, arguably more so given it's untrusted-network-facing.
+
+### 18.7 Phase E — Live/Source/Preview mode parity
+
+`GuestApp.jsx` already has a real 2-mode toggle (edit/preview, §6.10) using the correct
+quill/eye icons and the correct click-toggle interaction pattern from `ViewModeBtn`. Extend to
+the real 3 modes (`live`/`source`/`preview`, matching `MODE_META` exactly, pencil icon for
+source) — decide whether to also port the long-press-for-a-dropdown gesture (`ViewModeBtn`'s
+`onMouseDown`/`holdTimer` pattern) or keep the simpler click-cycle; either is defensible, not
+free — ask if unsure which reads as "exactly the same" enough. For Preview specifically: swap
+`src/collab/renderMarkdown.js` (this session's compact, deliberately-scoped-down renderer) for
+the REAL `inlineToHtml`/`renderMarkdown` (post-Phase-A, imported from wherever they land) with
+the asset-map image resolution from Phase B substituted in and wikilinks degraded per §18.2 —
+`renderMarkdown.js` can likely be deleted entirely once this lands, it was always meant as a
+stand-in for exactly this.
+
+### 18.8 Phase F — Lazy-load heavy deps, and verify it held
+
+Mermaid (~256KB gzip 71KB) and KaTeX (~258KB gzip 76KB) are both already lazy-loaded in
+`NotebookView.jsx` (`getKaTeX()`, mermaid's own dynamic import) — keep them that way for the
+guest bundle. This is easy to accidentally regress once the widget zoo (which references both)
+gets ported in via a shared module — **after Phase D lands, rebuild `dist-collab` and check the
+chunk list** (`npm run build:collab`, inspect output) to confirm mermaid/KaTeX still show as
+separate, non-eagerly-loaded chunks, not silently pulled into the main `collab-*.js` bundle. A
+guest whose shared note has no math or diagrams should still never download either.
+
+### 18.9 Phase G — Re-audit CRDT safety under continuous remote mutation, don't just trust §2.5.1
+
+§2.5.1's audit (2026-08-17) concluded every widget is safe, but it was reasoned against a
+different threat shape: A70's stale-captured-offset bug under **local editing + periodic disk
+sync** — not a live CRDT where a remote peer's edit can land between any two independent event-
+loop turns. The two defensive patterns §2.5.1 documented (position-in-`eq()`-plus-live-DOM-read;
+content-verified-scan-before-write) are almost certainly still sufficient — they don't actually
+assume the mutation source is local — but "almost certainly" isn't a re-audit. Do the pass
+explicitly: for each widget/handler, confirm no `async` gap between "read a position" and
+"dispatch a write" that skips the content-verification step (that's the actual hazard shape,
+regardless of whether the intervening mutation was local or remote-via-yCollab). Specifically
+re-check the two items §2.5.1 flagged as unusual: `makeTodoHandler`/`makeTaskHandler` (recorded
+as unreachable dead code — confirm still true in whatever markup this port actually emits,
+since "dead" was contingent on other code paths that may change during extraction), and the
+image drop-handler's position-clamp fix (already landed, confirm it's still present and still
+correct post-port).
+
+### 18.10 Phase H — `RelayedEditor`'s reconciliation gets more load-bearing under full parity
+
+The editor-guest path (`src/lib/collab/CollabEditor.jsx`'s `RelayedEditor`) binds CM6 to a
+local-only `draftDoc`, reconciled by **wholesale-importing** the canonical doc's full state on
+every remote change (§6.4/§6.5) — a documented, accepted shortcut ("no real OT reconciliation")
+when the editor was plain text. With the full widget zoo running, that blunt reseed becomes
+more visible and more disruptive: a widget mid-interaction (say, a table cell being edited, or
+a checkbox mid-toggle) can get its underlying content silently replaced by a remote update
+landing at the wrong moment, in a way a plain-text editor never surfaced as a UI glitch. Two
+honest options, don't default to the cheaper one without saying so: (a) accept and document a
+sharper version of the same known limitation ("editing near where a remote peer just edited
+can visibly reset a widget mid-interaction"), or (b) this is the point where building real
+OT/CRDT-aware reconciliation for `draftDoc` (rather than wholesale reseed) actually earns its
+cost — a genuinely separate, harder piece of work than anything else in this plan. Flag this
+tradeoff to the user explicitly before picking one.
+
+### 18.11 Verification plan
+
+Same standard this whole effort has held to — every phase gets checked live, two real
+processes, not reasoned about from source:
+- Two-tab round trip (host desktop app + guest browser) covering every widget category once
+  ported: fold arrows, checkboxes, tags, due dates, math (inline + `MathZoneWidget`), tables,
+  columns, HR, list markers, sup/sub, HTML blocks, mermaid, timer/pomo, habits, task blocks,
+  file/image/video links, wikilinks (confirm dead-but-clean, not confirm-they-resolve).
+- Live ⇄ Source ⇄ Preview toggling mid-session, both as host-side-mirrored content and as a
+  guest, confirming Preview matches what the real app's Preview mode shows for the same note.
+- Role changes mid-session (viewer ⇄ editor) with the full widget zoo active — confirm
+  `RelayedEditor`'s reconciliation behavior from §18.10 in practice, not just in theory.
+- `npm run build:collab` chunk audit from §18.8, every phase that touches the shared module.
+- Asset-heavy note (many images, at least one oversized, at least one video if Phase B took it
+  on) through both host-collection and guest-rendering.
+
+### 18.12 Open decisions for the user (don't guess, ask)
+
+1. Video/file asset size policy (§18.4) — cap, degrade, or exclude entirely for v1.
+2. Long-press mode-dropdown parity (§18.7) — full `ViewModeBtn` gesture, or the simpler
+   click-cycle already in `GuestApp.jsx`.
+3. `RelayedEditor` reconciliation (§18.10) — accept the sharper known limitation, or build real
+   OT/CRDT-aware reconciliation now that the stakes are higher.
+4. Slash-command surface for guests (`/linkf` especially, §18.6) — full parity including some
+   guest-appropriate replacement for the file/link picker, or a clearly-labeled reduced set.
