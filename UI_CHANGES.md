@@ -1,5 +1,1763 @@
 # UI Changes — July 2026 pass
 
+## A118. KanbanCardModal: narrowed overall width, 500→440px
+
+User: modal wasn't using its space efficiently. Checked the tightest row
+(5 priority pills, "Medium"/"Urgent" the longest labels) still holds up
+without wrapping or crowding at 440px, so dropped the fixed width there.
+Verified live, eslint/build clean.
+
+## A117. KanbanCardModal: tightened horizontal padding
+
+User: side margins too generous. Header/body/footer horizontal padding
+24px→20px (still on the A115 4px grid, just one step down); field/button
+internal padding untouched. Verified live, eslint/build clean.
+
+## A116. KanbanCardModal: fixed white/dim color hierarchy, was arbitrary
+
+User: type scale fix (A115) helped, but flagged the white-vs-dim split
+felt arbitrary — no rule for what got `var(--text)` vs `var(--textDim)`.
+Correct: section labels (Title/Priority/Due Date/Description/Comments)
+were dim by default (should read as prominent structure, not muted
+metadata) and the Cancel button was dim-at-rest, only flipping white on
+hover — meaning its resting state didn't match its own hover state or
+the always-white primary button next to it.
+
+**Rule now applied**: `var(--text)` (white) = section labels, the
+selected/active priority pill, and both footer action buttons (Cancel +
+Create Task/Save Changes). `var(--textDim)` = everything else — subtitle,
+placeholders, unselected priority pills, comment timestamps. Delete stays
+its own red, untouched (semantic, not part of this scale). Selected
+priority text was already white — no change needed there, called out by
+the user as already correct.
+
+**Verified live**: labels and Cancel now read white at rest, matching
+Create Task/heading/selected-pill. eslint baseline unchanged, build green.
+
+## A115. KanbanCardModal: collapsed type scale + spacing onto a real grid
+
+User called the modal "off" again after A114's fixes, and pinned it to
+"scaling and spacing, especially text." Counted the actual sizes in play:
+**7 font sizes bunched in a small range with no rhythm** — 18, 12.5, 12,
+11, 10.5, 10, 9, 13 — heading, subtitle, comment body, labels, comment
+meta/avatar, footer/fields all landing on slightly different numbers for
+no reason. Spacing was the same story: 7, 9, 11, 13, 14, 18, 22px one-offs
+instead of a grid.
+
+**Collapsed to 3 font sizes**: 17 (heading), 13 (body — fields, buttons,
+comment text, subtitle), 11 (labels, meta, priority pills, comment
+timestamp/avatar). Subtitle now differs from body text by color/weight
+only, not a 4th in-between size (was 12.5). Comment body text 12→13 to
+match the field/body size instead of sitting alone between it and the
+11px meta size.
+
+**Spacing moved onto a 4px grid** (4/8/12/16/20/24, matching
+`impeccable`'s craft-floor spacing guidance): header padding
+22/18→20/16, body gap 18→20, field padding 9px vert→8px, label
+margin-bottom 7→8, priority-toggle gap 2→4 + container padding 3→4,
+comment bubble padding 7/10→8/12, comment-input row gap 6→8, comment
+input padding 7/11→8/12 (now literally reuses the shared `field` style
+instead of its own smaller one-off), Send button padding 7/14→8/16,
+footer buttons 9px vert→10px (a deliberately larger step for the row's
+primary actions, not a leftover one-off). Added explicit `lineHeight` to
+every text style so line-box height is also on-grid, not left to each
+font's default metrics.
+
+**Verified live**: create + edit modals both re-screenshotted, spacing/
+type now reads as one deliberate scale rather than a pile of near-misses.
+eslint baseline unchanged; build in progress at write time (backgrounded,
+prior build was clean on the same file).
+
+## A114. KanbanCardModal follow-up: footer weight + premature Comments
+
+User asked for the footer's Cancel/primary buttons 50/50, and flagged the
+modal still felt off without saying why. Ran it back through the
+`impeccable` critique checklist — the mismatch: **Comments rendered
+unconditionally**, including in "New Task" (create) mode, so the modal
+asked you to write and Send a comment on a task that doesn't exist yet
+(no id, no persisted entity, nothing to actually be commenting on). None
+of the 3 reference dialogs (Create Event / Schedule Interview / Share
+Project) put a comment thread in their create flow either — only their
+edit/detail view. Fixed: Comments block (and its divider) now gated on
+`!isNew`, same as Delete already was.
+
+**Footer**: Cancel + primary action now split the remaining row 50/50
+(`flex:1` each) instead of shrink-to-content right-aligned. Delete stays
+fixed-width, far left, untouched — the 50/50 split is scoped to the two
+action buttons the user asked about, not a 3-way split with Delete.
+
+**Verified live**: create flow no longer shows Comments; created a real
+card; reopened it in edit mode and confirmed Comments reappears,
+pre-filled, Delete still left/separate, Cancel/Save Changes now equal
+width. eslint baseline unchanged (15 pre-existing, none new); build green.
+
+## A113. KanbanCardModal rebuilt around 3 reference edit-modal screenshots
+
+User supplied a macOS-style "Create an Event" dialog, a light "Schedule
+new interview" form, and a dark "Share project" panel, and asked for the
+task-edit modal's cleanliness/spacing specifically — the card redesign
+from A110-A112 was fine, the modal it opens still looked like the old
+"pile of icon+field rows" shape.
+
+**Common language across all three references, applied:**
+- **Fixed heading + muted subtitle, separate from the editable fields.**
+  The old modal's editable title input *was* the header (giant borderless
+  18px text) — now a plain "New Task"/"Edit Task" heading + a one-line
+  description sits above a real, separately-labeled Title field. Every
+  reference does this.
+- **Uppercase section labels** ("Title", "Priority", "Due Date",
+  "Description", "Comments") above each field/group, replacing the old
+  icon-per-row convention (a `Calendar`/`Flag`/`AlignLeft`/`MessageSquare`
+  icon to the left of each field, no label text).
+- **Real divider lines** — header/body, body/comments, and body/footer —
+  matching the reference panels' section breaks.
+- **Bordered fields with an accent focus ring** (`onFocus`/`onBlur` swap
+  `border-color`, same inline-handler convention this codebase already
+  uses for hover everywhere) — the old fields had no focus state at all.
+- **Priority became a segmented pill toggle** — one bordered strip, the
+  active option raised on its own inset background — instead of a wrapped
+  row of individually-bordered buttons. Directly modeled on the Event/
+  Reminder toggle and the 30/60 min duration toggle in two of the
+  references.
+- **Footer**: destructive action (`Delete`, now with a `Trash2` icon) kept
+  separate on the left; `Cancel` (new — there was no explicit cancel
+  button before, only the X and backdrop-click) + the solid primary action
+  right-aligned. Matches all three references' footer shape.
+
+**Not copied**: the character-limit counter pill next to "Title" in the
+event dialog (we don't enforce a max length — a fake counter would be
+decoration, not data) and the linked-record preview card in the interview
+form (no equivalent concept in this app's task model). Consistent with
+every prior pass's rule: match the design language, don't fabricate fields
+the reference implies but this app doesn't have.
+
+**Verified live** (see A112 for how) — opened the real modal in the
+browser preview, typed a title, picked a priority, confirmed the accent
+focus ring, created the task, reopened it in edit mode and confirmed every
+field pre-fills correctly including the Delete button appearing only in
+edit mode. Screenshotted at each step.
+
+**Verify:** `npx eslint` clean (`AlignLeft` import dropped — no longer used
+anywhere in the file — everything else pre-existing baseline); `npx vite
+build` green; impeccable `detect.mjs`: zero findings in the modal.
+
+## A112. Kanban board pushed closer to 1:1, and a real live-verification breakthrough
+
+User pushed back: A110/A111 were "better ish" but wanted the dark reference
+matched much more closely, and pointed out the onboarding screen can be
+skipped to see the real app.
+
+**The onboarding bypass**: `localStorage.setItem('gnos_onboarding_done',
+'1')` then reload. `App.jsx` already reads exactly this key
+(`onboardingCompleteStore || localStorage.getItem('gnos_onboarding_done')
+=== '1'`) — setting it in a fresh browser tab (no real archive, no Tauri)
+drops straight into the app with its bundled sample library. **This is the
+first time in this whole popup-revamp project that live visual
+verification was actually possible** — every prior pass (A101–A111) was
+verified by code review alone, with a standing note that the Tauri-fs
+onboarding gate blocked the browser preview. It didn't; only the
+first-run *screen* did, and it can be skipped.
+
+**Used it to verify and refine the kanban board live**, including actually
+creating cards through the real UI (title, due date, priority, comments)
+and confirming the result end-to-end:
+- Widened columns (240px card slot → 280px) — the reference boards give
+  cards noticeably more breathing room than the initial pass had.
+- Card padding 10px/11px → 12px/13px, corner radius 10→12px, title
+  14→14px (was 13, this is now the *actual verified* size, not a guess).
+- Confirmed live: card creation, priority picker, due-date relative
+  labels, comment counts, the overdue-red state, and the new "…" column
+  menu (Rename/Delete via the shared `ContextMenu`) — all render and
+  behave correctly. Screenshotted directly against the dark reference.
+
+**Also confirmed harmless**: kanban board data lives in local component
+state, loaded/saved through Tauri fs calls that fail silently in the
+browser preview (expected, same as every other view) — test cards created
+during this verification session don't persist and won't pollute the
+user's real data.
+
+**For future sessions on this project**: the onboarding-skip trick means
+**live visual verification is available going forward** — the standing
+"needs `npm run tauri:dev`, can't verify" caveat on A101 through A111
+no longer has to apply to new UI work. Worth re-verifying older passes
+opportunistically if touching that code again, rather than as its own
+project.
+
+**Verify:** confirmed live in the browser preview (see above) rather than
+by code review alone, for the first time this project — `npx eslint`
+clean (baseline unchanged), `npx vite build` green.
+
+## A111. Fix: the `/kanban` notebook widget A110 shipped didn't actually run
+
+User report: "the kanban widget isn't running." A110's `/todo`→`/kanban`
+rename only updated `parseTaskBlock`'s own header regex — missed **four
+other places** that gate on the literal string `/task` *before*
+`parseTaskBlock` is ever reached, so a freshly-typed `/kanban` block never
+made it far enough to render:
+
+- `_buildTaskDecos`'s whole-document early-exit (`if
+  (!fullDoc.includes('/task'))`) — skipped the entire line-scan for any
+  notebook that didn't *also* happen to contain the literal text "/task".
+- The same function's per-line gate (`/^\/task(?::.*)?$/`) run right
+  before calling `parseTaskBlock` — independently hardcoded, not reading
+  from the already-fixed regex inside `parseTaskBlock` itself.
+- The **preview-mode** markdown-to-HTML renderer's own separate `/task`
+  detector (a completely different code path from the live editor).
+- The paragraph-buffering pass that keeps a kanban block's lines grouped
+  instead of being split apart at blank lines — also its own hardcoded
+  `/task` regex.
+
+All four now accept `/(?:task|kanban)`. **Also found**: `TaskBlockWidget`
+(the actual live, interactive widget class) has its *own* internal
+`_serialize()` method — separate from the standalone `serializeTaskBlock`
+function A110 already fixed — which was still writing the header back out
+as `/task` on every interaction (drag, checkbox toggle), silently
+reverting the rename each time the widget touched itself. Fixed to match:
+always writes `/kanban` now.
+
+This is the actual lesson from A110: a single rename inside one "obviously
+central" parser function looked complete, but the same trigger string was
+duplicated across five independent call sites (four gates + one
+serializer) that don't share the check. Grepped the whole file for every
+remaining `/task` occurrence after fixing these — the rest are comments
+only.
+
+**Verify:** `npx eslint` clean on `NotebookView.jsx` (pre-existing-only,
+same baseline as A110); `npx vite build` green. **Not visually verified**
+— can't reach the notebook editor through the browser-preview onboarding
+flow (same Tauri-fs limitation as every prior pass); needs a real check in
+`npm run tauri:dev`: type `/kanban` in a notebook, confirm the board
+renders, add/drag/check a task, confirm the source line stays `/kanban`
+(not reverting to `/task`) after each interaction.
+
+## A110. Kanban board — real redesign toward the dark reference, real fields only
+
+User asked for the kanban board to match the reference screenshots
+"near 1 to 1," especially the dark Linear-style one. Went further than
+A107's earlier pass, but stopped short of literal 1:1 anywhere the
+reference needed data this app doesn't have — no fabricated
+assignee/attachment/sub-task fields standing in for real ones.
+
+**Elevation hierarchy was backwards, fixed.** The reference boards get
+progressively *lighter* from page → column → card (each layer floats above
+the one below). Ours had it backwards: columns used `var(--surfaceAlt)`
+(the lighter token) and cards used `var(--surface)` (darker), so columns
+visually sat *above* their own cards. Swapped: column background → `var(
+--surface)`, card background → `var(--surfaceAlt)`, page stays `var(--bg)`
+— now cards correctly pop off a darker column, matching the reference.
+
+**Column header** — the color swatch became a hollow colored ring (was a
+solid dot), closer to the reference's circular status token; the count
+badge now sits on `var(--bg)` (the darkest tier, for contrast against the
+now-darker column); the bare delete `×` button became a `…` button that
+opens the shared `ContextMenu` with Rename/Delete — matches the reference's
+overflow-menu pattern instead of one exposed destructive action.
+
+**Card layout rebuilt** into the reference's three-row shape:
+1. Status ring + a real ticket-style code (`TASK-1234`, derived from the
+   card's own id/creation-timestamp — genuine data reformatted, not
+   invented) + a priority flag icon (see below) + the edit affordance.
+2. Title, bold.
+3. Meta row: comment count (left) and a **relative due-date label** (right)
+   — "Today"/"Yesterday"/"in 3 days"/"5d overdue", colored, replacing the
+   old literal ISO-date chip. Real data, reformatted to match the
+   reference's phrasing exactly.
+
+**New real field: `card.priority`** (`none`/`low`/`medium`/`high`/
+`urgent`), user-set via a row of colored flag buttons in
+`KanbanCardModal` (same pattern as the existing due-date/description
+rows). Shows as a small colored `Flag` icon on the card when set. This is
+the one place the redesign adds a field rather than reformatting an
+existing one — justified because it's genuinely useful and fully
+user-controlled, unlike an avatar (no assignee/user system in this
+single-user app) or an attachment count (no attachment feature), which
+the redesign deliberately does **not** fake.
+
+**"+ Add task"** — was a dashed-border box requiring hover to show any
+color; now a plain text row (icon + label), matching the reference's
+minimal link-style affordance.
+
+**Default board** — the 4 starter columns (`Backlog`/`To Do`/`In
+Progress`/`Done`) now ship with distinct colors instead of all defaulting
+to the same red, so a fresh board's rings read as differentiated status
+tokens immediately instead of needing manual setup first.
+
+**`/todo` → `/kanban`, notebooks.** Separately: `/todo` (a "To-do list
+block" slash command) turned out to be **dead** — it inserted plain text
+but nothing anywhere built a widget to render it (confirmed: no code
+creates a `.cm-todo-block-w` element, only orphaned CSS and a click handler
+remain, left in place — untangling ~70 lines of dead CSS wasn't part of
+this ask). Meanwhile `/task` already **is** a real, working multi-column
+kanban board embedded in notebooks (`parseTaskBlock`/`serializeTaskBlock`/
+`.cm-task-board-w`, fully wired). Consolidated: removed the dead `/todo`
+entry, renamed `/task`'s trigger to `/kanban` in the command palette.
+`parseTaskBlock`'s header regex accepts both `/task` and `/kanban` (so
+notebooks written before this rename still render); `serializeTaskBlock`
+now always writes `/kanban` going forward — an old `/task`-headed board
+silently migrates to the new header the next time it's touched.
+
+**Verify:** `npx eslint` clean on `LibraryView.jsx`/`NotebookView.jsx`
+(pre-existing-only baseline, unchanged); `npx vite build` green; impeccable
+`detect.mjs` on the touched kanban region: zero findings. **Not visually
+verified** — same Tauri-fs onboarding limitation as every prior pass in
+this project; the kanban board specifically also can't be reached through
+the browser-preview onboarding flow at all. Needs a look in `npm run
+tauri:dev`.
+
+## A109. Hardcoded dark-theme accent color — codebase-wide mechanical fix
+
+Follow-up to A108's flagged finding. User asked for a quick pass rather
+than deferring it.
+
+Every `rgba(56,139,253,X)` — the dark theme's accent blue, `#388bfd`,
+written out as a literal RGB triple instead of referencing `var(--accent)`
+— replaced with `color-mix(in srgb, var(--accent) {X*100}%, transparent)`
+across `App.jsx`, `SideNav.jsx`, `LibraryView.jsx`, `NotebookView.jsx`,
+`ReaderView.jsx`, `SketchbookView.jsx`, and `global.css`. **80 instances**
+(A108's "151" was an artifact of an overlapping shell-glob double-counting
+some files in the earlier count, not a real discrepancy — every real
+instance is now fixed, confirmed by a zero-result re-grep).
+
+Mechanical, one-for-one value substitution — a Python regex pass, not
+hand-edited, since the transform is identical at every site and manual
+editing 80 spots would only add transcription risk. Two `--addBookBg`/
+`--addBookHover` root CSS custom properties were among the hits — these
+now correctly derive from `var(--accent)` inside their own definitions
+(valid CSS; custom properties resolve lazily), instead of being permanently
+pinned to dark-theme blue.
+
+**Deliberately not touched, different bug** — solid hardcoded `#388bfd`
+(no alpha) used as a plain fill/border color, e.g. `--addBookIcon: #388bfd`
+in the same `:root` block. That's a separate question (is this specific
+spot *supposed* to always be blue regardless of theme, or should it track
+`var(--accent)` too?) that needs case-by-case judgment, not a mechanical
+sweep — flagged, not fixed.
+
+**Verify:** `npx eslint` on all seven files — zero new errors (spot-checked
+line ranges against each file's pre-existing baseline; several of these
+files were linted for the first time this session and carry large
+pre-existing debt unrelated to this change); `npx vite build` green;
+impeccable `detect.mjs` — 39 pre-existing findings across these files,
+none related to (or newly introduced by) this pure color-value swap.
+
+## A108. Popup/dropdown revamp Pass 5 — dropdowns/pickers, and two systemic bugs
+
+Swept the Pass-5 list (`NavDropdown`, `SearchDropdown`, `ChapterDropdown`,
+`MonthYearPicker`, `NbShareMenu`, `CollectionSwitcher`'s picker, the
+bulk-select Add-to-Collection picker) for the bug classes prior passes kept
+finding (unicode-as-icon, wrong red, radius outliers). Most were already
+clean — this pass's real value was two **systemic, codebase-wide** bugs
+found while checking `CollectionSwitcher`, not confined to popups.
+
+**Fixed in this pass's actual scope:**
+- **Bulk-select "Add to Collection" picker** (`LibraryView.jsx`) — same
+  `quicknotes`-leak-plus-unsorted bug flagged back in A102, now fixed here:
+  filtered, sorted, and using `CollectionFace` for real icons (was
+  emoji/color-only). Bulk-delete button's red was `#ef5350` — app standard
+  is `#f85149` (Pass 1) — fixed.
+- **`CollectionSwitcher`'s picker popup** (`SideNav.jsx`) — container
+  background was `var(--bg)` instead of `var(--surface)` (inconsistent
+  with the rest of the menu family) and radius 10→8 to match; **found a
+  real bug in the process**: the active row's highlight was
+  `background: active ? 'var(--accent)14' : 'none'` — `'var(--accent)14'`
+  is not valid CSS (you cannot append a hex-alpha suffix to a `var()`
+  call), so the browser silently dropped it and the active row never
+  actually highlighted. Fixed with `color-mix(in srgb, var(--accent) 14%,
+  transparent)`.
+
+**Systemic bug #1 — the same `var(--accent)NN` invalid-CSS typo, found
+everywhere.** A codebase-wide grep for the pattern turned up 8 more
+identical instances: `GraphView.jsx` (5, at 18%/22% opacity — active-state
+highlights on the search view toggle, label toggle, link-filter toggle),
+`LibraryView.jsx` (2 more: a smart-collection badge border at 44%, and a
+quick-switch collection button's active background at 18%). All fixed the
+same way. One of the `LibraryView.jsx` spots also had a `⚡ Smart` emoji
+standing in for an icon — replaced with a proper `Zap` icon.
+
+**Systemic bug #2 — hardcoded dark-theme accent color instead of
+`var(--accent)`, found while checking the notebook date-picker widgets.**
+`showDateTimePicker`/`_makeTaskDatePicker` (vanilla-DOM CodeMirror popups
+in `NotebookView.jsx`) had their "selected date" highlight hardcoded as
+`rgba(56,139,253,X)` — the literal RGB of the **dark theme's** accent blue
+— instead of `color-mix(in srgb, var(--accent) X%, transparent)`. This app
+ships 6 themes with different accent colors (Coffee `#8b5e3c`, Light
+`#0969da`, Cherry `#e05c7a`, Sunset `#e8922a`, Moss `#3d6e32`); on every
+theme except Dark, this highlight silently shows the wrong (blue) color
+instead of the theme's actual accent. Fixed both instances in scope.
+
+**This bug is much bigger than two instances — flagging, not fixing
+further here.** A full-codebase grep for the literal string
+`rgba(56,139,253` (excluding the theme-definition file itself, where it's
+correctly the *literal value being defined*) returns **151 matches across
+7 files**: `App.jsx`, `SideNav.jsx`, `LibraryView.jsx`, `NotebookView.jsx`,
+`ReaderView.jsx`, `SketchbookView.jsx`, and `global.css` itself. Every one
+of these is a spot where a non-Dark theme user sees a blue tint where the
+UI meant to show their actual accent color — active tab highlights, hover
+states, focus rings, drag-over states, and more, all app-wide, predating
+this popup-revamp project entirely. Not attempted here: the fix pattern is
+mechanical (`rgba(56,139,253,X)` → `color-mix(in srgb, var(--accent)
+{X*100}%, transparent)`) but 151 instances across 7 files is a real,
+separate undertaking that deserves its own reviewed pass, not a blind
+sweep folded into Pass 5. Flagged for the user to decide on.
+
+**Also checked, not fixed — architecturally different, larger undertaking:**
+the wiki-link (`@`) and slash-command (`/`) autocomplete menus
+(`makeWikiDropdownPlugin`/`makeSlashSource`, `NotebookView.jsx`) are
+CodeMirror `autocomplete()` extensions with **no custom styling at all** —
+no `.cm-tooltip-autocomplete`/`.cm-completionLabel` overrides found
+anywhere in the codebase, so they render in CodeMirror's bare default
+theme, not this app's design language. Reskinning them needs a proper
+`EditorView.theme()` block, a different kind of work than the React-modal
+passes so far.
+
+**Swept clean, no changes needed:** `NavDropdown`, `SearchDropdown`,
+`ChapterDropdown`, `MonthYearPicker`, `NbShareMenu`,
+`showDateTimePicker`/`_makeTaskDatePicker`'s own chrome (radius, shadow,
+spacing — solid already, only their one color token was wrong).
+
+**Also fixed in code touched along the way (impeccable flagged all three):**
+the bulk-select toolbar's entrance animation used a bounce/overshoot easing
+curve (`cubic-bezier(0.34,1.56,0.64,1)`, craft-floor bans this) — changed
+to the same exponential ease-out `gnos-pop-in` already uses elsewhere. Two
+progress bars animated `width` (layout-thrash risk) — a collection's
+completion bar in `LibraryView.jsx` and a stat bar in `GraphView.jsx`
+(caught by the post-turn design-hook re-scan) — both changed to
+`transform: scaleX()`.
+
+**Verify:** `npx eslint` clean on every touched file (pre-existing-only
+errors, same baseline as prior passes); `npx vite build` green (transiently
+blocked mid-session by another chat's in-flight `collab.html`/
+`collab-main.jsx` work, unrelated to this session — resolved once that
+landed); impeccable `detect.mjs` re-run on the touched files after the
+easing/progress-bar fixes: both findings gone, one unrelated pre-existing
+finding remains elsewhere in `LibraryView.jsx`.
+
+## A107. Popup/dropdown revamp Pass 4 (kanban board) — real redesign, not just polish
+
+User supplied three reference kanban screenshots (Linear-style light, Linear-style
+dark, a CRM leads board) and flagged our kanban as looking "terrible." This one
+warranted an actual redesign, not the polish level of A106.
+
+**`KanbanBoard`/`KanbanCardModal` (`src/views/LibraryView.jsx`):**
+- **Removed the colored left border-bar on every card** — `craft-floor`
+  explicitly bans this exact shape ("a colored border-left or border-right
+  above 1px on cards... the most recognizable tell of AI-generated UIs"),
+  confirmed by impeccable's mechanical detector flagging the identical
+  pattern elsewhere in this codebase's CSS. Replaced with a small 6px color
+  dot inline before the title — same information (the column's tag color),
+  reads like the status dots in all three reference boards, not a slop tell.
+- **Column title** — was uppercase/10.5px/textDim (borrowed the app's
+  section-label convention, which fits a category label but not a column
+  heading). Every reference board uses a plain bold heading for columns.
+  Changed to 13px/600/normal-case/full-text-color, both the display span and
+  the rename input.
+- **Column color swatch** — square (radius 3) → circle, in both the trigger
+  dot and the picker grid, closer to the reference boards' circular status
+  indicators.
+- **Unicode-glyph icons replaced** (same craft-floor rule as A106): column
+  delete `×` → lucide `X`; card's `⋯` edit-affordance → lucide `Ellipsis`
+  (now with a proper hover background circle, was just an opacity fade);
+  "+ Column"/"+ Add task" leading `+` text → lucide `Plus`; comment-remove
+  `×` (in `KanbanCardModal`) → lucide `X`; the description indicator dots
+  `···` → a small `AlignLeft` icon (matches the description field's own
+  icon in the edit modal, more legible than three punctuation dots).
+- **Wrong red, again** — `KanbanCardModal`'s delete button and the overdue-
+  date chip both used `#ef4444`/`rgba(239,68,68,…)` instead of the app-wide
+  `#f85149` danger red (Pass 1 standardized this everywhere else). Fixed
+  both. **Also found and fixed the identical copy-pasted pattern in
+  `EventModal` (`src/components/Calendar.jsx`)** — byte-identical delete-
+  button style object, same wrong red, clearly copy-pasted from the same
+  origin as the kanban one. A stray third instance in `NotebookView.jsx`
+  is a genuine multi-color palette array (not a semantic "danger" use) —
+  left alone, not a bug.
+- `KanbanCardModal` corner radius 18px → 14px (same less-round direction as
+  every prior pass; 14 keeps this modal in the same tier as `SideEditModal`/
+  `CollectionEditModal`, which already sit at 14).
+- Card padding evened out to `11px 12px` (was asymmetric `10px 10px 9px
+  10px`, a leftover from when the left color bar needed the padding to
+  work around it).
+- Cleaned up one truly-dead line found along the way: `isInlineColorOpen`
+  was computed every card render and never read (the per-card color-picker
+  UI it would have gated was never built — `updateCardColor` is also fully
+  unused, left alone since removing it is unrelated cleanup, not a visual
+  fix, and rebuilding the half-finished per-card-color feature it implies
+  would be inventing new functionality, not a design pass).
+
+**Other Pass 4 modals** (`SideEditModal`, `EditItemModal`,
+`MissingSourceModal`) — swept for the same bug classes (unicode-as-icon,
+wrong red, radius outliers); none found. These three were already clean.
+
+**Verify:** `npx eslint` clean (`LibraryView.jsx` down one error from
+baseline — the dead `isInlineColorOpen` removal — `Calendar.jsx`
+pre-existing-only); `npx vite build` green; impeccable `detect.mjs` on the
+touched kanban region: zero findings (was flagging the side-tab pattern
+before this pass, confirmed gone after).
+
+## A106. Popup/dropdown revamp Pass 3 — Settings modal polish
+
+`UniversalSettingsModal` (`SideNav.jsx`) — unlike Pass 1/2's targets, this
+one was already well-architected (shared `SettingsRow`/`SettingsSectionLabel`/
+`Toggle`/`Slider`/`.gnos-select` used consistently across all 7 tabs, no
+duplicate popup implementations to unify). Pass was craft-floor polish +
+one real find, not a rebuild:
+
+- **Unicode glyphs standing in for icons** — craft-floor explicitly bans
+  this ("icons are drawn, from a real library... in one consistent stroke
+  and weight"), and the rest of the app is 100% lucide-react. Fixed four:
+  `⇄ Switch Archive` → `RefreshCw` icon + text, `↓ Export`/`↑ Import` →
+  `Download`/`Upload` icons, `✓ Piper is installed` → `Check` icon (tinted
+  accent, only shown when actually installed — was baked into the string
+  unconditionally reachable only via the ternary's true branch, now an
+  explicit conditional element).
+- **Real find: `PluginsSettingsPanel` had its own hand-rolled toggle
+  switch** (34×20px, custom inline styles, its own knob-transition timing)
+  instead of using the shared `Toggle` component every other setting in
+  this exact modal uses (38×22px, `.gnos-toggle`). A third toggle
+  implementation hiding in a file that already has one canonical one.
+  Replaced with `<Toggle on disabled title onChange>` — `Toggle` already
+  supports `disabled`+`title`, no new capability needed.
+- **Missing `fontFamily: 'inherit'`** on the Export/Import buttons — every
+  sibling button in the same tab had it, these two didn't, so they'd have
+  rendered in the browser's default UI font instead of the app's font
+  stack. Fixed alongside the icon change.
+- **Modal corner radius** 14px → 10px, closer to (not identical to) the
+  5px/8px scale Pass 1/2 settled on for menus/popups — a modal is a bigger
+  surface than a context menu and conventionally keeps a larger radius,
+  but 14px was noticeably rounder than everything else in the app's
+  "less round" direction from A102.
+
+**Verify:** `npx eslint` clean (pre-existing-only, same 2 errors as every
+prior pass); `npx vite build` green; impeccable `detect.mjs` over the
+whole file: zero findings, including the touched region.
+
+## A105. Popup/dropdown revamp Pass 2 — one shared AddPopup component
+
+Same treatment Pass 1 gave the context menus. Three implementations found:
+`SidebarAddPopup` (`SideNav.jsx`), `AddPopup` + `LibContextMenu`
+(`LibraryView.jsx` — the latter a mislabeled duplicate of the former,
+identified during Pass 1). Real inconsistencies between them, not just
+duplicated code:
+- **`SidebarAddPopup` was missing "Open File…" entirely** — the other two
+  had it, the sidebar's version didn't.
+- **Audiobook icon disagreed** — `Volume2` in one, `Music` in the other two.
+- **Icon color disagreed** — muted `var(--textDim)` in the sidebar version,
+  accent-tinted in the other two (CSS forced icons to 16×16 regardless of
+  the `size={20}` prop in the JSX — dead prop value).
+- **Header text disagreed** — "Add to Library" vs "Add".
+- **A real functional bug**: `LibraryView.jsx`'s `addOpen` state (set by
+  the empty-library "+" button and an `open-add` command) only ever
+  rendered something when `isMobile` was true — the desktop path was
+  completely dead, no popup, no error, just nothing. Found while tracing
+  where `<AddPopup>` was actually used.
+
+**New `src/components/AddPopup.jsx`** — the one component now used
+everywhere, with a `variant` prop covering every anchor shape the old three
+needed: `up` (sidebar footer, opens upward), `down` (a header/toolbar
+button, opens downward), `fixed` (right-click, viewport-clamped like
+`ContextMenu`), `sheet` (mobile bottom-sheet embedding), and new `center`
+(viewport-centered — used to finally wire up that dead desktop path, with
+a dismiss-on-click-outside backdrop matching the mobile sheet's). Container
+is literally `ContextMenu.jsx`'s `.context-menu` class — same chrome
+(radius, shadow, entrance animation, z-index token) for both popup
+families now, not just visually similar. Row styling (`.add-choice-btn`
+etc.) brought in line with Pass 1's leaner type (accent-icon convention
+kept — 2 of 3 old implementations already did this — font-weight 500 for
+labels, a dedicated `.add-choice-sub` class for the format-hint captions,
+which are kept — informative, low-cost, no reason to cut them).
+
+**All four call sites updated**, each still supplying its own
+creation-logic callbacks (same pattern as `ContextMenu`'s caller-supplied
+`items`): `SideNav.jsx`'s footer button (`variant="up"`), `App.jsx`'s
+titlebar button (`variant="down"`, and its redundant manual positioning
+wrapper div removed now that the component handles its own placement),
+`LibraryView.jsx`'s right-click-empty-space (`variant="fixed"`) and its
+add-triggers (`variant="sheet"`/`"center"` by device, fixing the dead
+desktop path above).
+
+**Verify:** `npx eslint` clean on all four touched files (pre-existing-only
+errors — this was the first time this session `App.jsx` got linted; its
+~70 pre-existing errors are almost all one cascading `react-hooks/
+rules-of-hooks` report from an intentional early-return-before-hooks
+dev-only code path, confirmed none fall inside the edited region);
+`npx vite build` green; impeccable `detect.mjs` over all five touched
+files: zero findings in new/changed code.
+
+## A104. Two quick fixes — quicknotes leak in CollectionSwitcher, Quicknotes added to the type-filter cycle
+
+- `CollectionSwitcher`'s `workspaces` list (`SideNav.jsx`) was still missing
+  the `quicknotes` exclusion everything else in the sidebar got in A102 —
+  fixed, one-line filter.
+- **`LibraryView.jsx`'s header `TypeFilterBtn`** (All → Books → Audiobooks
+  → Notebooks → Sketchbooks → Flashcards → All) gained a 7th stop:
+  **Quicknotes**. Not a real content type — it's notebooks that belong to
+  the auto-managed `quicknotes` collection — so `renderAll()`'s filter
+  branches specially for `tf === 'quicknotes'`: resolves that collection's
+  item-id set and filters `notebooks` down to it, while books/audio/
+  sketchbooks/flashcards are hidden entirely (same as any other single-type
+  filter). New `StickyNote` icon in `TYPE_FILTER_META`, matching the
+  sidebar's Quicknotes row icon (A100).
+
+**Verify:** `npx eslint` clean (pre-existing-only), `npx vite build` green.
+
+## A103. Pass 1 round 3 — lighter/leaner context-menu type, real icons in collection pickers, emoji picker dropped
+
+Reference: a Todoist-style context menu screenshot the user liked ("more
+comfortable and ample spacing + clean look"). Adopted the parts of its
+system that fit our scale (regular-weight type, comfortable-not-cramped
+rows) rather than copying its literal desktop-app pixel sizes, which are
+much bigger than this app's compact chrome.
+
+**`.ctx-item` typography/spacing (`global.css`):** font-weight 500 → 400
+(this — not the earlier size numbers — was most of the "fat/bloated"
+complaint: medium weight at small size reads heavier than it looks at a
+glance), font-size 13px → 12.5px, padding 7px → 8px, icon-label gap 7px →
+8px. Net: leaner glyph weight, slightly roomier row.
+
+**Emoji picker removed from `CollectionEditModal`** ("isn't necessary") —
+the input is gone; the `emoji` field itself stays in the save payload
+untouched so any collection that already has one doesn't lose it, and
+`CollectionFace` still renders it (emoji still wins over icon if both are
+somehow set) — just nothing left in the UI to set a *new* one. Picking an
+icon still clears a legacy emoji so the icon actually takes effect instead
+of being silently outranked.
+
+**Real collection icons now show in both places asked for:**
+- **"Add to Collection" picker** (`buildAddToCollectionSubmenu`,
+  `src/lib/collectionSubmenu.jsx`) — each row now renders via
+  `CollectionFace` (emoji/icon/color) instead of plain text.
+- **"Move Into" / "Move into"** (collection → collection reparenting, both
+  `SideNav.jsx` and `LibraryView.jsx`) — same treatment, plus alphabetical
+  sort and a `quicknotes` exclusion (was leaking in here too, same bug
+  class as A102's fix to the Add-to-Collection list) and a divider before
+  the real collection list in `LibraryView.jsx`'s version.
+
+**`ContextMenu.jsx` gained a general `iconNode` escape hatch** (top-level
+items and submenu items) alongside the existing raw-SVG-string `icon` —
+takes priority when both are given. Needed because a collection's glyph
+can be an emoji, a lucide icon, or a color dot depending on the collection,
+which doesn't fit the app-wide "icon is a raw `<path>` string" convention.
+
+**File shuffle to satisfy `react-refresh/only-export-components`** (an
+enforced eslint error for a component file that also exports plain
+data/functions, hit twice this round): `CollectionFace` moved to
+`src/lib/collectionIcons.jsx` (component-only); the `COLLECTION_ICONS`
+array/map that used to live next to it moved to new
+`src/lib/collectionIconData.js` (plain data, imported by both
+`collectionIcons.jsx` and `SideNav.jsx`'s icon-picker grid).
+`collectionSubmenu.js` → `.jsx` (now renders `<CollectionFace/>`, needs JSX).
+
+**Not done:** LibraryView.jsx's own collection cards, collection detail
+header, and bulk-select picker still don't render `col.icon` — same gap
+noted in A102, still open in `PLAN_POPUP_REVAMP.md`. LibraryView also has
+its own separate collection-edit surface (`EditItemModal` with
+`fields:['color']`, no emoji field to begin with so nothing to remove
+there, but also no icon field — a third, still-inconsistent editing
+surface alongside `CollectionEditModal`).
+
+**Follow-up, same session:** the sidebar footer's `CollectionSwitcher`
+(the "Home / Web Design / Otis / …" popup you cycle collections from) was
+missed in the sweep above — still rendering the old emoji/color-dot/plain-
+House fallback in both the picker-popup rows and the collapsed switcher
+button. Fixed: both spots now render `<CollectionFace col={ws}/>`, with the
+synthetic `id: null` "Home" entry (not a real collection, no `col.icon` to
+read) kept on its explicit House icon. Also caught and fixed the sidebar
+tree's own active-collection-workspace header row (`activeCol.emoji`
+ternary) — same stale pattern, same fix.
+
+**Verify:** `npx eslint` clean on every touched file (pre-existing-only
+errors remain — same set as A101/A102); `npx vite build` green; impeccable
+`detect.mjs` scan over all seven touched files: zero findings in the new
+code (all 21 pre-existing, elsewhere).
+
+## A102. Pass 1 round 2 — sidebar chevron alignment, collection icon picker, context-menu spacing
+
+Another live-screenshot round on top of A101.
+
+**Sidebar chevrons misaligned.** Type-folder rows (Books/Audiobooks/…) wrap
+their chevron in `.sidenav-nav-expand` (adds 2px padding); collection rows
+rendered `<ChevronIcon/>` bare with slightly different row padding —
+different total inset from the row's right edge, so the two groups'
+chevrons sat a few px apart instead of forming one column. Root cause was
+collection rows being a fully bespoke inline-styled div instead of sharing
+`.sidenav-nav-item`/`.sidenav-nav-icon`/`.sidenav-nav-expand` with the
+type-folder rows above them — which was also *why* they "looked different"
+(brighter resting-state text since collections hardcoded `color:
+var(--text)` instead of inheriting `.sidenav-nav-item`'s dimmed
+`var(--textDim)`-until-hover, different icon opacity, no keyboard
+support). Collection rows in `SideNav.jsx` now render through the same
+three classes as every other row — only the per-depth left indent stays as
+an inline override. Manual `onMouseEnter`/`onMouseLeave` background swap
+removed in favor of the class's own `:hover` rule.
+
+**Icon picker added to the collection edit modal** (`CollectionEditModal`,
+`SideNav.jsx`). New `col.icon` field (a key into a curated 16-icon
+lucide-react set — folder, archive, bookmark, tag, star, heart, flame,
+graduation-cap, briefcase, globe, palette, music, coffee, layers, +2 folder
+variants), mutually exclusive with emoji (picking one clears the other —
+avoids ambiguity about which face wins). New `CollectionFace` component
+centralizes the precedence every collection-glyph render site should use:
+emoji → icon → color dot → plain Folder. Wired into the sidebar tree row;
+**not yet wired into LibraryView.jsx's own collection cards, the collection
+detail header, or the bulk-select picker** — those still render emoji-only
+and won't show a chosen icon yet. Flagged in `PLAN_POPUP_REVAMP.md`.
+
+**Context menu spacing, per feedback ("add padding top/bottom to match
+horizontal, corners less round, drop 2-4px on the bevel"):** `.ctx-item`
+vertical padding 5px → 7px (now equals the 7px horizontal, was
+asymmetric); `.context-menu` corner radius 8px → 5px, `.ctx-item` corner
+radius 5px → 3px.
+
+**Also:** exported `buildAddToCollectionSubmenu` moved out of
+`ContextMenu.jsx` into new `src/lib/collectionSubmenu.js` —
+`react-refresh/only-export-components` errors on a component file mixing
+in a plain function export; this project enforces that rule.
+
+**Verify:** `npx eslint` clean on all touched files (pre-existing-only
+errors remain, same set as A101); `npx vite build` green.
+
+## A101. Popup/dropdown revamp Pass 1 — one shared ContextMenu component
+
+First pass of `PLAN_POPUP_REVAMP.md` (queued in [[project_popup_revamp]]).
+Scope: unify the app's right-click/dots-menu implementations and give the
+result a real design pass — impeccable + the Lookatthis UI/UX guidelines
+(4pt/8pt spacing, layered shadow calibration for popovers, one authored
+entrance motion, keyboard-focus states).
+
+**Found on inspection, not assumed:** three near-duplicate menu components
+existed (`SideNavCtxMenu` in `SideNav.jsx`; `ContextMenu` + `CtxSubmenu` in
+`LibraryView.jsx`), each pure-inline-styled with its own ad hoc numbers
+(danger color `#ef5350` vs the app-wide `#f85149`, icon size 13 vs 14px,
+hardcoded z-index 9999/99999/100000 instead of the existing `--z-popover`
+token, zero keyboard support, no entrance animation on the sidebar's
+version). CSS was worse: **four** overlapping, mostly-dead class families
+in `global.css` — `.lib-context-menu` (zero JSX usages, fully dead),
+`.card-ctx-menu`/`.lib-ctx-item` (the only one actually wired up, to
+LibraryView's menu), and an unused `.context-menu`/`.ctx-item` pair that a
+later "section 6" polish block (deeper layered shadow + `gnos-pop-in`
+entrance) was already targeting — but nothing in the app rendered with
+those exact class names, so that polish was dead code no one ever saw.
+
+**New: `src/components/ContextMenu.jsx`** — the one menu component now used
+everywhere. `SideNavCtxMenu` and `ContextMenu`/`CtxSubmenu` deleted from
+their old files; both call sites (`SideNav.jsx`'s sidebar right-click menu,
+`LibraryView.jsx`'s card/collection right-click menu) now import and render
+this. Same `items` prop shape as before (`{ label, icon, action, danger,
+disabled, submenu }`, icon as a raw `<path>` SVG-fragment string — kept
+because dozens of call sites across the app build menus this way; rewriting
+every caller onto `lucide-react` components is out of scope for a container
+redesign and would be a separate, much larger pass).
+
+- **Keyboard nav added** — none of the three old menus had any. Up/Down
+  moves a highlighted row (wraps, skips disabled items), Enter activates it
+  or opens its submenu, Right opens a submenu, Left/Escape closes the
+  nearest open layer, `:focus-visible` gets an accent outline ring.
+  `role="menu"`/`role="menuitem"` added.
+- **Submenu positioning** — kept LibraryView's viewport-aware version
+  (flips left/right, clamps + scrolls vertically) over SideNav's cruder
+  one (computed once from initial `x`, no vertical clamp — could run off
+  the bottom of the screen).
+- **Visual, `global.css`:** collapsed the four class families into one —
+  `.context-menu` (container: `var(--z-popover)` instead of a hardcoded
+  number, `var(--surface)`/`var(--border)`, 10px radius) + `.ctx-item` (rows:
+  8px/12px padding, 7px radius, pill-hover via `var(--hover)`, no divider
+  lines — matches the sidebar's own rounded-pill row language). Danger rows
+  standardized on the app-wide `#f85149` red (was `#ef5350`, inconsistent
+  with every other danger-red in the app). The dormant "section 6" polish
+  (layered shadow `0 0 0 1px / 0 10px 24px / 0 24px 64px`, `gnos-pop-in`
+  0.13s entrance) now actually applies, extended to cover the submenu too.
+  Deleted the fully-dead `.lib-context-menu` block and the now-superseded
+  `.card-ctx-menu`/`.lib-ctx-item` rules.
+- Icon size standardized to 14px (was 13 in one implementation, 14 in the
+  other); submenu color-swatches to 14px/4px-radius.
+- **Tightened after user feedback ("too much horizontal space, looks
+  cheap — Notion-quality")**: row padding 8px/12px → 5px/7px, icon-label
+  gap 9→7, row radius 7→5, container padding 4→3, container min-width
+  180→160, swatch 14px/4px-radius → 13px/3px. Denser rows, menu width now
+  hugs its content instead of leaving dead space around short labels.
+
+**Follow-up after live screenshots — real data/content bugs, not just
+sizing:**
+- **`quicknotes` was leaking into every "Add to Collection" picker.** Both
+  files built that submenu as a raw, unfiltered `collections.map(...)` —
+  the auto-managed `quicknotes` collection (meant to read as a type-folder
+  everywhere else, per A100) showed up as a normal pickable target.
+  New exported helper `buildAddToCollectionSubmenu()` in `ContextMenu.jsx`
+  is now the one place this list gets built: filters out `quicknotes`,
+  **sorts alphabetically** (was raw insertion order — unscannable once a
+  user has 8+ collections), and **checkmarks collections the item already
+  belongs to** (previously no indication at all, so re-adding to a
+  collection you're already in gave silent no-op feedback). Both
+  `SideNav.jsx`'s `colSub` and `LibraryView.jsx`'s `makeCollectionSubmenu`
+  now call the shared helper instead of hand-rolling their own copy.
+  A 4th unfiltered `collections.map` was found in the bulk-select toolbar's
+  own "Add to Collection" picker (`LibraryView.jsx:3333`, a bespoke dropdown
+  that doesn't go through `ContextMenu` at all) — not fixed here, flagged
+  in `PLAN_POPUP_REVAMP.md` for whichever pass covers it.
+- **Ellipsis/chevron affordance was mixed on submenu-opening items** —
+  "Move Into…" carried both a trailing "…" *and* a chevron, while "Add to
+  Collection" (same submenu behavior) had only the chevron. Ellipsis
+  conventionally signals "opens a dialog needing more input"; chevron
+  signals "opens a submenu" — using both on one but not the other was an
+  inconsistent, slightly conflicting signal. Standardized: submenu-openers
+  keep the chevron only, ellipsis reserved for real dialog-openers (Edit…,
+  Edit Collection…). Renamed "Move Into…"/"Move into…" → "Move Into"/
+  "Move into" in both files.
+- **`ContextMenu`'s "Move Into" icon read as a plain inbox/drawer**, not
+  "move into a folder" — swapped for a folder-outline + arrow-entering
+  glyph (LibraryView's own "Move into" icon was already this shape;
+  SideNav's collection-row version wasn't).
+- New general-purpose support added to `ContextMenu.jsx`/`global.css` while
+  fixing the above, available to any menu now: `{ divider: true }` items
+  (top-level or submenu) render a thin separator (used between "+ New
+  Collection" and the real collection list); submenu items can carry
+  `checked: true` for a trailing checkmark.
+
+**Verify:** `npx eslint` clean (same pre-existing-only errors as before);
+`npx vite build` green.
+
+**Verify:** `npx eslint` clean on all three touched files (only pre-existing
+unrelated errors remain — same set noted in A100, plus one new-then-fixed
+`useLayoutEffect` unused-import in `SideNav.jsx` after `SideNavCtxMenu`'s
+removal); `npx vite build` green. Ran the impeccable mechanical detector
+(`detect.mjs`) over all four changed files — zero findings in the new/
+changed code (everything it flagged is pre-existing, elsewhere in
+`global.css`/`LibraryView.jsx`, unrelated to this pass). **Not visually
+verified** — same browser-preview limitation as A100 (the onboarding
+archive-folder picker needs a real Tauri `invoke()`); needs a look in
+`npm run tauri:dev`: right-click a sidebar item and a library card, confirm
+both render the same menu, submenu flip/scroll still works, arrow keys move
+the highlight, Enter/Escape work, danger rows read red.
+
+## A100. Library nav v2 — single "Library" accordion, bigger, click-to-expand
+
+User saw A99 live and asked for a revision — full plan handed off in
+`PLAN_LIBRARY_NAV.md`. Reverses A99's "flatten collections to be siblings of
+the type buckets" piece while keeping the rest of A99 (header filter/sort
+buttons, Sketchbooks as its own row, collection-workspace flat view).
+
+**`SideNav.jsx`:**
+- **Single top-level accordion.** `NAV_ITEMS` split: `LIBRARY_ITEM` (id
+  `library`) is now the one parent row, rendered above a `NAV_ITEMS` array
+  that holds only Books/Audiobooks/Notebooks/Sketchbooks/Flashcards. Its own
+  expand state (`isLibraryExpanded()`/`toggleLibraryExpanded()`) is
+  independent of the type-folder accordion sweep in `toggleExpanded()` —
+  collapsing Library doesn't clobber which type-folder or collection was
+  open inside it. Starts expanded (`expanded.library === undefined` reads as
+  open). Everything nested below it — type-folders, Quicknotes, collections
+  — sits inside a `paddingLeft: 14` wrapper for one visual indent level; each
+  folder's own contents indent further via `NavDropdown`'s existing padding,
+  same as before. Net structure: `Library > Books/Audiobooks/Notebooks/
+  Sketchbooks/Flashcards/Quicknotes/Collection A/Collection B`.
+- **Quicknotes reads as a type-folder.** New block between the `NAV_ITEMS`
+  map and the collections sweep: finds the collection via
+  `collections.find(c => c.name === 'quicknotes')` (matches the auto-managed
+  collection from A61-era `addToQuickNotesCollection()` in `storage.js` —
+  data model unchanged), renders it with the same `.sidenav-nav-item` row
+  markup as the type-folders (plain `Folder` icon, no emoji/color-dot/count),
+  and the `rootCollections` filter in the collections sweep now excludes
+  `c.name === 'quicknotes'` so it doesn't also render there with the
+  ordinary card treatment.
+- **Click = expand, ⌘/Ctrl+click = navigate.** Library's row and each
+  type-folder row now branch in `onClick`: `e.metaKey || e.ctrlKey` calls
+  `handleNavItem(id)` (today's navigate + apply-filter behavior), otherwise
+  toggles expand only. The old separate chevron `<button>` (`toggleExpanded`
+  as its own click target) is now a plain `<span className="sidenav-nav-
+  expand">` — same hover-opacity affordance, glyph still visible, but the
+  row itself is the only click target (no more double-click-target
+  redundancy). Collection rows and item rows are unchanged — plain click was
+  already toggle-only / open-only there, no regression.
+- **Sizing brought back up — roughly midway between pre-A99 and A99,** not a
+  straight revert (user: "make everything slightly bigger... it's too
+  small"). Every place A99 shrank: `.sidenav-nav-item` (gap 7→8, padding
+  5/6→6/7, font 10→11px), `NAV_ITEMS`/`LIBRARY_ITEM` icon size (11→13),
+  `ChevronIcon` (8→9), `MiniCover` (15×21/26→18×25/30, radius 3→4),
+  `NavDropdown` row (gap 6→7, padding, title 9→10px, author/due-date 8→9px,
+  progress-pct 7→8px, format-tag 7→8px + padding, Ellipsis button 19→22px +
+  icon 10→12), collection row (gap 5→6, padding, emoji 11→13px, color-dot
+  10→12px, `Folder` icon 10→12, name 10→11px, count 8→9px).
+
+**`LibraryView.jsx`:**
+- **Removed the duplicate collection-identity bar.** The `app-header`
+  workspace-indicator block used to show a chip with the active collection's
+  name + a ✕-to-exit button whenever `activeCollectionId` was set —
+  redundant once the sidebar already shows the active collection (workspace
+  flat-view header row, plus the footer `CollectionSwitcher`, which has its
+  own "Home" entry that fully exits the workspace via `setActiveCollectionId
+  (null)`). Removed; the `typeFilter !== 'all'` badge in the same block is
+  untouched (separate concern, still shows on its own). `setActiveCollectionId`
+  import dropped from the file — it was only ever called from the removed
+  ✕ button.
+
+**Quicknotes icon** — plain `Folder` swapped for `StickyNote` (lucide-react)
+in the Quicknotes row so it reads as its own thing instead of landing as a
+generic file/folder.
+
+**Resolved after a live screenshot:** the redundant text was the
+`sidenav-section-label` reading "LIBRARY" directly above the nav tree —
+harmless on its own pre-A100, but now literally duplicated by the new
+Library accordion row right underneath it (both say "Library"). Dropped for
+the non-workspace case; kept for the "Collection" workspace label since
+nothing else in that view repeats it.
+
+**Verify:** `npx eslint` clean on both files (same pre-existing unrelated
+errors noted in A99 — `SideNav.jsx`'s 2 in the untouched External-files
+block, `LibraryView.jsx`'s pre-existing set from other concurrent in-flight
+work — none in the new/changed code); `npx vite build` green after the
+label fix too. **Not visually
+verified** — the web preview (`vite preview`, since this session's dev-server
+port was already held by another chat) can't get past onboarding: the
+"Begin" button's archive-folder picker calls a real Tauri `invoke()` that
+never resolves outside the packaged app, so the library never loads far
+enough to render the sidebar. Same limitation as every prior sizing/sidebar
+pass in this project — needs a look in `npm run tauri:dev`: Library
+expanded by default with everything nested inside and indented, Quicknotes
+reads as a folder not a collection card, sizing feels right (denser than
+pre-A99, roomier than A99), plain click expands / ⌘-click navigates, and the
+collection workspace no longer shows the duplicate identity bar.
+
+## A99. Library header filters + sidebar reads as flat folder management
+
+User: two header filter buttons for Library (type cycle + sort, "like the live/preview/source switcher"), and a sidebar redesign — nested under one "Library" heading instead of a separate "Collections" bucket one level deeper, Sketchbooks split out on its own, everything ~25% smaller for denser navigation, and a collection workspace should show one flat file list instead of type-bucketed sections.
+
+**Header — two new buttons, `LibraryView.jsx`, portaled via `<QuickAccess>` (the same titlebar slot NotebookView's view-mode switcher uses — Library had never used this slot before):**
+- `TypeFilterBtn` — click cycles `typeFilter` through All → Books → Audiobooks → Notebooks → Sketchbooks → Flashcards → All; long-press (300ms) opens a dropdown to jump straight to one. Exact interaction shape as `ViewModeBtn`.
+- `SortFilterBtn` — click opens a dropdown: Manual order (existing drag-order/insertion-order behavior, unchanged default) / Name / Date Modified / Date Created; re-clicking the active field flips ascending/descending. New `_itemCreatedAt`/`_itemModifiedAt` helpers normalize the inconsistent field names across types (books/audio use `addedAt` from import, notebooks/sketchbooks/decks use `createdAt`/`updatedAt`). **No "Size" option** — no file byte-size is tracked anywhere yet (would need a new async stat pass over every book/audio/note file); user chose to skip it for now rather than fake it with a proxy.
+- Wired into `renderAll()`'s existing ordering step: an active sort overrides `unifiedLibraryOrder` (manual drag order) while active; switching back to "Manual order" restores prior behavior exactly.
+
+**Sidebar — `SideNav.jsx`, three structural changes:**
+- **Sketchbooks split out.** `NAV_ITEMS` had no entry of its own — sketchbooks rode along inside the `notebooks` bucket (`case 'notebooks': return [...nbs, ...sbs]`). Now `sketchbooks` is its own top-level row (Books → Audiobooks → Notebooks → Sketchbooks → Flashcards), `getItemsForTab`/`VIEW_TO_TAB` updated to match.
+- **Collections flattened.** The old `NAV_ITEMS` had a separate `collections` entry — expanding it revealed the individual collections one level deeper. Removed that intermediate bucket entirely; every root collection (recursive sub-collections still nest inside their parent, unchanged) now renders as a **direct sibling** of Books/Audiobooks/Notebooks/Sketchbooks/Flashcards, right under the same "Library" label. Reads as one flat folder listing — one expand step from "Library" to any collection, not two. The existing `quicknotes` collection (already a real auto-managed collection, A61-era) comes along for free, no special-casing needed.
+- **Collection workspace goes flat.** Switching into a collection workspace (`activeCollectionId` set, via the sidebar footer's `CollectionSwitcher`) used to still show the full Books/Audiobooks/Notebooks/Sketchbooks/Flashcards breakdown, just filtered to that collection's items. Now it replaces the whole bucket list with **one** flat item list under the collection's own name — matches "Collection folder > File 1/File 2/File 3" exactly. Reuses the existing `getItemsForTab('library')` collection-filter (smart-filter rules included) for the item set; search stays global (`SideNavSearch` was never scoped to the active collection), so finding and opening something outside the workspace never requires leaving it first.
+- **~25% smaller across the board** — `.sidenav-nav-item` padding/font (7px→5px, 12.5px→10px), `NAV_ITEMS` icon size (14→11), `NavDropdown` row padding/fonts/Ellipsis-button/format-tag, `MiniCover` (20×28→15×21), collection-row padding/fonts/icons, `ChevronIcon` (10→8) — denser list, more of the tree visible without scrolling.
+
+**Verify:** `npx eslint` clean on both files (same 2 pre-existing unrelated errors in `SideNav.jsx`, from the other concurrent chat's in-flight external-ref work, untouched); `npx vite build` green (two earlier failures were transient `ENODEV`/`ETIMEDOUT` iCloud asset-copy flakes unrelated to this change — a clean retry succeeded). **Not yet visually verified** — the browser-preview tool hit a transient overload during this session; needs a look in the running Tauri app: header buttons cycle/sort correctly, Sketchbooks shows its own row, collections sit flush under Library, a collection workspace shows one flat list, and the whole tree reads noticeably denser.
+
+## A98. Folder existence alone now registers as a collection
+
+User tested the "AI agents/other devices can just use a folder" claim directly: dropped a `tutor/` folder with a random `.md` in it straight into the archive via Finder, outside the app. The note self-heal-adopted fine (existing orphan-scan already covered every folder), but `tutor` never showed up as a Collections card — that tab only ever read `collections_meta.json`, and nothing synthesized an entry from a bare folder on disk. Real gap vs. the collections design intent.
+
+- New `syncFolderCollections()` (`storage.js`) — NOT a one-time migration, runs every reconcile: (1) registers any real, non-reserved root folder that has no matching `collections_meta` entry yet, name-cased off the folder itself; (2) for notebooks/sketchbooks — whose index already tracks each item's real path — rewrites `items[]` to match physical location exactly, so a note moved, renamed-folder, or dropped in externally is always correctly attributed, notebooks/sketchbooks membership stops being something the app has to be told about.
+- **Books/audio deliberately excluded from the physical-location reconcile** — unlike notebooks/sketchbooks they have no orphan-adopt tied to physical path, so guessing membership from a filename match would be fragile guesswork, not a real self-heal. They keep using the explicit `book.collection` field (A96's in-app move, A97's id-based backfill).
+- Wired into `useAppStore.js` at two points: `init()` (chained after the flatten migrations, before A97's backfill — so a freshly-discovered collection's notebook/sketchbook membership is already correct by the time A97 runs, making its move calls no-ops for those) and `rescanNotebooks()` (the existing "pick up external edits without a restart" poll) — so a folder dropped in while the app is already open shows up live, not just on next launch.
+
+**Verify:** build green; eslint clean (same 2 pre-existing unrelated `storage.js` errors, untouched). **Runtime-verified by user** — `tutor/Tutor Test Note.md` dropped directly into the archive via Finder showed up correctly as a "tutor" collection card containing the note.
+
+## A97. Backfill: pre-A96 collection membership now physically moves files too
+
+User, after confirming A96 worked for a fresh "Add to Collection": "auto update everything that is already in a collection." Real gap — several collections (e.g. "Early Christianity and Greek Studies" already listed an audiobook id) had items added back when only notebooks had a mover; `collections_meta.json`'s `items[]` said they belonged, but the file itself was still sitting in `audio/`/`books/`/`sketches/`, never moved.
+
+- New `migrateCollectionMembershipToFolders()` (`storage.js`) — one-time, guarded (`collection_membership_backfilled_v1`). Walks every collection's `items[]`, looks each id up (notebook index → sketchbook index → library), and calls the matching A96 mover. All 4 movers already no-op if the file's already in the right place, so this is safe to run over notebooks too even though they never needed it.
+- Wired into `useAppStore.js` init(), chained after `Promise.allSettled([...])` on the 5 flatten-migration promises — has to run after them so paths resolve against final on-disk shape, not a mid-flatten one. Fire-and-forget overall (doesn't block startup), just internally sequenced.
+
+**Verify:** build green; eslint clean (same 2 pre-existing unrelated `storage.js` errors, untouched). Runs automatically on next launch — watch for the pre-existing audiobook (and anything else added to a collection before today) to physically move into its collection folder.
+
+## A96. Collections generalized to all 4 content types (books, audio, sketchbooks, notebooks)
+
+User's collections redesign, confirmed earlier: a collection is a real folder at archive root; the Library workspace ignores collection folders and shows everything flat; other workspaces (notebooks/sketchbooks) only show their own group's files; single membership per item, no type-subfolders inside a collection. Notebooks already worked this way (A61). This extends the same real-folder-move mechanism to sketchbooks, books, and audio — the last piece before "Now run through the collections changes please" is done.
+
+- **Sketchbooks** (`storage.js`): new `_splitSkPath`/`_resolveSkPath`/`_resolveSkDir` — generic archive-relative path resolvers mirroring notebooks' `_splitIndexPath`/`_resolveIndexPath`, since a sketch's `file` in `sketches_index` can now point inside a collection folder instead of always under `sketches/`. `loadSketchbookContent`/`saveSketchbookContent`/`saveSketchbooksMeta`/`deleteSketchbookContent`/`moveToTrash('sketchbook', …)` all route through them. New `moveSketchbookToCollection(id, collectionName)`, mirroring `moveNotebookToCollection`. `_adoptSketchOrphans` rewritten to scan collection folders too — normalizes both sides through `_splitSkPath` before comparing, to avoid misreading an existing (bare-path) sketchbook as orphaned the moment collection-folder paths enter the comparison (same bug class as A88, caught before shipping this time).
+- **Books** (`storage.js`): new `getBookBaseDir(book)` — returns the book's collection dir if set, else `getBooksDir()`. `saveBookContent`/`loadBookContent`/`moveToTrash('book', …)`/`loadLibrary`'s `attachPdf` + `sourceMissing` check all resolve through it instead of a hardcoded `books/`. New `moveBookToCollection(book, collectionName)`, handles `.pdf`/`.epub`/`content.json` uniformly.
+- **Audio** (`storage.js`): new `getAudioBaseDir(book)`; `getAudioBookDir`/`getAudioFlatPath` now call it, which cascades the collection-awareness to everything downstream (`saveAudiobookMeta`, `deleteAudiobookMeta`, chapter read/write) for free. New `moveAudioToCollection(book, collectionName)` — handles both the multi-chapter chunk-folder case and the single-track flat-file case.
+- **Store** (`useAppStore.js`): `syncCollectionFolders`/`removeFromCollection` now route through a new generic `_moveItemToCollection(itemId, collectionName, storageMod)` — looks up the item's type across `notebooks`/`sketchbooks`/`library`, calls the matching mover. Books/audio have no index (unlike notebooks/sketchbooks), so this patches `book.collection` onto the `library` entry and persists on success.
+- **UI**: no changes needed. Both context-menu builders (`LibraryView.jsx`'s `makeCollectionSubmenu`, `SideNav.jsx`'s `colSub`) already built "Add to Collection" off a bare item id, and the collection-detail view already resolved `col.items` across `library`/`notebooks`/`sketchbooks`/`flashcardDecks` generically — that UI was already type-agnostic from the notebooks-only days; only the underlying move mechanics were notebooks-only until now.
+
+**Verify:** `npx eslint` clean on `storage.js`/`useAppStore.js` (same 2 pre-existing unrelated errors in `storage.js`, untouched; `useAppStore.js` fully clean); `npx vite build` green. **Not yet runtime-verified** — needs a live launch: create a collection, drag/menu a book, an audiobook, and a sketchbook into it, confirm the physical files move into the collection folder and the collection-detail view still opens/plays/edits them correctly from the new location.
+
+## A95. `_internal/` hidden from Finder — without renaming it
+
+User wants `_internal/` out of the way so it can't get accidentally deleted browsing the archive, but a dot-prefix rename is exactly the move that's broken this app twice already (A52 — the fs capability scope rejects dot-prefixed paths outright). Different mechanism, same path: macOS/Windows both support an OS-level "hidden" attribute completely separate from the filename.
+
+- New Rust command `hide_path` (`src-tauri/src/lib.rs`) — runs `chflags hidden <path>` on macOS, `attrib +h <path>` on Windows. Fire-and-forget from the JS side, errors swallowed — this is cosmetic, never allowed to block a real write.
+- `storage.js`'s `keyToPath()` calls it exactly once, right where `_internal/` gets `mkdir`'d for the first time — covers every future install/archive automatically, no separate migration needed. Only `_internal/` gets this treatment; the real content folders (`books/audio/notebooks/sketches/covers`) stay normally visible.
+- Applied directly to the live archive too (`chflags hidden`) rather than waiting for a fresh-creation trigger that will never fire again for an `_internal/` that already exists.
+
+Terminal tools, scripts, and the app itself all still see the folder exactly as before — `chflags hidden` only affects a default Finder/Explorer browse, not the filesystem path. The user can still reveal it anytime (Finder's `Cmd+Shift+.`, or `chflags nohidden`).
+
+**Verify:** frontend build green, eslint clean (same 2 pre-existing unrelated errors); `cargo check` clean, exit 0, no warnings. **Not yet confirmed the folder actually disappears from Finder on this machine** — `chflags` succeeded without error, but hasn't been visually confirmed in a Finder window yet.
+
+## A94. Eight migration-guard files → one `migrations.json`
+
+User, looking at the still-long `_internal/` listing: "there's nothing about this we could consolidate?" Right call — every one-time migration in `storage.js` had been guarding itself with its own dedicated boolean file (`nb_flat_migrated_v2.json`, `sk_flat_migrated.json`, `root_files_migrated.json`, `nb_foldernotes_indexed.json`, `type_meta_migrated.json`, `nb_legacy_cleaned.json`, `books_flat_migrated.json`, `audio_flat_migrated_v2.json`) — eight tiny files that are each just the literal value `true`.
+
+- New `_migrationDone(key)`/`_markMigrationDone(key)` helpers read/write one consolidated `_internal/migrations.json` map instead. All 8 call-site pairs across the file swapped over.
+- **Self-healing, no dedicated migration needed**: `_migrationDone` checks the combined file first; if a key isn't there, it falls back to checking for the OLD separate file, folds a `true` value into the combined map, and deletes the stale separate file. Every existing install picks this up automatically the next time each guard is normally consulted — same pattern as every other migration this session, just for the guards themselves.
+- Also did the live consolidation directly on the archive (all 8 were already `true`) rather than waiting for the next launch to self-heal it.
+
+**What's staying separate, and why:** the real per-item data (`nb_index`, `sketches_index`, annotations, calendar events, flashcard decks, kanban boards, reading progress/log, collections, quicknote map) each get written independently by unrelated features at unrelated times. Merging those into one mega-file would mean any small edit rewrites everyone else's data too — reintroducing the exact whole-file-rewrite cost A83/A84 spent today's session removing from `library.json`. Guard flags were different: pure booleans, all written together at startup by the same migration-runner code, no independent-write-frequency concern.
+
+**Verify:** build green; eslint clean (same 2 pre-existing unrelated errors, untouched). `_internal/` went from 23 items to 15. **Not yet re-verified live** — the self-heal fallback path (old-file-not-found-in-combined) hasn't been exercised by an actual launch yet, only the direct-consolidation path (done manually, matches what the code would have produced).
+
+## A93. A87 shipped a real regression: startup race mass-duplicated notebook/sketchbook indexes
+
+User noticed `nb_index.json` and `sketches_index.json` each existed in TWO places — root **and** `_internal/` — and asked to scrub `_internal/`. Investigating surfaced active, serious data corruption from earlier today, not just stray files.
+
+**Root cause:** `useAppStore.js`'s init runs `migrateRootFilesToInternal()` (A87) as fire-and-forget, positioned *after* the `Promise.all([loadLibrary, loadNotebooksMeta, loadSketchbooksMeta])` reconcile step. On the very first launch after A87 shipped: the reconcile step's self-heal orphan-adopt logic looked for `_internal/nb_index.json` / `_internal/sketches_index.json` — not there yet, migration hadn't run — read as empty, and treated **every real note and sketchbook** as an orphan, mass-adopting all of them with fresh random ids. The migration then ran moments later, saw its own just-created (bad) file already sitting at the destination, and — per its own "don't clobber" safety check — skipped moving the real data over. Net effect: the good original index (55 real notes with tags/due-dates/fork-history intact, 8 sketchbooks with real cover art) got stranded at the archive root, invisible to the app, while `_internal/` held a corrupted index of mostly-bare re-adopted duplicates.
+
+**Fix (`useAppStore.js`):** moved `migrateRootFilesToInternal()`/`migrateTypeMetaCachesToInternal()`/`migrateCachesToLocal()` earlier and **awaited** them, before the reconcile `Promise.all` runs — so relocation is always complete before anything can misread an empty destination as "nothing indexed yet."
+
+**Data recovery (live archive):** backed up both copies of each index file first. Reconciled `nb_index.json` by matching entries on their **file path** (not id, since ids differed) — the 55 real notes kept their original id + full metadata (tags, due dates, fork history); the only entries kept from the corrupted `_internal` copy were 6 that checked out as legitimate — today's own A90/A91 migration output (Koine_greek, two flattened notes, the `Questions`/`Quesitons` id-collision fix, the two folder-notes), not corruption artifacts. None of the ~53 phantom duplicates survived. `sketches_index.json` was simpler — all 8 real entries matched 1:1 by file, root's copy (with real cover art) replaced the corrupted one outright. Verified afterward: all 59 final `nb_index` entries resolve to a real file on disk. Also removed the stale root copies and one unrelated dead file found in passing: a stray `notebooks/app_prefs.json` (traced to a Jul 21 — three weeks old, unrelated to today — period where `archivePath` was itself misconfigured to point at `.../Gnos/notebooks`).
+
+**On "scrub `_internal/` of bloat":** checked every file in it. All but one are either real user data or an **active** guard flag whose job is to persist forever (tiny, one-time migration markers — deleting one just makes its migration pointlessly re-run, not "cleans up"). Found and removed exactly one genuinely dead one: `nb_flat_migrated.json` (v1, superseded by `_v2`, same as the `audio_flat_migrated` v1 already cleaned up in A87 — this one just never got the same treatment).
+
+**Verify:** build green; eslint clean. Ordering fix not yet re-verified live (the bug it fixes can now only occur on a first-run-after-A87 basis, which has already happened once for this archive — this closes it for any future install/user).
+
+## A91. Folder-notes' `meta.json` folded into `nb_index` — folder + `images/` stay, sidecar file goes
+
+User: keep the `images/` subfolder (looks more visually consistent), but flatten the JSON — matching the treatment every other type's per-item `meta.json` already got this session (audio A73, books A77, sketchbooks A72). Notebooks were the one holdout because folder-notes (kept as folders specifically for `images/`) were never index-backed at all — `nb_index` only ever covered fully-flat notes.
+
+- New `folderNote: true` flag on an `nb_index` entry — same entry shape as a flat note, `file` just points at `notebooks/<Title>/<Title>.md` instead of a bare `notebooks/<Title>.md`. The folder and its `images/` are completely unchanged; only `meta.json` disappears.
+- `_renameFolderNoteIfNeeded()` — new shared helper both `saveNotebooksMeta` and `saveNotebookContent` call for a `folderNote` entry: renames the whole **folder** (not just the `.md` inside it) when the title changes, so the folder name stays in sync. Wired into both save paths' existing flat-note branch (title changes could arrive through either).
+- `moveToTrash('notebook', …)` now trashes the whole folder for a `folderNote` entry instead of just the `.md` inside it.
+- `moveNotebookToCollection` still excludes `folderNote` entries (same "not movable yet" status as before — collections work is next).
+- **Caught a real conflict before it shipped**: `syncNotebooksFromDisk()` (runs at the top of every `loadNotebooksMeta()`) treats any folder with a `.md` but no `meta.json` as "externally created" and mints it a **fresh random id** — which would have re-broken A90's fix the moment a `folderNote`'s `meta.json` disappeared, on the very next load. Added an index-membership check so it skips anything already `folderNote`-tracked.
+- New **`migrateNotebookFoldersToIndex()`** — one-time, guarded (`nb_foldernotes_indexed`), converts existing folder-notes (found by having a `meta.json`) into index entries and removes the sidecar file. Atomic per note — only removes `meta.json` after the index write succeeds.
+
+**Verify:** build green; eslint clean (one pre-existing `notebooksDir` unused-var warning incidentally fixed as a byproduct of this edit; two unrelated ones remain from other in-flight work). **Not yet runtime-verified.**
+
+## A92. `notebooks_meta.json`/`sketchbooks_meta.json` → `_internal/` too
+
+Answering "what's `sketchbooks_meta.json` and how's it different from `sketches_index.json`": the index is the canonical id→file/metadata map (source of truth); the `*_meta.json` file is just a flat order-cache (preserves manual drag-reorder) plus an emergency cold-start fallback if the index+folder-scan both come up empty — same role `library.json`'s slim array plays for books/audio. Unlike `library.json`, which the user asked to keep visible in `books/` because it carries real per-item fields, these two carry no such user-facing value — pure bookkeeping, same as `nb_index`/`sketches_index` (A87).
+
+- `getSubfolder()` now special-cases these two exact keys to `_internal` before the general type-prefix rules (which would otherwise route them into `notebooks/`/`sketches/`).
+- New `migrateTypeMetaCachesToInternal()` — A87's root-only scan never touched these since they live inside their type folder, not archive root; this one-time migration relocates the two existing files into `_internal/`.
+
+**Verify:** build green, eslint clean. **Not yet runtime-verified.**
+
+## A90. Notebooks stuck as orphan folders — a second save function that defaulted to folder instead of flat
+
+User's Finder screenshot of `notebooks/` showed several folders — `Koine_greek`, `CFM Lesson`, `CFM Lesson May 31`, `Questions`/`Quesitons`, two "Odyssey…Highlights" — that weren't the known "kept for images" case. Checked all 9 non-indexed folders directly: 2 legitimately have `images/` (correctly excluded from flattening, working as designed); the other 7 were pure bug fallout, split two ways:
+
+- **4 had real content** (`CFM Lesson` 5252B, `Koine_greek` 21324B, `Questions` 12B, `[[…]] — Highlights` 672B) but were never in `nb_index.json` at all.
+- **3 were empty ghosts** (0 bytes) — `CFM Lesson May 31`, `The Odyssey…— Highlights` (no brackets), and `Quesitons`. That last one shared its **exact id** with `Questions` — a rename had created a second, empty folder instead of renaming in place, leaving the real content stranded under the old name.
+
+**Root cause:** `saveNotebooksMeta` and `saveNotebookContent` disagreed on what a brand-new note defaults to. `saveNotebookContent`'s new-note path already creates it flat (comment: *"New note — create it FLAT"*). `saveNotebooksMeta`'s equivalent fallback — reached when a note has no index entry and no folder found by id — called `getNotebookDir(nb)`, which unconditionally creates a **folder**. Whichever of the two save functions happened to run first for a given note silently decided its format forever, since `migrateNotebooksToFlat` only ever runs once (guarded) and never revisits a note already accounted for.
+
+**Fix (`storage.js`):** `saveNotebooksMeta`'s brand-new-note fallback now creates the note flat too — same `_flatFileName` + index-entry pattern `saveNotebookContent` already used, so both paths agree.
+
+**Data cleanup (live archive):**
+- 3 confirmed-empty ghost folders backed up (`~/Gnos-backups/<ts>-notebook-ghosts/`) then OS-trashed.
+- Guard bumped `nb_flat_migrated` → `nb_flat_migrated_v2` (same pattern as A75) so the 4 real-content orphan folders get correctly swept into flat `.md` files by the existing (already-correct) `migrateNotebooksToFlat()` on the next launch — no manual reconciliation needed, and by then the `Questions`/`Quesitons` id collision has only one folder left to resolve, so no ambiguity.
+
+**Verify:** build green; eslint clean (pre-existing unrelated errors only). **Not yet re-verified against a live launch.**
+
+## A89. Pure caches split out of `_internal/` into per-machine app data — not synced
+
+Follow-up to A87. User plans to use Gnos across multiple devices via this same iCloud archive eventually, so `_internal/` (synced) needs to stay reserved for things that matter for continuity — but 3 of its key families are pure regenerable caches with no reason to make that trip: `reader_pageindex_book_*` (rebuilds from the book), `reader_perf_report` (a debug snapshot), `epub_content_cache` (A86 — re-derivable from the kept `.epub`).
+
+- New **`getLocalJSON`/`setLocalJSON`** (`storage.js`) — same tiny key→JSON-file interface as `getJSON`/`setJSON`, but rooted in Tauri's `appDataDir()` (next to the existing `archive_path.json`) instead of the archive. Per-machine, never touches iCloud.
+- Rewired the 3 cache families to use it: `loadEpubCache`/`_saveEpubCache`, `ReaderView.jsx`'s page-index store, `readerPerf.js`'s `/perf report` save.
+- **`migrateCachesToLocal()`** — one-time relocation of whatever already exists archive-side (checks both root and `_internal/`, since a user could be on either side of A87's migration) into the new local cache dir; copies then removes, nothing lost. Guarded **locally** (per-machine) rather than via the synced archive — correct here, since a second device would have its own leftover archive-side cache files to migrate independently.
+
+**Everything that genuinely needs to sync stays in `_internal/`** — `nb_index`, `sketches_index`, `reading_progress`, `annotations_*`, `flashcard_decks`, `kanban_boards`, `calendar_events`, `collections_meta`, `app_prefs`, etc.
+
+**Verify:** build green; eslint clean (pre-existing unrelated errors/warnings only). **Needs the Tauri app** — watch the next launch: `reader_pageindex_*`/`reader_perf_report`/`epub_content_cache` should disappear from `_internal/` and reappear under the app's own data directory; reading position/pagination and `/perf report` should keep working unchanged.
+
+## A88. RUNAWAY SKETCHBOOK DUPLICATION — race in the orphan-adopt self-heal, materialized by a missing migration guard
+
+User's Finder screenshot of `sketches/` — 24 stray folders, 3 phantom duplicates for each of 8 real sketchbooks (`Char_30008_659ydo`, `Char_30008_wz2gow`, `Char_6610962_nvxs`, …), each **meta.json-only, zero real content**. `sketches_index.json` itself was clean (8 correct entries) — the mess was entirely orphaned folders the index no longer even referenced.
+
+**Root cause — two bugs compounding:**
+1. `loadSketchbooksMeta`'s orphan-adopt self-heal (A72) read the index, scanned for `.excalidraw` files not in it, and wrote a fresh entry — but had no protection against two overlapping calls to `loadSketchbooksMeta()` each reading the SAME pre-write index and independently "adopting" the same file under its own fresh random id (`sk_<Date.now()>_<rand>`) — matching ids down to the millisecond confirmed this (`sk_1787029930008_659ydo` / `sk_1787029930008_wz2gow`). Whichever call's `saveSketchesIndex` wrote last won — the other's index entry was silently lost, but the phantom entry still existed in that call's *returned in-memory array*.
+2. `migrateSketchbooksToFolders` (still wired for the oldest keyed-store shape) had no "already flat-indexed" guard — the exact bug class A53 already fixed for `migrateNotebooksToFolders`, missed when A72 built the sketchbook equivalent. It received the polluted in-memory array and unconditionally materialized *every* entry — including the phantom, lost-the-race ones — as a real folder + `meta.json` on disk. Every launch that raced added a fresh pair.
+
+**Fix (`storage.js`):**
+- Orphan-adopt now runs through `_adoptSketchOrphans()`, chained on a module-level promise so concurrent calls serialize — the second call's index re-read happens *after* the first call's write, so it correctly sees the file as no longer orphaned. Both the flat-index listing and the legacy-folder dedup check in `loadSketchbooksMeta` now read from this one authoritative post-heal index instead of two independently-stale snapshots.
+- `migrateSketchbooksToFolders` now skips anything already in `sketches_index` — mirrors A53's notebooks fix exactly.
+
+**Data cleanup (live archive):** backed up all 24 folders to `~/Gnos-backups/<ts>-sketch-dupes/`, verified each held only `meta.json` (no `sketch.json`, no unique content — safe), moved to OS Trash. `sketches/` back to 8 real files + the order cache.
+
+**Verify:** build green; eslint clean (pre-existing unrelated errors only). **Not yet re-verified against a live launch** — watch the next one: no new duplicate folders should appear regardless of how many times init runs.
+
+## A87. Archive root decluttered — ~23 loose internal JSON files → `_internal/`
+
+User showed a screenshot of the archive root: 6 real content folders (`audio/books/notebooks/plugins/sketches/covers`) buried among ~23 loose bookkeeping files (`nb_index.json`, `reading_progress.json`, `reader_pageindex_book_*.json`, migration-done flags, annotations, prefs, etc.) — asked what could be hidden or compartmentalized.
+
+- **One-line fix at the root of the problem**: `getSubfolder()` (`storage.js`) is the single routing function every `storage.get/set/delete` call goes through. Its fallback for anything that isn't a real content type (`book_*`/`library`, `notebook_*`, `sketchbook_*`, `audiochap_*`) used to be `''` (loose at archive root) — now it's `'_internal'`. One line catches all ~23 existing keys **and** every future one, with no per-key list to maintain. Underscore prefix, not a dot — the fs capability scope only rejects leading-dot paths (A52, hit twice already); confirmed the app still boots against this change, live disk relocation still needs the real Tauri app to verify.
+- `library.json` stays inside `books/`, deliberately **not** moved — per the user, it's useful for them to see there.
+- **`migrateRootFilesToInternal()`** — one-time relocation of whatever already exists at root into the new folder (guarded, `rename`, never clobbers). Also deletes the one confirmed-dead file it finds along the way: `audio_flat_migrated.json`, the old v1 migration flag superseded by A75's `_v2` — nothing reads the old key any more.
+- `_internal` added to `RESERVED_DIRS` (a collection can't claim that name) and to `list()`'s subfolder scan (unused by any current caller, kept correct anyway).
+
+**Verify:** build green; eslint clean (pre-existing unrelated errors only). App boots fine in browser preview (no crash from the new migration call — it no-ops harmlessly there, no Tauri fs). **Needs the Tauri app** for the actual file relocation — watch the next launch: archive root should drop from ~29 items to 7 (6 content folders + `_internal/`), and every feature that reads one of the relocated keys (prefs, annotations, reading progress, page-index cache, etc.) should keep working unchanged since `keyToPath` resolves the same way for reads and writes.
+
+## A86. Epub books keep the real `.epub` file — content.json becomes a disposable cache
+
+User proposal: keep the real `.epub` in `books/` (portable, grab-able, backup-able) instead of only the parsed text — connected such that the epub is the source of truth and the parsed content is just an accelerator, not the only copy. Only possible now because A77 restricted book import to `.epub`/`.pdf` — with `.txt`/`.md` gone, epub is deterministically re-parseable from its own bytes, unlike before when the original file was discarded and `content.json` really was the only copy.
+
+- **Extracted `parseEpub` + its helpers into `src/lib/epubParser.js`** — needed regardless of everything else below, since `storage.js` regenerating a stale cache can't import from `bookImport.js` (backwards) without a shared lower-level module. `bookImport.js` shrank by ~400 lines to just the import glue.
+- **New imports**: keep the real bytes → flat `books/<Author - Title>.epub` (mirrors how `.pdf` already works) + seed a root-keyed `epub_content_cache.json` (`{id: {chapters, sourceMtime}}`, same shape family as `nb_index`/`reading_progress`). No `content.json` written for these.
+- **`loadBookContent`**: cache hit + `.epub` mtime unchanged → fast path. Cache miss or a newer `.epub` (user swapped the file) → re-parse live via `parseEpub`, repopulate the cache. **A `.epub` that's gone is NOT served from a stale cache** — by design, per the user's framing: the file is the connection, not a fallback source. Only a book with no cache entry at all (imported before this feature) falls through to the old `content.json`/legacy-folder/chunked-store paths, unaffected.
+- **`moveToTrash('book', …)`** now checks all three possible flat shapes (pdf / epub / content.json) and drops the cache entry — covers deleting a book with the kept file present.
+- **Missing-file handling — deliberately NOT silent auto-delete.** `loadLibrary` flags a book `sourceMissing: true` (runtime-only, stripped before every save, same treatment as `pdfUrl`) when it has a cache entry (i.e. was imported under this flow) but its `.epub` is gone — iCloud sync gaps could otherwise make a real book vanish from a race, no confirmation. Opening a flagged book (grid click, new-tab, sidebar, search) now shows a **"File not found" prompt** — Keep or Remove, Remove goes through the normal `moveToTrash` path (OS Trash, reversible, not a true irreversible delete) — instead of navigating into a broken reader. Small red "MISSING" badge on the card too, so it's visible before clicking. SideNav can't reach LibraryView's modal state directly, so it dispatches a `gnos:missing-book-prompt` event LibraryView listens for — same cross-component pattern already used for `gnos:import-books`.
+
+**Verify:** build green; eslint clean (pre-existing unrelated errors only, untouched). Verified live in the browser preview (injected a book with `sourceMissing: true`): badge renders, clicking it shows the correct prompt with the right title, Keep dismisses, a normal book without the flag opens straight into the reader unaffected. **Needs the Tauri app** for the actual import/cache/regenerate-on-stale flow (preview has no FS) — import a fresh epub, confirm `books/<Name>.epub` + an `epub_content_cache` entry appear, reading works, and manually deleting the `.epub` in Finder makes the book show Missing on next launch.
+
+## A85. A83/A84 verified with a real `/perf report` — ~21x less stall time
+
+User re-ran `/perf report` after relaunching. Confirms the fix, with numbers:
+
+| | before (A83's report) | after |
+|---|---|---|
+| flip→paint p95 / max | 154ms / 397ms | 31ms / 34ms |
+| dropped frames | 7/41 | 2/86 |
+| chapter MISS p50 / max | 90ms / **1224ms** | 22ms / **39ms** |
+| long frames (count, total time) | 129, **28,395ms** | 14, **1,350ms** |
+| stalls = scan? | 65% | 11% |
+| write:library | **25,686ms / 37 calls** | gone entirely |
+| write/read:reading_progress | — | 569ms/40, 453ms/40 (~14ms avg — the replacement is cheap, as designed) |
+
+Remaining flag (`cache hit rate 20%`) is now cosmetic — a chapter-cache miss costs 22-39ms post-fix vs up to 1224ms before, so it's no longer perceptible. Not chasing further. The CSS-strip-width theory from the original investigation never needed testing — the library.json bloat (A83) was the entire story.
+
+## A84. Reading-progress autosave split out of `library.json`
+## A84. Reading-progress autosave split out of `library.json`
+
+Follow-up to A83. Even at a healthy size, `library.json` is one file for the whole library — `persistLibrary()` always rewrites every book's full metadata, no matter which single field changed. ReaderView's position autosave calls that on every settle-after-pause while reading, i.e. constantly — the exact mechanism that turned a 750MB stray field into 37 full-file rewrites in one 10-minute read (A83). Fixing the stray field fixed the size; this fixes the *pattern*, so a future bloat (or just a bigger library) can't reproduce the same cost.
+
+- New root-keyed `reading_progress.json` (`{ [bookId]: {currentChapter, currentPage, updatedAt} }`) — same shape as `nb_index`/`sketches_index`. `patchReadingProgress(id, {...})` writes ONE entry; `loadLibrary()` merges it back onto each book so `book.currentChapter`/`currentPage` reads exactly the same everywhere downstream (LibraryView resume cards, ProfileContent, etc.) — no caller besides ReaderView's own save path had to change.
+- New store action `persistBookProgress(id, chapter, page)` — thin wrapper, used in place of `persistLibrary()` for the two autosave call sites (debounced settle + unmount-flush) in `ReaderView.jsx`. `persistLibrary()` itself is untouched and still used everywhere it should be (add/remove/edit book) — those are already infrequent, user-driven, not a perf concern.
+- No migration needed / no data loss on upgrade: `reading_progress.json` starts empty, `loadLibrary` only overrides a book's position when an entry exists there, so existing `library.json` positions keep showing until the next time that book is read (at which point the small file becomes authoritative for it).
+
+**Verify:** build green; eslint clean (pre-existing unrelated errors only). **Needs the Tauri app** — read a book, confirm position survives a relaunch, and confirm (via `/perf report` or just watching `reading_progress.json`'s mtime) that reading no longer touches `library.json` at all.
+
+## A83. THE real reader perf villain: a 750MB `library.json`, not the CSS strip
+
+User ran `/perf report` while reading (per the A73-era investigation's resume instructions) chasing the "89% unattributed" reader stall. Report showed something new: `write:library 25686ms/37` — 37 whole-`library.json` rewrites in one 10-minute read (periodic reading-progress autosave), ~694ms average each.
+
+**Root cause:** `books/library.json` was **788,461,556 bytes** (~750MB). One entry — the "Great Expectations" audiobook — was **786,798,456 bytes** on its own: its `audioChapters[]` carried a base64 `dataUrl` per chapter (59 of them), a pre-binary-storage shape from before `writeAudioFile` existed. A73/A75 fixed the *keyed-store* (`audiochap_<id>_<n>`) and the on-disk orphan-folder copies of this same bloat, but never checked whether the **live book object in the `library` array itself** carried the same stale shape — it did, and every `saveLibrary()` call (including the periodic reading-progress autosave, for a *completely unrelated* book) re-serialized and rewrote the whole 750MB file.
+
+**Fix:**
+- **Data (live archive, backed up first to `~/Gnos-backups/<ts>-library-bloat-fix/`):** stripped `dataUrl` from all 59 `audioChapters` entries, keeping `title`/`index`/`ext` (derived from the dataUrl's mime where missing). The real audio bytes already live on disk as `chapter_N.mp3` (A73/A75) — nothing lost. `library.json`: 750MB → 1.67MB; the Great Expectations entry alone: 786MB → 4.8KB.
+- **Code (`saveLibrary`, storage.js):** now defensively strips any stray `audioChapters[].dataUrl` before writing, same treatment `pdfDataUrl`/`rawDataUrl` already got — so this class of bug can't silently reoccur and balloon the file again.
+
+**Lesson:** A75's "check the oldest legacy shape, don't assume folder-based is the only thing to migrate" needed to extend one level further — to the metadata object itself, not just its keyed-store/on-disk siblings. Next time a migration strips a legacy payload from disk, also check the in-memory/library.json copy of the same object for the same stale shape.
+
+**Not yet re-verified with a fresh `/perf report`** — the CSS-strip-width theory from the same investigation is still untested and may still be a real secondary contributor; this fix targets the dominant cost the report actually surfaced, not everything in the `long frames` bucket.
+
+## A82. History panel — tightened spacing, aligned headings, hint removed
+
+- **Origin hint text dropped.** "Arrived from disk — another app, device, or collaborator"
+  restated what the row's coloured label already said. The expanded body now goes straight to
+  `+n −n` + Restore, then the diff. (`originOf().hint` is still the row's `title` tooltip.)
+- **HISTORY / TODAY / rows share one 14px left edge.** They were at 16 / 12 / 18px. Rows sit
+  inside `.nbh-item` (`margin: 0 6px`), so their own padding-left is 8px to land on the same
+  edge as the two headings.
+- **Vertical spacing tightened throughout:** header `14/14/10/16` → `11/12/4/14`, day heading
+  `9/12/4` → `7/14/3`, rows `8/12` → `6/8`, accordion body `10px` → `8px`. The list reads as
+  one dense block instead of a loose stack.
+
+**Verify:** build green; measured left offsets — `History` text, `Today` text and the row
+chevrons all land at 15px from the panel edge. Screenshotted collapsed and expanded. Seeding
+stub **removed and rebuilt (0 occurrences)**.
+
+*(Measurement note: comparing `getBoundingClientRect().left` of an inline `<span>` against a
+full-width `<div>` looks like a 14px misalignment when the text is actually flush — compare
+text offsets, not box offsets.)*
+
+## A81. History panel polish — full-height expansion, cleaner header
+
+Five fixes from the user's review of A80:
+
+- **Expanded rows show their whole diff.** The inner `maxHeight: 220 / overflow: auto` meant a
+  scroll *inside* an accordion inside a scrolling panel — three nested scroll contexts. The
+  expansion is now the full height of its content; the panel itself is the only scroller.
+- **Header divider removed** — spacing carries the separation. Also removed the rule under the
+  list, and re-padded the header (`14px 14px 10px 16px`).
+- **Bare close X instead of a boxed button.** The bordered 26px box read as cheap; it is now a
+  plain 13px X that turns red on hover.
+- **"Current version" row dropped.** It was redundant — nothing is altered unless the user
+  explicitly hits Restore, so a row representing "no change" carried no information.
+- **Expanded-row layout fixed.** The origin hint shared a row with the `+n −n` counts and the
+  Restore button, so it wrapped to two lines and crowded them. The hint now has its own line;
+  counts sit left, Restore right.
+
+**Verify:** build green; screenshotted with a seeded timeline — clean header, no dividers, no
+Current row, full-height diff, hint on its own line. Temporary seeding stub **removed and
+rebuilt (0 occurrences)**.
+
+## A80. History → accordion rows in a header-anchored pop-in
+
+Third pass on the presentation, per the user: *"each history addition sits accordion style —
+clicking opens it with the info + restore button. Keep this pop-up inside the header space,
+similar to the audiobook chapter pop-in."*
+
+- **Adopts the chapters pop-in language exactly** (`AudioPlayerView`): floating rounded card,
+  `right: 8, top: TITLEBAR_H + 6, bottom: 8`, 12px radius, `-8px 0 32px` shadow, uppercase
+  section header + matching close button. It now reads as part of the app's existing
+  vocabulary rather than a bespoke dialog.
+- **Accordion rows.** Each version is a compact row (chevron · origin icon · time · origin
+  label). Clicking expands it **in place** to reveal the hint, `+n −n` counts, **Restore**,
+  and the red/green diff (max 220px, scrolls). Only one row open at a time; the chevron
+  rotates. Version text is fetched lazily on first expand and cached.
+- Dropped the separate bottom detail pane entirely — that split was what made the previous
+  version feel heavy.
+- `TITLEBAR_H` is **inlined as `NB_TITLEBAR_H = 34`**: `App.jsx` exports it but also imports
+  `NotebookView`, so importing it back would be circular.
+
+**Verify:** build green; screenshotted with a seeded timeline — day grouping, three origin
+types, expanded accordion with diff + Restore, note still readable beside it. Temporary stub
+used for seeding was **removed and rebuilt (0 occurrences remain)**.
+
+## A79. History: most external edits weren't recorded + side-panel redesign
+
+**Bug (user: "not for every external edit").** The watcher only snapshotted on the *merge*
+branch — i.e. when you had unsaved local edits. The `else` branch, where there are no local
+edits and the incoming text is simply adopted, recorded nothing. That is the **common**
+external case (you aren't typing; Obsidian or another device saves), so most external edits
+never appeared in History. Now both sides of that swap are snapshotted (`local` = your text
+before, `remote` = what arrived).
+
+**Origin is now explicit.** `originOf(kind)` in `history.js` maps storage kinds to what a
+human actually wants to know first — *was this me, or something outside Gnos?*
+| kind | shown as | origin |
+|---|---|---|
+| `remote` | **External edit** — "Arrived from disk — another app, device, or collaborator" | external (blue, arrow-in icon) |
+| `auto` | **You edited** | internal (grey, pencil) |
+| `local` | **Your version** — "Your text just before changes arrived" | internal |
+| `merge` | **Merged** | merged (green) |
+| `pre-restore` | **Before restore** | internal |
+
+**Redesigned as a right-hand side panel** (the modal felt "cheap" because it was the wrong
+shape — a centered dialog covers the very note you are comparing against). This follows the
+pattern used by Google Docs, Notion, Craft and Dropbox Paper:
+- **Note stays visible and readable** on the left while you browse versions.
+- Timeline **grouped by day** with sticky `Today` / `Yesterday` / date headers.
+- Per-row: origin icon, time, coloured origin label; selected row gets an accent spine.
+- **Real diff instead of a raw text dump** — new `diffRows()` (LCS-based) renders green
+  additions / red deletions with `⋯ N unchanged lines` collapsing, plus `+n −n` counts and a
+  one-line explanation of where the version came from.
+- Restore stays the primary action; Esc closes.
+
+**Verify:** build green. Verified visually with a seeded timeline (temporary stub, since real
+snapshots need Tauri FS — **stub removed and rebuilt afterwards, 0 occurrences remain**):
+day grouping, all three origin labels, and the red/green diff all render correctly against
+the live note.
+
+## A78. History: snapshots never fired + panel redesign
+
+**Bug — the panel was correctly empty.** Every `historySnapshot()` call sat inside a
+*conflict* path (merge, external change, iCloud copy), so during ordinary editing nothing
+was ever recorded. The `auto` kind was specced in `PLAN_CONCURRENCY.md` but never wired.
+- **On open:** baseline snapshot of the loaded text, so History always has a recovery point
+  instead of nothing until the first tick. Also prunes >7-day entries there.
+- **While writing:** periodic `auto` snapshot in `doSave`, throttled to one per 3 min so the
+  800 ms autosave can't spam it (`history.js` additionally skips text identical to the last
+  snapshot).
+
+**Panel redesign** — the first pass was functional but cheap-looking. Rebuilt:
+- **Timeline spine** — connecting rail with colour-coded dots per kind, trimmed at the first
+  and last rows so it reads as a true timeline rather than a list.
+- **Badges** for kind (`From disk`, `Discarded edit`, `Merged`, `Snapshot`, `Before restore`)
+  using `color-mix` tints so they inherit the active theme.
+- **Header** gains the clock icon + the note's title as a subtitle.
+- **Empty states** with icons and real explanation ("Snapshots are taken as you write, and
+  whenever changes arrive from elsewhere. Kept for 7 days.") instead of a bare sentence.
+- Backdrop blur, entrance animation, hover states, custom scrollbars, monospace diff counts
+  (`+12 −3 vs current`), tinted preview surface, **Esc to close**, taller fixed 520px body so
+  the layout doesn't jump between states.
+
+**Verify:** build green; rendered and screenshotted in **both light and dark** themes —
+hierarchy, icons, badges and empty states all read correctly. The populated timeline uses the
+same primitives but needs real snapshots (i.e. a Tauri run) to see.
+
+## A77. Stage 1 complete — History panel + iCloud conflict-copy merging
+
+**Version History panel** (`NotebookHistoryPanel`) — the retrospective "merge chooser".
+Because merges are silent by design, this is where they become visible: `remote` entries are
+what arrived from disk/a peer, `local` entries are what a conflict discarded. That audit
+trail is what makes silence safe rather than lossy.
+- Button in the **right** titlebar zone beside Backlinks (the left zone is hard-capped at two
+  buttons — a third overflows into the macOS traffic lights).
+- Left rail = timeline (colour-coded by kind, relative timestamps); right = full text of the
+  selected version with a `+added / −removed` line count vs current.
+- **Restore is non-destructive** — the current text is snapshotted as `pre-restore` first,
+  then applied through the existing `applyExternal` path (cursor preserved, card refreshed,
+  merge baseline re-based) and flushed to disk.
+- Empty state states the 7-day retention explicitly.
+
+**iCloud conflict copies** (`loadNotebooksMeta` self-heal): iCloud resolves its *own* sync
+races by writing `Note 2.md` beside the original. Adopting those as new notes silently
+duplicated the library — the same class of clutter the fork produced. Now they are merged
+back into the original and the copy goes to the OS Trash.
+- **Guard:** only treated as a conflict copy when the original (`Note.md`) actually exists in
+  the index. A legitimately-named `Chapter 2.md` with no `Chapter.md` is left alone as a real
+  note.
+- No shared base exists for an iCloud copy, so the two sides are **unioned** rather than one
+  being picked; the incoming side is snapshotted to history first.
+
+**Verify:** build green; merge/union and the filename guard table-tested (`Note 2.md` /
+`Note 3.md` detected, `Note.md` not, `Chapter 2.md` only when an original exists).
+
+**Stage 1 is now feature-complete.** Remaining before it can be called done: a real
+`tauri:dev` run to exercise the two genuinely new filesystem paths —
+(1) `appDataDir/history/<noteId>/` directory creation, and (2) the `.md.tmp` → `rename()`
+atomic write. Neither can execute in the browser preview.
+
+## A77. Books flattened — `<Author - Title>/{meta.json,content.json,source.pdf,cover.*}` → one flat file
+
+Part 3 of 3 of the file-type flatten (see `PLAN_FLATTEN.md`, A72/A73/A75). Corrected a wrong assumption from the earlier design notes before writing any migration code: `content.json` is a disposable placeholder **only for `format: 'pdf'`** (PdfView renders the real `.pdf` live) — for epub/txt/md it's the **only surviving copy of the book's text**, not a cache. Moving that to `appDataDir` as originally planned would have been real data loss; caught by actually reading `bookImport.js`/`ReaderView.jsx` first.
+
+- `format: 'pdf'` → flat `books/<Author - Title>.pdf` (rescued from a legacy folder or base64-in-library.json, same rescue logic as before, now targeting the flat path); no content.json written for these at all.
+- epub/txt/md → flat `books/<Author - Title>.content.json` — every book fully flattens, no folder ever needed (unlike notebooks, which keep a folder for image attachments).
+- Cover → shared `covers/<id>.<ext>` (the dir A73 introduced for audio).
+- No id→name index — same reasoning as audio: book title isn't user-editable (`EditItemModal`'s book fields are author/rating/tags/description), so the file name is a stable pure function of title+author and every call site's own book object is enough. Two callers needed a one-line fix to actually hold that object: `ReaderView.jsx`'s load effect now passes `activeBook` instead of `activeBook.id` to `loadBookContent`, and `SideNav.jsx`/`LibraryView.jsx`'s book-delete handlers now pass the book as `moveToTrash`'s 4th arg.
+- **`moveToTrash('book', …)`** gets the same flat-first branch `moveToTrash('audio', …)` already had.
+- **`migrateBooksToFlat()`** replaces `migrateBooksToNamedFolders`. Applies the A75 lesson up front this time: checks the oldest chunked-keyed-store shape (`book_<id>_data`/`_chunks`/`_chunk_N`, which routes to flat `books/book_<id>_*.json` files with no folder at all) unconditionally, not gated on a legacy folder existing. Also stricter than audio's migration — the old folder is only sent to the OS Trash once the flat target is *confirmed* on disk, never unconditionally after just attempting the move.
+
+**Verify:** build green; eslint clean (pre-existing unrelated errors elsewhere in `storage.js`/`LibraryView.jsx`/`SideNav.jsx` from other in-flight work, not touched). **Needs the Tauri app** for the actual migration (preview has no FS/`invoke`) — watch the next real launch: book folders under `books/` should be replaced by flat `.pdf`/`.content.json` files; opening a PDF, opening an epub/txt/md, editing rating/tags/description, and deleting should all keep working.
+
+## A76. Stage 1 of concurrency — silent 3-way merge + invisible history
+
+Replaces both bad options (clobber the file, or fork it into a `(offline edit …)` duplicate)
+with **line-level merging**. Design: `PLAN_CONCURRENCY.md`.
+
+**New `src/lib/merge3.js`** — vendored line-based diff3 (no dependency; this project has
+been bitten by transitive deps). `merge3(base, ours, theirs)` + `mergeSilently()` policy
+wrapper. Line granularity is deliberate: character-level merging of prose produces word
+salad. Disjoint edits combine; a true overlap keeps ours and flags that the losing side
+needs preserving. 12 unit cases pass (disjoint, identical, one-sided, deletions, appends,
+true conflict, realistic note).
+
+**New `src/lib/history.js`** — per-note snapshots in **`appDataDir/history/<noteId>/`**,
+never the archive. This is what makes silence safe: *you cannot silently discard an edit
+unless the user can get it back*. `snapshot/listVersions/readVersion/restoreVersion/prune`,
+kinds `remote|local|merge|auto|pre-restore`, **7-day retention**, restore is
+non-destructive (snapshots current first). Note: a `.history/` folder inside the archive is
+impossible — leading-dot paths are rejected by the fs scope (A52, the bug that once made 64
+notes vanish); appDataDir also means history never syncs to iCloud.
+
+**`storage.js`**
+- `contentHash()` (FNV-1a) — change detection no longer trusts mtime alone. **iCloud rewrites
+  mtimes on byte-identical syncs**, which is what produced false "changed underneath us"
+  conclusions and fed the fork storm.
+- `writeTextAtomic()` — temp file + `rename()`, so no reader (or iCloud) can observe a
+  half-written note. Falls back to a direct write.
+- `saveNotebookContent(nb, content, { baseText })` now merges instead of overwriting, on
+  **both** the flat and folder paths, snapshots both sides, writes atomically, stamps
+  `contentHash`, and **returns the text actually written**.
+
+**`NotebookView.jsx`** — `doSave` passes `syncedTextRef` as the merge base and adopts the
+returned text when a merge changed it (silently). The disk watcher no longer force-saves
+over an external change: it merges in place, snapshots both sides, then persists.
+
+**Verify:** build green; 12 merge unit tests pass; end-to-end scenario confirmed — editing
+§3 in Gnos while "Obsidian" adds a paragraph to §6 keeps **both**, clean, no prompt, no fork.
+Still needs a real Tauri run for the FS paths (history dir creation, atomic rename).
+
+## A75. Audio flatten fix — oldest legacy books (base64-in-JSON chapters) were being skipped entirely
+
+User: *"I don't see how the audiobooks got flattened in my folder, I still see every single chapter in its own json file."* Correct — A73's migration missed an entire legacy shape.
+
+**Root cause:** `audio/` has always had a second, older storage format underneath the per-book folder one: the generic keyed store routes `audiochap_<id>_<n>` / `audiodata_<id>` (base64 `data:` URL strings) to `audio/audiochap_<id>_<n>.json` etc — flat files sitting directly in `audio/`, never inside a per-book folder at all. A73's `migrateAudiobooksToFlat` only looked for the binary chunk-folder shape (`audio/<Name>/chapter_N.<ext>`) and `continue`d immediately for any book with no such folder — silently skipping every book that was still in this oldest format, which is exactly what the user has.
+
+**Fix (`storage.js`):** `migrateAudiobooksToFlat` now handles both shapes per book, independent of whether a folder exists — decodes any `audiochap_<id>_<n>`/`audiodata_<id>` still in the keyed store straight into a real binary file (chunk folder for multi-chapter, flat file for single-track) and deletes the JSON. Guard flag bumped `audio_flat_migrated` → `audio_flat_migrated_v2` so this fix re-runs even though the buggy v1 pass already completed (and would otherwise have been permanently skipped by its own done-flag).
+
+**Verify:** build green; eslint clean (pre-existing unrelated warnings only). **Needs the Tauri app** — watch the next real launch: the individual `audiochap_*.json`/`audiodata_*.json` files in `audio/` should be gone, replaced by real audio chunks/files; playback should keep working for both single-track and multi-chapter books.
+
+## A74. Audio player — chapters panel moved to the right side
+
+User request. Floating chapters `<aside>` (`AudioPlayerView.jsx`) was inset from the left edge; moved to the right — `left: 8` → `right: 8`, shadow flipped (`8px 0` → `-8px 0`), and the `ap-slide-in` keyframe now slides in from `translateX(100%)` instead of `-100%` so it still enters from its own edge instead of sliding in backwards. Verified live in the browser preview (injected a fake audio book into the store, since preview has no Tauri fs) — panel docks flush right with correct shadow direction, rounding, and slide-in animation.
+
+## A72. Sketchbooks flattened — `<Title>_<id>/{meta.json,sketch.json}` → single `<Title>.excalidraw`
+
+Part 1 of 3 of the file-type flatten (see `PLAN_FLATTEN.md`) — sketchbooks/audio/books de-cluttered the way notebooks were in A50/A51/A61. Sketchbooks were the easy case: Excalidraw's own scene JSON already embeds pasted images as base64 in its `files` map, so unlike notebooks there is no "keep the folder for attachments" exception — **every** sketchbook can go flat.
+
+- **`sketches_index`** (root-keyed, mirrors `nb_index`) now holds all sketchbook meta (title, elementCount, coverColor, timestamps) + the flat filename. **Not** a dotfile inside `sketches/` — A52's lesson holds here too: the fs capability scope rejects leading-dot paths.
+- `loadSketchbooksMeta`/`saveSketchbooksMeta`/`loadSketchbookContent`/`saveSketchbookContent`/`deleteSketchbookContent` all now check the index first, fall back to the legacy folder scan for anything not yet migrated, and write brand-new sketchbooks straight to a flat file. `moveToTrash('sketchbook', …)` got the same flat-first branch `moveToTrash('notebook', …)` already had.
+- **Self-heal**: `loadSketchbooksMeta` adopts any orphan `.excalidraw` file the index lost track of (fresh id minted, same resilience pattern as the notebook self-heal from A52).
+- **`migrateSketchbooksToFlat()`** — guarded (`sk_flat_migrated`), atomic (index written and confirmed before old folders go to the OS Trash, never hard-deleted), runs in `useAppStore.js` init right after the existing `migrateSketchbooksToFolders` (super-legacy keyed-store → folder, unchanged; folder → flat is the new second hop).
+- `SketchbookView.jsx` untouched — `loadSketchbookContent(id)` / `saveSketchbookContent(sb, data)` call signatures didn't change.
+
+**Verify:** build green; eslint clean (pre-existing unrelated `no-unused-vars` warnings elsewhere in `storage.js` from other in-flight work, not touched). **Needs the Tauri app for the actual migration** (preview has no FS/`invoke`) — watch the next real launch: sketchbook folders under `sketches/` should be replaced by flat `.excalidraw` files, old folders recoverable in the OS Trash; open/edit/rename/delete each still work.
+
+**Next:** audiobooks (partial flatten — single-track only, multi-chapter keeps a folder but drops `meta.json`), then books/PDF (moves the derived `content.json` text-cache out of the archive into `appDataDir`). Full design in `PLAN_FLATTEN.md`.
+
+## A73. Audiobooks flattened — single-track → flat file, covers → shared `covers/`
+
+Part 2 of 3 of the file-type flatten (see `PLAN_FLATTEN.md`, A72). Audio is binary, so unlike sketchbooks it can't fully flatten — a multi-chapter book can't merge its chunks into one file. Key fact that made this simpler than sketchbooks: `library.json` (`loadLibrary`/`saveLibrary`) was **already** the sole meta source of truth for books/audio — the per-folder `meta.json` was pure duplication, never actually load-bearing. And unlike notebooks/sketchbooks, the audio folder/file name is a **pure function of title+author** (`bookFolderName`) and title isn't user-editable for audio (`EditItemModal`'s audio fields are `author/color/image` only) — so no id→name index was needed at all; every call site already hands over the full book object.
+
+- **Single-track (`format: 'audio'`)**: flattened to `audio/<Author - Title>.<ext>` — no per-item folder at all any more, not even transiently (new imports via `bookImport.js` write straight to the flat path from the start).
+- **Multi-chapter (`format: 'audiofolder'`)**: keeps its folder (chunks can't merge) but the folder now holds chunks *only* — `meta.json` dropped.
+- **New shared `covers/<id>.<ext>`** dir (+ `<id>.thumb.jpg` cache, same thumb strategy as the existing per-folder book covers) replaces the per-item `cover.<ext>` sidecar for audio. `RESERVED_DIRS` already blocked a collection from claiming that name.
+- `writeAudioFile`/`readAudioFile` branch on `book.format`; `readAudioFile` falls back to the legacy per-book folder if the flat file isn't there yet (mid-migration safety). `saveAudiobookMeta` now only writes the shared cover (meta itself lives solely in library.json).
+- **`moveToTrash('audio', …)`** — this was the one genuinely risky spot: it used to *scan* `meta.json` files to find an id's folder, which no longer exist. Rewritten to resolve the path deterministically from the `bookObj` it's already passed (single-file → flat path or legacy-folder fallback; multi-chapter → chunk folder), so delete can't silently no-op and orphan files on disk.
+- **`migrateAudiobooksToFlat()`** — guarded (`audio_flat_migrated`), replaces the old `migrateAudiobooksToFolders` (whose entire job was writing the now-unwanted `meta.json`). Pulls the cover out to `covers/` for both formats, then either promotes the single audio file to flat + OS-trashes the emptied folder, or just strips `meta.json`/the thumb from a multi-chapter folder in place. Runs in `useAppStore.js` init.
+
+**Verify:** build green; eslint clean (pre-existing unrelated warnings only, untouched). **Needs the Tauri app** for the actual migration (preview has no FS/`invoke`) — watch the next real launch: single-track audiobook folders under `audio/` should disappear (replaced by a flat file, old folder recoverable in OS Trash), multi-chapter folders should lose their `meta.json`, covers should show up under `covers/`, and playback/delete should keep working for both formats.
+
+**Next:** books/PDF — moves the derived `content.json` text-cache out of the archive into `appDataDir`, flattens the PDF itself, and reuses the same shared `covers/` dir. Full design in `PLAN_FLATTEN.md`.
+
+## A61. Collections are real folders (one collection per item)
+
+Per the user's spec — *"collections saved in folders named after the collection; library ignores folders and displays all files in the archive"* — and their explicit choice of **true folder semantics** (an item lives in exactly one collection, like a file on disk). Collections were previously virtual (id lists in `collections_meta.json`).
+
+**Index paths are now archive-relative.** `nb_index` entries store `"notebooks/Note.md"` or `"My Research/Note.md"` instead of a bare filename; `_splitIndexPath` / `_resolveIndexPath` resolve them and treat a legacy bare filename as living in `notebooks/` (backward compatible — verified against all four path shapes). Every read/write/rename/delete/asset-base site was routed through the resolver, so a note works identically wherever it is filed.
+
+**New storage helpers:** `getCollectionDir`, `ensureCollectionFolder(name, oldName)` (creates, or renames + `_repointIndexDir` so notes inside follow the rename), `moveNotebookToCollection(id, name|null)` (physically `rename`s the file; collision-safe, never clobbers), `listCollectionFolders()`. `RESERVED_DIRS` protects `notebooks/books/audio/sketches/plugins/trash/covers` from being treated as — or overwritten by — a collection.
+
+**Store:** `addCollection` creates the folder; `updateCollection` renames it; `addToCollection` **removes the item from every other collection** and moves the file; `removeFromCollection` moves it back to `notebooks/`.
+
+**Discovery:** the `loadNotebooksMeta` self-heal now scans `notebooks/` **and every collection folder**, so a `.md` dropped into a collection folder by hand shows up in the library — the "displays all files in the archive" half of the spec.
+
+**Verify:** build green; path-splitting verified incl. legacy/bare/nested; one-collection-per-item confirmed live (adding to a 2nd collection removed it from the 1st). **Needs the Tauri app for the file moves themselves** (preview has no FS): create a collection → confirm a folder appears at the archive root; drag a note in → confirm the `.md` physically moves; rename the collection → folder renames and the note still opens; remove from collection → file returns to `notebooks/`.
+
+**Scope note:** this covers **notebooks**. Books/audio/sketches still live in their type folders — `moveNotebookToCollection` returns false for folder-format items, so nothing breaks, they just don't move yet. Extending to those belongs with the sketches/audio flatten work.
+
+## A71. Conflict-fork DISABLED (per request) + resize grows/tracks + no text wrap
+
+**1. Conflict forking removed.** Duplicates kept appearing, so per the user's instruction the safeguard is gone: both save paths (flat + folder) now simply write our content and `console.warn` when the file had changed underneath, instead of branching it into `<title> (offline edit …)`. `_forkExternalConflict` is retained but unreferenced (marked, so lint stays quiet) in case we want a real merge UI later. **Trade-off, stated plainly:** if a note is edited outside the app while open here, our version now wins and the external edit is overwritten. That is the behaviour asked for; the mtime check still logs when it happens.
+
+**2. Resizing could only shrink.** `_applySize` gives the wrapper the explicit width and makes the image `width:100%` of it — so setting `img.style.width` during a drag could never exceed the wrapper. The drag now sizes the **wrapper**, capped at the line width. Measured: 300 → **500px** (previously impossible).
+
+**3. Handle snapped into place only after the drag.** Same cause — the wrapper (which the handle is anchored to) wasn't resized until commit. Now it moves with the pointer, so the handle stays glued to the corner throughout.
+
+**4. Text no longer wraps beside images.** `left`/`right` used `float`, so body text flowed alongside. Floats dropped in favour of `display:block` + auto margins, in **both** the live editor and `inlineToHtml` (preview/export): an image owns its line, and alignment only decides which side of that line it sits on.
+
+**Verify:** build green. Simulated a real pointer drag: width grew 300→500, handle tracked the corner *during* the drag (within 8px), saved `![PIC|500]`. Alignment confirmed via computed styles — `float: none` on every image, right-aligned pushed by `margin-left:434px`.
+
+## A70. THE duplication cause: stale widget offset corrupted the markdown
+
+The A68 meta-merge fix was necessary but not sufficient — duplication continued after relaunch. The user's file showed why:
+
+```
+![The five vowel sounds … maps to eac](images/…_1.svg )
+                              ^ lost "h"                ^ stray space inside the parens
+```
+
+**Root cause:** `ImgWidget` stores `this.from` — the document offset captured when the widget is built. `updateDOM` deliberately **reuses the existing DOM** (to avoid a remount flash), so the resize/align handlers keep a closure over an *older* widget instance whose `from` is stale the moment anything above it edits the document. Writing back at that drifted offset sliced the markdown mid-token, mangling the alt and the `)`. The corrupted file then no longer matched what the app held → the conflict-fork fired → `(offline edit …)` duplicates. The earlier `:cr|405` corruption was the same bug.
+
+This is also why it looked resize-triggered: resizing is the action that performs the write-back.
+
+**Fixes (`ImgWidget`):**
+- New `_livePos(view, wrap)` asks the view where the widget's DOM node *currently* is (`view.posAtDOM`), falling back to `this.from`. Both the resize commit and `setAlign` now use it instead of the captured offset.
+- Defence in depth: both handlers refuse to write unless the text at the resolved column literally starts with `![`. A drifted offset can no longer corrupt anything — worst case the edit is skipped.
+
+**Data repair (backup taken first):** removed the stray space inside the image parens, restored the truncated alt (`maps to eac` → `maps to each`); both refs verified to resolve on disk. Retired 2 new fork folders + 1 recreated legacy JSON to `~/Gnos-backups/…-fork-cleanup2` (moved, not deleted).
+
+**Verify:** build green. Drift simulation: a write at a drifted offset is now REFUSED by the guard. Live end-to-end — aligned the **second** image (the offset-drift-prone case), then the first: both alts survived intact ("maps to each"), no stray space, correct per-image alignment.
+
+## A69. Image controls: buttons showed no state, handle drifted off the image
+
+Follow-ups from A67, all in `ImgWidget`:
+
+- **Align buttons looked dead.** They *were* writing correctly (verified: clicking centre saved `![PIC:center|405]` and the image moved) — but the `.active` class was only applied in `toDOM`, and CM6 reuses the DOM through `updateDOM`, so the state never changed. With a subtle move and no button feedback it read as "nothing happened". New `_syncAlignButtons()` (buttons tagged `data-align`) is called from **both** `toDOM` and `updateDOM`.
+- **Resize handle didn't follow the image.** A65's fix for zero-intrinsic-size SVGs stretched the *wrapper* to `width:100%`, but the image inside is only as wide as its set width — so the handle (anchored to the wrapper's bottom-right) sat far to the right, and the align bar drifted too. New `_applySize()` gives the wrapper the image's explicit width (image then fills it), used by `toDOM` and `updateDOM`; the two `width:100%` fallbacks now carry `:not([style*="width"])` so they only apply when no width is set.
+- `updateDOM` previously set only `img.style.width`, never the wrapper — which is why the controls stayed wherever the image was first laid out.
+
+**Verify:** build green. Measured with a `viewBox`-only SVG at `|405`: wrapper hugs the image at 405px, handle lands on the image's bottom-right corner, align bar sits on the image. Click centre → button shows active + saves `:center|405`; click again → clears to `|405`, width preserved throughout.
+
+**Note on the duplication report:** the A68 meta-merge fix landed after that session's relaunch, so the resize-triggers-duplication observation predates it. Resize dispatches a normal doc change → autosave, which is the same path A68 repaired; needs one clean run to confirm.
+
+## A68. RUNAWAY FILE DUPLICATION — `saveNotebooksMeta` wiped the sync stamp every save
+
+User: *"the SVGs are no longer connected to the file, and we keep duplicating files."* Archive showed `Koine_greek (offline edit …)` ×3 (one even ` 2`), a `Look Here (offline edit …)`, and legacy `notebook_*.json` files reappearing.
+
+**Root cause — a feedback loop:**
+1. `saveNotebooksMeta` wrote `JSON.stringify(nb)` — the **in-memory store object** — straight over `meta.json`. That object has no `contentSyncedAt`, so every save **erased the sync stamp**.
+2. `doSave` calls `persistNotebooks()` after each save, so the stamp was wiped moments after being written.
+3. The next save then read `contentSyncedAt = 0`, concluded "the .md is newer than we last synced", and ran the conflict-fork — creating `<title> (offline edit …)` with a **fresh id**. The app followed the new id, so the next save forked again. Runaway.
+4. Forks copy only the `.md`, never `images/` — which is exactly why **the SVGs disconnected**: the live note kept becoming a new folder with no images.
+5. The legacy `notebook_*.json` files are the `saveNotebookContent` catch-all fallback firing when the folder path failed — a symptom of the same churn.
+
+**Fixes (`storage.js`):**
+- `saveNotebooksMeta` now **merges over the meta.json on disk** instead of replacing it, and explicitly preserves `contentSyncedAt` / `forkedFrom` / `forkedFromTitle` / `adoptedFromDisk` when the store object doesn't carry them.
+- **Never fork against an unknown baseline.** Both the folder and flat save paths now require a truthy `contentSyncedAt` before forking. Without a stamp we cannot distinguish an external edit from our own last write, and guessing "external" is what let this run away. No stamp → treat as ours, save, re-stamp.
+
+**Data repair (live archive, backed up first to `~/Gnos-backups/…-forkfix`):**
+- **`Look Here/Look Here.md` was 0 bytes** — the fork held the only copy. Restored (888 B).
+- Main `Koine_greek.md` contained a corrupted alignment token `:cr|405` (invalid, so it would render as caption text). Repaired to `:center|405`.
+- Verified every fork's content against its main, then retired the 4 fork folders + 2 recreated legacy JSONs to `~/Gnos-backups/…-fork-cleanup` (moved, not deleted). `notebooks/` back to 58 flat + 10 folders.
+
+**Verify:** build green; merge + fork-guard logic table-tested — stamp survives a save, no fork when the stamp is missing, genuine external edit still forks. **Watch the next real session**: save a note repeatedly and confirm no new `(offline edit …)` folders appear and `images/` stays attached.
+
+## A67. Image alignment — finished and made usable
+
+Alignment was half-built: the live path parsed `:left|:center|:right` off the alt and `_applyAlign` implemented the CSS, but (a) the suffix was never stripped, so `:center` leaked into the visible caption, (b) preview/export ignored alignment entirely, and (c) there was no way to set it short of hand-editing the alt.
+
+- **`parseImgAlt` now returns `{alt, width, align}`** and strips both suffixes in **either order**, so `caption:center|600` and `caption|600:center` are equivalent; new `composeImgAlt()` is its inverse. A caption containing an unrelated colon (`cap:notreal`) is left untouched. Used by the live path, the legacy `=Nx` fallback, preview/export, and the write-backs.
+- **Alignment now survives into preview/export** — emitted as `margin:auto` (center) or `float` (left/right), matching live.
+- **Hover controls** (`.cm-img-align-bar`): ⇤ / ↔ / ⇥ buttons on the image, styled like the resize handle. Clicking the active one clears alignment. They preserve width and title, and **resizing preserves alignment** (previously a resize would have clobbered it).
+
+**Verify:** build green; parse/compose table-tested across 8 forms including both orders and the false-positive colon. Rendered live at 1280px: DEFAULT x=48, CENTER x=240 (auto margins), RIGHT floated to x=482 with body text wrapping beside it; zero raw markdown leakage; align bar present on every image; screenshot taken.
+
+## A66. Image resize always broke rendering + blank regions above images
+
+**Why resizing broke images.** The resize handle wrote the width as `![alt](src =600x)`. That is **not valid CommonMark** — a space inside the parens that isn't a quoted title means the whole thing stops being an image, so the markdown parser emitted no Image node and the raw markdown leaked out as text. The live handler *did* read `=(\d+)x`, but it only ran for parser-produced Image nodes, so it could never fire. Confirmed by test: `![SIZED](… =500x)` rendered as literal text.
+- Width now lives in the alt, Obsidian-style: **`![caption|600](src)`** — valid CommonMark, so the image still parses. New `parseImgAlt()` splits alt/width; the live path, `inlineToHtml` and the resize write-back all use it.
+- **Legacy `=Nx` notes still render**: a fallback pass matches them by regex and builds the widget directly (the parser never will). It defers to any widget the tree already made, and the existing replace-vs-mark reconciliation strips the parser's stray marks — an earlier attempt to splice those out by hand regressed the *other* images, so that was removed.
+- `inlineToHtml` also never parsed a width at all, so a resized image broke preview/export too. It now accepts both forms and emits `style="width:Npx"`.
+- The write-back was anchored on the line's trailing `)`, which mangled any image with text after it on the same line. It now rewrites the image at the widget's own offset, preserving trailing text and titles (verified on 4 shapes).
+
+**Why the top of the page blanked.** CodeMirror caches the height of every block widget, but an image changes size *after* that measurement — it decodes asynchronously, the A65 no-intrinsic-size fallback widens it, and dragging resizes it live. Nothing told the view, so cached heights went stale and the editor painted blank regions. `ImgWidget` now attaches a `ResizeObserver` to the wrapper that calls `view.requestMeasure()` on any height change, disconnected in `destroy()`.
+
+**Verify:** build green; all three forms render with zero raw leakage — no-width, `|500`, and legacy `=450x` — with the paragraph above them staying visible; screenshot taken. Regex/write-back logic table-tested (widths, titles, trailing text, already-sized).
+
+## A65. The actual SVG bug: markdown IMAGE refs — unresolved relative paths + zero-size SVGs
+
+The reported problem was never a ```svg fence (A60–A64 chased the wrong feature). The user's note contains a markdown **image**:
+`![The five vowel sounds…](images/koine_greek_pronunciation_habit_vowel_system_1.svg)`
+The grey pill was `.cm-img-err` — the alt text of a **broken image**. Three separate causes, found by reading the real note and the real files:
+
+**1. Relative paths without `./` were never resolved.** `ImgWidget` only handled `this.src.startsWith('./')`. The app's own inserter writes `./images/x`, but markdown written by hand/another tool writes `images/x` — those fell through unresolved, hit the page origin, 404'd, and rendered the alt-text pill. New shared `resolveImgSrc(src, notebookDir)` handles `./images/x`, `images/x`, `x.png` and absolute paths, while passing through `data:`/`blob:`/`http(s):` untouched. Used by both `ImgWidget` sites **and** the HTML renderer (`inlineToHtml`), which previously emitted `src` completely unresolved — so preview/export was broken for every relative image too. `renderMarkdown` gained a `notebookDir` arg (module-level `_imgBaseDir`) rather than threading it through every caller.
+
+**2. The referenced files did not exist.** No `images/` dir in `notebooks/Koine_greek/`, and zero `.svg` files anywhere in the archive or backups — the note's markdown had been generated with image references but the files were never written. Copied the two real SVGs from `~/learning-tutor/images/` into `notebooks/Koine_greek/images/`; both refs now resolve on disk (verified by walking every `![…](…)` in the note).
+
+**3. SVGs with only a `viewBox` render 0×0.** The user's files are `<svg viewBox="0 0 900 480">` with **no width/height attributes**, so they have no intrinsic size; inside `.cm-img-wrap { width: fit-content }` the sizing resolves circularly to **0×0** — the image loads successfully and is invisible. Isolated with a controlled test (no-attrs → 0×0, with-attrs → 600×320) and compared four candidate fixes. Fix: CSS fast-path `.cm-img-wrap:has(.cm-img[src*=".svg"]) { width:100% }` **plus** a general JS safety net — on load, if the laid-out width is <1px, tag the wrapper `.cm-img-nosize` (width:100%, max-height:70vh). The JS net is the one that generalises: it caught a `data:` URL the CSS selector can't match.
+
+**Verify:** build green; measured 0×0 → **684×350** and confirmed visually with a `viewBox`-only SVG in the exact shape of the user's files; screenshot taken. *(Build note: backticks inside a CSS comment terminated the surrounding JS template literal — caught and fixed.)*
+
+## A64. SVG rendered blank with only stray caption text — my sanitiser was destroying it
+
+User: *"the svg is no longer destroying the page but it also isn't rendering correctly"* — screenshots showed an empty block with a small grey pill of text underneath (the diagram's own `<title>`/`<desc>` copy), no graphic.
+
+**Two bugs in `_sanitizeSvg`, both mine:**
+1. **It deleted every `<foreignObject>`.** I stripped them wholesale in A60 as a blunt safety measure — but that is exactly where many exported diagrams (and mermaid-style output) keep their *visible content*. Removing it left an empty graphic with only `<title>`/`<desc>` text surviving, which is precisely the reported symptom.
+2. **No handling of an XML prolog / DOCTYPE.** Exported `.svg` files routinely begin with `<?xml …?>` and a `<!DOCTYPE svg …>`; feeding that to `innerHTML` parses unreliably.
+
+**Rewritten:** slice out just the root `<svg>…</svg>` (dropping prolog/DOCTYPE/trailing junk), then parse with `DOMParser('image/svg+xml')` and prune dangerous **nodes/attributes** — `<script>` elements, every `on*` handler, and `javascript:` in `href`/`xlink:href` — instead of deleting whole elements by regex. `foreignObject` is preserved with its contents sanitised. Parser errors report cleanly; a parse failure falls back to the old conservative string scrub.
+
+**Verify:** build green; both previously-broken shapes confirmed rendering in a real viewport — an SVG with XML prolog + DOCTYPE + `<title>`/`<desc>` (renders "PROLOG OK", 684×182) and a `foreignObject`-only SVG (renders "FOREIGNOBJECT CONTENT"); screenshot taken. Surrounding paragraphs unaffected.
+
+## A63. Mermaid/SVG render in LIVE mode (A60 was preview-only) + SVG no longer collapses
+
+A60 only taught `blockToHtml` (preview/export) about diagrams. **Live mode is the default view**, and it renders code fences via CM6 decorations, not that function — so a ```mermaid block still showed raw source (user screenshot). The ```svg block "blanked parts of the page".
+
+- **`DiagramWidget` + `_buildDiagramDecos`** (`NotebookView.jsx`): a block widget replacing ```mermaid / ```svg fences in live mode, following the existing `_buildColumnsDecos` pattern (regex over the doc → `Decoration.replace({block:true})`, skipped while the cursor is inside so editing reveals the source). Registered as `diagramDecoField` alongside the task/table/columns fields, and added to the `WidgetType` patch list. Mermaid renders async: `toDOM` returns a placeholder and calls `hydrateDiagrams` on itself.
+- **SVG collapse fixed.** My A60 CSS forced `width:auto; height:auto` on the SVG — an SVG with no `viewBox` has *no intrinsic size*, so it computed to **0×0** and the block appeared to blank. Now clamped with `max-*` only, plus `width:100%` on the container, `max-height:70vh` and `contain:paint` so an oversized author SVG can never paint over the page.
+- **Mermaid label clipping fixed.** Mermaid measures each label, then emits fixed box geometry; the notebook's own font-size/line-height then cascaded into the SVG and the text no longer fit ("Nouns"/"Verbs" rendered cut off). Pinned the typography mermaid assumes inside `.nb-mermaid svg` and set `foreignObject { overflow:visible }`.
+- **Mermaid follows the app theme** — was hardcoded `theme:'base'` (light boxes in a dark notebook). Now picks `dark`/`default` from the measured `body` background luminance, so custom themes work too.
+
+**Verify:** build green; confirmed live in a real 1280×820 viewport — mermaid renders inline between paragraphs (684×224), dark-themed, long labels like "Alphabet & Phonology (YOU ARE HERE)" fully legible; ```svg renders at 684×150 with no collapse and no page takeover; screenshots taken. *(Earlier 0×0 readings in this session were a collapsed preview viewport, not a bug — worth remembering when measuring layout here.)*
+
+## A62. `## Heading` wrong size/colour in live mode — the actual bug
+
+A60 fixed the wrong direction. The real complaint was that **spaced** headings (`## Text`) got the wrong **size and colour** in the live editor; `##Text` was the one rendering correctly.
+
+**Root cause:** heading appearance is owned by the `.cm-lv-hN` **line** classes (carrying `--nb-hN` / `--nb-hN-color`), but `makeHighlight()` also styled `tags.heading1–4` with `fontSize` + `color`. Those tag styles land on a span **inside** the line, so:
+- `fontSize: '1.35em'` **multiplied** the line's already-scaled size → 18.9px became **25.5px**
+- `color: 'var(--text)'` overrode the heading colour → white instead of the h2 blue
+
+Only *spaced* headings were hit, because `##Text` is not parsed as an ATXHeading and therefore never received the tag styles — exactly why the two forms looked different. (My first measurement missed it: I read the computed style of the `.cm-line`, which was correct; the damage was on the child span.)
+
+**Fix:** heading tag styles keep `fontWeight`/`fontFamily`/`letterSpacing` only — no `fontSize`, no `color`. Line classes are the single source of truth for heading size and colour.
+
+**Also corrected a bug A60 introduced:** the guard `([^\s#].*?)` rejected legitimate content starting with `#` after a space, so `## #1 Priority` stopped being a heading. Regex is now `^(#{1,6})(?:[ \t]+|(?=[^\s#]))(.+?)(?:\s+\{#([^}]+)\})?$` — verified against 12 cases (`## #Hash inside` ✓, `#######Seven` ✗, bare `###` ✗, `{#anchor}` ✓).
+
+**Verify:** build green; measured live — `## H2 spaced` went 25.5px/white → **18.9px/h2-blue**, now identical to `##H2nospace`; h3 likewise.
+
+## A60. Notebook headings without a space + mermaid & SVG rendering
+
+**1. `##Heading` now renders everywhere.** The live editor already accepted a missing space (the no-space heading pass in `makeLivePlugin`), but the preview/export renderers required `\s+` after the hashes — so the same note looked different in the two modes. Changed the three renderer regexes (`blockToHtml`, the `/toc` collector, the live `/toc` widget) to `^(#{1,6})[ \t]*([^\s#].*?)…`. The `[^\s#]` guard keeps a bare `###`, a lone `## `, and a 7-hash line from matching, and `{#custom-anchor}` still works. Verified against 11 cases incl. those edges.
+
+**2. Mermaid diagrams.** A `/mermaid` slash-command existed but nothing rendered its output — mermaid was only present transitively (via `@excalidraw/mermaid-to-excalidraw`). Now: ```mermaid fences render to real SVG. Mermaid is **declared as a direct dependency** (`^10.9.3` — relying on a transitive one is fragile) and **lazily imported on first diagram only** (~1.4MB; it must never touch startup, given the reader-perf work). `blockToHtml` emits a `.nb-mermaid` placeholder carrying the source; new exported `hydrateDiagrams(root)` renders pending nodes after paint (idempotent via `data-rendered`), called alongside `hydrateMathNodes`. Render errors show inline instead of throwing.
+
+**3. Inline SVG.** ```svg fences render the markup, passed through a new `_sanitizeSvg()` first — strips `<script>`, all `on*=` handlers, `javascript:` URLs and `<foreignObject>`, since notes can arrive from outside the archive (sync, external refs). Verified: `<svg onload=… ><script>…` → cleaned.
+
+**4. `vite.config.js`:** added `mermaid` to `optimizeDeps.include`. Without pre-bundling, the dev server transforms mermaid's dependency tree on first use and the first diagram hangs (observed: a >30s stall, then success once pre-bundled — 407ms cold render after).
+
+**Verify:** build green. Live-mode headings confirmed (`# Title`→h1, `## With space`→h2, `##Without space`→h2, `###Deep no space`→h3); regex table verified for all edge cases; mermaid confirmed rendering a real 19-shape SVG in 407ms; sanitiser output checked.
+
+## A59. Attribute the remaining stalls (~89% unexplained) — labelled task timing
+
+Fourth session confirms the earlier fixes and **clears the index build**:
+
+```
+flip → paint    p50=22  p95=35   (1/5 dropped)
+chapter HIT     5ms      MISS 376ms (was 1111ms)   hit rate 67% (was 20%)
+scan layout     p50=16  max=18            ← index build is cheap now
+stalls = scan?  6%  (scan 474ms of 8552ms)  ← and NOT the cause
+long frames     n=28  p50=291  max=576     ← still the problem
+```
+
+Scan (474ms) + chapter loads (~386ms) + React (~112ms) explain only **~11%** of the 8552ms of stall time. Rather than guess a fourth time, added labelled attribution for the rest:
+
+- **`readerPerf.markTask(label, ms)`** + `taskTotals` in the report (total ms per label, biggest first, shown as `other work`). Exposed as **`window.__perfTask`** so modules this file indirectly depends on can report without an import cycle.
+- **Instrumented the suspects:** `storage.set` / `storage.get` (labelled per key — `JSON.stringify` of `library.json`/page indexes is synchronous main-thread work, and the reader writes progress on a 400ms/500ms debounce while flipping), and the **notebook disk watcher** (`notebookWatcherTick` — polls the filesystem every 1.5s *per open notebook*, and the archive is on iCloud where a `stat` can be slow).
+
+**Verify:** build green; hook confirmed live in preview against real storage calls → `write:app_prefs 15ms/1 · write:perf_probe 0ms/1 · read:perf_probe 0ms/1`.
+
+**Next run — reproduce a NORMAL setup** (notebook tabs open as usual, not a clean reader-only window) so the real cause shows up. Read the `other work` line: whichever label dominates is the culprit. If nothing does, the stalls are outside JS (image decode / WKWebView compositing) and the next step is a different tool, not more of this one.
+
+## A58. Fix MY A57 regression (prewarm starved → 1111ms chapter misses) + fix the long-frame detector
+
+Third measured session. **Flips are confirmed solid: p50 27ms, p95 32ms, 0/8 dropped** (n=8, bigger sample). **The index build is exonerated** — `scan layout` is now p50 16ms / max 93ms, so A56's throttling worked.
+
+But two problems, one of them mine:
+
+**1. REGRESSION I INTRODUCED IN A57.** Cache hit rate collapsed **100% → 20%**, and chapter misses cost **p50 1111ms**. Cause: A57 made *both* scans defer on `_lastActivity()` (any input incl. `pointermove`). The neighbour prewarm therefore never got its 2.5s quiet window while the user was reading with a hand on the mouse — so it never ran, and every chapter crossing became a full ~1111ms layout. Fix: split the *activity source*, not just the backoff length — prewarm gates on **page turns only** (`_lastNavTime`), the full-book build keeps the presence gate (`_lastActivity()`). Lesson: prewarm must stay responsive *while the user reads*; that is exactly when it earns its value.
+
+**2. My long-frame detector was wrong.** It logged a **207,308ms** "long frame" — that's the window backgrounded/machine asleep, where rAF stops firing, not a stall. It swamped the totals and made the scan attribution read a misleading **1%** (real figure ≈14% once the bogus entry is removed). Fixed: ignore deltas > `SUSPEND_MS` (5s) and any frame while `document.hidden`.
+
+**Verify:** build green; report math re-checked in preview. **Next run** should show cache hit rate back near 100%, chapter MISS rare, and a long-frame max in the hundreds of ms (not minutes) with a trustworthy `stalls = scan?`.
+
+## A57. Flip lag fixed (1211ms → 27ms); stalls now attributed + deferred on user presence
+
+A56 verified — measured before/after:
+
+| | before | after |
+|---|---|---|
+| flip → paint p95 | **1211ms** | **27ms** |
+| flip max | 1211ms | 27ms |
+| dropped frames | 2/6 | **0/2** |
+| cache hit rate | 100% | 100% (still 5–19ms) |
+
+Flips are fixed. But long frames persisted (17, p50 331ms, max 786ms) in a session with only **2 flips** — revealing the remaining flaw: the scan deferred only on page FLIPS, and a reader spends most of their time *reading*, not flipping. So the index build ran happily while the user sat looking at the page.
+
+- **Attribution (don't guess twice):** `readerPerf.markScanStep()` now times every background scan layout; the report adds `scanLayout` and **`stalls = scan?`** — the % of long-frame time the index build accounts for. If it's high the scan is confirmed; if low, something else is stalling and we look elsewhere.
+- **Presence-aware deferral (`Paginationengine.js`):** new `_lastInputTime` fed by passive capture listeners (`pointerdown/pointermove/wheel/keydown/touchstart/scroll`), hooked idempotently from `setupColumns`. The backoff now tests `_lastActivity()` = `max(lastNav, lastInput)`, so the expensive build only runs when the user is genuinely away from the book — not merely between page turns.
+
+**Verify:** build green; attribution math confirmed in preview (synthetic data → `98% (scan 1090ms of 1117ms)`). **Next Tauri run:** `/perf on` → read → `/perf report`. Expect long-frame count to drop sharply; read `stalls = scan?` to confirm the cause. If it reports a LOW % , the index build is exonerated and the remaining stalls are something else (image decode, storage writes) — investigate from there rather than tuning the scan further.
+
+## A56. Reader flip lag — ROOT CAUSE FOUND + fixed (background index build stalled the main thread)
+
+A54/A55's profiling paid off. Real numbers from the user's session:
+
+```
+flip → paint    n=6   p50=27    p95=1211  max=1211
+dropped frames  2/6
+chapter HIT     n=1   p50=5                  cache hit rate 100%
+chapter MISS    —
+React render    n=24  p50=1     p95=5
+long frames     n=23  p50=261   p95=881   max=1202
+```
+
+**All three original suspects were WRONG.** Chapter layout is 5ms with a 100% cache-hit rate; React render p95 is 5ms. The killer is the third row: **23 main-thread stalls, median 261ms, max 1202ms** — and the worst flip (1211ms) is almost exactly the worst stall (1202ms). The slow flip *is* a flip that landed inside a background stall.
+
+**Root cause:** the full-book pagination index build (`scanAllChapters`). Each step does `_scanEl.innerHTML = <whole chapter>` then a rect read → a synchronous, uninterruptible multi-column layout of an entire chapter (~261ms). Two guards existed and BOTH failed:
+1. `requestIdleCallback(fn, {timeout: 2000})` — the timeout **defeats the purpose**: rIC fires after it *regardless of whether the thread is idle*, so during active reading it fired constantly.
+2. The 3s post-nav backoff was checked only at *step start*. Reading a page takes tens of seconds, so the scan reliably woke mid-read; and once a step began, a flip had to queue behind the whole layout.
+
+**Fix (`Paginationengine.js`):**
+- rIC timeout 2s → `SCAN_FALLBACK_MS` 30s, so steps wait for **genuine** idle (long backstop still completes the index when the user pauses).
+- New `MIN_IDLE_MS` gate: if `deadline.timeRemaining()` says there's no real idle time, reschedule instead of starting a ~261ms layout.
+- Post-nav backoff 3s → `SCAN_NAV_BACKOFF_MS` 9s, and **re-checked immediately before** the `innerHTML` (a step can sit queued a long time); on bail it decrements `i` so the chapter is retried, not skipped.
+- **Neighbour prewarm keeps a short 2.5s backoff** (`opts.neighborsOnly`) — it's small (radius 2) and is exactly what makes chapter crossings a 5ms cache hit, so it must stay responsive. Only the expensive full-book build gets the long backoff.
+
+**Verify:** build green. **Needs the Tauri app to confirm the win** — re-run `/perf on` → read/flip a minute → `/perf report`. Expect `long frames` count/median to drop sharply and `flip → paint` p95 to fall from ~1200ms toward the ~27ms median. Chapter cache-hit rate should stay high (if it drops, the prewarm backoff is too long).
+
+## A55. `/perf` commands — reader profiling without devtools
+
+User reports that **opening the inspector blanks the whole app window** outside the devtools pane (WKWebView repaint failure on webview resize — this codebase has prior form: see the `.book-cover` comment in global.css about WKWebView rendering skipped subtrees blank). Not reproducible in the Chromium preview, and it blocked A54's profiling, so the profiler no longer needs devtools at all.
+
+- **`readerPerf.js`:** `report()` now ALSO (a) renders an **in-app overlay** (fixed, bottom-right, metrics table + verdict + close button) and (b) writes `reader_perf_report.json` to the archive root via `setJSON` — so results are readable on screen and off disk. New `gnos:perf-cmd` window listener drives on/report/off.
+- **`LibraryView.jsx` SearchDropdown:** typing `/perf` in the search bar lists **/perf on · /perf report · /perf off**, each dispatching `gnos:perf-cmd`.
+- **`App.jsx`:** imports `@/lib/readerPerf` at app level so the API + listener exist before ReaderView mounts (still inert until `on()`).
+
+**Verify:** build green; verified live in preview — `/perf` rows render in the titlebar search, `report` draws the overlay with real stats + verdict, `off` clears it. Metrics still need the Tauri app + a real book.
+
+**NOTE — the blanking bug itself is NOT fixed** (diagnosed, not reproducible outside WKWebView). Prime suspects: heavy `backdrop-filter` usage (notorious for WKWebView repaint bugs on resize) and/or huge compositor layers (the reader strip is ~70,000px wide). Worth its own pass; the `/perf` route means it no longer blocks the reader work.
+
+## A54. Reader page-flip profiling instrumentation (diagnostic only)
+
+User reports book page-flips lag vs other e-readers. Rather than guess-optimise a 636-line pagination engine, added opt-in profiling to find the dominant cost. **No behaviour change** — every hook is a no-op until enabled (one boolean check per flip).
+
+- **`src/lib/readerPerf.js` (new):** `markFlip` (input → actual painted frame, via double-rAF; flags >32ms as a dropped frame), `markChapterStart/End` (chapter layout time + **cache hit/miss**), `markRender` (ReaderView render pass), plus a long-frame observer (>50ms main-thread stalls). `report()` prints a console table with p50/p95/max and a **verdict** naming the likely bottleneck.
+- **`ReaderView.jsx`:** `markFlip` in `flipTo`; chapter timers around BOTH the cache-hit and cache-miss branches of the chapter-render effect; render timer at the top of the component paired with a `useLayoutEffect`.
+
+**Three suspects it distinguishes:** (1) CSS multi-column lays out the ENTIRE chapter at once (no virtualization) → long chapters stall on entry; (2) chapter crossings that miss the prewarm cache do a full synchronous layout+measure; (3) every deliberate flip's `setCurPage` re-renders the whole 2,690-line view.
+
+**Usage (in the Tauri app's devtools console):** `__readerPerf.on()` → read/flip normally for a minute, crossing chapters → `__readerPerf.report()` → `__readerPerf.off()`.
+
+**Verify:** build green; API confirmed live in preview (`on`/`report`/`off`, all metric keys present), off by default. Real numbers need the Tauri app with a real book.
+
+**Revert:** delete `readerPerf.js`, its import, the 5 call sites.
+
+## A53. External file references + pin, and a re-foldering bug fix
+
+**Re-foldering bug (fixed):** `migrateNotebooksToFolders` runs every launch and unconditionally created a folder+meta.json for every notebook — so after the A51 flatten it **re-created 69 folders**, un-flattening on each relaunch. Now it skips any note already in the flat index or present as an on-disk flat `<Title>.md`, and only folds notes that genuinely have legacy flat-JSON and no folder. Cleaned up the 59 dup folders it had made (→ `~/Gnos-backups/…-refolder-dups`); verified 0 content loss. `notebooks/` = 64 flat + 9 folders.
+
+**External file references** — edit a `.md` that lives OUTSIDE the archive (a download, an Obsidian vault); never copied in, reads/saves hit the original absolute path.
+- **`storage.js`:** `loadExternalRefs`/`saveExternalRefs` (root `external_refs.json`, pinned only), `readExternalFile`. `loadNotebookContent`/`saveNotebookContent`/`getNotebookMdPath` handle `ext_…` ids by resolving the ref's absolute path — save writes straight back + updates the ref's derived title.
+- **store:** `externalRefs` slice (add/remove/pin/update/persist) + `openExternalFile()` (dialog → `.md` → transient ref → open in a notebook tab). Loads pinned refs at init.
+- **NotebookView:** `doSave` detects external notes → writes the file, updates the ref title, skips all notebook-meta/folder/wikilink work. Watcher (live external-edit sync) works via `getNotebookMdPath`.
+- **UI:** sidebar **EXTERNAL** section (pinned refs persist; unpinned dimmed, this-session only; right-click Pin/Unpin/Remove) + "Open File…" row; "Open File…" also in the Add menu.
+
+**Verify:** build green; wired end-to-end in preview (inject ref → sidebar EXTERNAL shows it → click opens as an `ext_` notebook, no crash). **Real read/write/live-sync needs the Tauri app** (preview has no FS/dialog): Add → Open File… → pick a `.md` anywhere → edit → saves write to the original path; right-click → Pin to keep it in the sidebar; edit the file externally → live-syncs in.
+
+**Revert:** drop the external-ref storage helpers + `ext_` branches; the store slice + `openExternalFile` + init load; the NotebookView `doSave` external branch; the SideNav EXTERNAL section + Add-menu entry. Re-foldering fix: restore the old unconditional `migrateNotebooksToFolders` loop.
+
+## A52. Flatten HOTFIX — index write failed (dotfile scope) → notes vanished; recovered
+
+**Bug:** A51 stored the central index as `notebooks/.index.json`. The fs capability scope (`/**`, `$HOME/**`) rejects a **leading-dot** path, so every `writeTextFile('.index.json')` failed silently (caught → returned false). The migration then went on to trash the source folders anyway (no atomicity), so 64 flat `.md` files were written but their id→metadata map was lost → those notes disappeared from the library. (Plain `Name.md` writes and root `setJSON` files were unaffected — only the dotfile.)
+
+**Fixes (`storage.js`):**
+- **Index → root keyed storage.** `loadNotebooksIndex`/`saveNotebooksIndex` now use `getJSON/setJSON('nb_index')` → archive-root `nb_index.json`, the same proven-writable pattern as `flashcard_decks.json`. `notebooks/` stays pure markdown. Dotfile approach removed.
+- **Atomicity.** `migrateNotebooksToFlat` now aborts (keeps folders, doesn't set the done-flag) if the index doesn't persist — never trashes a source before its replacement is safely saved.
+- **Self-heal.** `loadNotebooksMeta` adopts any top-level flat `.md` not referenced by the index (mints a fresh id, writes it back) — a flat note can never be invisible again even if the index is lost.
+
+**Data recovery performed (this session, on the live archive):**
+- Rebuilt `nb_index.json` (64 notes) from the backup's `meta.json` files, matched to the flat files by name + content hash (0 unmatched).
+- Reconciled leftover folders: 5 content-identical dup folders + 4 empty stale folders → recovery dirs under `~/Gnos-backups/`. 3 folders with unique content whose id was shadowed by a **pre-existing duplicate-id** collision (notably `CFM Lesson`, 5252 B) were rescued — given fresh ids so they load as their own notes. 2 attachment folders kept.
+- **Verified: 0 non-empty notes from the backup are missing live.** Final `notebooks/` = 64 flat `.md` + 5 folders; `nb_index.json` at root.
+
+**Verify:** build green; preview boots clean. On next `tauri:dev` launch all notebooks (flat + folder) should appear; `nb_index.json` persists metadata; open/edit/save/rename/delete work. Backups: `~/Gnos-backups/20260816-074818` (original), plus `-stale-folders` / `-empty-stale` recovery dirs.
+
+## A51. Flatten step 2 — notes are single `.md` files + one hidden index (SHIP-UNVERIFIED)
+
+Per-note folders (`Name/Name.md` + `meta.json`) → **flat pure-markdown `notebooks/Name.md`**. All app metadata (id, cover, createdAt, wordCount, dueDate, tags, order) lives in ONE hidden `notebooks/.index.json` keyed by id. A note becomes a folder ONLY when it has image attachments. Chosen over YAML frontmatter (which would clutter the file body).
+
+**storage.js:**
+- Index helpers: `loadNotebooksIndex()` / `saveNotebooksIndex()` / `_patchNbIndex` / `_removeNbIndex`; `_flatFileName` (collision-safe `Title.md`); `getNotebookMdPath(note)` (exact .md path — flat file or folder).
+- `migrateNotebooksToFlat()`: converts plain folder-notes → flat file + index entry, then sends the **old folder to the OS Trash** (reversible, never rm). Notes with `images/` or a `coverImage` file stay folders. Guarded by `nb_flat_migrated`; crash-resumable (skips ids already in index).
+- All read/write paths made flat-aware **and backward-compatible** (still read folders, so a partial/failed migration never blanks the library): `loadNotebookContent` (index first), `loadNotebooksMeta` (merges index notes, refreshes ones edited externally), `saveNotebookContent` (flat fast-path with conflict-fork; NEW notes are flat), `saveNotebooksMeta` (flat branch → index, renames flat file on title change), `getNotebookFolderPath` (flat → notebooks dir), `moveToTrash`/`deleteNotebookContent` (trash the flat file + drop index entry), `saveNotebookImage` (promotes a flat note to a folder on first image).
+- Wired `migrateNotebooksToFlat` into store `init()` after `cleanupLegacyNotebookFiles`.
+
+**NotebookView.jsx:** md-path resolution (watcher baseline + post-first-save) now uses `getNotebookMdPath(note)` instead of scanning the folder (a flat note's "folder" is the whole notebooks dir).
+
+**Verify (SHIP-UNVERIFIED — no FS in preview; boots clean, seed library renders, no new console errors):** on next `tauri:dev` launch, console logs `Removed 84 legacy…` then `Flattened N notebook(s) → single .md files`. Then: `notebooks/` should hold ~70 flat `Name.md` + hidden `.index.json` + 2–3 attachment folders; old folders in macOS Trash; all notebooks still in the library; open/edit/save, rename (file renames), new note (created flat), delete (flat file → Trash) all work.
+
+**Rollback (backup `~/Gnos-backups/20260816-074818`):** quit app → `rm notebooks/.index.json`, restore `notebooks/` from backup. Migration won't re-run (`nb_flat_migrated` set); folders load via the backward-compat path. To retry, also clear the `nb_flat_migrated` flag.
+
+**Revert (code):** drop the index helpers + `migrateNotebooksToFlat` + `getNotebookMdPath` + all flat branches; restore folder-only `saveNotebookContent`/`saveNotebooksMeta`/`loadNotebookContent`/etc.; revert NotebookView to `resolveNotebookMdPath`; drop the `init()` call.
+
+## A50. Notebooks de-clutter (flatten step 1) — remove legacy junk
+
+Diagnosed the archive's `notebooks/` mess (user: "storage is a nightmare"). 160 entries = **73 real notebooks** (folder + meta.json + .md) buried under junk: **75 legacy `notebook_*.json`** flat files (old pre-folder format — 53 dupes of existing folders, 9 empty, 13 abandoned orphans the user chose to drop) + **9 empty stray folders** (4 blank test notes + 5 root-name dirs `books`/`sketches`/`trash`/`plugins`/`notebooks` from an old base-dir bug) + `.DS_Store`.
+
+- **`storage.js` `cleanupLegacyNotebookFiles()`** (new): one-shot startup migration (guarded by `nb_legacy_cleaned` flag). Removes `notebook_*.json` files and any notebooks/ subfolder that has NEITHER `meta.json` NOR a `.md` (so real notebooks are never touched). Everything goes to the **OS Trash** (recoverable) via the `move_to_trash` command. Wired into store `init()` after `cleanupTrash()`.
+- Selection dry-run on the real archive: **84 junk → trash, 73 notebooks kept** — verified exact.
+- Backup taken first: `~/Gnos-backups/20260816-074818` (verified == live).
+
+**Revert:** drop `cleanupLegacyNotebookFiles` + its `init()` call + the import.
+
+**Verify:** build green; selection dry-run confirmed. **Runs in the Tauri app on next launch** — check console for "Removed 84 legacy notebook junk file(s) → OS Trash", confirm `notebooks/` now holds 73 folders + nothing else, and the junk sits in macOS Trash. All 73 visible notebooks remain in the library.
+
+**DEFERRED — flatten step 2 (folder → flat `Name.md` + `.index.json`):** the structural conversion (drop per-note folders/meta.json for pure-markdown files) rewrites `saveNotebookContent`/`loadNotebooksMeta` — the SAME functions the other chat just rewrote for A46 conflict-fork. Doing both concurrently risks a corrupt merge on live iCloud data, and it can't be runtime-verified from preview (no FS). Held for a focused pass once A46's storage.js edits settle. Design unchanged: central hidden `.index.json` (id/cover/createdAt), folder only when a note has image attachments.
+
+## A49. Sidebar nav — correct cover colors + reveal open file in place
+
+- **Cover colors** (`SideNav.jsx` `MiniCover`): the sidebar thumbnail defaulted uncoloured items to a single near-black `#1a1a2e`, while the library cards default notebooks to `#2d1b69`, sketchbooks `#0d5eaf`, decks `#7a3b8f`. So a note with no `coverColor` showed black in the sidebar but purple in the grid. Default now branches per type to match the cards. Verified in preview: notebook rows `rgb(45,27,105)`, sketchbook `rgb(13,94,175)`.
+- **Reveal open file in place** (`SideNav.jsx` `NavDropdown`): opening the sidebar while editing a file only highlighted the active row — if it was scrolled off, the user had to hunt for it. Added a `scrollRef` + effect that `scrollIntoView({block:'nearest'})` on the active row when the list mounts (section auto-expands on open) or the sidebar re-opens (`revealSignal={sideNavOpen}`). Uses `CSS.escape` on the id.
+
+**Revert:** restore `MiniCover` single `#1a1a2e` default; drop the `scrollRef`/reveal effect + `revealSignal` prop.
+
+## A48. Delete actually deletes — to the OS Trash, not an in-archive folder
+
+Deleting an item wasn't removing its files. Two bugs + a UX complaint:
+1. **Sidebar delete skipped disk entirely** — `SideNav.jsx` notebook/book/audio "Delete" called only `removeNotebook`/`removeBook` (state), never `moveToTrash`. Files stayed; notes resurrected on next launch via `loadNotebooksMeta` (folder scan) + `syncNotebooksFromDisk` orphan-adoption.
+2. **Even the working path only *moved* files** into `<archive>/trash/` for 7 days — still sitting in the user's Gnos folder.
+
+Now delete goes to the **operating-system Trash** (recoverable in Finder, genuinely gone from the archive):
+- **Rust:** new `move_to_trash(paths: Vec<String>)` command (`src-tauri/src/lib.rs`) using the `trash` crate (Cargo dep added), registered in `generate_handler!`. Skips non-existent paths, returns what it trashed. `cargo check` green.
+- **`storage.js` `moveToTrash`** rewritten: locate the item's content folder by id, `invoke('move_to_trash', {paths:[folder]})`. Fallback if the OS move fails: strip `meta.json` (`_stripMeta`) so it can't resurrect. Dropped the in-archive trash dir + manifest writing. Audio keyed-store payload cleanup kept.
+- **Wired every delete path:** `SideNav.jsx` notebook/book/audio/sketchbook now `await moveToTrash(...)` before removing from state; `LibraryView.jsx` card menus already did.
+- **Legacy cleanup:** `getTrashDir` no longer *creates* `<archive>/trash` (it was being recreated empty on every load = clutter). `cleanupTrash` now one-shot **migrates** any leftover `<archive>/trash/*` to the OS Trash and removes the empty dir on startup. `loadNotebooksMeta`'s trash-manifest filter guards on `exists`.
+
+**Revert:** remove `move_to_trash` (lib.rs + Cargo `trash` dep + handler line); restore old `moveToTrash` (in-archive trash dir + rename + manifest) and `getTrashDir` mkdir + old `cleanupTrash`; revert the four SideNav delete actions to state-only.
+
+**Verify:** `cargo check --lib` green ×3; `vite build` green. **Needs the running Tauri app** (browser preview has no `invoke`/FS): delete a notebook from BOTH the sidebar menu and a library card → folder leaves `notebooks/` and lands in the macOS Trash → relaunch, it stays gone (no resurrection). On startup the two legacy `<archive>/trash/` stragglers should move to the OS Trash and the `trash/` folder disappear.
+
+**NOTE (next):** metadata re-architecture — flatten the 162 per-note folders to pure-markdown `Name.md` with a single hidden `.gnos-index.json` (id/cover/createdAt), no sidecars, no folder unless attachments. Chosen over YAML frontmatter (which would clutter the file body). Deferred: needs a full backup + dry-run and coordination with the other chat's in-flight `storage.js` (conflict-save) work. External-file references (open/edit any `.md` in place + pin to sidebar) also pending.
+
+## A47. Heading fold arrows moved to the left gutter + collapsed-state fix
+
+Fold chevrons were **inline**, replacing the hidden `#` marks, so each heading's text started shifted right by the arrow's width and the arrows never lined up (deeper headings sat further in). Now they're parked in the left gutter:
+
+- **`NotebookView.jsx` CSS:** `.cm-fold-arrow` → `position: absolute; left: -22px; top:0; bottom:0` (16px wide, vertically centered on the heading line). Foldable heading lines (`.nb-live .cm-line.cm-lv-h1…h6`) get `position: relative` to anchor it. Rotation moved from the button to the inner `<svg>` (`.cm-fold-arrow-open svg { rotate 90 }`) so the absolute box is free. `@media (max-width:640px)` pulls it in to `-18px`. Result: every heading's text left-aligns with the body text and the arrows form one consistent gutter column regardless of level.
+- **Collapsed-state fix (found while testing):** the live ViewPlugin only rebuilt decorations on `docChanged || selectionSet`; a fold/unfold changes neither, so the chevron stayed pointing "open" after a section collapsed. Added a `foldChanged` check (`upd.transactions.some(tr => tr.effects.some(e => e.is(foldEffect)||e.is(unfoldEffect)))`) to the update condition; `foldEffect`/`unfoldEffect` now destructured from `cm.language` in `makeLivePlugin`. Chevron now flips right⇄down correctly.
+
+**Revert:** restore the old inline `.cm-fold-arrow` rule (inline-flex, `margin-right:3px`, button-transform rotate); drop the heading-line `position:relative` block and the media query; remove `foldChanged` from the update condition and the `foldEffect,unfoldEffect` destructure.
+
+**Verify:** build green; verified live in preview — three headings' arrows sit in one gutter column at the same x, heading text aligns with body text; real click on a section folds it AND the chevron flips to point right, sibling stays down; no new console errors (only the expected Tauri-runtime-missing `invoke`/`transformCallback` preview noise).
+
 ## A46. Forty-fifth pass — conflict-safe save: keep BOTH edits, never prompt
 
 Refines A45's conflict handling per user ask: "allow the app to save both the offline edits and current edits whenever the edit is made." A45 surfaced an interactive banner (Load from disk / Keep mine) when a note was open and its `.md` changed on disk. User wants no prompt — auto-keep both.

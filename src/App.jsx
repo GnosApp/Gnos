@@ -11,21 +11,28 @@ import { relaunch } from '@tauri-apps/plugin-process'
 import { PaneContext, PaneChromeContext } from '@/lib/PaneContext'
 import pluginHost from '@/lib/PluginHost'
 import { loadPlugins } from '@/lib/loadPlugins'
-import LibraryView, { SearchDropdown, AddPopup } from '@/views/LibraryView'
+import LibraryView, { SearchDropdown } from '@/views/LibraryView'
+import { AddPopup } from '@/components/AddPopup'
 import { makeId, generateCoverColor } from '@/lib/utils'
 import ReaderView      from '@/views/ReaderView'
 import AudioPlayerView from '@/views/AudioPlayerView'
 import PdfView         from '@/views/PdfView'
+// Registers window.__readerPerf + the `gnos:perf-cmd` listener app-wide, so the
+// `/perf` search commands work before ReaderView has ever mounted. Inert until on().
+import '@/lib/readerPerf'
 import SideNav                                    from '@/components/SideNav'
 import { UniversalSettingsModal } from '@/components/SideNav'
 import GraphView       from '@/views/GraphView'
 import CalendarView    from '@/views/CalendarView'
+import { ArrowLeft, ArrowLeftRight, BookOpen, Calendar, CalendarArrowDown, ChevronDown, ChevronLeft, ChevronRight, ChevronsLeftRight, CircleCheck, CirclePlay, CodeXml, Columns2, Copy, FilePlus2, FileText, FlipHorizontal, House, Layers, Library, Link, List, Lock, Maximize2, NotebookText, PanelLeft, PanelLeftClose, Pencil, Plus, Rows2, Search, Settings, SquareKanban, SquareStack, Star, TextSearch, TriangleAlert, User, Volume2, Waypoints, X } from 'lucide-react'
 
 const NotebookView      = lazy(() => import('@/views/NotebookView'))
 const SketchbookView    = lazy(() => import('@/views/SketchbookView'))
 const FlashcardView     = lazy(() => import('@/views/FlashcardView'))
 const KanbanView        = lazy(() => import('@/views/KanbanView'))
 const PluginManagerView = lazy(() => import('@/views/PluginManagerView'))
+const YjsProofHarness    = lazy(() => import('@/dev/YjsProofHarness'))
+const YjsRelayHarness    = lazy(() => import('@/dev/YjsRelayHarness'))
 
 const VIEW_LABELS = {
   library: 'Library', reader: 'Reading', 'audio-player': 'Listening',
@@ -135,13 +142,13 @@ function TabPane({ tabId, isActive, isLastActive, isSplit, grow = 1, onFocus, on
             <div className="pane-header-actions">
               {/* Window-manager chrome: swap sides · promote to full · close split */}
               <button className="pane-wm-btn" title="Swap sides" onClick={e => { e.stopPropagation(); onSwapPanes?.() }}>
-                <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M4 2L1.5 4.5 4 7M8 5l2.5 2.5L8 10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/><path d="M1.5 4.5h6M10.5 7.5h-6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+                <ArrowLeftRight size={11} strokeWidth={1.4} />
               </button>
               <button className="pane-wm-btn" title="Expand this pane (unsplit)" onClick={e => { e.stopPropagation(); onUnsplit?.() }}>
-                <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M7 1.5h3.5V5M5 10.5H1.5V7M10.5 1.5L7 5M1.5 10.5L5 7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                <Maximize2 size={11} strokeWidth={1.4} />
               </button>
               <button className="pane-wm-btn pane-wm-close" title="Close this pane (keep the other)" onClick={e => { e.stopPropagation(); onClosePane?.() }}>
-                <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                <X size={9} strokeWidth={1.5} />
               </button>
               <div id={`qa-${tabId}`} className="gnos-tb-quick pane-qa" />
               <svg id={`nbsave-${tabId}`} className="nb-save-icon" viewBox="0 0 18 18" fill="none">
@@ -223,7 +230,7 @@ function TabLayoutModal({ onClose, splitDir, splitPanes, setSplitDir, setSplitPa
           <div>
             <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--textDim)', marginBottom: 8 }}>Open Tabs</div>
             {tabs.map(tab => (
-              <div key={tab.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', borderRadius: 8, background: tab.id === activeTabId ? 'rgba(56,139,253,0.1)' : 'transparent', marginBottom: 2 }}>
+              <div key={tab.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', borderRadius: 8, background: tab.id === activeTabId ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : 'transparent', marginBottom: 2 }}>
                 <div style={{ width: 6, height: 6, borderRadius: 3, background: tab.id === activeTabId ? 'var(--accent)' : 'var(--border)', flexShrink: 0 }} />
                 <span style={{ flex: 1, fontSize: 13, color: tab.id === activeTabId ? 'var(--accent)' : 'var(--text)', fontWeight: tab.id === activeTabId ? 600 : 400 }}>
                   {getTabLabel(tab, { notebooks, flashcardDecks, sketchbooks, library })}
@@ -263,21 +270,15 @@ function TabLayoutModal({ onClose, splitDir, splitPanes, setSplitDir, setSplitPa
               <div style={{ display: 'flex', gap: 8 }}>
                 {[
                   { dir: 'horizontal', label: 'Side by Side', icon: (
-                    <svg width="32" height="22" viewBox="0 0 32 22" fill="none">
-                      <rect x="1" y="1" width="13" height="20" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-                      <rect x="18" y="1" width="13" height="20" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-                    </svg>
+                    <Columns2 size={26} strokeWidth={1.5} />
                   )},
                   { dir: 'vertical', label: 'Top / Bottom', icon: (
-                    <svg width="32" height="22" viewBox="0 0 32 22" fill="none">
-                      <rect x="1" y="1" width="30" height="9" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-                      <rect x="1" y="12" width="30" height="9" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-                    </svg>
+                    <Rows2 size={26} strokeWidth={1.5} />
                   )},
                 ].map(({ dir, label, icon }) => (
                   <button key={dir} onClick={() => startSplit(dir)}
                     style={{ flex: 1, padding: '10px 0 8px', background: 'var(--surfaceAlt)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text)', cursor: 'pointer', fontSize: 11, fontFamily: 'inherit', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7, transition: 'border-color 0.1s, background 0.1s' }}
-                    onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.background = 'rgba(56,139,253,0.06)' }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.background = 'color-mix(in srgb, var(--accent) 6%, transparent)' }}
                     onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'var(--surfaceAlt)' }}
                   >
                     {icon}
@@ -360,16 +361,17 @@ const TAB_CSS = `
     display: flex; align-items: center;
   }
   .gnos-tb-left > *, .gnos-tb-center > *, .gnos-tb-right > * { pointer-events: auto; }
-  /* Lead zone — a 72px padding-left keeps its contents strictly to the RIGHT
-     of the macOS traffic lights (which live at top-left), so toggle+Home never
-     sit under them even when the sidebar is closed. The zone width animates
-     132px→sidebar-width; the right-aligned buttons ride out to the sidebar's
-     right edge as it opens, and back to just past the traffic lights when it
-     closes. */
+  /* Lead zone — the padding-left keeps its contents strictly to the RIGHT of
+     the macOS traffic lights (trafficLightPosition x:16 in tauri.conf.json →
+     the light cluster ends at window x≈68; the titlebar itself starts at x=6
+     because of its 6px margin), so toggle+Home never sit under them even when
+     the sidebar is closed. The zone width animates 144px→sidebar-width; the
+     right-aligned buttons ride out to the sidebar's right edge as it opens,
+     and back to ~25px past the traffic lights when it closes. */
   .gnos-tb-left {
     box-sizing: border-box;
-    width: 172px; min-width: 172px; flex-shrink: 0;
-    padding-left: 88px;
+    width: 144px; min-width: 144px; flex-shrink: 0;
+    padding-left: 80px;
     justify-content: flex-end; gap: 3px;
     transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1);
   }
@@ -378,8 +380,11 @@ const TAB_CSS = `
      so it never overflows into the traffic lights (the lead zone is fixed-width). */
   .gnos-tb-ctx {
     position: relative; z-index: 1; pointer-events: none;
-    /* No own margin — the lead zone's trailing flex gap (3px, includes the
-       collapsed save slot) already provides the same spacing as toggle↔home. */
+    /* 3px margin so Calendar/Nebuli sit the same distance from Home as Home
+       does from the sidebar toggle — the lead zone's own flex gap stops at its
+       last child, and the save slot that used to fill it renders null outside
+       the notebook view. */
+    margin-left: 3px;
     display: flex; align-items: center; gap: 3px; flex-shrink: 0;
   }
   .gnos-tb-ctx > * { pointer-events: auto; }
@@ -522,6 +527,10 @@ const TAB_CSS = `
     .gnos-titlebar { padding-left: 12px; }
   }
   .gnos-titlebar.is-fullscreen { padding-left: 12px; }
+  /* Fullscreen hides the traffic lights, so the lead zone no longer needs to
+     clear them — pull the buttons back to the window edge. */
+  .gnos-titlebar.is-fullscreen .gnos-tb-left { width: 64px; min-width: 64px; padding-left: 0; }
+  .gnos-titlebar.is-fullscreen.pushed .gnos-tb-left { width: ${SIDEBAR_WIDTH}px; min-width: 0; }
   .gnos-new-tab-btn {
     display: flex; align-items: center; justify-content: center;
     width: 22px; height: 22px; border-radius: 4px;
@@ -543,7 +552,7 @@ const TAB_CSS = `
   }
   .gnos-tab-nav-btn:hover:not(:disabled) { background: var(--surfaceAlt); border-color: var(--border); color: var(--text); opacity: 1; }
   .gnos-tab-nav-btn:disabled { opacity: 0.15; cursor: default; }
-  .gnos-tab.drag-over .gnos-tab-body { border-color: var(--accent) !important; background: rgba(56,139,253,0.08) !important; }
+  .gnos-tab.drag-over .gnos-tab-body { border-color: var(--accent) !important; background: color-mix(in srgb, var(--accent) 8%, transparent) !important; }
 
   /* ── Titlebar controls (sidebar-tabs mode) ── */
   .gnos-titlebar-search {
@@ -693,16 +702,16 @@ const TAB_CSS = `
 
 // ── View colors + icons for mobile tab previews ───────────────────────────────
 const VIEW_PREVIEW = {
-  library:      { color: '#388bfd', icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M4 19V5a2 2 0 0 1 2-2h13v14H6a2 2 0 0 0-2 2zm0 0a2 2 0 0 0 2 2h13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg> },
-  reader:       { color: '#c0976a', icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="1.6"/><line x1="7" y1="8" x2="17" y2="8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/><line x1="7" y1="12" x2="14" y2="12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg> },
-  'audio-player': { color: '#8250df', icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.6"/><path d="M10 8.5l6 3.5-6 3.5V8.5z" fill="currentColor" opacity="0.8"/></svg> },
-  notebook:     { color: '#3fb950', icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="1.6"/><line x1="7" y1="8" x2="17" y2="8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/><line x1="7" y1="12" x2="17" y2="12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/><line x1="7" y1="16" x2="12" y2="16" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg> },
-  sketchbook:   { color: '#e05c7a', icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg> },
-  flashcard:    { color: '#e8922a', icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="2" y="4" width="16" height="12" rx="2" stroke="currentColor" strokeWidth="1.5"/><rect x="6" y="8" width="16" height="12" rx="2" stroke="currentColor" strokeWidth="1.5"/></svg> },
-  graph:        { color: '#56d4dd', icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" fill="currentColor" opacity="0.9"/><circle cx="4" cy="6" r="2" fill="currentColor" opacity="0.55"/><circle cx="20" cy="6" r="2" fill="currentColor" opacity="0.55"/><line x1="12" y1="9" x2="4" y2="6" stroke="currentColor" strokeWidth="1.2" opacity="0.5"/><line x1="12" y1="9" x2="20" y2="6" stroke="currentColor" strokeWidth="1.2" opacity="0.5"/></svg> },
-  pdf:          { color: '#f0883e', icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/><polyline points="14,2 14,8 20,8" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/></svg> },
-  calendar:     { color: '#1a6b3a', icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="1.6"/><line x1="8" y1="2" x2="8" y2="6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/><line x1="16" y1="2" x2="16" y2="6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/><line x1="3" y1="10" x2="21" y2="10" stroke="currentColor" strokeWidth="1.6"/></svg> },
-  kanban:       { color: '#7a1f6e', icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="5" height="14" rx="1" stroke="currentColor" strokeWidth="1.5"/><rect x="10" y="3" width="5" height="9" rx="1" stroke="currentColor" strokeWidth="1.5"/><rect x="17" y="3" width="5" height="18" rx="1" stroke="currentColor" strokeWidth="1.5"/></svg> },
+  library:      { color: '#388bfd', icon: <Library size={28} strokeWidth={1.6} /> },
+  reader:       { color: '#c0976a', icon: <BookOpen size={28} strokeWidth={1.6} /> },
+  'audio-player': { color: '#8250df', icon: <CirclePlay size={28} strokeWidth={1.6} /> },
+  notebook:     { color: '#3fb950', icon: <NotebookText size={28} strokeWidth={1.6} /> },
+  sketchbook:   { color: '#e05c7a', icon: <Pencil size={28} strokeWidth={1.6} /> },
+  flashcard:    { color: '#e8922a', icon: <Layers size={28} strokeWidth={1.5} /> },
+  graph:        { color: '#56d4dd', icon: <Waypoints size={28} strokeWidth={1.6} /> },
+  pdf:          { color: '#f0883e', icon: <FileText size={28} strokeWidth={1.6} /> },
+  calendar:     { color: '#1a6b3a', icon: <Calendar size={28} strokeWidth={1.6} /> },
+  kanban:       { color: '#7a1f6e', icon: <SquareKanban size={28} strokeWidth={1.5} /> },
 }
 
 // Content-first tab-card preview — reuses the library-card cover system so the
@@ -780,9 +789,7 @@ function MobileTabSwitcher({ onClose, switchTab, tabs, activeTabId, closeTab, op
                       onClick={e => { e.stopPropagation(); closeTab(tab.id) }}
                       aria-label="Close tab"
                     >
-                      <svg width="8" height="8" viewBox="0 0 9 9" fill="none">
-                        <path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                      </svg>
+                      <X size={8} strokeWidth={1.5} />
                     </button>
                   )}
                 </div>
@@ -792,10 +799,7 @@ function MobileTabSwitcher({ onClose, switchTab, tabs, activeTabId, closeTab, op
         </div>
       </div>
       <button className="mobile-tabs-new-btn" onClick={() => { openNewTab({ view: 'library', activeLibTab: 'library' }); onClose() }}>
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          <line x1="7" y1="1.5" x2="7" y2="12.5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/>
-          <line x1="1.5" y1="7" x2="12.5" y2="7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/>
-        </svg>
+        <Plus size={14} strokeWidth={2.2} />
         New Tab
       </button>
     </div>
@@ -986,9 +990,7 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
             style={{ flexShrink: 0, width: 28, height: 42, border: 'none', background: 'transparent',
               color: 'var(--textDim)', cursor: 'pointer', display: 'flex', alignItems: 'center',
               justifyContent: 'center', borderRadius: '14px 0 0 14px' }}>
-            <svg width="10" height="16" viewBox="0 0 10 16" fill="none">
-              <path d="M7 2L2 8l5 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+            <ChevronLeft size={16} strokeWidth={2} />
           </button>
           <div ref={syntaxScrollRef} style={{ flex: 1, display: 'flex', alignItems: 'center',
             overflowX: 'auto', gap: 2, scrollbarWidth: 'none' }}>
@@ -1001,7 +1003,7 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
               { icon: <span style={{ fontSize: 13 }}>•</span>, before: '- ', after: '', placeholder: 'item' },
               { icon: <span style={{ fontSize: 11 }}>1.</span>, before: '1. ', after: '', placeholder: 'item' },
               { icon: <span style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 700 }}>"</span>, before: '> ', after: '', placeholder: 'quote' },
-              { icon: <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 7h5M9 4l3 3-3 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/><path d="M2 4h3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>, before: '[', after: '](url)', placeholder: 'text' },
+              { icon: <Link size={13} strokeWidth={1.6} />, before: '[', after: '](url)', placeholder: 'text' },
               { icon: <span style={{ fontFamily: 'Georgia, serif', fontStyle: 'italic', fontSize: 12 }}>∑</span>, before: '$', after: '$', placeholder: 'expr' },
               { icon: <span style={{ fontSize: 12, background: 'var(--accent)', color: '#fff', borderRadius: 2, padding: '0 2px', lineHeight: 1.3 }}>H</span>, before: '==', after: '==', placeholder: 'highlight' },
               { icon: <span style={{ textDecoration: 'line-through', fontSize: 11 }}>S</span>, before: '~~', after: '~~', placeholder: 'text' },
@@ -1019,9 +1021,7 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
             style={{ flexShrink: 0, width: 28, height: 42, border: 'none', background: 'transparent',
               color: 'var(--textDim)', cursor: 'pointer', display: 'flex', alignItems: 'center',
               justifyContent: 'center', borderRadius: '0 14px 14px 0' }}>
-            <svg width="10" height="16" viewBox="0 0 10 16" fill="none">
-              <path d="M3 2l5 6-5 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+            <ChevronRight size={16} strokeWidth={2} />
           </button>
         </div>
       )}
@@ -1029,10 +1029,7 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
       <div className={`mobile-bottom-bar${activeView !== 'reader' && searchActive ? ' search-expanded' : ''}${activeView === 'reader' && chaptersSearchActive ? ' search-expanded' : ''}`}>
         {activeView === 'reader' && chaptersSearchActive ? (
           <>
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, color: 'var(--textDim)' }}>
-              <circle cx="6.5" cy="6.5" r="4" stroke="currentColor" strokeWidth="1.8"/>
-              <line x1="9.8" y1="9.8" x2="14" y2="14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-            </svg>
+            <Search size={16} strokeWidth={1.8} style={{ flexShrink: 0, color: 'var(--textDim)' }} />
             <input
               ref={chapterSearchInputRef}
               className="mobile-nav-search-input"
@@ -1042,9 +1039,7 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
               autoFocus
             />
             <button className="mobile-nav-search-return" onClick={closeChaptersSearch} title="Close">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <path d="M12 8H4M4 8l4-4M4 8l4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <ArrowLeft size={14} strokeWidth={1.8} />
             </button>
           </>
         ) : activeView === 'reader' ? (
@@ -1052,39 +1047,25 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
             {/* ← Prev Page — rounded button */}
             <button className="mobile-nav-btn" onClick={() => readerCmd('prev')} title="Previous page">
               <div className="mobile-nav-btn-arrow">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                  <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
+                <ChevronLeft size={18} strokeWidth={2.2} />
               </div>
             </button>
 
             {/* Library / back to library */}
             <button className="mobile-nav-btn" onClick={() => { setView('library'); setActiveLibTab('library') }} title="Library">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <rect x="3" y="5" width="3.5" height="13" rx="1" stroke="currentColor" strokeWidth="2"/>
-                <rect x="10" y="8" width="3.5" height="10" rx="1" stroke="currentColor" strokeWidth="2"/>
-                <rect x="17" y="6" width="3.5" height="12" rx="1" stroke="currentColor" strokeWidth="2"/>
-                <line x1="2" y1="19.5" x2="22" y2="19.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
+              <Library size={20} strokeWidth={2} />
             </button>
 
             {/* → Next Page — rounded button */}
             <button className="mobile-nav-btn" onClick={() => readerCmd('next')} title="Next page">
               <div className="mobile-nav-btn-arrow">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                  <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
+                <ChevronRight size={18} strokeWidth={2.2} />
               </div>
             </button>
 
             {/* Chapters / Search — expands to search bar */}
             <button className="mobile-nav-btn" onClick={openChaptersSearch} title="Chapters">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <line x1="3" y1="5" x2="15" y2="5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                <line x1="3" y1="10" x2="13" y2="10" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                <circle cx="18.5" cy="16.5" r="3.5" stroke="currentColor" strokeWidth="1.8"/>
-                <line x1="21" y1="19" x2="23" y2="21" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-              </svg>
+              <TextSearch size={20} strokeWidth={2} />
             </button>
 
             {/* TTS toggle */}
@@ -1093,28 +1074,18 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
               onClick={() => readerCmd('tts-toggle')}
               title="Read aloud"
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                <path d="M3 9h3l5-4.5v15L6 15H3V9z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/>
-                <path d="M14 7c1.2 1 2 2.5 2 4s-.8 3-2 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                <path d="M17 4c2 1.7 3.3 4 3.3 6.5s-1.3 4.8-3.3 6.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
+              <Volume2 size={18} strokeWidth={2} />
             </button>
 
             {/* Tabs */}
             <button className={`mobile-nav-btn${tabsOpen ? " active" : ""}`} onClick={onTabsOpen}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <rect x="7" y="7" width="11" height="11" rx="2.5" stroke="currentColor" strokeWidth="2" opacity="0.45"/>
-                <rect x="4" y="4" width="11" height="11" rx="2.5" stroke="currentColor" strokeWidth="2"/>
-              </svg>
+              <SquareStack size={20} strokeWidth={2} />
             </button>
           </>
 
         ) : activeView === 'notebook' && nbSearchOpen ? (
           <>
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, color: 'var(--textDim)' }}>
-              <circle cx="6.5" cy="6.5" r="4" stroke="currentColor" strokeWidth="1.8"/>
-              <line x1="9.8" y1="9.8" x2="14" y2="14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-            </svg>
+            <Search size={16} strokeWidth={1.8} style={{ flexShrink: 0, color: 'var(--textDim)' }} />
             <input
               ref={nbSearchRef}
               className="mobile-nav-search-input"
@@ -1124,9 +1095,7 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
               autoFocus
             />
             <button className="mobile-nav-search-return" onClick={() => { setNbSearchOpen(false); setNbSearchQuery(''); window.dispatchEvent(new CustomEvent('gnos:mobile-nb-search-query', { detail: '' })) }} title="Close">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <path d="M12 8H4M4 8l4-4M4 8l4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <ArrowLeft size={14} strokeWidth={1.8} />
             </button>
           </>
 
@@ -1134,21 +1103,12 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
           <>
             {/* Syntax insert bar toggle */}
             <button className={`mobile-nav-btn${syntaxOpen ? ' active' : ''}`} onClick={() => setSyntaxOpen(o => !o)} title="Insert syntax">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                <path d="M8 6l-4 6 4 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M16 6l4 6-4 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                <line x1="13" y1="4" x2="11" y2="20" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
+              <CodeXml size={18} strokeWidth={2} />
             </button>
 
             {/* Library */}
             <button className="mobile-nav-btn" onClick={() => { setView('library'); setActiveLibTab('library') }} title="Library">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <rect x="3" y="5" width="3.5" height="13" rx="1" stroke="currentColor" strokeWidth="2"/>
-                <rect x="10" y="8" width="3.5" height="10" rx="1" stroke="currentColor" strokeWidth="2"/>
-                <rect x="17" y="6" width="3.5" height="12" rx="1" stroke="currentColor" strokeWidth="2"/>
-                <line x1="2" y1="19.5" x2="22" y2="19.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
+              <Library size={20} strokeWidth={2} />
             </button>
 
             {/* Live mode toggle — active when in source mode; hold for view mode menu */}
@@ -1158,6 +1118,7 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
               onPointerLeave={() => clearTimeout(nbLiveHold.current)}
               title="Toggle live mode">
               <div className="mobile-add-btn-inner">
+                {/* Brand quill — hand-drawn, not a lucide glyph (see icons.jsx) */}
                 <svg width="13" height="13" viewBox="0 0 32 32" fill="none">
                   <path d="M26 3C22 5 14 10 10 18C8 22 7 25 6.5 28" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round"/>
                   <path d="M26 3C24 8 18 15 10 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" opacity="0.6"/>
@@ -1169,18 +1130,12 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
 
             {/* Search */}
             <button className="mobile-nav-btn" onClick={() => nbCmd('search')} title="Find in notebook">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2"/>
-                <line x1="16.5" y1="16.5" x2="22" y2="22" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
+              <Search size={20} strokeWidth={2} />
             </button>
 
             {/* Tabs */}
             <button className={`mobile-nav-btn${tabsOpen ? " active" : ""}`} onClick={onTabsOpen}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <rect x="7" y="7" width="11" height="11" rx="2.5" stroke="currentColor" strokeWidth="2" opacity="0.45"/>
-                <rect x="4" y="4" width="11" height="11" rx="2.5" stroke="currentColor" strokeWidth="2"/>
-              </svg>
+              <SquareStack size={20} strokeWidth={2} />
             </button>
           </>
 
@@ -1188,48 +1143,29 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
           <>
             {/* Import PDF */}
             <button className="mobile-nav-btn" onClick={() => sbCmd('import')} title="Import PDF">
-              <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
-                <rect x="2" y="1" width="9" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
-                <path d="M8 1v4h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M5 7h4M5 9.5h2.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-                <path d="M12.5 11v3M11 12.5h3" stroke="var(--accent)" strokeWidth="1.6" strokeLinecap="round"/>
-              </svg>
+              <FilePlus2 size={18} strokeWidth={1.4} />
             </button>
 
             {/* Library */}
             <button className="mobile-nav-btn" onClick={() => { setView('library'); setActiveLibTab('library') }} title="Library">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <rect x="3" y="5" width="3.5" height="13" rx="1" stroke="currentColor" strokeWidth="2"/>
-                <rect x="10" y="8" width="3.5" height="10" rx="1" stroke="currentColor" strokeWidth="2"/>
-                <rect x="17" y="6" width="3.5" height="12" rx="1" stroke="currentColor" strokeWidth="2"/>
-                <line x1="2" y1="19.5" x2="22" y2="19.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
+              <Library size={20} strokeWidth={2} />
             </button>
 
             {/* Lock background */}
             <button className="mobile-nav-btn" onClick={() => sbCmd('lock-toggle')} title="Lock/unlock background">
               <div className="mobile-add-btn-inner">
-                <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                  <rect x="3" y="7" width="10" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
-                  <path d="M5 7V5a3 3 0 0 1 6 0v2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-                </svg>
+                <Lock size={13} strokeWidth={1.4} />
               </div>
             </button>
 
             {/* Sketchbook settings */}
             <button className="mobile-nav-btn" onClick={() => sbCmd('settings')} title="Sketchbook settings">
-              <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
-                <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.4"/>
-                <path d="M8 1.5v1M8 13.5v1M1.5 8h1M13.5 8h1M3.3 3.3l.7.7M12 12l.7.7M12 3.3l-.7.7M4 12l-.7.7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-              </svg>
+              <Settings size={18} strokeWidth={1.4} />
             </button>
 
             {/* Tabs */}
             <button className={`mobile-nav-btn${tabsOpen ? " active" : ""}`} onClick={onTabsOpen}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <rect x="7" y="7" width="11" height="11" rx="2.5" stroke="currentColor" strokeWidth="2" opacity="0.45"/>
-                <rect x="4" y="4" width="11" height="11" rx="2.5" stroke="currentColor" strokeWidth="2"/>
-              </svg>
+              <SquareStack size={20} strokeWidth={2} />
             </button>
           </>
 
@@ -1237,60 +1173,35 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
           <>
             {/* Study side toggle */}
             <button className="mobile-nav-btn" onClick={() => fcCmd('studyside')} title="Flip study direction">
-              <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
-                <rect x="1" y="3" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.4"/>
-                <path d="M5 8h6M9 6l2 2-2 2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <FlipHorizontal size={18} strokeWidth={1.4} />
             </button>
 
             {/* Library */}
             <button className="mobile-nav-btn" onClick={() => { setView('library'); setActiveLibTab('library') }} title="Library">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <rect x="3" y="5" width="3.5" height="13" rx="1" stroke="currentColor" strokeWidth="2"/>
-                <rect x="10" y="8" width="3.5" height="10" rx="1" stroke="currentColor" strokeWidth="2"/>
-                <rect x="17" y="6" width="3.5" height="12" rx="1" stroke="currentColor" strokeWidth="2"/>
-                <line x1="2" y1="19.5" x2="22" y2="19.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
+              <Library size={20} strokeWidth={2} />
             </button>
 
             {/* Study mode */}
             <button className="mobile-nav-btn" onClick={() => fcCmd('study')} title="Study">
               <div className="mobile-add-btn-inner">
-                <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                  <rect x="1" y="2" width="10" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
-                  <rect x="5" y="6" width="10" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
-                  <path d="M6 6V4a2 2 0 0 1 4 0v2" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" opacity="0.6"/>
-                </svg>
+                <Layers size={13} strokeWidth={1.3} />
               </div>
             </button>
 
             {/* List mode */}
             <button className="mobile-nav-btn" onClick={() => fcCmd('list')} title="List view">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                <line x1="8" y1="6" x2="21" y2="6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                <line x1="8" y1="12" x2="21" y2="12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                <line x1="8" y1="18" x2="21" y2="18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                <circle cx="3.5" cy="6" r="1.5" fill="currentColor"/>
-                <circle cx="3.5" cy="12" r="1.5" fill="currentColor"/>
-                <circle cx="3.5" cy="18" r="1.5" fill="currentColor"/>
-              </svg>
+              <List size={18} strokeWidth={2} />
             </button>
 
             {/* Tabs */}
             <button className={`mobile-nav-btn${tabsOpen ? " active" : ""}`} onClick={onTabsOpen}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <rect x="7" y="7" width="11" height="11" rx="2.5" stroke="currentColor" strokeWidth="2" opacity="0.45"/>
-                <rect x="4" y="4" width="11" height="11" rx="2.5" stroke="currentColor" strokeWidth="2"/>
-              </svg>
+              <SquareStack size={20} strokeWidth={2} />
             </button>
           </>
 
         ) : searchActive ? (
           <>
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, color: 'var(--textDim)' }}>
-              <circle cx="6.5" cy="6.5" r="4" stroke="currentColor" strokeWidth="1.8"/>
-              <line x1="9.8" y1="9.8" x2="14" y2="14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-            </svg>
+            <Search size={16} strokeWidth={1.8} style={{ flexShrink: 0, color: 'var(--textDim)' }} />
             <input
               ref={searchInputRef}
               className="mobile-nav-search-input"
@@ -1300,9 +1211,7 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
               autoFocus
             />
             <button className="mobile-nav-search-return" onClick={closeSearch} title="Close search">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <path d="M12 8H4M4 8l4-4M4 8l4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <ArrowLeft size={14} strokeWidth={1.8} />
             </button>
           </>
         ) : (
@@ -1310,14 +1219,9 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
             {/* Profile — becomes back arrow when profile is open */}
             <button className="mobile-nav-btn" onClick={profileViewOpen ? triggerProfileClose : triggerProfile}>
               {profileViewOpen ? (
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                  <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
+                <ChevronLeft size={20} strokeWidth={2.2} />
               ) : (
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                  <circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="2"/>
-                  <path d="M4 20c0-3.314 3.582-6 8-6s8 2.686 8 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                </svg>
+                <User size={20} strokeWidth={2} />
               )}
             </button>
 
@@ -1330,38 +1234,24 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
               onPointerLeave={onHomeLeave}
               onPointerCancel={onHomeLeave}
             >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <rect x="3" y="5" width="3.5" height="13" rx="1" stroke="currentColor" strokeWidth="2"/>
-                <rect x="10" y="8" width="3.5" height="10" rx="1" stroke="currentColor" strokeWidth="2"/>
-                <rect x="17" y="6" width="3.5" height="12" rx="1" stroke="currentColor" strokeWidth="2"/>
-                <line x1="2" y1="19.5" x2="22" y2="19.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
+              <Library size={20} strokeWidth={2} />
             </button>
 
             {/* Add — styled like the desktop header plus button */}
             <button className="mobile-nav-btn" onClick={triggerAdd}>
               <div className="mobile-add-btn-inner">
-                <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
-                  <line x1="7" y1="1.5" x2="7" y2="12.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                  <line x1="1.5" y1="7" x2="12.5" y2="7" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                </svg>
+                <Plus size={13} strokeWidth={2} />
               </div>
             </button>
 
             {/* Search */}
             <button className="mobile-nav-btn" onClick={openSearch}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2"/>
-                <line x1="16.5" y1="16.5" x2="22" y2="22" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
+              <Search size={20} strokeWidth={2} />
             </button>
 
             {/* Tabs */}
             <button className={`mobile-nav-btn${tabsOpen ? " active" : ""}`} onClick={onTabsOpen}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                <rect x="7" y="7" width="11" height="11" rx="2.5" stroke="currentColor" strokeWidth="2" opacity="0.45"/>
-                <rect x="4" y="4" width="11" height="11" rx="2.5" stroke="currentColor" strokeWidth="2"/>
-              </svg>
+              <SquareStack size={20} strokeWidth={2} />
             </button>
           </>
         )}
@@ -1503,7 +1393,7 @@ function GnosLoadingScreen({ onDone, initDone = false }) {
         <path d="M4 4 L13 4 M4 4 L4 13" stroke={p.accent} strokeWidth="2" strokeLinecap="round"/>
       </svg>
 
-      {/* Quill icon */}
+      {/* Quill icon — brand mark, hand-drawn (see icons.jsx) */}
       <svg width="44" height="44" viewBox="0 0 32 32" fill="none" style={{ opacity: 0.45, position: 'relative', zIndex: 1 }}>
         <path d="M26 3C22 5 14 10 10 18C8 22 7 25 6.5 28" stroke={p.dim} strokeWidth="1.1" strokeLinecap="round" />
         <path d="M26 3C24 8 18 15 10 18" stroke={p.dim} strokeWidth="0.7" strokeLinecap="round" opacity="0.6" />
@@ -1699,7 +1589,7 @@ function TabOverview({ onClose, onOpenLayout, leftOffset = 0 }) {
                     title="Close tab"
                     onClick={e => { e.stopPropagation(); closeTab(tab.id) }}
                   >
-                    <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                    <X size={9} strokeWidth={1.5} />
                   </button>
                 )}
               </div>
@@ -1712,7 +1602,7 @@ function TabOverview({ onClose, onOpenLayout, leftOffset = 0 }) {
             onClick={() => { openNewTab({ view: 'library', activeLibTab: 'library' }); onClose() }}
           >
             <div className="gnos-tab-overview-thumb">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+              <Plus size={24} strokeWidth={1.8} />
             </div>
             <div className="gnos-tab-overview-meta"><span className="gnos-tab-overview-label">New tab</span></div>
           </div>
@@ -1751,10 +1641,7 @@ function TitlebarSearch() {
       {/* Leading glyph slot — magnifier normally; save flash swaps in over it.
           #nb-save-icon must stay in the DOM: notebook/sketchbook saves target it by id. */}
       <span className="gnos-tbs-glyph">
-        <svg className="gnos-tbs-magnifier" width="13" height="13" viewBox="0 0 16 16" fill="none">
-          <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.8"/>
-          <path d="M11 11l3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-        </svg>
+        <Search className="gnos-tbs-magnifier" size={13} strokeWidth={1.8} />
         <svg id="nb-save-icon" className="nb-save-icon" viewBox="0 0 18 18" fill="none">
           <circle className="nb-save-ring" cx="9" cy="9" r="7.5" stroke="currentColor" strokeWidth="1.5" fill="none"/>
           <polyline className="nb-save-check" points="5.5,9 7.8,11.5 12.5,6.5" stroke="currentColor" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
@@ -1774,9 +1661,7 @@ function TitlebarSearch() {
       )}
       {!focused && !query && titlebarMeta?.dropdown && (
         <button className="gnos-tbs-chevron" title="Jump to…" onMouseDown={e => e.preventDefault()} onClick={() => setDropOpen(o => !o)}>
-          <svg width="10" height="10" viewBox="0 0 12 12" fill="none" style={{ transform: dropOpen ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}>
-            <path d="M2.5 4.5L6 8l3.5-3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
+          <ChevronDown size={10} strokeWidth={1.8} style={{ transform: dropOpen ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />
         </button>
       )}
       {dropOpen && titlebarMeta?.dropdown && (
@@ -1828,13 +1713,13 @@ function TitlebarAdd() {
   }
 
   return (
-    <div style={{ position: 'relative', flexShrink: 0, alignSelf: 'center' }}>
+    <div style={{ position: 'relative', flexShrink: 0, alignSelf: 'center' }} onMouseLeave={() => setOpen(false)}>
       <button className="gnos-titlebar-iconbtn" title="Add" onClick={() => setOpen(o => !o)}>
-        <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M6 1v10M1 6h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+        <Plus size={11} strokeWidth={2} />
       </button>
       {open && (
-        <div style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 10000 }} onMouseLeave={() => setOpen(false)}>
           <AddPopup
+            variant="down"
             onClose={() => setOpen(false)}
             onAddBook={() => viaLibrary('import-books')}
             onAddAudio={() => viaLibrary('import-audio')}
@@ -1872,7 +1757,6 @@ function TitlebarAdd() {
               navigate({ view: 'library', activeLibTab: 'collections' })
             }}
           />
-        </div>
       )}
     </div>
   )
@@ -1892,15 +1776,13 @@ const TITLEBAR_CHIP_DEFS = {
 }
 
 function chipIcon(id) {
-  const s = { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none' }
-  const st = { stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' }
   switch (id) {
-    case 'save':        return <svg {...s}><circle cx="8" cy="8" r="6" {...st} fill="none"/><polyline points="5,8 7.2,10.2 11,5.8" {...st} fill="none"/></svg>
-    case 'arrows':      return <svg {...s}><path d="M7 3.5L3.5 8 7 12.5M9 3.5L12.5 8 9 12.5" {...st}/></svg>
-    case 'search':      return <svg {...s}><circle cx="7" cy="7" r="4.5" {...st} fill="none"/><path d="M10.5 10.5L14 14" {...st}/></svg>
-    case 'add':         return <svg {...s}><path d="M8 3v10M3 8h10" {...st}/></svg>
-    case 'quickAccess': return <svg {...s}><path d="M8 2l1.7 3.6 3.9.5-2.9 2.7.8 3.9L8 10.8l-3.5 1.9.8-3.9L2.4 6.1l3.9-.5z" {...st} fill="none"/></svg>
-    case 'tabManager':  return <svg {...s}><path d="M6 6V3.6A1.6 1.6 0 0 1 7.6 2h4.8A1.6 1.6 0 0 1 14 3.6v4.8A1.6 1.6 0 0 1 12.4 10H10" {...st} fill="none"/><rect x="2" y="6" width="8" height="8" rx="1.6" {...st}/></svg>
+    case 'save':        return <CircleCheck size={14} strokeWidth={1.6} />
+    case 'arrows':      return <ChevronsLeftRight size={14} strokeWidth={1.6} />
+    case 'search':      return <Search size={14} strokeWidth={1.6} />
+    case 'add':         return <Plus size={14} strokeWidth={1.6} />
+    case 'quickAccess': return <Star size={14} strokeWidth={1.6} />
+    case 'tabManager':  return <Copy size={14} strokeWidth={1.6} />
     default:            return null
   }
 }
@@ -2180,7 +2062,7 @@ const CUSTOMIZE_CSS = `
     display: flex; align-items: center; justify-content: center;
     transition: border-color .1s, background .1s;
   }
-  .ct2-tray-hot { border-color: var(--accent); background: rgba(56,139,253,0.09); }
+  .ct2-tray-hot { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, transparent); }
   .ct2-tray-label {
     font-size: 10.5px; font-weight: 600; letter-spacing: .04em;
     color: var(--textDim); opacity: .75; pointer-events: none;
@@ -2196,6 +2078,15 @@ const CUSTOMIZE_CSS = `
 `
 
 export default function App() {
+  // Dev-only Stage-2 proof rig (PLAN_CONCURRENCY.md §6 step 6). Must be the
+  // first line — before any hooks — so the two render paths never disagree
+  // on hook count. Not linked from any UI; remove once step 6 is retired.
+  if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('yjsProof') === '1') {
+    return <Suspense fallback={null}><YjsProofHarness /></Suspense>
+  }
+  if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('yjsRelay') === '1') {
+    return <Suspense fallback={null}><YjsRelayHarness /></Suspense>
+  }
   const isMobile    = useIsMobile()
   const init        = useAppStore(s => s.init)
   const tabs        = useAppStore(s => s.tabs)
@@ -2590,11 +2481,11 @@ export default function App() {
                   <div key="arrows" style={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
                     <button className="gnos-tab-nav-btn" title="Go back" disabled={!canBack}
                       onMouseDown={e => e.stopPropagation()} onClick={() => goBack()}>
-                      <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M10 3.5L5 8l5 4.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      <ChevronLeft size={15} strokeWidth={2} />
                     </button>
                     <button className="gnos-tab-nav-btn" title="Go forward" disabled={!canFwd}
                       onMouseDown={e => e.stopPropagation()} onClick={() => goForward()}>
-                      <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M6 3.5l5 4.5-5 4.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      <ChevronRight size={15} strokeWidth={2} />
                     </button>
                   </div>
                 )
@@ -2611,10 +2502,7 @@ export default function App() {
                   title="Show all tabs"
                   onClick={() => setTabOverviewOpen(o => !o)}
                 >
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                    <path d="M6 6V3.6A1.6 1.6 0 0 1 7.6 2h4.8A1.6 1.6 0 0 1 14 3.6v4.8A1.6 1.6 0 0 1 12.4 10H10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                    <rect x="2" y="6" width="8" height="8" rx="1.6" stroke="currentColor" strokeWidth="1.5"/>
-                  </svg>
+                  <Copy size={16} strokeWidth={1.5} />
                 </button>
               )
               default: return null
@@ -2641,21 +2529,14 @@ export default function App() {
                   title="Toggle sidebar (⌘\)"
                   onClick={() => { if (!isSplit) useAppStore.getState().toggleSideNav() }}
                 >
-                  <svg width="17" height="16" viewBox="0 0 20 18" fill="none">
-                    <rect x="1" y="1" width="18" height="16" rx="3" stroke="currentColor" strokeWidth="2"/>
-                    <line x1="7" y1="1" x2="7" y2="17" stroke="currentColor" strokeWidth="2"/>
-                    {(!isSplit && (sideNavOpen || sidebarPinned)) && <rect x="2.6" y="2.8" width="3" height="12.4" rx="1" fill="currentColor" opacity="0.5"/>}
-                  </svg>
+                  {(!isSplit && (sideNavOpen || sidebarPinned)) ? <PanelLeftClose size={17} strokeWidth={1.8} /> : <PanelLeft size={17} strokeWidth={1.8} />}
                 </button>
                 <button
                   className="gnos-settings-btn"
                   title="Home"
                   onClick={() => { useAppStore.getState().setActiveCollectionId(null); useAppStore.getState().navigate({ view: 'library', activeLibTab: 'library' }) }}
                 >
-                  <svg width="17" height="16" viewBox="0 0 20 18" fill="none">
-                    <path d="M2.5 8.5L10 2l7.5 6.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                    <path d="M4.3 7.8V15a1 1 0 0 0 1 1h9.4a1 1 0 0 0 1-1V7.8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
+                  <House size={17} strokeWidth={1.8} />
                 </button>
                 {layout.left.map(slot)}
               </div>
@@ -2668,23 +2549,13 @@ export default function App() {
                 {tabs.find(t => t.id === activeTabId)?.view !== 'calendar' && (
                   <button className="gnos-settings-btn" title="Open Calendar"
                     onClick={() => useAppStore.getState().navigate({ view: 'calendar' })}>
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                      <rect x="2" y="3" width="12" height="11" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-                      <path d="M5 1.6v2.2M11 1.6v2.2M2 6.3h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                    </svg>
+                    <Calendar size={16} strokeWidth={1.5} />
                   </button>
                 )}
                 {tabs.find(t => t.id === activeTabId)?.view !== 'graph' && (
                   <button className="gnos-settings-btn" title="Open Nebuli graph"
                     onClick={() => useAppStore.getState().openNewTab({ view: 'graph' })}>
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                      <circle cx="8" cy="8" r="2" fill="currentColor"/>
-                      <circle cx="2.8" cy="4" r="1.4" stroke="currentColor" strokeWidth="1.4"/>
-                      <circle cx="13.2" cy="4" r="1.4" stroke="currentColor" strokeWidth="1.4"/>
-                      <circle cx="4" cy="13" r="1.4" stroke="currentColor" strokeWidth="1.4"/>
-                      <circle cx="12.4" cy="12" r="1.4" stroke="currentColor" strokeWidth="1.4"/>
-                      <path d="M6.4 6.6L3.7 4.9M9.6 6.6l2.4-1.5M6.8 9.4l-2 2.4M9.3 9.5l2.2 1.6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                    </svg>
+                    <Waypoints size={16} strokeWidth={1.5} />
                   </button>
                 )}
               </div>
@@ -2701,11 +2572,7 @@ export default function App() {
                 {tabs.find(t => t.id === activeTabId)?.view === 'calendar' && (
                   <button className="gnos-settings-btn" title="Import calendar (.ics)"
                     onClick={() => window.dispatchEvent(new CustomEvent('gnos:import-ics'))}>
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                      <rect x="2" y="3" width="12" height="11" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-                      <path d="M5 1.6v2.2M11 1.6v2.2M2 6.3h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                      <path d="M8 8.6v3M6.4 10.2L8 11.8l1.6-1.6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
+                    <CalendarArrowDown size={16} strokeWidth={1.5} />
                   </button>
                 )}
                 {layout.right.map(slot)}
@@ -2808,10 +2675,7 @@ export default function App() {
           background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12,
           padding: '12px 14px', boxShadow: '0 12px 40px rgba(0,0,0,0.45)', fontSize: 13, color: 'var(--text)',
         }}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
-            <path d="M8 1.5L15 14H1L8 1.5z" stroke="#d29922" strokeWidth="1.4" strokeLinejoin="round"/>
-            <path d="M8 6v3.5M8 11.5v.5" stroke="#d29922" strokeWidth="1.4" strokeLinecap="round"/>
-          </svg>
+          <TriangleAlert size={16} strokeWidth={1.4} color="#d29922" style={{ flexShrink: 0, marginTop: 1 }} />
           <div style={{ flex: 1, lineHeight: 1.45 }}>
             <strong>External edit kept separately.</strong> “{conflictNote.originalTitle}” changed on disk while open — the offline version was saved as “{conflictNote.forkTitle}” so nothing was lost.
           </div>
@@ -2849,10 +2713,7 @@ export default function App() {
             onClick={() => useAppStore.getState().toggleSideNav()}
             title="Open sidebar"
           >
-            <svg width="19" height="17" viewBox="0 0 20 18" fill="none">
-              <rect x="0.9" y="0.9" width="18.2" height="16.2" rx="2.6" stroke="currentColor" strokeWidth="1.8"/>
-              <line x1="6.5" y1="0.9" x2="6.5" y2="17.1" stroke="currentColor" strokeWidth="1.8"/>
-            </svg>
+            <PanelLeft size={19} strokeWidth={1.8} />
           </button>
 
           {/* Centered title pill — view-specific content */}
@@ -2880,10 +2741,7 @@ export default function App() {
             }}
             title="Settings"
           >
-            <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.5"/>
-              <path d="M8 1.5v1.2M8 13.3v1.2M1.5 8h1.2M13.3 8h1.2M3.4 3.4l.85.85M11.75 11.75l.85.85M12.6 3.4l-.85.85M4.25 11.75l-.85.85" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-            </svg>
+            <Settings size={18} strokeWidth={1.5} />
           </button>
 
           {mobileSettingsOpen && (

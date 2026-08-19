@@ -22,6 +22,7 @@ import { loadSketchbookContent, saveSketchbookContent } from '@/lib/storage'
 import QuickAccess, { useTitlebarMeta } from '@/components/QuickAccess'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { paintSurfaceBackground, hexLuminance } from '@/lib/canvasSurface'
+import { AlignJustify, FilePlus2, Grid2x2, Grip, LoaderCircle, Lock, LockOpen, Share, Square } from 'lucide-react'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-theme Excalidraw configuration
@@ -1087,12 +1088,12 @@ export default function SketchbookView() {
               title={`Canvas background: ${{ dots: 'Dot grid', lines: 'Lined paper', grid: 'Grid', none: 'None' }[sketchBgStyle] || 'Dot grid'} — click to change`}
             >
               {sketchBgStyle === 'lines'
-                ? <svg width="15" height="15" viewBox="0 0 18 18" fill="none"><line x1="2" y1="5" x2="16" y2="5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><line x1="2" y1="9" x2="16" y2="9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><line x1="2" y1="13" x2="16" y2="13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                ? <AlignJustify size={15} strokeWidth={1.5} />
                 : sketchBgStyle === 'grid'
-                ? <svg width="15" height="15" viewBox="0 0 18 18" fill="none"><line x1="2" y1="6" x2="16" y2="6" stroke="currentColor" strokeWidth="1.5"/><line x1="2" y1="12" x2="16" y2="12" stroke="currentColor" strokeWidth="1.5"/><line x1="6" y1="2" x2="6" y2="16" stroke="currentColor" strokeWidth="1.5"/><line x1="12" y1="2" x2="12" y2="16" stroke="currentColor" strokeWidth="1.5"/></svg>
+                ? <Grid2x2 size={15} strokeWidth={1.5} />
                 : sketchBgStyle === 'none'
-                ? <svg width="15" height="15" viewBox="0 0 18 18" fill="none"><rect x="2" y="2" width="14" height="14" rx="2.5" stroke="currentColor" strokeWidth="1.5"/></svg>
-                : <svg width="15" height="15" viewBox="0 0 18 18" fill="none"><circle cx="4" cy="4" r="1.2" fill="currentColor"/><circle cx="9" cy="4" r="1.2" fill="currentColor"/><circle cx="14" cy="4" r="1.2" fill="currentColor"/><circle cx="4" cy="9" r="1.2" fill="currentColor"/><circle cx="9" cy="9" r="1.2" fill="currentColor"/><circle cx="14" cy="9" r="1.2" fill="currentColor"/><circle cx="4" cy="14" r="1.2" fill="currentColor"/><circle cx="9" cy="14" r="1.2" fill="currentColor"/><circle cx="14" cy="14" r="1.2" fill="currentColor"/></svg>}
+                ? <Square size={15} strokeWidth={1.5} />
+                : <Grip size={15} strokeWidth={1.8} />}
             </button>
           )}
 
@@ -1104,8 +1105,8 @@ export default function SketchbookView() {
               title={bgLocked ? 'Unlock background images (make editable)' : 'Lock background images (protect from eraser)'}
             >
               {bgLocked
-                ? <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="3" y="7" width="10" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.7"/><path d="M5 7V5a3 3 0 0 1 6 0v2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
-                : <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="3" y="7" width="10" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.7"/><path d="M5 7V5a3 3 0 0 1 6 0" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
+                ? <Lock size={14} strokeWidth={1.7} />
+                : <LockOpen size={14} strokeWidth={1.7} />
               }
             </button>
           )}
@@ -1118,11 +1119,7 @@ export default function SketchbookView() {
             title="Import PDF into canvas"
             style={{ opacity: (pdfImporting || !isLoaded) ? 0.5 : 1 }}
           >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <rect x="2" y="1" width="9" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.6"/>
-              <path d="M8 1v4h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M12.5 11v3M11 12.5h3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-            </svg>
+            <FilePlus2 size={14} strokeWidth={1.6} />
           </button>
 
           {/* Share / Export PNG button */}
@@ -1161,10 +1158,7 @@ export default function SketchbookView() {
               }}
               className="gnos-settings-btn"
             >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <path d="M8 11V3M5 6l3-3 3 3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M3 11v1a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
-              </svg>
+              <Share size={14} strokeWidth={1.7} />
             </button>
           )}
       </QuickAccess>
@@ -1183,13 +1177,13 @@ export default function SketchbookView() {
                   <div style={{ fontSize:11, fontWeight:600, color:'var(--textDim)', letterSpacing:'0.05em', textTransform:'uppercase', marginBottom:10 }}>Canvas Background</div>
                   {[
                     { value:'dots',  label:'Dot Grid',
-                      icon: <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="4" cy="4" r="1.1" fill="currentColor"/><circle cx="9" cy="4" r="1.1" fill="currentColor"/><circle cx="14" cy="4" r="1.1" fill="currentColor"/><circle cx="4" cy="9" r="1.1" fill="currentColor"/><circle cx="9" cy="9" r="1.1" fill="currentColor"/><circle cx="14" cy="9" r="1.1" fill="currentColor"/><circle cx="4" cy="14" r="1.1" fill="currentColor"/><circle cx="9" cy="14" r="1.1" fill="currentColor"/><circle cx="14" cy="14" r="1.1" fill="currentColor"/></svg> },
+                      icon: <Grip size={18} strokeWidth={1.8} /> },
                     { value:'lines', label:'Lined Paper',
-                      icon: <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><line x1="2" y1="5" x2="16" y2="5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="2" y1="9" x2="16" y2="9" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="2" y1="13" x2="16" y2="13" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg> },
+                      icon: <AlignJustify size={18} strokeWidth={1.2} /> },
                     { value:'grid',  label:'Grid',
-                      icon: <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><line x1="2" y1="6" x2="16" y2="6" stroke="currentColor" strokeWidth="1.2"/><line x1="2" y1="12" x2="16" y2="12" stroke="currentColor" strokeWidth="1.2"/><line x1="6" y1="2" x2="6" y2="16" stroke="currentColor" strokeWidth="1.2"/><line x1="12" y1="2" x2="12" y2="16" stroke="currentColor" strokeWidth="1.2"/></svg> },
+                      icon: <Grid2x2 size={18} strokeWidth={1.2} /> },
                     { value:'none',  label:'None',
-                      icon: <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="2" y="2" width="14" height="14" rx="2" stroke="currentColor" strokeWidth="1.2"/></svg> },
+                      icon: <Square size={18} strokeWidth={1.2} /> },
                   ].map(opt => (
                     <button
                       key={opt.value}
@@ -1205,7 +1199,7 @@ export default function SketchbookView() {
                       style={{
                         display:'flex', alignItems:'center', gap:10, width:'100%',
                         padding:'7px 10px', marginBottom:4, borderRadius:7, cursor:'pointer',
-                        background: sketchBgStyle === opt.value ? 'var(--accentDim, rgba(56,139,253,0.12))' : 'transparent',
+                        background: sketchBgStyle === opt.value ? 'var(--accentDim, color-mix(in srgb, var(--accent) 12%, transparent))' : 'transparent',
                         border: sketchBgStyle === opt.value ? '1px solid var(--accent)' : '1px solid transparent',
                         color: sketchBgStyle === opt.value ? 'var(--accent)' : 'var(--text)',
                         fontSize:13, textAlign:'left', fontFamily:'inherit',
@@ -1232,10 +1226,7 @@ export default function SketchbookView() {
           fontSize:13, color:'var(--text)',
           zIndex:1000, whiteSpace:'nowrap',
         }}>
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style={{ animation:'spin 0.8s linear infinite', flexShrink:0 }}>
-            <circle cx="8" cy="8" r="6" stroke="var(--border)" strokeWidth="2"/>
-            <path d="M8 2a6 6 0 0 1 6 6" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round"/>
-          </svg>
+          <LoaderCircle size={14} strokeWidth={2} color="var(--accent)" style={{ animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
           {pdfProgress}
         </div>
       )}
@@ -1267,10 +1258,7 @@ export default function SketchbookView() {
         {/* Loading / error overlay */}
         {(!isLoaded || !ExcalidrawCmp) && !loadError && (
           <div style={{ position:'absolute', inset:0, zIndex:10, display:'flex', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--textDim)', fontSize:13, gap:10 }}>
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ animation:'spin 1s linear infinite' }}>
-              <circle cx="8" cy="8" r="6" stroke="var(--border)" strokeWidth="2"/>
-              <path d="M8 2a6 6 0 0 1 6 6" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round"/>
-            </svg>
+            <LoaderCircle size={16} strokeWidth={2} color="var(--accent)" style={{ animation: 'spin 1s linear infinite' }} />
             Loading canvas…
           </div>
         )}

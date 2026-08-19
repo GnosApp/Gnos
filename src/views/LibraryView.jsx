@@ -7,37 +7,28 @@ import { importBooks, importAudioFile, importAudioFolder } from '@/lib/bookImpor
 import { loadReadingLog, loadNotebookContent, resetBaseDir, saveCalendarEvents, loadKanbanBoards, saveKanbanBoards } from '@/lib/storage'
 import Toast from '@/components/ui/Toast'
 import { UniversalSettingsModal } from '@/components/SideNav'
+import { ContextMenu } from '@/components/ContextMenu'
+import { AddPopup } from '@/components/AddPopup'
+import { buildAddToCollectionSubmenu } from '@/lib/collectionSubmenu'
+import { CollectionFace } from '@/lib/collectionIcons'
 import { useIsMobile } from '@/lib/useIsMobile'
 import ProfileContent from '@/components/ProfileContent'
 import { FullCalendar } from '@/components/Calendar'
+import { Archive, ArrowDownWideNarrow, ArrowRight, ArrowUpDown, ArrowUpWideNarrow, AudioLines, Book, Calendar, ChevronRight, Clock, Ellipsis, Flag, Folder, Layers, Link as LinkIcon, ListFilter, MessageSquare, Music, NotebookText, Pencil, Plus, Search, SquarePen, StickyNote, Trash2, Volume2, Waypoints, X, Zap } from 'lucide-react'
+import QuickAccess from '@/components/QuickAccess'
 export { FullCalendar } // back-compat for existing imports
 
 const SearchIcon = () => (
-  <svg className="search-icon" width="13" height="13" viewBox="0 0 16 16" fill="none">
-    <circle cx="6.5" cy="6.5" r="4" stroke="currentColor" strokeWidth="1.5"/>
-    <line x1="9.8" y1="9.8" x2="14" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-  </svg>
+  <Search className="search-icon" size={13} strokeWidth={1.5} />
 )
 const DotsIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-    <circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/>
-  </svg>
+  <Ellipsis size={16} strokeWidth={2} />
 )
 const MusicIcon = () => (
-  <svg width="36" height="28" viewBox="0 0 36 28" fill="none">
-    <rect x="0"  y="10" width="4" height="8"  rx="2" fill="currentColor" opacity="0.6"/>
-    <rect x="6"  y="5"  width="4" height="18" rx="2" fill="currentColor" opacity="0.8"/>
-    <rect x="12" y="2"  width="4" height="24" rx="2" fill="currentColor" opacity="1"/>
-    <rect x="18" y="7"  width="4" height="14" rx="2" fill="currentColor" opacity="0.85"/>
-    <rect x="24" y="9"  width="4" height="10" rx="2" fill="currentColor" opacity="0.65"/>
-    <rect x="30" y="7"  width="4" height="14" rx="2" fill="currentColor" opacity="0.5"/>
-  </svg>
+  <AudioLines size={28} strokeWidth={1.8} />
 )
 const PlusIcon = () => (
-  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-    <line x1="7" y1="1.5" x2="7" y2="12.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-    <line x1="1.5" y1="7" x2="12.5" y2="7" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-  </svg>
+  <Plus size={14} strokeWidth={2} />
 )
 const TABS = [
   { id: 'library',    label: 'Library' },
@@ -91,6 +82,15 @@ const BookCard = memo(function BookCard({ book, onOpen, onMenu }) {
   return (
     <div className="book-card-container" onContextMenu={e => { e.preventDefault(); onMenu(e, book) }}>
       <div className="book-cover" style={{ '--c1': c1, '--c2': c2, background: `linear-gradient(135deg, ${c1}, ${c2})` }} onClick={() => onOpen(book)}>
+        {book.sourceMissing && (
+          <div title="Source .epub file not found" style={{
+            position: 'absolute', top: 6, left: 6, zIndex: 3,
+            display: 'flex', alignItems: 'center', gap: 4,
+            background: 'rgba(248,81,73,0.92)', color: '#fff',
+            fontSize: 8, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase',
+            borderRadius: 4, padding: '2px 6px 3px',
+          }}>Missing</div>
+        )}
         {book.coverDataUrl ? (
           <>
             <CoverImg src={book.coverDataUrl} alt={book.title} />
@@ -167,168 +167,13 @@ const AudiobookCard = memo(function AudiobookCard({ book, onOpen, onMenu }) {
   )
 })
 
-// A submenu flyout that clamps itself into the viewport: flips left when it
-// would overrun the right edge, and shifts up (or scrolls) when it would run
-// off the bottom — so it never clips through the page.
-function CtxSubmenu({ submenu, onClose }) {
-  const subRef = useRef()
-  useLayoutEffect(() => {
-    const el = subRef.current
-    if (!el) return
-    // reset before measuring
-    el.style.left = '100%'; el.style.right = 'auto'
-    el.style.top = '-4px'; el.style.maxHeight = ''; el.style.overflowY = ''
-    const margin = 8
-    let r = el.getBoundingClientRect()
-    // horizontal: flip to the left of the parent item if it overflows the right
-    if (r.right > window.innerWidth - margin) {
-      el.style.left = 'auto'; el.style.right = '100%'
-      r = el.getBoundingClientRect()
-    }
-    // vertical: if taller than the viewport, pin near the top + scroll; else if
-    // it runs past the bottom edge, shift it up by the overflow amount.
-    if (r.height > window.innerHeight - 2 * margin) {
-      el.style.maxHeight = (window.innerHeight - 2 * margin) + 'px'
-      el.style.overflowY = 'auto'
-      el.style.top = (margin - r.top - 4) + 'px'
-    } else if (r.bottom > window.innerHeight - margin) {
-      el.style.top = (-4 - (r.bottom - (window.innerHeight - margin))) + 'px'
-    }
-  }, [])
-  return (
-    <div ref={subRef} style={{
-      position: 'absolute', left: '100%', top: -4, zIndex: 10000,
-      background: 'var(--surface)', border: '1px solid var(--border)',
-      borderRadius: 10, padding: 4, minWidth: 140,
-      boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-    }}>
-      {submenu.map((sub, j) => (
-        <button key={j} className="lib-ctx-item" style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8 }}
-          onClick={() => { sub.action(); onClose() }}>
-          {sub.label?.startsWith('#') && (
-            <span style={{ width: 16, height: 16, borderRadius: 4, background: sub.label, flexShrink: 0, border: '1px solid rgba(255,255,255,0.15)' }} />
-          )}
-          {sub.label?.startsWith('#') ? '' : sub.label}
-        </button>
-      ))}
-      {submenu.length === 0 && (
-        <div style={{ padding: '6px 12px', fontSize: 12, color: 'var(--textDim)', fontStyle: 'italic' }}>No collections</div>
-      )}
-    </div>
-  )
-}
-
-function ContextMenu({ x, y, items, onClose }) {
-  const ref = useRef()
-  const [openSub, setOpenSub] = useState(null) // index of hovered submenu item
-  useEffect(() => {
-    const h = e => { if (ref.current && !ref.current.contains(e.target)) onClose() }
-    setTimeout(() => document.addEventListener('mousedown', h), 0)
-    return () => document.removeEventListener('mousedown', h)
-  }, [onClose])
-  useLayoutEffect(() => {
-    if (!ref.current) return
-    const el = ref.current
-    const { offsetWidth: w, offsetHeight: h } = el
-    const clampedLeft = Math.max(8, Math.min(x, window.innerWidth - w - 8))
-    const clampedTop  = Math.max(60, Math.min(y, window.innerHeight - h - 8))
-    el.style.left = clampedLeft + 'px'
-    el.style.top  = clampedTop  + 'px'
-  }, [x, y])
-  const safeX = Math.max(8, Math.min(x, window.innerWidth - 180))
-  return (
-    <div ref={ref} className="card-ctx-menu" style={{
-      position: 'fixed', left: safeX, top: y, zIndex: 9999,
-      background: 'var(--surface)', border: '1px solid var(--border)',
-      borderRadius: 10, padding: 4, minWidth: 160,
-      boxShadow: '0 10px 28px rgba(0,0,0,0.5)',
-    }}>
-      {items.map((item, i) => (
-        <div key={i} style={{ position: 'relative' }}
-          onMouseEnter={() => item.submenu && setOpenSub(i)}
-          onMouseLeave={() => item.submenu && setOpenSub(null)}
-        >
-          <button className="lib-ctx-item"
-            style={{ width: '100%', ...(item.danger ? { color: '#ef5350' } : {}) }}
-            onClick={() => { if (!item.submenu) { item.action(); onClose() } }}>
-            {item.icon && <svg width="14" height="14" viewBox="0 0 16 16" fill="none"
-              dangerouslySetInnerHTML={{ __html: item.icon }} />}
-            {item.label}
-            {item.submenu && <svg width="8" height="8" viewBox="0 0 8 8" fill="none" style={{ marginLeft: 'auto', opacity: 0.5 }}>
-              <path d="M2 1l4 3-4 3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>}
-          </button>
-          {item.submenu && openSub === i && (
-            <CtxSubmenu submenu={item.submenu} onClose={onClose} />
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-export function AddPopup({ onClose, onAddBook, onAddAudio, onNewNotebook, onNewSketchbook, onNewCollection, onNewFlashcardDeck, asSheet = false }) {
-  const ref = useRef()
-  useEffect(() => {
-    const h = e => { if (ref.current && !ref.current.contains(e.target)) onClose() }
-    setTimeout(() => document.addEventListener('mousedown', h), 0)
-    return () => document.removeEventListener('mousedown', h)
-  }, [onClose])
-  return (
-    <div ref={ref} className="add-choice-popup" style={asSheet ? { position: 'relative' } : { position: 'absolute', top: 'calc(100% + 6px)', right: 0 }}>
-      <div className="add-choice-header">Add</div>
-      <button className="add-choice-btn" onClick={() => { onAddBook(); onClose() }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-          <path d="M4 19V5a2 2 0 0 1 2-2h13v14H6a2 2 0 0 0-2 2zm0 0a2 2 0 0 0 2 2h13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-          <line x1="9" y1="7" x2="16" y2="7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-          <line x1="9" y1="11" x2="14" y2="11" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-        </svg>
-        <span className="add-choice-label">Book</span>
-      </button>
-      <button className="add-choice-btn" onClick={() => { onAddAudio(); onClose() }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-          <path d="M9 18c0 1.66-1.34 3-3 3H4c-1.66 0-3-1.34-3-3v-1c0-1.66 1.34-3 3-3h2c1.66 0 3 1.34 3 3v1zM22 15c0 1.66-1.34 3-3 3h-2c-1.66 0-3-1.34-3-3v-1c0-1.66 1.34-3 3-3h2c1.66 0 3 1.34 3 3v1z" stroke="currentColor" strokeWidth="1.5"/>
-          <path d="M9 19V8l13-3v10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-        <span className="add-choice-label">Audiobook</span>
-      </button>
-
-      <button className="add-choice-btn" onClick={() => { onNewNotebook(); onClose() }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-          <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="1.6"/>
-          <line x1="7" y1="8" x2="17" y2="8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-          <line x1="7" y1="12" x2="17" y2="12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-          <line x1="7" y1="16" x2="12" y2="16" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-        </svg>
-        <span className="add-choice-label">Notebook</span>
-      </button>
-      <button className="add-choice-btn" onClick={() => { onNewSketchbook(); onClose() }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"
-            stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"
-            stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-        <span className="add-choice-label">Sketchbook</span>
-      </button>
-      <button className="add-choice-btn" onClick={() => { onNewFlashcardDeck(); onClose() }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-          <rect x="2" y="4" width="16" height="12" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-          <rect x="6" y="8" width="16" height="12" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-        </svg>
-        <span className="add-choice-label">Flashcards</span>
-      </button>
-      <button className="add-choice-btn" onClick={() => { onNewCollection(); onClose() }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-          <rect x="3" y="11" width="18" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.5"/>
-          <path d="M2 11h20V8a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v3z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
-          <rect x="8" y="14" width="8" height="4" rx="0.8" stroke="currentColor" strokeWidth="1.2"/>
-        </svg>
-        <span className="add-choice-label">Collection</span>
-      </button>
-    </div>
-  )
-}
+// ContextMenu/CtxSubmenu removed (Pass 1 of PLAN_POPUP_REVAMP.md) — this
+// view now uses the shared `ContextMenu` component (src/components/
+// ContextMenu.jsx), same one SideNav.jsx uses.
+// AddPopup/LibContextMenu removed (Pass 2) — this view now uses the shared
+// `AddPopup` component (src/components/AddPopup.jsx). LibContextMenu turned
+// out to be a mislabeled duplicate of AddPopup (found during Pass 1), not a
+// real context menu.
 
 function StreakFooter({ streakDays = 0, weekActivity = [false,false,false,false,false,false,false], todayMinutes = 0 }) {
   // weekActivity[6] = today (rightmost), weekActivity[0] = 6 days ago
@@ -362,74 +207,6 @@ function StreakFooter({ streakDays = 0, weekActivity = [false,false,false,false,
         </div>
         <span className="streak-count">{streakDays}d</span>
       </div>
-    </div>
-  )
-}
-
-
-function LibContextMenu({ x, y, onClose, onAddBook, onAddAudio, onNewNotebook, onNewSketchbook, onNewFlashcardDeck, onNewCollection }) {
-  const ref = useRef()
-  useEffect(() => {
-    const h = e => { if (ref.current && !ref.current.contains(e.target)) onClose() }
-    setTimeout(() => document.addEventListener('mousedown', h), 0)
-    return () => document.removeEventListener('mousedown', h)
-  }, [onClose])
-  useLayoutEffect(() => {
-    if (!ref.current) return
-    const el = ref.current
-    const { offsetWidth: w, offsetHeight: h } = el
-    el.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + 'px'
-    el.style.top  = Math.max(60, Math.min(y, window.innerHeight - h - 8)) + 'px'
-  }, [x, y])
-  return (
-    <div ref={ref} className="add-choice-popup" style={{ position: 'fixed', left: x, top: y }}>
-      <div className="add-choice-header">Add</div>
-      <button className="add-choice-btn" onClick={() => { onAddBook(); onClose() }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-          <path d="M4 19V5a2 2 0 0 1 2-2h13v14H6a2 2 0 0 0-2 2zm0 0a2 2 0 0 0 2 2h13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-          <line x1="9" y1="7" x2="16" y2="7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-          <line x1="9" y1="11" x2="14" y2="11" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-        </svg>
-        <span className="add-choice-label">Book</span>
-      </button>
-      <button className="add-choice-btn" onClick={() => { onAddAudio(); onClose() }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-          <path d="M9 18c0 1.66-1.34 3-3 3H4c-1.66 0-3-1.34-3-3v-1c0-1.66 1.34-3 3-3h2c1.66 0 3 1.34 3 3v1zM22 15c0 1.66-1.34 3-3 3h-2c-1.66 0-3-1.34-3-3v-1c0-1.66 1.34-3 3-3h2c1.66 0 3 1.34 3 3v1z" stroke="currentColor" strokeWidth="1.5"/>
-          <path d="M9 19V8l13-3v10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-        <span className="add-choice-label">Audiobook</span>
-      </button>
-      <button className="add-choice-btn" onClick={() => { onNewNotebook(); onClose() }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-          <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="1.6"/>
-          <line x1="7" y1="8" x2="17" y2="8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-          <line x1="7" y1="12" x2="17" y2="12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-          <line x1="7" y1="16" x2="12" y2="16" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-        </svg>
-        <span className="add-choice-label">Notebook</span>
-      </button>
-      <button className="add-choice-btn" onClick={() => { onNewSketchbook(); onClose() }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-        <span className="add-choice-label">Sketchbook</span>
-      </button>
-      <button className="add-choice-btn" onClick={() => { onNewFlashcardDeck(); onClose() }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-          <rect x="2" y="4" width="16" height="12" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-          <rect x="6" y="8" width="16" height="12" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-        </svg>
-        <span className="add-choice-label">Flashcards</span>
-      </button>
-      <button className="add-choice-btn" onClick={() => { onNewCollection(); onClose() }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-          <rect x="3" y="11" width="18" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.5"/>
-          <path d="M2 11h20V8a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v3z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
-          <rect x="8" y="14" width="8" height="4" rx="0.8" stroke="currentColor" strokeWidth="1.2"/>
-        </svg>
-        <span className="add-choice-label">Collection</span>
-      </button>
     </div>
   )
 }
@@ -571,6 +348,29 @@ function EditItemModal({ heading, item, fields, colors = NB_COLORS, onSave, onCl
   )
 }
 
+// MissingSourceModal — an epub's kept .epub file (A86) is gone. Opening the
+// book prompts instead of navigating into a broken reader; removal goes
+// through the normal moveToTrash path (OS Trash, recoverable — same as every
+// other delete in the app, not a true irreversible delete).
+function MissingSourceModal({ book, onRemove, onClose }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={onClose} onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }}>
+      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: 22, width: 360, boxShadow: '0 16px 48px rgba(0,0,0,0.5)' }}
+        onClick={e => e.stopPropagation()}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8, color: 'var(--text)', letterSpacing: '-0.01em' }}>File not found</div>
+        <div style={{ fontSize: 13, color: 'var(--textDim)', lineHeight: 1.5, marginBottom: 19 }}>
+          Can't find <strong style={{ color: 'var(--text)' }}>{book.title}</strong>'s <code>.epub</code> file — it may have been moved or deleted outside Gnos. Remove this book from your library? (Goes to the OS Trash, same as Delete — not permanent.)
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={onClose} style={{ background: 'none', border: '1px solid var(--border)', color: 'var(--textDim)', borderRadius: 8, padding: '7px 16px', fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>Keep</button>
+          <button onClick={onRemove} style={{ background: '#f85149', border: 'none', color: '#fff', borderRadius: 8, padding: '7px 16px', fontSize: 13, cursor: 'pointer', fontWeight: 600, fontFamily: 'inherit' }}>Remove</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function SearchDropdown({ query, library, notebooks, sketchbooks, flashcardDecks, onOpenBook, onOpenAudio, onOpenNotebook, onOpenSketchbook, onOpenDeck, onClose, onDevCommand, onOpenGraph, onOpenCalendar, onOpenKanban, onReset }) {
   const q = query.trim().toLowerCase()
   if (!q) return null
@@ -581,7 +381,7 @@ export function SearchDropdown({ query, library, notebooks, sketchbooks, flashca
       <div className="search-dropdown">
         <button className="search-drop-item" onClick={() => { onOpenCalendar?.(); onClose() }}>
           <div className="search-drop-cover" style={{ background: 'linear-gradient(135deg,#1a4a3e,#2ecc71)', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="3" width="16" height="15" rx="2" stroke="white" strokeWidth="1.5" opacity="0.9"/><line x1="6" y1="1" x2="6" y2="5" stroke="white" strokeWidth="1.5" strokeLinecap="round"/><line x1="14" y1="1" x2="14" y2="5" stroke="white" strokeWidth="1.5" strokeLinecap="round"/><line x1="2" y1="8" x2="18" y2="8" stroke="white" strokeWidth="1.5" opacity="0.7"/><rect x="6" y="11" width="3" height="3" rx="0.5" fill="white" opacity="0.7"/></svg>
+            <Calendar size={20} strokeWidth={1.5} color="white" style={{ opacity: 0.9 }} />
           </div>
           <div className="search-drop-info">
             <div className="search-drop-title">Calendar</div>
@@ -598,7 +398,7 @@ export function SearchDropdown({ query, library, notebooks, sketchbooks, flashca
       <div className="search-dropdown">
         <button className="search-drop-item" onClick={() => { onOpenGraph?.(); onClose() }}>
           <div className="search-drop-cover" style={{ background: 'linear-gradient(135deg,#1a3a6e,#4a90e2)', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="3" fill="white" opacity="0.9"/><circle cx="3" cy="5" r="2" fill="white" opacity="0.6"/><circle cx="17" cy="5" r="2" fill="white" opacity="0.6"/><circle cx="3" cy="15" r="2" fill="white" opacity="0.6"/><circle cx="17" cy="15" r="2" fill="white" opacity="0.6"/><line x1="10" y1="7" x2="3" y2="5" stroke="white" strokeWidth="1" opacity="0.5"/><line x1="10" y1="7" x2="17" y2="5" stroke="white" strokeWidth="1" opacity="0.5"/><line x1="10" y1="13" x2="3" y2="15" stroke="white" strokeWidth="1" opacity="0.5"/><line x1="10" y1="13" x2="17" y2="15" stroke="white" strokeWidth="1" opacity="0.5"/></svg>
+            <Waypoints size={20} strokeWidth={1.5} color="white" />
           </div>
           <div className="search-drop-info">
             <div className="search-drop-title">Nebuli</div>
@@ -636,6 +436,29 @@ export function SearchDropdown({ query, library, notebooks, sketchbooks, flashca
             <div className="search-drop-sub">Preview onboarding flow — read-only, no file system changes</div>
           </div>
         </button>
+      </div>
+    )
+  }
+  // ── /perf — reader profiling without devtools ─────────────────────────────
+  // The inspector blanks the app window (WKWebView repaint bug), so these drive
+  // the profiler from the search bar and show results as an in-app overlay.
+  if (q.startsWith('/perf')) {
+    const perf = (cmd) => { window.dispatchEvent(new CustomEvent('gnos:perf-cmd', { detail: { cmd } })); onClose() }
+    const row = (cmd, title, sub, emoji, bg) => (
+      <button key={cmd} className="search-drop-item" onClick={() => perf(cmd)}>
+        <div className="search-drop-cover" style={{ background: bg, fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{emoji}</div>
+        <div className="search-drop-info">
+          <div className="search-drop-title">{title}</div>
+          <div className="search-drop-sub">{sub}</div>
+        </div>
+      </button>
+    )
+    return (
+      <div className="search-dropdown">
+        <div style={{ padding: '8px 14px 4px', fontSize: 10, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--textDim)', opacity: 0.6 }}>Reader Profiling</div>
+        {row('on', '/perf on', 'Start measuring page flips + chapter loads', '▶', 'linear-gradient(135deg,#1a4a3e,#2ecc71)')}
+        {row('report', '/perf report', 'Show results on screen + save to archive', '📊', 'linear-gradient(135deg,#1a3a6e,#4a90e2)')}
+        {row('off', '/perf off', 'Stop measuring, hide the overlay', '■', 'linear-gradient(135deg,#4a4a4a,#888)')}
       </div>
     )
   }
@@ -795,15 +618,15 @@ export function SearchDropdown({ query, library, notebooks, sketchbooks, flashca
             </div>
             <div className="search-drop-badge">
               {isAudio ? (
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 6h3l3.5-4.5v13L6 10H3V6z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/><path d="M11 5c.8.7 1.3 1.6 1.3 3s-.5 2.3-1.3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+                <Volume2 size={12} strokeWidth={1.4} />
               ) : isNb ? (
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="12" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.4"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>
+                <NotebookText size={12} strokeWidth={1.4} />
               ) : isSb ? (
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M2 14l4-4 7-7a1.5 1.5 0 0 1 2 2L8 12 2 14z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/></svg>
+                <Pencil size={12} strokeWidth={1.3} />
               ) : isFd ? (
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="4.5" width="10" height="9" rx="1.4" stroke="currentColor" strokeWidth="1.3"/><path d="M5 3.2A1.4 1.4 0 0 1 6.3 2.5h6.3A1.4 1.4 0 0 1 14 3.9v7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
+                <Layers size={12} strokeWidth={1.3} />
               ) : (
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 14V3a1.5 1.5 0 0 1 1.5-1.5h9V14H4.5A1.5 1.5 0 0 1 3 12.5v0A1.5 1.5 0 0 1 4.5 11H13.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                <Book size={12} strokeWidth={1.3} />
               )}
             </div>
           </button>
@@ -956,9 +779,7 @@ const SketchbookCard = memo(function SketchbookCard({ sb, onOpen, onMenu }) {
             }} />
             {/* SKETCH badge + pencil icon */}
             <div style={{ position:'relative', padding:'0 12px 16px 16px', display:'flex', alignItems:'center', gap:6, zIndex:2 }}>
-              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ opacity:0.7, flexShrink:0 }}>
-                <path d="M11.5 2.5a2.121 2.121 0 0 1 3 3L5 15l-4 1 1-4 9.5-9.5z" stroke="rgba(255,255,255,0.85)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <Pencil size={11} strokeWidth={1.5} color="rgba(255,255,255,0.85)" style={{ opacity: 0.7, flexShrink: 0 }} />
               <span style={{ fontSize:8, fontWeight:800, letterSpacing:'.1em', color:'rgba(255,255,255,0.7)', textTransform:'uppercase' }}>Sketch</span>
             </div>
           </>
@@ -1002,10 +823,7 @@ const FlashcardDeckCard = memo(function FlashcardDeckCard({ deck, onOpen, onMenu
           background:'rgba(0,0,0,0.18)', zIndex:1 }} />
         {/* Flashcard icon + title */}
         <div style={{ position:'relative', padding:'14px 12px 0 16px', flex:1, zIndex:2 }}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ marginBottom: 6, opacity: 0.7 }}>
-            <rect x="2" y="4" width="16" height="12" rx="2" stroke="rgba(255,255,255,0.8)" strokeWidth="1.5"/>
-            <rect x="6" y="8" width="16" height="12" rx="2" stroke="rgba(255,255,255,0.5)" strokeWidth="1.5"/>
-          </svg>
+          <Layers size={20} strokeWidth={1.5} color="rgba(255,255,255,0.8)" style={{ marginBottom: 6, opacity: 0.7 }} />
           <div style={{ fontSize:13, fontWeight:800, color:'#fff', lineHeight:1.25, wordBreak:'break-word', overflow:'hidden', display:'-webkit-box', WebkitLineClamp:3, WebkitBoxOrient:'vertical' }}>{deck.title}</div>
         </div>
         {/* Card count + due badge */}
@@ -1148,90 +966,200 @@ const makeCardId = () => `card_${Date.now()}_${Math.random().toString(36).slice(
 const makeColId  = () => `col_${Date.now()}_${Math.random().toString(36).slice(2,6)}`
 const makeCmtId  = () => `cmt_${Date.now()}_${Math.random().toString(36).slice(2,6)}`
 
+// Real ticket-style code derived from the card's own id (its creation
+// timestamp) — not a fabricated field, just a display format for data we
+// already have. Matches the reference boards' "PROJ-123" convention.
+function kanbanCardCode(id) {
+  const m = /^card_(\d+)_/.exec(id || '')
+  return `TASK-${m ? m[1].slice(-4) : '0000'}`
+}
+
+// Priority is a real, user-set field (picked in KanbanCardModal) — not
+// decoration standing in for data we don't have, unlike an assignee avatar
+// or attachment count, which this app has no backing feature for and so
+// doesn't fake.
+const PRIORITY_LEVELS = [
+  { id: 'none',   label: 'No priority', color: null },
+  { id: 'low',    label: 'Low',         color: '#6b7280' },
+  { id: 'medium', label: 'Medium',      color: '#eab308' },
+  { id: 'high',   label: 'High',        color: '#f97316' },
+  { id: 'urgent', label: 'Urgent',      color: '#f85149' },
+]
+const priorityMeta = id => PRIORITY_LEVELS.find(p => p.id === id) || PRIORITY_LEVELS[0]
+
+// Relative day label matching the reference boards ("Today", "Yesterday",
+// "in 3 days", falling back to a plain date once it's far enough out).
+function kanbanDueLabel(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00')
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const diffDays = Math.round((d - today) / 86400000)
+  if (diffDays === 0) return 'Today'
+  if (diffDays === 1) return 'Tomorrow'
+  if (diffDays === -1) return 'Yesterday'
+  if (diffDays < 0) return `${-diffDays}d overdue`
+  if (diffDays <= 6) return `in ${diffDays}d`
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
 
 // ── KanbanCardModal ───────────────────────────────────────────────────────────
+// Reference: three edit-modal screenshots the user supplied (a macOS-style
+// "Create an Event" dialog, a light "Schedule new interview" form, a dark
+// "Share project" panel) — the common language across all three that ours
+// was missing: a fixed heading + muted subtitle (separate from the
+// editable fields, not doubling as the title input itself), uppercase
+// section labels above each field/group, real divider lines between
+// sections, bordered fields with an accent focus ring, a segmented pill
+// toggle for a small fixed set of choices (their Event/Reminder,
+// 30/60/90 min — ours is priority), and a footer with Cancel + a solid
+// primary action right-aligned, destructive action kept separate on the
+// left. Rebuilt around that shape.
 function KanbanCardModal({ card, onSave, onDelete, onClose }) {
   const [title,       setTitle]       = useState(card?.title       || '')
   const [dueDate,     setDueDate]     = useState(card?.dueDate     || '')
+  const [priority,    setPriority]    = useState(card?.priority    || 'none')
   const [description, setDescription] = useState(card?.description || '')
   const [comments,    setComments]    = useState(card?.comments    || [])
   const [newCmt,      setNewCmt]      = useState('')
   const isNew = !card?.id
+  const canSave = title.trim().length > 0
 
   const addCmt = () => {
     if (!newCmt.trim()) return
     setComments(c => [...c,{id:makeCmtId(),text:newCmt.trim(),createdAt:new Date().toISOString()}])
     setNewCmt('')
   }
+  const save = () => canSave && onSave({title:title.trim(),dueDate,priority,description,comments})
 
-  const iStyle = {background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:9,color:'var(--text)',fontSize:13,padding:'8px 11px',fontFamily:'inherit',outline:'none',width:'100%',boxSizing:'border-box'}
-  const icoStyle = {flexShrink:0,color:'var(--textDim)',opacity:0.7}
+  // Type scale collapsed to 3 obvious steps (was 7 near-duplicate sizes —
+  // 18/12.5/12/11/10/9/13 — bunched within a few px of each other with no
+  // real rhythm): 17 heading, 13 body/fields/buttons, 11 labels/meta.
+  // Differentiate the subtitle from body text by color+weight, not a
+  // fourth in-between size. Spacing likewise moved onto a 4-unit grid
+  // (4/8/12/16/20/24) instead of one-off 7/9/13/14/18/22px values.
+  // Color hierarchy: var(--text) (white) is reserved for section labels,
+  // selected/active control text, and the two footer actions — everything
+  // else (subtitle, placeholders, unselected pill text, meta) stays
+  // var(--textDim). Previously the labels were dim and the split between
+  // white/dim elsewhere had no rule, which read as arbitrary.
+  const label   = {fontSize:11,fontWeight:600,color:'var(--text)',textTransform:'uppercase',letterSpacing:'0.05em',display:'block',marginBottom:8}
+  const field   = {width:'100%',background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:8,color:'var(--text)',fontSize:13,lineHeight:'20px',padding:'8px 12px',fontFamily:'inherit',outline:'none',boxSizing:'border-box',transition:'border-color 0.12s'}
+  const onFocusRing = e=>e.currentTarget.style.borderColor='var(--accent)'
+  const onBlurRing  = e=>e.currentTarget.style.borderColor='var(--border)'
+  const divider = <div style={{height:1,background:'var(--borderSubtle)',flexShrink:0}}/>
 
   return (
     <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',zIndex:4000,display:'flex',alignItems:'center',justifyContent:'center',backdropFilter:'blur(6px)'}} onClick={onClose}>
-      <div style={{background:'var(--surface)',borderRadius:18,width:500,maxWidth:'calc(100vw - 32px)',maxHeight:'calc(100vh - 48px)',overflow:'auto',boxShadow:'0 40px 100px rgba(0,0,0,0.5)',border:'1px solid var(--border)'}} onClick={e=>e.stopPropagation()}>
-        <div style={{height:4,borderRadius:'18px 18px 0 0',background:'var(--accent)'}}/>
-        <div style={{padding:'18px 20px 14px',borderBottom:'1px solid var(--borderSubtle)',display:'flex',alignItems:'center',gap:10}}>
-          <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Task title" autoFocus
-            style={{flex:1,background:'none',border:'none',color:'var(--text)',fontSize:18,fontWeight:700,padding:0,fontFamily:'inherit',outline:'none',letterSpacing:'-0.01em'}}/>
-          <button onClick={onClose} style={{width:28,height:28,borderRadius:8,border:'1px solid var(--border)',background:'none',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}
+      <div style={{background:'var(--surface)',borderRadius:16,width:440,maxWidth:'calc(100vw - 32px)',maxHeight:'calc(100vh - 48px)',display:'flex',flexDirection:'column',boxShadow:'0 40px 100px rgba(0,0,0,0.5)',border:'1px solid var(--border)'}} onClick={e=>e.stopPropagation()}>
+        {/* Header — fixed heading + subtitle, not the editable title */}
+        <div style={{padding:'20px 20px 16px',display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:16,flexShrink:0}}>
+          <div>
+            <div style={{fontSize:17,fontWeight:700,color:'var(--text)',letterSpacing:'-0.01em',lineHeight:'22px',marginBottom:4}}>{isNew?'New Task':'Edit Task'}</div>
+            <div style={{fontSize:13,fontWeight:400,lineHeight:'18px',color:'var(--textDim)'}}>{isNew?'Add a task to this column.':'Update the details for this task.'}</div>
+          </div>
+          <button onClick={onClose} title="Close" style={{width:28,height:28,borderRadius:8,border:'1px solid var(--border)',background:'none',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}
             onMouseEnter={e=>e.currentTarget.style.background='var(--surfaceAlt)'}
             onMouseLeave={e=>e.currentTarget.style.background='none'}>
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
+            <X size={13} strokeWidth={1.6} />
           </button>
         </div>
-        <div style={{padding:'16px 20px 20px',display:'flex',flexDirection:'column',gap:10}}>
-          {/* Due date */}
-          <div style={{display:'flex',alignItems:'center',gap:10}}>
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={icoStyle}><rect x="1.5" y="2.5" width="13" height="12" rx="2" stroke="currentColor" strokeWidth="1.4"/><line x1="5" y1="1" x2="5" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="11" y1="1" x2="11" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="1.5" y1="6.5" x2="14.5" y2="6.5" stroke="currentColor" strokeWidth="1.2"/></svg>
-            <input type="date" value={dueDate} onChange={e=>setDueDate(e.target.value)} style={{...iStyle,flex:1}}/>
+        {divider}
+
+        {/* Body */}
+        <div style={{padding:'20px 20px',display:'flex',flexDirection:'column',gap:20,overflow:'auto'}}>
+          <div>
+            <label style={label}>Title</label>
+            <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="e.g. Fix modal mobile breakpoint" autoFocus
+              onFocus={onFocusRing} onBlur={onBlurRing} style={field}/>
           </div>
-          {/* Description */}
-          <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={{...icoStyle,marginTop:9}}><line x1="2.5" y1="4" x2="13.5" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="2.5" y1="7.5" x2="13.5" y2="7.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="2.5" y1="11" x2="9" y2="11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
-            <textarea value={description} onChange={e=>setDescription(e.target.value)} placeholder="Add description" rows={3}
-              style={{...iStyle,flex:1,resize:'none',lineHeight:1.55}}/>
+
+          <div>
+            <label style={label}>Priority</label>
+            <div style={{display:'flex',gap:4,background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:8,padding:4}}>
+              {PRIORITY_LEVELS.map(p => (
+                <button key={p.id} onClick={()=>setPriority(p.id)} title={p.label} style={{
+                  flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:4,padding:'6px 8px',borderRadius:6,
+                  border:'none',background: priority===p.id?'var(--surface)':'none',
+                  boxShadow: priority===p.id?'0 1px 2px rgba(0,0,0,0.2)':'none',
+                  color: priority===p.id?'var(--text)':'var(--textDim)',
+                  fontSize:11,fontWeight:600,cursor:'pointer',fontFamily:'inherit',transition:'background 0.12s,color 0.12s',
+                }}>
+                  {p.color && <Flag size={11} strokeWidth={2.4} style={{color:p.color,flexShrink:0}} />}
+                  {p.id==='none'?'None':p.label}
+                </button>
+              ))}
+            </div>
           </div>
-          {/* Comments */}
-          <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={{...icoStyle,marginTop:2}}><path d="M2 2h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H5l-3 3V3a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/></svg>
-            <div style={{flex:1}}>
-              {comments.length>0&&<div style={{marginBottom:8}}>
-                {comments.map(c=>(
-                  <div key={c.id} style={{display:'flex',gap:8,marginBottom:6,alignItems:'flex-start'}}>
-                    <div style={{width:22,height:22,borderRadius:'50%',background:'var(--accent)',color:'#fff',fontSize:9,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>{c.text[0]?.toUpperCase()||'?'}</div>
-                    <div style={{flex:1,background:'var(--surfaceAlt)',borderRadius:8,padding:'6px 10px',position:'relative'}}>
-                      <div style={{fontSize:12,color:'var(--text)',lineHeight:1.4}}>{c.text}</div>
-                      <div style={{fontSize:10,color:'var(--textDim)',marginTop:2}}>{new Date(c.createdAt).toLocaleDateString()}</div>
-                      <button onClick={()=>setComments(cs=>cs.filter(x=>x.id!==c.id))} style={{position:'absolute',top:4,right:8,background:'none',border:'none',color:'var(--textDim)',cursor:'pointer',fontSize:14,padding:0,lineHeight:1}}>×</button>
+
+          <div>
+            <label style={label}>Due Date</label>
+            <input type="date" value={dueDate} onChange={e=>setDueDate(e.target.value)}
+              onFocus={onFocusRing} onBlur={onBlurRing} style={field}/>
+          </div>
+
+          <div>
+            <label style={label}>Description</label>
+            <textarea value={description} onChange={e=>setDescription(e.target.value)} placeholder="Add more detail…" rows={3}
+              onFocus={onFocusRing} onBlur={onBlurRing} style={{...field,resize:'none',lineHeight:'20px'}}/>
+          </div>
+
+          {/* Comments only once the task is a real, saved entity — showing a
+              thread + Send button on a task that doesn't exist yet (no ref
+              for anyone to be commenting on) was the mismatch here; none of
+              the 3 reference dialogs put a comment thread in their create
+              flow either, only their edit/detail views. */}
+          {!isNew && (<>
+            {divider}
+            <div>
+              <label style={label}>Comments{comments.length>0?` (${comments.length})`:''}</label>
+              {comments.length>0&&(
+                <div style={{marginBottom:8,display:'flex',flexDirection:'column',gap:8}}>
+                  {comments.map(c=>(
+                    <div key={c.id} style={{display:'flex',gap:8,alignItems:'flex-start'}}>
+                      <div style={{width:20,height:20,borderRadius:'50%',background:'var(--accent)',color:'#fff',fontSize:11,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,marginTop:1}}>{c.text[0]?.toUpperCase()||'?'}</div>
+                      <div style={{flex:1,background:'var(--surfaceAlt)',border:'1px solid var(--borderSubtle)',borderRadius:8,padding:'8px 12px',position:'relative'}}>
+                        <div style={{fontSize:13,color:'var(--text)',lineHeight:'18px',paddingRight:16}}>{c.text}</div>
+                        <div style={{fontSize:11,color:'var(--textDim)',marginTop:4}}>{new Date(c.createdAt).toLocaleDateString()}</div>
+                        <button onClick={()=>setComments(cs=>cs.filter(x=>x.id!==c.id))} title="Remove comment" style={{position:'absolute',top:8,right:8,background:'none',border:'none',color:'var(--textDim)',cursor:'pointer',padding:2,lineHeight:1,display:'flex'}}><X size={11} strokeWidth={1.8} /></button>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>}
-              <div style={{display:'flex',gap:6}}>
+                  ))}
+                </div>
+              )}
+              <div style={{display:'flex',gap:8}}>
                 <input value={newCmt} onChange={e=>setNewCmt(e.target.value)} placeholder="Write a comment…"
                   onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();addCmt()}}}
-                  style={{...iStyle,flex:1,padding:'7px 11px'}}/>
+                  onFocus={onFocusRing} onBlur={onBlurRing} style={{...field,flex:1}}/>
                 <button onClick={addCmt} disabled={!newCmt.trim()}
-                  style={{padding:'7px 14px',borderRadius:9,border:'none',background:'var(--accent)',color:'#fff',cursor:'pointer',fontSize:12,fontWeight:700,opacity:newCmt.trim()?1:0.45,fontFamily:'inherit'}}>
+                  style={{padding:'8px 16px',borderRadius:8,border:'none',background:'var(--accent)',color:'#fff',cursor:'pointer',fontSize:13,fontWeight:700,opacity:newCmt.trim()?1:0.45,fontFamily:'inherit',flexShrink:0}}>
                   Send
                 </button>
               </div>
             </div>
-          </div>
-          {/* Footer */}
-          <div style={{display:'flex',gap:8,marginTop:6,paddingTop:14,borderTop:'1px solid var(--borderSubtle)'}}>
-            {!isNew&&(
-              <button onClick={onDelete}
-                style={{padding:'9px 16px',borderRadius:10,border:'1px solid rgba(239,68,68,0.3)',background:'rgba(239,68,68,0.06)',color:'#ef4444',cursor:'pointer',fontSize:13,fontWeight:600,fontFamily:'inherit',transition:'background 0.12s',flexShrink:0}}
-                onMouseEnter={e=>e.currentTarget.style.background='rgba(239,68,68,0.14)'}
-                onMouseLeave={e=>e.currentTarget.style.background='rgba(239,68,68,0.06)'}>
-                Delete
-              </button>
-            )}
-            <button onClick={()=>title.trim()&&onSave({title:title.trim()||'Untitled',dueDate,description,comments})}
-              disabled={!title.trim()}
-              style={{flex:1,padding:'10px',borderRadius:10,border:'none',background:title.trim()?'var(--accent)':'var(--surfaceAlt)',color:title.trim()?'#fff':'var(--textDim)',cursor:title.trim()?'pointer':'default',fontSize:13,fontWeight:700,fontFamily:'inherit',opacity:title.trim()?1:0.45}}>
+          </>)}
+        </div>
+
+        {divider}
+        {/* Footer — destructive kept separate on the left, fixed width;
+            Cancel + primary action split the remaining space 50/50. */}
+        <div style={{padding:'16px 20px',display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
+          {!isNew&&(
+            <button onClick={onDelete} title="Delete task"
+              style={{display:'flex',alignItems:'center',gap:8,padding:'10px 16px',borderRadius:8,border:'1px solid rgba(248,81,73,0.3)',background:'rgba(248,81,73,0.06)',color:'#f85149',cursor:'pointer',fontSize:13,fontWeight:600,fontFamily:'inherit',transition:'background 0.12s',flexShrink:0}}
+              onMouseEnter={e=>e.currentTarget.style.background='rgba(248,81,73,0.14)'}
+              onMouseLeave={e=>e.currentTarget.style.background='rgba(248,81,73,0.06)'}>
+              <Trash2 size={13} strokeWidth={1.8} />Delete
+            </button>
+          )}
+          <div style={{flex:1,display:'flex',gap:8}}>
+            <button onClick={onClose}
+              style={{flex:1,padding:'10px 16px',borderRadius:8,border:'1px solid var(--border)',background:'none',color:'var(--text)',cursor:'pointer',fontSize:13,fontWeight:600,fontFamily:'inherit',transition:'background 0.1s'}}
+              onMouseEnter={e=>e.currentTarget.style.background='var(--surfaceAlt)'}
+              onMouseLeave={e=>e.currentTarget.style.background='none'}>
+              Cancel
+            </button>
+            <button onClick={save} disabled={!canSave}
+              style={{flex:1,padding:'10px 16px',borderRadius:8,border:'none',background:canSave?'var(--accent)':'var(--surfaceAlt)',color:canSave?'#fff':'var(--textDim)',cursor:canSave?'pointer':'default',fontSize:13,fontWeight:700,fontFamily:'inherit',opacity:canSave?1:0.6}}>
               {isNew?'Create Task':'Save Changes'}
             </button>
           </div>
@@ -1245,10 +1173,10 @@ function KanbanCardModal({ card, onSave, onDelete, onClose }) {
 const DEFAULT_KANBAN = {
   id:'board_default', title:'My Board',
   columns:[
-    {id:'col_backlog',    title:'Backlog',      cards:[]},
-    {id:'col_todo',       title:'To Do',        cards:[]},
-    {id:'col_inprogress', title:'In Progress',  cards:[]},
-    {id:'col_done',       title:'Done',         cards:[]},
+    {id:'col_backlog',    title:'Backlog',      cards:[], color:'#6B7280'},
+    {id:'col_todo',       title:'To Do',        cards:[], color:'#3B82F6'},
+    {id:'col_inprogress', title:'In Progress',  cards:[], color:'#F59E0B'},
+    {id:'col_done',       title:'Done',         cards:[], color:'#10B981'},
   ]
 }
 
@@ -1259,6 +1187,7 @@ export function KanbanBoard() {
   const [editColName2, setEditColName2] = useState('')
   const [newColName,   setNewColName]   = useState('')
   const [addingCol,    setAddingCol]    = useState(false)
+  const [colMenu,      setColMenu]      = useState(null) // {x,y,colId} — column "…" menu
   const [inlineColor,  setInlineColor]  = useState(null) // {cardId, colId}
   const dragRef = useRef(null)
   const dropRef = useRef(null)
@@ -1277,6 +1206,9 @@ export function KanbanBoard() {
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [inlineColor])
+
+  const ICON_KB_EDIT  = '<path d="M10.8 2.8a1.98 1.98 0 0 1 2.8 2.8l-7.8 7.8-3.6.8.8-3.6 7.8-7.8z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.4 4.2l2.8 2.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'
+  const ICON_KB_TRASH = '<path d="M2.5 4.5h11M6.4 4.2v-1A1.2 1.2 0 0 1 7.6 2h.8a1.2 1.2 0 0 1 1.2 1.2v1M3.8 4.8l.6 8a1.5 1.5 0 0 0 1.5 1.4h4.2a1.5 1.5 0 0 0 1.5-1.4l.6-8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.6 7.3v4M9.4 7.3v4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'
 
   const persist = async b => { setBoard(b); await saveKanbanBoards(b) }
 
@@ -1380,10 +1312,10 @@ export function KanbanBoard() {
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
         <span style={{fontSize:15,fontWeight:700,color:'var(--text)',letterSpacing:'-0.01em'}}>{board.title}</span>
         <button onClick={()=>setAddingCol(s=>!s)}
-          style={{padding:'5px 14px',borderRadius:8,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',fontSize:12,fontWeight:600,cursor:'pointer',transition:'background 0.1s,color 0.1s'}}
+          style={{display:'flex',alignItems:'center',gap:5,padding:'5px 14px',borderRadius:8,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',fontSize:12,fontWeight:600,cursor:'pointer',transition:'background 0.1s,color 0.1s',fontFamily:'inherit'}}
           onMouseEnter={e=>{e.currentTarget.style.background='var(--surface)';e.currentTarget.style.color='var(--text)'}}
           onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)'}}>
-          + Column
+          <Plus size={13} strokeWidth={2} />Column
         </button>
       </div>
       {addingCol&&(
@@ -1400,27 +1332,29 @@ export function KanbanBoard() {
           const isDropTarget = dropTarget?.colId===col.id
           return (
             <div key={col.id} data-kb-col={col.id}
-              style={{minWidth:220,maxWidth:260,flex:'0 0 240px',
-                background:isDropTarget?'color-mix(in srgb,var(--accent) 6%,var(--surfaceAlt))':'var(--surfaceAlt)',
-                border:isDropTarget?'1.5px solid color-mix(in srgb,var(--accent) 50%,var(--border))':'1.5px solid var(--border)',
-                borderRadius:12,padding:'12px 10px 10px',
+              style={{minWidth:260,maxWidth:300,flex:'0 0 280px',
+                background:isDropTarget?'color-mix(in srgb,var(--accent) 6%,var(--surface))':'var(--surface)',
+                border:isDropTarget?'1.5px solid color-mix(in srgb,var(--accent) 50%,var(--border))':'1.5px solid var(--borderSubtle)',
+                borderRadius:14,padding:'12px 10px 10px',
                 display:'flex',flexDirection:'column',gap:0,transition:'background 0.12s,border-color 0.12s'}}>
-              {/* Column header */}
+              {/* Column header — status ring (colored, hollow, matches the
+                  reference boards' circular status token) + title + a dark
+                  count pill + a "…" menu (rename/delete) instead of a bare
+                  delete button, closer to the reference's overflow menu. */}
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
-                {/* Column color picker */}
-                <div data-inline-cp style={{position:'relative',flexShrink:0,marginRight:6}}>
+                <div data-inline-cp style={{position:'relative',flexShrink:0,marginRight:7}}>
                   <div onClick={e=>{e.stopPropagation();setInlineColor(inlineColor?.colId===col.id&&!inlineColor?.cardId?null:{colId:col.id})}}
-                    style={{width:12,height:12,borderRadius:3,background:col.color||CARD_COLORS[0],cursor:'pointer',flexShrink:0,
+                    style={{width:13,height:13,borderRadius:'50%',background:'none',border:`2px solid ${col.color||CARD_COLORS[0]}`,cursor:'pointer',flexShrink:0,boxSizing:'border-box',
                       boxShadow:(inlineColor?.colId===col.id&&!inlineColor?.cardId)?`0 0 0 2px var(--surface),0 0 0 3.5px ${col.color||CARD_COLORS[0]}`:'none',
                       transition:'box-shadow 0.15s'}} title="Set column color"/>
                   {inlineColor?.colId===col.id&&!inlineColor?.cardId&&(
-                    <div data-inline-cp style={{position:'absolute',top:18,left:-4,zIndex:200,
+                    <div data-inline-cp style={{position:'absolute',top:20,left:-4,zIndex:200,
                       background:'var(--surface)',border:'1px solid var(--border)',borderRadius:10,
                       padding:'8px',boxShadow:'0 8px 24px rgba(0,0,0,0.22)',
                       display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:5}}>
                       {CARD_COLORS.map(c=>(
                         <div key={c} onClick={e=>{e.stopPropagation();persist({...board,columns:board.columns.map(cl=>cl.id===col.id?{...cl,color:c}:cl)});setInlineColor(null)}}
-                          style={{width:16,height:16,borderRadius:3,background:c,cursor:'pointer',
+                          style={{width:16,height:16,borderRadius:'50%',background:c,cursor:'pointer',
                             boxShadow:(col.color||CARD_COLORS[0])===c?`0 0 0 2px var(--surface),0 0 0 3.5px ${c}`:'none',
                             transform:(col.color||CARD_COLORS[0])===c?'scale(1.2)':'scale(1)',
                             transition:'transform 0.1s,box-shadow 0.1s'}}/>
@@ -1432,24 +1366,23 @@ export function KanbanBoard() {
                   ?<input value={editColName2} autoFocus onChange={e=>setEditColName2(e.target.value)}
                     onBlur={()=>{persist({...board,columns:board.columns.map(c=>c.id===col.id?{...c,title:editColName2||col.title}:c)});setEditColId2(null)}}
                     onKeyDown={e=>{if(e.key==='Enter'||e.key==='Escape'){persist({...board,columns:board.columns.map(c=>c.id===col.id?{...c,title:editColName2||col.title}:c)});setEditColId2(null)}}}
-                    style={{flex:1,background:'none',border:'none',borderBottom:'1px solid var(--accent)',color:'var(--text)',fontSize:11,fontWeight:700,padding:'2px 0',fontFamily:'inherit',outline:'none',textTransform:'uppercase',letterSpacing:'0.06em'}}/>
+                    style={{flex:1,background:'none',border:'none',borderBottom:'1px solid var(--accent)',color:'var(--text)',fontSize:13,fontWeight:600,padding:'2px 0',fontFamily:'inherit',outline:'none'}}/>
                   :<span onClick={()=>{setEditColId2(col.id);setEditColName2(col.title)}}
-                    style={{fontSize:11,fontWeight:700,color:'var(--textDim)',textTransform:'uppercase',letterSpacing:'0.07em',cursor:'pointer',flex:1}}
+                    style={{fontSize:13,fontWeight:600,color:'var(--text)',cursor:'pointer',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}
                     title="Click to rename">{col.title}</span>
                 }
                 <div style={{display:'flex',alignItems:'center',gap:4}}>
-                  <span style={{fontSize:11,color:'var(--textDim)',background:'var(--surface)',borderRadius:20,padding:'1px 7px',fontWeight:700,minWidth:18,textAlign:'center'}}>{col.cards.length}</span>
-                  <button onClick={()=>persist({...board,columns:board.columns.filter(c=>c.id!==col.id)})} title="Delete column"
-                    style={{background:'none',border:'none',color:'var(--textDim)',cursor:'pointer',fontSize:14,padding:'0 2px',opacity:0.4,lineHeight:1,transition:'opacity 0.1s'}}
-                    onMouseEnter={e=>e.currentTarget.style.opacity='0.9'}
-                    onMouseLeave={e=>e.currentTarget.style.opacity='0.4'}>×</button>
+                  <span style={{fontSize:11,color:'var(--textDim)',background:'var(--bg)',borderRadius:20,padding:'1px 7px',fontWeight:700,minWidth:18,textAlign:'center'}}>{col.cards.length}</span>
+                  <button onClick={e=>{e.stopPropagation();setColMenu({x:e.clientX,y:e.clientY,colId:col.id})}} title="Column options"
+                    style={{background:'none',border:'none',color:'var(--textDim)',cursor:'pointer',padding:3,borderRadius:5,display:'flex',opacity:0.5,transition:'opacity 0.1s,background 0.1s'}}
+                    onMouseEnter={e=>{e.currentTarget.style.opacity='1';e.currentTarget.style.background='var(--bg)'}}
+                    onMouseLeave={e=>{e.currentTarget.style.opacity='0.5';e.currentTarget.style.background='none'}}><Ellipsis size={13} strokeWidth={1.8} /></button>
                 </div>
               </div>
               {/* Cards with drop indicators */}
               <div style={{display:'flex',flexDirection:'column',gap:0}}>
                 {col.cards.map((card, cardIdx)=>{
                   const showIndicator = isDropTarget && dropTarget.idx===cardIdx && !!dragging
-                  const isInlineColorOpen = inlineColor?.cardId===card.id && inlineColor?.colId===col.id
                   return (
                     <div key={card.id} data-kb-card data-kb-card-idx={cardIdx} style={{position:'relative'}}>
                       {/* Drop indicator before */}
@@ -1458,50 +1391,55 @@ export function KanbanBoard() {
                       )}
                       <div
                         onMouseDown={e=>{if(e.button!==0||e.target.closest('[data-inline-cp]')||e.target.closest('button'))return;e.preventDefault();dragRef.current={id:card.id,fromCol:col.id,sx:e.clientX,sy:e.clientY,dragging:false}}}
-                        style={{background:'var(--surface)',border:'1px solid var(--borderSubtle)',
-                          borderRadius:9,padding:'10px 10px 9px 10px',cursor:dragging?'grabbing':'grab',
-                          opacity:dragging===card.id?0.3:1,marginBottom:6,
-                          boxShadow:'0 1px 3px rgba(0,0,0,0.06)',transition:'opacity 0.15s,box-shadow 0.12s,transform 0.12s',
+                        style={{background:'var(--surfaceAlt)',border:'1px solid var(--borderSubtle)',
+                          borderRadius:12,padding:'12px 13px',cursor:dragging?'grabbing':'grab',
+                          opacity:dragging===card.id?0.3:1,marginBottom:8,
+                          boxShadow:'0 1px 2px rgba(0,0,0,0.12)',transition:'opacity 0.15s,box-shadow 0.12s,transform 0.12s',
                           userSelect:'none'}}
-                        onMouseEnter={e=>{if(dragging!==card.id){e.currentTarget.style.boxShadow='0 3px 10px rgba(0,0,0,0.12)';e.currentTarget.style.transform='translateY(-1px)'}}}
-                        onMouseLeave={e=>{e.currentTarget.style.boxShadow='0 1px 3px rgba(0,0,0,0.06)';e.currentTarget.style.transform='translateY(0)'}}>
-                        <div style={{display:'flex',alignItems:'flex-start',gap:8}}>
-                          {/* Column color indicator (read-only, color set on column) */}
-                          <div style={{width:3,alignSelf:'stretch',borderRadius:2,background:col.color||CARD_COLORS[0],flexShrink:0,marginTop:2,marginBottom:2}}/>
-                          {/* Title + meta */}
-                          <div style={{flex:1,minWidth:0}}>
-                            <div style={{fontSize:12.5,fontWeight:600,color:'var(--text)',lineHeight:1.4,marginBottom:card.dueDate||card.comments?.length?5:0}}>
-                              {card.title}
-                            </div>
-                            {(card.dueDate||card.comments?.length>0||card.description)&&(
-                              <div style={{display:'flex',gap:5,flexWrap:'wrap',alignItems:'center'}}>
-                                {card.dueDate&&(
-                                  <span style={{fontSize:10.5,fontWeight:500,
-                                    color:isOverdue(card.dueDate)?'#ef4444':isToday(card.dueDate)?'#f97316':'var(--textDim)',
-                                    background:isOverdue(card.dueDate)?'rgba(239,68,68,0.1)':isToday(card.dueDate)?'rgba(249,115,22,0.1)':'var(--surfaceAlt)',
-                                    borderRadius:5,padding:'1px 6px',border:`1px solid ${isOverdue(card.dueDate)?'rgba(239,68,68,0.25)':isToday(card.dueDate)?'rgba(249,115,22,0.25)':'var(--borderSubtle)'}`,
-                                    display:'inline-flex',alignItems:'center',gap:3}}>
-                                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                                    {card.dueDate}
-                                  </span>
-                                )}
-                                {card.comments?.length>0&&(
-                                  <span style={{fontSize:10.5,color:'var(--textDim)',display:'inline-flex',alignItems:'center',gap:3}}>
-                                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                                    {card.comments.length}
-                                  </span>
-                                )}
-                                {card.description&&(
-                                  <span style={{fontSize:10,color:'var(--textDim)',opacity:0.5,letterSpacing:'0.1em'}}>···</span>
-                                )}
-                              </div>
+                        onMouseEnter={e=>{if(dragging!==card.id){e.currentTarget.style.boxShadow='0 4px 14px rgba(0,0,0,0.22)';e.currentTarget.style.transform='translateY(-1px)'}}}
+                        onMouseLeave={e=>{e.currentTarget.style.boxShadow='0 1px 2px rgba(0,0,0,0.12)';e.currentTarget.style.transform='translateY(0)'}}>
+                        {/* Id row — status ring + ticket code, priority flag
+                            (real fields only: derived from the card's own id
+                            and the user-set priority — no fabricated
+                            assignee/attachment data standing in for the
+                            reference boards' avatar/paperclip). */}
+                        <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
+                          <span style={{width:7,height:7,borderRadius:'50%',border:`1.5px solid ${col.color||CARD_COLORS[0]}`,flexShrink:0,boxSizing:'border-box'}}/>
+                          <span style={{fontSize:11,fontWeight:600,color:'var(--textDim)',letterSpacing:'0.02em',flexShrink:0}}>{kanbanCardCode(card.id)}</span>
+                          <span style={{flex:1}}/>
+                          {priorityMeta(card.priority).color && (
+                            <Flag size={12} strokeWidth={2.2} style={{color:priorityMeta(card.priority).color,flexShrink:0}} title={priorityMeta(card.priority).label} />
+                          )}
+                          <button onClick={e=>{e.stopPropagation();setEditingCard({card,colId:col.id,isNew:false})}}
+                            title="Edit task"
+                            style={{background:'none',border:'none',color:'var(--textDim)',cursor:'pointer',padding:2,borderRadius:5,display:'flex',flexShrink:0,opacity:0.5,transition:'opacity 0.1s,background 0.1s'}}
+                            onMouseEnter={e=>{e.currentTarget.style.opacity='1';e.currentTarget.style.background='var(--surface)'}}
+                            onMouseLeave={e=>{e.currentTarget.style.opacity='0.5';e.currentTarget.style.background='none'}}><Ellipsis size={13} strokeWidth={2} /></button>
+                        </div>
+                        {/* Title */}
+                        <div style={{fontSize:14,fontWeight:600,color:'var(--text)',lineHeight:1.4,
+                          marginBottom:card.dueDate||card.comments?.length?8:0}}>
+                          {card.title}
+                        </div>
+                        {/* Meta row — comments left, relative due-date right */}
+                        {(card.dueDate||card.comments?.length>0)&&(
+                          <div style={{display:'flex',alignItems:'center',gap:8}}>
+                            {card.comments?.length>0&&(
+                              <span style={{fontSize:11,color:'var(--textDim)',display:'inline-flex',alignItems:'center',gap:3}}>
+                                <MessageSquare size={11} strokeWidth={2} />
+                                {card.comments.length}
+                              </span>
+                            )}
+                            <span style={{flex:1}}/>
+                            {card.dueDate&&(
+                              <span style={{fontSize:11,fontWeight:500,display:'inline-flex',alignItems:'center',gap:3,
+                                color:isOverdue(card.dueDate)?'#f85149':isToday(card.dueDate)?'#f97316':'var(--textDim)'}}>
+                                <Clock size={11} strokeWidth={2} />
+                                {kanbanDueLabel(card.dueDate)}
+                              </span>
                             )}
                           </div>
-                          <button onClick={e=>{e.stopPropagation();setEditingCard({card,colId:col.id,isNew:false})}}
-                            style={{background:'none',border:'none',color:'var(--textDim)',cursor:'pointer',fontSize:16,padding:'0 1px',flexShrink:0,lineHeight:1,opacity:0.5,transition:'opacity 0.1s'}}
-                            onMouseEnter={e=>e.currentTarget.style.opacity='1'}
-                            onMouseLeave={e=>e.currentTarget.style.opacity='0.5'}>⋯</button>
-                        </div>
+                        )}
                       </div>
                     </div>
                   )
@@ -1511,12 +1449,13 @@ export function KanbanBoard() {
                   <div style={{height:3,borderRadius:2,background:'var(--accent)',margin:'2px 0 6px',boxShadow:'0 0 6px color-mix(in srgb,var(--accent) 60%,transparent)'}}/>
                 )}
               </div>
-              {/* Add task */}
+              {/* Add task — plain text link, not a dashed box, matching the
+                  reference boards' minimal "+ Add task" row. */}
               <button onClick={()=>setEditingCard({card:null,colId:col.id,isNew:true})}
-                style={{background:'none',border:'1.5px dashed var(--borderSubtle)',borderRadius:8,color:'var(--textDim)',cursor:'pointer',padding:'7px',fontSize:12,fontWeight:600,textAlign:'center',transition:'background 0.1s,border-color 0.1s,color 0.1s',marginTop:2}}
-                onMouseEnter={e=>{e.currentTarget.style.background='color-mix(in srgb,var(--accent) 5%,var(--surface))';e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)'}}
-                onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.borderColor='var(--borderSubtle)';e.currentTarget.style.color='var(--textDim)'}}>
-                + Add task
+                style={{display:'flex',alignItems:'center',justifyContent:'flex-start',gap:6,background:'none',border:'none',borderRadius:7,color:'var(--textDim)',cursor:'pointer',padding:'7px 4px',fontSize:12,fontWeight:600,textAlign:'left',transition:'background 0.1s,color 0.1s',marginTop:2,fontFamily:'inherit'}}
+                onMouseEnter={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--accent)'}}
+                onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.color='var(--textDim)'}}>
+                <Plus size={13} strokeWidth={2} />Add task
               </button>
             </div>
           )
@@ -1525,12 +1464,12 @@ export function KanbanBoard() {
       {/* Drag ghost */}
       {dragging&&ghostPos&&ghostCard&&(
         <div style={{position:'fixed',left:ghostPos.x+12,top:ghostPos.y-10,zIndex:9999,pointerEvents:'none',
-          background:'var(--surface)',border:'1px solid var(--border)',
-          borderRadius:9,padding:'10px 12px',minWidth:180,maxWidth:240,
+          background:'var(--surfaceAlt)',border:'1px solid var(--border)',
+          borderRadius:10,padding:'10px 12px',minWidth:180,maxWidth:240,
           boxShadow:'0 12px 32px rgba(0,0,0,0.35)',
           opacity:0.95,transform:'rotate(1.5deg)'}}>
           <div style={{display:'flex',alignItems:'center',gap:8}}>
-            <div style={{width:3,alignSelf:'stretch',borderRadius:2,background:ghostCard.colColor,flexShrink:0}}/>
+            <span style={{width:7,height:7,borderRadius:'50%',border:`1.5px solid ${ghostCard.colColor}`,flexShrink:0,boxSizing:'border-box'}}/>
             <span style={{fontSize:12.5,fontWeight:600,color:'var(--text)',lineHeight:1.3}}>{ghostCard.title}</span>
           </div>
         </div>
@@ -1540,6 +1479,17 @@ export function KanbanBoard() {
           onSave={data=>editingCard.isNew?addCard(editingCard.colId,data):updateCard(editingCard.colId,editingCard.card.id,data)}
           onDelete={()=>deleteCard(editingCard.colId,editingCard.card?.id)}
           onClose={()=>setEditingCard(null)}/>
+      )}
+      {colMenu && (
+        <ContextMenu x={colMenu.x} y={colMenu.y} onClose={()=>setColMenu(null)} items={[
+          { label: 'Rename', icon: ICON_KB_EDIT, action: () => {
+            const col = board.columns.find(c => c.id === colMenu.colId)
+            if (col) { setEditColId2(col.id); setEditColName2(col.title) }
+          }},
+          { label: 'Delete', icon: ICON_KB_TRASH, danger: true, action: () => {
+            persist({ ...board, columns: board.columns.filter(c => c.id !== colMenu.colId) })
+          }},
+        ]} />
       )}
     </div>
   )
@@ -1676,7 +1626,7 @@ function ProfileModal({ onClose }) {
             <button onClick={onClose} style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}}
               onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}}
               onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}>
-              <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+              <X size={9} strokeWidth={1.5} />
             </button>
           </div>
         )}
@@ -1692,7 +1642,7 @@ function ProfileModal({ onClose }) {
                 <button onClick={()=>{onClose();navigate({view:'calendar'})}} style={{padding:'5px 12px',borderRadius:7,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',fontSize:11,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',gap:6,transition:'background 0.15s,color 0.15s'}}
                   onMouseEnter={e=>{e.currentTarget.style.background='var(--accent)';e.currentTarget.style.color='#fff';e.currentTarget.style.borderColor='var(--accent)'}}
                   onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}>
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="1" y="1.5" width="10" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.2"/><line x1="4" y1="0.5" x2="4" y2="2.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="8" y1="0.5" x2="8" y2="2.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="1" y1="4.5" x2="11" y2="4.5" stroke="currentColor" strokeWidth="1.2"/></svg>
+                  <Calendar size={12} strokeWidth={1.2} />
                   Open Calendar
                 </button>
               </div>
@@ -1745,9 +1695,7 @@ function ProfileModal({ onClose }) {
                         onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--accent)'}}
                         onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--textDim)'}}
                       >
-                        <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-                          <path d="M2 6h8M6 2l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
+                        <ArrowRight size={11} strokeWidth={1.5} />
                       </button>
                       <div style={{textAlign:'right'}}>
                         <div style={{fontSize:20,fontWeight:800,color:'var(--accent)',lineHeight:1}}>{todayDone}/{totalHabits}</div>
@@ -1876,6 +1824,139 @@ function OnboardingViewDev({ onClose }) {
   return <OBView onComplete={onClose} devMode={true} />
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Header filter buttons — type filter (cycle) + sort (dropdown). Portal into
+// the titlebar quick-access strip via <QuickAccess>, same slot NotebookView's
+// ViewModeBtn uses (click-cycles the primary state, long-press opens a full
+// picker dropdown).
+// ─────────────────────────────────────────────────────────────────────────────
+const TYPE_FILTER_CYCLE = ['all', 'book', 'audio', 'notebook', 'sketchbook', 'flashcard', 'quicknotes']
+const TYPE_FILTER_META = {
+  all:        { icon: <ListFilter  size={15} strokeWidth={1.5} />, label: 'All Types',  title: 'Showing all types' },
+  book:       { icon: <Book        size={14} strokeWidth={1.6} />, label: 'Books',      title: 'Filter: Books' },
+  audio:      { icon: <Volume2     size={14} strokeWidth={1.6} />, label: 'Audiobooks', title: 'Filter: Audiobooks' },
+  notebook:   { icon: <NotebookText size={14} strokeWidth={1.6} />, label: 'Notebooks',  title: 'Filter: Notebooks' },
+  sketchbook: { icon: <SquarePen   size={14} strokeWidth={1.6} />, label: 'Sketchbooks', title: 'Filter: Sketchbooks' },
+  flashcard:  { icon: <Layers      size={14} strokeWidth={1.6} />, label: 'Flashcards', title: 'Filter: Flashcards' },
+  quicknotes: { icon: <StickyNote  size={14} strokeWidth={1.6} />, label: 'Quicknotes', title: 'Filter: Quicknotes' },
+}
+
+/** Click cycles to the next type; long-press (300ms hold) opens a dropdown to
+ *  jump straight to any type. Same interaction shape as NotebookView's
+ *  live/source/preview switcher. */
+function TypeFilterBtn({ typeFilter, setTypeFilter }) {
+  const [dropOpen, setDropOpen] = useState(false)
+  const holdTimer = useRef(null)
+  const didLong   = useRef(false)
+  const wrapRef   = useRef(null)
+
+  useEffect(() => {
+    if (!dropOpen) return
+    const h = e => { if (!wrapRef.current?.contains(e.target)) setDropOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [dropOpen])
+
+  return (
+    <div style={{ position: 'relative', flexShrink: 0 }} ref={wrapRef}>
+      <button className={`gnos-settings-btn${typeFilter !== 'all' ? ' active' : ''}`}
+        title={TYPE_FILTER_META[typeFilter].title}
+        onMouseDown={() => { didLong.current = false; holdTimer.current = setTimeout(() => { didLong.current = true; setDropOpen(d => !d) }, 300) }}
+        onMouseUp={() => clearTimeout(holdTimer.current)}
+        onMouseLeave={() => clearTimeout(holdTimer.current)}
+        onClick={() => {
+          if (didLong.current) return
+          const i = TYPE_FILTER_CYCLE.indexOf(typeFilter)
+          setTypeFilter(TYPE_FILTER_CYCLE[(i + 1) % TYPE_FILTER_CYCLE.length])
+          setDropOpen(false)
+        }}
+      >
+        {TYPE_FILTER_META[typeFilter].icon}
+      </button>
+      {dropOpen && (
+        <div style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 12px 40px rgba(0,0,0,.45)', minWidth: 150, zIndex: 9300 }}>
+          {TYPE_FILTER_CYCLE.map(t => (
+            <button key={t} onMouseDown={e => { e.preventDefault(); setTypeFilter(t); setDropOpen(false) }}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px', border: 'none', background: 'none', width: '100%', cursor: 'pointer', textAlign: 'left', fontSize: 13, fontFamily: 'inherit', color: typeFilter === t ? 'var(--accent)' : 'var(--text)' }}>
+              {TYPE_FILTER_META[t].icon}
+              <span style={{ flex: 1, fontWeight: 500 }}>{TYPE_FILTER_META[t].label}</span>
+              {typeFilter === t && <span style={{ fontSize: 11, opacity: .7 }}>✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Timestamp helpers — item shapes disagree on field names across types
+// (books/audio use `addedAt` from import, notebooks/sketchbooks/decks use
+// `createdAt`/`updatedAt`) so this normalizes to one comparable number.
+// No byte size is tracked anywhere yet (no file stat pass), so "Size" isn't
+// offered here — Name/Modified/Created only, all reliably available.
+function _itemCreatedAt(item) {
+  const t = Date.parse(item?.createdAt || item?.addedAt || 0)
+  return Number.isFinite(t) ? t : 0
+}
+function _itemModifiedAt(item) {
+  const t = Date.parse(item?.updatedAt || 0)
+  return (Number.isFinite(t) && t > 0) ? t : _itemCreatedAt(item)
+}
+
+const SORT_META = {
+  manual:   { label: 'Manual order' },
+  name:     { label: 'Name' },
+  modified: { label: 'Date Modified' },
+  created:  { label: 'Date Created' },
+}
+
+/** Click opens a dropdown: pick a field, or re-click the active field to flip
+ *  direction. 'Manual order' turns sorting off and falls back to drag order. */
+function SortFilterBtn({ sortBy, setSortBy, sortDir, setSortDir }) {
+  const [dropOpen, setDropOpen] = useState(false)
+  const wrapRef = useRef(null)
+
+  useEffect(() => {
+    if (!dropOpen) return
+    const h = e => { if (!wrapRef.current?.contains(e.target)) setDropOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [dropOpen])
+
+  const active = sortBy !== 'manual'
+  return (
+    <div style={{ position: 'relative', flexShrink: 0 }} ref={wrapRef}>
+      <button className={`gnos-settings-btn${active ? ' active' : ''}`}
+        title={active ? `Sorted by ${SORT_META[sortBy].label} (${sortDir === 'desc' ? 'descending' : 'ascending'})` : 'Sort'}
+        onClick={() => setDropOpen(d => !d)}
+      >
+        {active
+          ? (sortDir === 'desc' ? <ArrowDownWideNarrow size={15} strokeWidth={1.6} /> : <ArrowUpWideNarrow size={15} strokeWidth={1.6} />)
+          : <ArrowUpDown size={14} strokeWidth={1.6} />}
+      </button>
+      {dropOpen && (
+        <div style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 12px 40px rgba(0,0,0,.45)', minWidth: 170, zIndex: 9300 }}>
+          {Object.keys(SORT_META).map(key => (
+            <button key={key} onMouseDown={e => {
+                e.preventDefault()
+                if (key === 'manual') { setSortBy('manual'); setDropOpen(false); return }
+                if (sortBy === key) { setSortDir(d => d === 'asc' ? 'desc' : 'asc') }
+                else { setSortBy(key); setSortDir(key === 'name' ? 'asc' : 'desc') }
+                setDropOpen(false)
+              }}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px', border: 'none', background: 'none', width: '100%', cursor: 'pointer', textAlign: 'left', fontSize: 13, fontFamily: 'inherit', color: sortBy === key ? 'var(--accent)' : 'var(--text)' }}>
+              <span style={{ flex: 1, fontWeight: 500 }}>{SORT_META[key].label}</span>
+              {sortBy === key && (key === 'manual'
+                ? <span style={{ fontSize: 11, opacity: .7 }}>✓</span>
+                : (sortDir === 'desc' ? <ArrowDownWideNarrow size={13} strokeWidth={1.8} /> : <ArrowUpWideNarrow size={13} strokeWidth={1.8} />))}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function LibraryView() {
   const isMobile  = useIsMobile()
   const library   = useAppStore(s => s.library)
@@ -1909,7 +1990,6 @@ export default function LibraryView() {
   const addToCollection      = useAppStore(s => s.addToCollection)
   const persistCollections   = useAppStore(s => s.persistCollections)
   const activeCollectionId   = useAppStore(s => s.activeCollectionId)
-  const setActiveCollectionId = useAppStore(s => s.setActiveCollectionId)
   const flashcardDecks        = useAppStore(s => s.flashcardDecks)
   const addDeck               = useAppStore(s => s.addDeck)
   const removeDeck            = useAppStore(s => s.removeDeck)
@@ -1945,6 +2025,9 @@ export default function LibraryView() {
   const [editNb,     setEditNb]     = useState(null)
   const [editSb,     setEditSb]     = useState(null)
   const [editCol,    setEditCol]    = useState(null)
+  // Epub whose kept .epub source file went missing (A86) — opening it prompts
+  // to remove the book instead of navigating into a broken reader.
+  const [missingBookPrompt, setMissingBookPrompt] = useState(null)
   const [toast,      setToast]      = useState(null) // { message, error }
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [profileOpen,  setProfileOpen]  = useState(false)
@@ -1958,6 +2041,8 @@ export default function LibraryView() {
   const [smartFilterValue, setSmartFilterValue] = useState('')
 
   const [typeFilter, setTypeFilter] = useState('all') // all | book | audio | notebook | sketchbook | flashcard
+  const [sortBy, setSortBy] = useState('manual') // manual | name | modified | created
+  const [sortDir, setSortDir] = useState('asc')
   // Windowed grid: render the first WINDOW_STEP cards immediately, grow on idle.
   // Bounds DOM nodes + compositor layers at open so a big library doesn't mount
   // hundreds of absolutely-positioned cover imgs in one commit (mount spike +
@@ -2270,13 +2355,19 @@ export default function LibraryView() {
     const keyHandler = (e) => {
       if (e.key === 'Escape') { setSelectedIds(new Set()); setLastSelectedId(null); setBulkColPicker(false) }
     }
+    // SideNav can't show LibraryView's own modal state — it dispatches this
+    // instead when a book with a missing .epub source (A86) gets opened from
+    // the sidebar, same prompt as opening it from the grid.
+    const missingBookHandler = (e) => { if (e.detail) setMissingBookPrompt(e.detail) }
     window.addEventListener('open-file', handler)
     window.addEventListener('gnos:edit-item', editHandler)
     window.addEventListener('keydown', keyHandler)
+    window.addEventListener('gnos:missing-book-prompt', missingBookHandler)
     return () => {
       window.removeEventListener('open-file', handler)
       window.removeEventListener('gnos:edit-item', editHandler)
       window.removeEventListener('keydown', keyHandler)
+      window.removeEventListener('gnos:missing-book-prompt', missingBookHandler)
     }
   }, [addBook, persistLibrary])
 
@@ -2289,7 +2380,7 @@ export default function LibraryView() {
     if (added.length) await persistLibrary()
     if (errors.length) setToast({ message: errors[0], error: true })
     else if (added.length) setToast({ message: `Added ${added.length} book${added.length > 1 ? 's' : ''}!` })
-    else setToast({ message: 'No supported files found (.epub, .txt, .md, .pdf)', error: true })
+    else setToast({ message: 'No supported files found (.epub, .pdf)', error: true })
     setTimeout(() => setToast(null), errors.length ? 6000 : 3000)
     e.target.value = ''
   }
@@ -2328,6 +2419,7 @@ export default function LibraryView() {
   const paneTabId = useContext(PaneContext)
 
   function openBook(book) {
+    if (book.sourceMissing) { setMissingBookPrompt(book); return }
     const newView = book.format === 'pdf' ? 'pdf' : 'reader'
     if (paneTabId) {
       setActiveBook(book)
@@ -2375,6 +2467,7 @@ export default function LibraryView() {
   }
 
   function openBookInNewTab(book) {
+    if (book.sourceMissing) { setMissingBookPrompt(book); return }
     useAppStore.getState().setActiveBook(book)
     openNewTab({ view: book.format === 'pdf' ? 'pdf' : 'reader', activeBook: book })
   }
@@ -2411,25 +2504,23 @@ export default function LibraryView() {
   const ICON_SEARCH = '<circle cx="6.8" cy="6.8" r="4.3" stroke="currentColor" stroke-width="1.5"/><path d="M10.2 10.2l3.3 3.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>'
   const ICON_NEWTAB = '<path d="M13.5 8.8v3.7a1.5 1.5 0 0 1-1.5 1.5H4a1.5 1.5 0 0 1-1.5-1.5V4A1.5 1.5 0 0 1 4 2.5h3.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M10.4 2h3.6v3.6M13.7 2.3L8.9 7.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'
 
-  // Build the "Add to Collection" submenu with a "+ New Collection" item at top
+  // Build the "Add to Collection" submenu — shared with SideNav.jsx via
+  // buildAddToCollectionSubmenu (filters out quicknotes, sorts
+  // alphabetically, checkmarks collections the item already belongs to).
   function makeCollectionSubmenu(itemId) {
-    return [
-      {
-        label: '+ New Collection',
-        action: () => {
-          const newCol = { id: makeId('col'), name: 'New Collection', items: [itemId], color: '' }
-          addCollection(newCol)
-          addToCollection(newCol.id, itemId)
-          persistCollections()
-          // Switch to collections tab so user sees it
-          setActiveLibTab('collections')
-          setView('library')
-        },
+    return buildAddToCollectionSubmenu({
+      collections, itemId,
+      onCreateNew: id => {
+        const newCol = { id: makeId('col'), name: 'New Collection', items: [id], color: '' }
+        addCollection(newCol)
+        addToCollection(newCol.id, id)
+        persistCollections()
+        // Switch to collections tab so user sees it
+        setActiveLibTab('collections')
+        setView('library')
       },
-      ...collections.map(c => ({
-        label: c.name, action: () => { addToCollection(c.id, itemId); persistCollections() }
-      })),
-    ]
+      onAdd: (colId, id) => { addToCollection(colId, id); persistCollections() },
+    })
   }
 
   function showBookMenu(e, book) {
@@ -2444,7 +2535,7 @@ export default function LibraryView() {
       },
       { label: 'Delete', icon: ICON_TRASH, danger: true, action: async () => {
         const { moveToTrash } = await import('@/lib/storage')
-        await moveToTrash('book', book.id, book.title)
+        await moveToTrash('book', book.id, book.title, book)
         removeBook(book.id)
         persistLibrary()
       }},
@@ -2550,30 +2641,38 @@ export default function LibraryView() {
     const sbs = colIds ? sketchbooks.filter(s => colIds.has(s.id)) : sketchbooks
     const fds = colIds ? flashcardDecks.filter(d => colIds.has(d.id)) : flashcardDecks
 
-    // Apply type filter
+    // Apply type filter. "quicknotes" isn't a real content type (they're
+    // just notebooks in the auto-managed `quicknotes` collection) — filters
+    // notebooks down to that collection's members instead of showing every
+    // notebook, and hides books/audio/sketchbooks/flashcards entirely.
     const showBooks   = tf === 'all' || tf === 'book'
     const showAudio   = tf === 'all' || tf === 'audio'
     const showNb      = tf === 'all' || tf === 'notebook'
     const showSb      = tf === 'all' || tf === 'sketchbook'
     const showFd      = tf === 'all' || tf === 'flashcard'
     const filtLib     = lib.filter(b => b.type === 'audio' ? showAudio : showBooks)
-    const filtNbs     = showNb ? nbs : []
+    const filtNbs     = tf === 'quicknotes'
+      ? (() => {
+          const qnIds = new Set((collections || []).find(c => c.name === 'quicknotes')?.items || [])
+          return nbs.filter(n => qnIds.has(n.id))
+        })()
+      : (showNb ? nbs : [])
     const filtSbs     = showSb ? sbs : []
     const filtFds     = showFd ? fds : []
 
     if (!filtLib.length && !filtNbs.length && !filtSbs.length && !filtFds.length) return (
       <div className="lib-empty-state" style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10}}>
         <button className="lib-empty-plus" onClick={() => fileInputRef.current?.click()}>
-          <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
+          <Plus size={28} strokeWidth={2.5} />
         </button>
         <p className="lib-empty-hint">Right-click anywhere to add books,<br/>audiobooks, notebooks, or sketchbooks</p>
-        <p className="lib-empty-formats">.epub · .txt · .md · .pdf · .mp3 · .m4b</p>
+        <p className="lib-empty-formats">.epub · .pdf · .mp3 · .m4b</p>
       </div>
     )
     const dragStyle = (id) => ({
       opacity: draggingId === id ? 0.35 : 1,
       outline: dropId === id ? '2px solid var(--accent)' : newlyCreatedId === id ? '2px solid var(--accent)' : 'none',
-      boxShadow: dropId === id ? '0 0 0 5px rgba(56,139,253,0.18)' : newlyCreatedId === id ? '0 0 0 6px rgba(56,139,253,0.22)' : 'none',
+      boxShadow: dropId === id ? '0 0 0 5px color-mix(in srgb, var(--accent) 18%, transparent)' : newlyCreatedId === id ? '0 0 0 6px color-mix(in srgb, var(--accent) 22%, transparent)' : 'none',
       outlineOffset: 2, borderRadius: 10, cursor: 'grab', userSelect: 'none',
       transform: dropId === id ? 'scale(0.95)' : 'scale(1)',
       transition: 'transform 0.12s, box-shadow 0.12s, opacity 0.12s',
@@ -2587,7 +2686,19 @@ export default function LibraryView() {
       ...filtFds.map(d => ({ item: d, _type: 'nb', _kind: 'flashcard' })),
     ]
     let ordered
-    if (unifiedLibraryOrder.length) {
+    if (sortBy !== 'manual') {
+      // Explicit sort overrides manual drag order while active.
+      const dir = sortDir === 'desc' ? -1 : 1
+      const keyFor = sortBy === 'name'
+        ? (e) => (e.item.title || '').toLowerCase()
+        : sortBy === 'created'
+        ? (e) => _itemCreatedAt(e.item)
+        : (e) => _itemModifiedAt(e.item)
+      ordered = [...allEntries].sort((a, b) => {
+        const ka = keyFor(a), kb = keyFor(b)
+        return ka < kb ? -dir : ka > kb ? dir : 0
+      })
+    } else if (unifiedLibraryOrder.length) {
       const orderMap = new Map(unifiedLibraryOrder.map((id, i) => [id, i]))
       const inOrder    = allEntries.filter(e => orderMap.has(e.item.id)).sort((a, b) => orderMap.get(a.item.id) - orderMap.get(b.item.id))
       const notInOrder = allEntries.filter(e => !orderMap.has(e.item.id))
@@ -2669,7 +2780,7 @@ export default function LibraryView() {
                 <div key={deck.id}
                   data-drag-item={deck.id} data-drag-type="nb"
                   onPointerDown={e => { if (e.button !== 0 || e.target.closest('button')) return; e.preventDefault(); dragRef.current = { idx: i, type: 'nb', id: deck.id, title: deck.title, nbKind: 'flashcard', startX: e.clientX, startY: e.clientY, dragging: false } }}
-                  style={{ opacity: draggingId === deck.id ? 0.35 : 1, outline: dropId === deck.id ? '2px solid var(--accent)' : 'none', boxShadow: dropId === deck.id ? '0 0 0 5px rgba(56,139,253,0.18)' : 'none', outlineOffset: 2, borderRadius: 10, cursor: 'grab', userSelect: 'none', transform: dropId === deck.id ? 'scale(0.95)' : 'scale(1)', transition: 'transform 0.12s, box-shadow 0.12s, opacity 0.12s' }}>
+                  style={{ opacity: draggingId === deck.id ? 0.35 : 1, outline: dropId === deck.id ? '2px solid var(--accent)' : 'none', boxShadow: dropId === deck.id ? '0 0 0 5px color-mix(in srgb, var(--accent) 18%, transparent)' : 'none', outlineOffset: 2, borderRadius: 10, cursor: 'grab', userSelect: 'none', transform: dropId === deck.id ? 'scale(0.95)' : 'scale(1)', transition: 'transform 0.12s, box-shadow 0.12s, opacity 0.12s' }}>
                   <FlashcardDeckCard deck={deck} onOpen={openFlashcardDeck} onMenu={showDeckMenu} />
                 </div>
               ))}
@@ -2682,7 +2793,7 @@ export default function LibraryView() {
                 useAppStore.getState().persistFlashcardDecks?.()
                 openFlashcardDeck(deck)
               }}>
-                <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
+                <Plus size={28} strokeWidth={2.5} />
               </button>
               <p className="lib-empty-hint">No flashcard decks yet.<br/>Click + to create one.</p>
               <p className="lib-empty-formats">Spaced repetition · Anki import · study from notes</p>
@@ -2734,7 +2845,7 @@ export default function LibraryView() {
               <div key={b.id}
                 data-drag-item={b.id} data-drag-type="book"
                 onPointerDown={e => { if (e.button !== 0 || e.target.closest('button')) return; e.preventDefault(); dragRef.current = { idx: i, type: 'book', id: b.id, title: b.title, startX: e.clientX, startY: e.clientY, dragging: false } }}
-                style={{ opacity: draggingId === b.id ? 0.35 : 1, outline: dropId === b.id ? '2px solid var(--accent)' : 'none', boxShadow: dropId === b.id ? '0 0 0 5px rgba(56,139,253,0.18)' : 'none', outlineOffset: 2, borderRadius: 10, cursor: 'grab', userSelect: 'none', transform: dropId === b.id ? 'scale(0.95)' : 'scale(1)', transition: 'transform 0.12s, box-shadow 0.12s, opacity 0.12s' }}>
+                style={{ opacity: draggingId === b.id ? 0.35 : 1, outline: dropId === b.id ? '2px solid var(--accent)' : 'none', boxShadow: dropId === b.id ? '0 0 0 5px color-mix(in srgb, var(--accent) 18%, transparent)' : 'none', outlineOffset: 2, borderRadius: 10, cursor: 'grab', userSelect: 'none', transform: dropId === b.id ? 'scale(0.95)' : 'scale(1)', transition: 'transform 0.12s, box-shadow 0.12s, opacity 0.12s' }}>
                 <BookCard book={b} onOpen={openBook} onMenu={showBookMenu} />
               </div>
             )) : null}
@@ -2744,10 +2855,10 @@ export default function LibraryView() {
               {bookFormatFilter === 'all' ? (
                 <>
                   <button className="lib-empty-plus" onClick={() => fileInputRef.current?.click()}>
-                    <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
+                    <Plus size={28} strokeWidth={2.5} />
                   </button>
                   <p className="lib-empty-hint">Click to add books, or right-click anywhere</p>
-                  <p className="lib-empty-formats">.epub · .txt · .md · .pdf</p>
+                  <p className="lib-empty-formats">.epub · .pdf</p>
                 </>
               ) : (
                 <>
@@ -2772,7 +2883,7 @@ export default function LibraryView() {
               <div key={b.id}
                 data-drag-item={b.id} data-drag-type="audio"
                 onPointerDown={e => { if (e.button !== 0 || e.target.closest('button')) return; e.preventDefault(); dragRef.current = { idx: i, type: 'audio', id: b.id, title: b.title, startX: e.clientX, startY: e.clientY, dragging: false } }}
-                style={{ opacity: draggingId === b.id ? 0.35 : 1, outline: dropId === b.id ? '2px solid var(--accent)' : 'none', boxShadow: dropId === b.id ? '0 0 0 5px rgba(56,139,253,0.18)' : 'none', outlineOffset: 2, borderRadius: 10, cursor: 'grab', userSelect: 'none', transform: dropId === b.id ? 'scale(0.95)' : 'scale(1)', transition: 'transform 0.12s, box-shadow 0.12s, opacity 0.12s' }}>
+                style={{ opacity: draggingId === b.id ? 0.35 : 1, outline: dropId === b.id ? '2px solid var(--accent)' : 'none', boxShadow: dropId === b.id ? '0 0 0 5px color-mix(in srgb, var(--accent) 18%, transparent)' : 'none', outlineOffset: 2, borderRadius: 10, cursor: 'grab', userSelect: 'none', transform: dropId === b.id ? 'scale(0.95)' : 'scale(1)', transition: 'transform 0.12s, box-shadow 0.12s, opacity 0.12s' }}>
                 <AudiobookCard book={b} onOpen={openAudio} onMenu={showAudioMenu} />
               </div>
             )) : null}
@@ -2780,7 +2891,7 @@ export default function LibraryView() {
           {!audiobooks.length && (
             <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10}}>
               <button className="lib-empty-plus" onClick={() => audioInputRef.current?.click()}>
-                <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
+                <Plus size={28} strokeWidth={2.5} />
               </button>
               <p className="lib-empty-hint">Right-click anywhere to add an audiobook,<br/>or click + above</p>
               <p className="lib-empty-formats">.mp3 · .m4b · .m4a · .wav · .flac</p>
@@ -2824,7 +2935,7 @@ export default function LibraryView() {
               <div key={item.id}
                 data-drag-item={item.id} data-drag-type="nb"
                 onPointerDown={e => { if (e.button !== 0 || e.target.closest('button')) return; e.preventDefault(); dragRef.current = { idx: i, type: 'nb', id: item.id, title: item.title, nbKind: item._kind, startX: e.clientX, startY: e.clientY, dragging: false } }}
-                style={{ opacity: draggingId === item.id ? 0.35 : 1, outline: dropId === item.id ? '2px solid var(--accent)' : 'none', boxShadow: dropId === item.id ? '0 0 0 5px rgba(56,139,253,0.18)' : 'none', outlineOffset: 2, borderRadius: 10, cursor: 'grab', userSelect: 'none', transform: dropId === item.id ? 'scale(0.95)' : 'scale(1)', transition: 'transform 0.12s, box-shadow 0.12s, opacity 0.12s' }}>
+                style={{ opacity: draggingId === item.id ? 0.35 : 1, outline: dropId === item.id ? '2px solid var(--accent)' : 'none', boxShadow: dropId === item.id ? '0 0 0 5px color-mix(in srgb, var(--accent) 18%, transparent)' : 'none', outlineOffset: 2, borderRadius: 10, cursor: 'grab', userSelect: 'none', transform: dropId === item.id ? 'scale(0.95)' : 'scale(1)', transition: 'transform 0.12s, box-shadow 0.12s, opacity 0.12s' }}>
                 {item._kind === 'sketchbook'
                   ? <SketchbookCard sb={item} onOpen={openSketchbook} onMenu={showSbMenu} />
                   : item._kind === 'flashcard'
@@ -2836,7 +2947,7 @@ export default function LibraryView() {
           {!combined.length && (
             <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10,paddingTop:60,paddingBottom:40}}>
               <button className="lib-empty-plus" onClick={() => setAddOpen(true)}>
-                <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
+                <Plus size={28} strokeWidth={2.5} />
               </button>
               <p className="lib-empty-hint">
                 {nbSubFilter !== 'all'
@@ -2908,8 +3019,8 @@ export default function LibraryView() {
                 <span
                   title={`Smart filter: ${col.filter.field} = "${col.filter.value}" — click to edit`}
                   onClick={() => { setSmartFilterOpen(col.id); setSmartFilterField(col.filter.field); setSmartFilterValue(col.filter.value) }}
-                  style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--accent)', border: '1px solid var(--accent)44', borderRadius: 4, padding: '2px 6px', flexShrink: 0, cursor: 'pointer' }}
-                >⚡ Smart</span>
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent) 44%, transparent)', borderRadius: 4, padding: '2px 6px', flexShrink: 0, cursor: 'pointer' }}
+                ><Zap size={9} strokeWidth={2.5} />Smart</span>
               )}
               <span style={{ flex: 1 }} />
               {/* All collection settings live behind one menu */}
@@ -2925,7 +3036,7 @@ export default function LibraryView() {
                   { label: 'Delete Collection', danger: true, action: () => { removeCollection(col.id); persistCollections(); setActiveCollection(col.parentId || null) } },
                 ]})
               }} style={{ width: 26, height: 26, borderRadius: 7, border: '1px solid var(--border)', background: 'none', color: 'var(--textDim)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/></svg>
+                <Ellipsis size={14} strokeWidth={2} />
               </button>
             </div>
 
@@ -2975,8 +3086,8 @@ export default function LibraryView() {
                   )}
                   {colItems.length > 0 && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
-                      <div style={{ width: 70, height: 4, background: 'var(--border)', borderRadius: 2 }}>
-                        <div style={{ height: '100%', width: `${pct}%`, background: col.color || 'var(--accent)', borderRadius: 2, transition: 'width 0.3s' }} />
+                      <div style={{ width: 70, height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: '100%', transformOrigin: 'left', transform: `scaleX(${pct / 100})`, background: col.color || 'var(--accent)', borderRadius: 2, transition: 'transform 0.3s' }} />
                       </div>
                       <span style={{ fontSize: 10, color: 'var(--textDim)', minWidth: 26 }}>{pct}%</span>
                     </div>
@@ -3014,7 +3125,7 @@ export default function LibraryView() {
                   <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--textDim)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 6 }}>Sub-collections</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                     {subCols.map(sc => (
-                      <button key={sc.id} data-collection-id={sc.id} onClick={() => setActiveCollection(sc.id)} style={{ fontSize: 11, fontWeight: 600, padding: '4px 10px', borderRadius: 7, border: dropId === sc.id ? '1px dashed var(--accent)' : `1px solid ${sc.color || 'var(--border)'}`, background: dropId === sc.id ? 'var(--accent)18' : 'none', color: sc.color || 'var(--text)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5 }}>
+                      <button key={sc.id} data-collection-id={sc.id} onClick={() => setActiveCollection(sc.id)} style={{ fontSize: 11, fontWeight: 600, padding: '4px 10px', borderRadius: 7, border: dropId === sc.id ? '1px dashed var(--accent)' : `1px solid ${sc.color || 'var(--border)'}`, background: dropId === sc.id ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'none', color: sc.color || 'var(--text)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5 }}>
                         {sc.color && <span style={{ width: 7, height: 7, borderRadius: 2, background: sc.color, display: 'inline-block', flexShrink: 0 }} />}
                         {sc.name}
                         <span style={{ color: 'var(--textDim)', fontWeight: 400 }}>({sc.items.length})</span>
@@ -3040,7 +3151,7 @@ export default function LibraryView() {
                     style={{
                       opacity: draggingId === item.id ? 0.35 : 1,
                       outline: dropId === item.id ? '2px solid var(--accent)' : 'none',
-                      boxShadow: dropId === item.id ? '0 0 0 5px rgba(56,139,253,0.18)' : 'none',
+                      boxShadow: dropId === item.id ? '0 0 0 5px color-mix(in srgb, var(--accent) 18%, transparent)' : 'none',
                       outlineOffset: 2, borderRadius: 10, cursor: 'grab', userSelect: 'none',
                       transform: dropId === item.id ? 'scale(0.95)' : 'scale(1)',
                       transition: 'transform 0.12s, box-shadow 0.12s, opacity 0.12s',
@@ -3090,13 +3201,18 @@ export default function LibraryView() {
                   // Name + color live in one Edit dialog — no separate Rename /
                   // Change Color entries (was two items + a hex submenu).
                   { label: 'Edit…', icon: ICON_EDIT, action: () => setEditCol(col) },
-                  { label: 'Move into…', icon: ICON_MOVE,
+                  { label: 'Move into', icon: ICON_MOVE,
                     submenu: [
                       { label: '— None (top level)', action: () => { updateCollection(col.id, { parentId: null }); persistCollections() } },
-                      ...collections.filter(c => c.id !== col.id && !c.parentId).map(c => ({
-                        label: c.name,
-                        action: () => { updateCollection(col.id, { parentId: c.id }); persistCollections() },
-                      })),
+                      { divider: true },
+                      ...collections
+                        .filter(c => c.id !== col.id && !c.parentId && c.name !== 'quicknotes')
+                        .slice().sort((a, b) => a.name.localeCompare(b.name))
+                        .map(c => ({
+                          label: c.name,
+                          iconNode: <CollectionFace col={c} size={13} />,
+                          action: () => { updateCollection(col.id, { parentId: c.id }); persistCollections() },
+                        })),
                     ],
                   },
                   { label: 'Delete Collection', icon: ICON_TRASH, danger: true, action: () => { removeCollection(col.id); persistCollections() } },
@@ -3122,7 +3238,7 @@ export default function LibraryView() {
                       background: 'var(--surfaceAlt)', boxSizing: 'border-box',
                       outline: dropId === col.id ? '2px dashed var(--accent)' : '1px solid var(--border)',
                       outlineOffset: -1,
-                      boxShadow: dropId === col.id ? '0 0 0 5px rgba(56,139,253,0.18)' : '0 2px 10px rgba(0,0,0,0.14)',
+                      boxShadow: dropId === col.id ? '0 0 0 5px color-mix(in srgb, var(--accent) 18%, transparent)' : '0 2px 10px rgba(0,0,0,0.14)',
                       transform: dropId === col.id ? 'scale(0.96)' : 'scale(1)',
                       transition: 'transform 0.12s, box-shadow 0.12s',
                     }}>
@@ -3142,10 +3258,7 @@ export default function LibraryView() {
                         <div style={{ gridColumn: '1 / -1', gridRow: '1 / -1', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                           {col.emoji
                             ? <span style={{ fontSize: 30, opacity: 0.7 }}>{col.emoji}</span>
-                            : <svg width="32" height="32" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.35 }}>
-                                <rect x="2" y="3" width="12" height="11" rx="1.5" stroke="var(--textDim)" strokeWidth="1.2"/>
-                                <path d="M2 6h12" stroke="var(--textDim)" strokeWidth="1" opacity="0.5"/>
-                              </svg>}
+                            : <Folder size={32} strokeWidth={1.2} color="var(--textDim)" style={{ opacity: 0.35 }} />}
                         </div>
                       )}
                       {/* ⋯ menu — fades in on hover */}
@@ -3155,7 +3268,7 @@ export default function LibraryView() {
                         cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
                         opacity: 0, transition: 'opacity 0.12s',
                       }}>
-                        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/></svg>
+                        <Ellipsis size={13} strokeWidth={2} />
                       </button>
                     </div>
                     {/* Caption — matches book card typography */}
@@ -3210,7 +3323,7 @@ export default function LibraryView() {
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   transition: 'border-color 0.12s, color 0.12s',
                 }}>
-                  <svg width="22" height="22" viewBox="0 0 28 28" fill="none"><line x1="14" y1="6" x2="14" y2="22" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><line x1="6" y1="14" x2="22" y2="14" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+                  <Plus size={22} strokeWidth={2} />
                 </div>
                 <div style={{ marginTop: 7, padding: '0 2px', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--textDim)' }}>
                   New Collection
@@ -3225,7 +3338,7 @@ export default function LibraryView() {
                 addCollection(col)
                 persistCollections()
               }}>
-                <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><line x1="14" y1="4" x2="14" y2="24" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/><line x1="4" y1="14" x2="24" y2="14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/></svg>
+                <Plus size={28} strokeWidth={2.5} />
               </button>
               <p className="lib-empty-hint">Create a collection to organize your library</p>
               <p className="lib-empty-formats">Group books, notes, and more</p>
@@ -3258,7 +3371,7 @@ export default function LibraryView() {
            (mounted outside LibraryView) sizes covers correctly. */
       `}</style>
       {/* Hidden inputs */}
-      <input ref={fileInputRef}  type="file" accept=".epub,.epub3,.txt,.md,.pdf,application/epub+zip" className="hidden-input" multiple onChange={handleBookFiles} />
+      <input ref={fileInputRef}  type="file" accept=".epub,.epub3,.pdf,application/epub+zip" className="hidden-input" multiple onChange={handleBookFiles} />
       <input ref={audioInputRef} type="file" accept="audio/*" className="hidden-input" multiple onChange={handleAudioImport} />
 
       {/* Bulk selection toolbar */}
@@ -3269,8 +3382,10 @@ export default function LibraryView() {
           background: 'var(--surface)', border: '1px solid var(--border)',
           borderRadius: 14, padding: '10px 16px',
           boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
-          animation: 'bulk-bar-in 0.18s cubic-bezier(0.34,1.56,0.64,1)',
+          animation: 'bulk-bar-in 0.18s cubic-bezier(0.2, 0.8, 0.3, 1)',
         }}>
+          {/* Exponential ease-out, not the old bounce/overshoot curve —
+              matches gnos-pop-in's entrance elsewhere in the app. */}
           <style>{`@keyframes bulk-bar-in { from { opacity:0; transform: translateX(-50%) translateY(12px); } to { opacity:1; transform: translateX(-50%) translateY(0); } }`}</style>
           <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', minWidth: 60 }}>
             {selectedIds.size} selected
@@ -3284,10 +3399,7 @@ export default function LibraryView() {
               borderRadius: 8, padding: '6px 12px', color: 'var(--text)',
               fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
             }}>
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                <rect x="2" y="7" width="12" height="8" rx="1" stroke="currentColor" strokeWidth="1.3"/>
-                <rect x="1" y="4.5" width="14" height="3" rx="1" stroke="currentColor" strokeWidth="1.2"/>
-              </svg>
+              <Archive size={13} strokeWidth={1.3} />
               Add to Collection
             </button>
             {bulkColPicker && (
@@ -3297,7 +3409,10 @@ export default function LibraryView() {
                 borderRadius: 10, padding: 4, minWidth: 180,
                 boxShadow: '0 8px 24px rgba(0,0,0,0.4)', zIndex: 100,
               }}>
-                {(collections || []).map(col => (
+                {(collections || [])
+                  .filter(c => c.name !== 'quicknotes')
+                  .slice().sort((a, b) => a.name.localeCompare(b.name))
+                  .map(col => (
                   <button key={col.id} onClick={() => {
                     selectedIds.forEach(id => addToCollection(col.id, id))
                     persistCollections()
@@ -3315,15 +3430,11 @@ export default function LibraryView() {
                     onMouseEnter={e => e.currentTarget.style.background='var(--hover)'}
                     onMouseLeave={e => e.currentTarget.style.background='none'}
                   >
-                    {col.emoji
-                      ? <span style={{ fontSize: 13 }}>{col.emoji}</span>
-                      : col.color
-                        ? <span style={{ width: 10, height: 10, borderRadius: 3, background: col.color, flexShrink: 0 }} />
-                        : null}
+                    <CollectionFace col={col} size={13} />
                     {col.name}
                   </button>
                 ))}
-                {collections?.length > 0 && <div style={{ height: 1, background: 'var(--borderSubtle)', margin: '4px 8px' }} />}
+                {collections?.filter(c => c.name !== 'quicknotes').length > 0 && <div style={{ height: 1, background: 'var(--borderSubtle)', margin: '4px 8px' }} />}
                 <button onClick={() => {
                   const count = selectedIds.size
                   const ids = [...selectedIds]
@@ -3344,9 +3455,7 @@ export default function LibraryView() {
                   onMouseEnter={e => e.currentTarget.style.background='var(--hover)'}
                   onMouseLeave={e => e.currentTarget.style.background='none'}
                 >
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                    <path d="M6 1v10M1 6h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-                  </svg>
+                  <Plus size={12} strokeWidth={1.6} />
                   New Collection
                 </button>
               </div>
@@ -3368,14 +3477,11 @@ export default function LibraryView() {
             setTimeout(() => setToast(null), 2500)
           }} style={{
             display: 'flex', alignItems: 'center', gap: 6,
-            background: 'rgba(239,83,80,0.1)', border: '1px solid rgba(239,83,80,0.3)',
-            borderRadius: 8, padding: '6px 12px', color: '#ef5350',
+            background: 'rgba(248,81,73,0.1)', border: '1px solid rgba(248,81,73,0.3)',
+            borderRadius: 8, padding: '6px 12px', color: '#f85149',
             fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
           }}>
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-              <polyline points="3,6 5,6 13,6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-              <path d="M11 6V4H5v2M14 6l-.867 9.143A1.5 1.5 0 0 1 11.64 16.5H4.36A1.5 1.5 0 0 1 2.867 15.143L2 6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+            <Trash2 size={12} strokeWidth={1.3} />
             Delete
           </button>
           <div style={{ width: 1, height: 20, background: 'var(--border)' }} />
@@ -3389,29 +3495,28 @@ export default function LibraryView() {
         </div>
       )}
 
+      {/* Per-view header buttons — portal into the titlebar quick-access strip. */}
+      <QuickAccess>
+        <TypeFilterBtn typeFilter={typeFilter} setTypeFilter={setTypeFilter} />
+        <SortFilterBtn sortBy={sortBy} setSortBy={setSortBy} sortDir={sortDir} setSortDir={setSortDir} />
+      </QuickAccess>
+
       {/* Header — search/add/profile/settings live in the title bar and native menu bar now. */}
       <header className="app-header">
 
-        {/* ── Workspace indicator + active filter badge ──
-             Type filters + Manage Collections now live in the native View menu */}
-        {!isMobile && (activeCollectionId || typeFilter !== 'all') && (
+        {/* ── Active filter badge ──
+             Type filters + Manage Collections now live in the native View
+             menu. The collection-name chip that used to live here was cut —
+             redundant once the sidebar already shows which collection is
+             active (workspace flat-view header row + the footer
+             CollectionSwitcher, which also carries the "Home" exit). */}
+        {!isMobile && typeFilter !== 'all' && (
           <div style={{ height: 34, borderBottom: '1px solid var(--borderSubtle)', flexShrink: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 16px', height: '100%', boxSizing: 'border-box' }}>
-              {activeCollectionId && (() => {
-                const col = collections.find(c => c.id === activeCollectionId)
-                if (!col) return null
-                return (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
-                    {col.color && <span style={{ width: 8, height: 8, borderRadius: 2, background: col.color, flexShrink: 0 }} />}
-                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', whiteSpace: 'nowrap' }}>{col.name}</span>
-                    <button onClick={() => { setActiveCollectionId(null); setActiveLibTab('library') }} style={{ width: 14, height: 14, borderRadius: 3, border: 'none', background: 'none', color: 'var(--textDim)', cursor: 'pointer', fontSize: 10, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
-                  </div>
-                )
-              })()}
               {typeFilter !== 'all' && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
                   <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--textDim)', whiteSpace: 'nowrap' }}>
-                    Filter: {{ book: 'Books', audio: 'Audio', notebook: 'Notes', sketchbook: 'Sketches', flashcard: 'Cards' }[typeFilter] || typeFilter}
+                    Filter: {{ book: 'Books', audio: 'Audio', notebook: 'Notes', sketchbook: 'Sketches', flashcard: 'Cards', quicknotes: 'Quicknotes' }[typeFilter] || typeFilter}
                   </span>
                   <button onClick={() => setTypeFilter('all')} style={{ width: 14, height: 14, borderRadius: 3, border: 'none', background: 'none', color: 'var(--textDim)', cursor: 'pointer', fontSize: 10, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
                 </div>
@@ -3499,8 +3604,20 @@ export default function LibraryView() {
             setEditCol(null)
           }} />
       )}
+      {missingBookPrompt && (
+        <MissingSourceModal book={missingBookPrompt}
+          onClose={() => setMissingBookPrompt(null)}
+          onRemove={async () => {
+            const book = missingBookPrompt
+            setMissingBookPrompt(null)
+            const { moveToTrash } = await import('@/lib/storage')
+            await moveToTrash('book', book.id, book.title, book)
+            removeBook(book.id)
+            persistLibrary()
+          }} />
+      )}
       {libMenu && (
-        <LibContextMenu x={libMenu.x} y={libMenu.y} onClose={() => setLibMenu(null)}
+        <AddPopup variant="fixed" x={libMenu.x} y={libMenu.y} onClose={() => setLibMenu(null)}
           onAddBook={() => fileInputRef.current?.click()}
           onAddAudio={() => audioInputRef.current?.click()}
           onNewNotebook={() => {
@@ -3532,18 +3649,23 @@ export default function LibraryView() {
           }}
         />
       )}
-      {/* Mobile add sheet — triggered by gnos:mobile-add event from bottom nav */}
-      {isMobile && addOpen && (
+      {/* Add popup — triggered by the empty-library "+", the "open-add"
+          command, and the gnos:mobile-add event from the mobile bottom nav.
+          Mobile gets a bottom sheet; desktop gets a centered popup (this
+          desktop path used to be dead — `addOpen` flipped true with nothing
+          rendering for it, since the only consumer here was gated on
+          `isMobile` — found while unifying AddPopup for Pass 2). */}
+      {addOpen && (
         <div
           style={{ position: 'fixed', inset: 0, zIndex: 9200, background: 'rgba(0,0,0,0.45)' }}
           onClick={() => setAddOpen(false)}
         >
           <div
-            style={{ position: 'absolute', bottom: 72, left: 12, right: 12 }}
+            style={isMobile ? { position: 'absolute', bottom: 72, left: 12, right: 12 } : {}}
             onClick={e => e.stopPropagation()}
           >
             <AddPopup
-              asSheet
+              variant={isMobile ? 'sheet' : 'center'}
               onClose={() => setAddOpen(false)}
               onAddBook={() => fileInputRef.current?.click()}
               onAddAudio={() => audioInputRef.current?.click()}

@@ -8,6 +8,7 @@ import useAppStore from '@/store/useAppStore'
 import { saveCalendarEvents } from '@/lib/storage'
 import QuickAccess from '@/components/QuickAccess'
 import SegmentedControl from '@/components/SegmentedControl'
+import { AlertTriangle, AlignLeft, Calendar, CalendarArrowDown, Check, ChevronDown, ChevronLeft, Clock, MapPin, MoveRight, Navigation, Palette, Plus, RefreshCw } from 'lucide-react'
 
 // Tinted event chip — readable on every theme (no white-on-hex).
 const eventChip = (c) => ({
@@ -177,7 +178,7 @@ function EventModal({ event, onSave, onDelete, onClose }) {
           <button onClick={onClose} style={{width:28,height:28,borderRadius:8,border:'1px solid var(--border)',background:'none',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,transition:'background 0.1s'}}
             onMouseEnter={e=>e.currentTarget.style.background='var(--surfaceAlt)'}
             onMouseLeave={e=>e.currentTarget.style.background='none'}>
-            <svg width="8" height="12" viewBox="0 0 8 12" fill="none"><path d="M7 1L1 6l6 5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            <ChevronLeft size={12} strokeWidth={1.6} />
           </button>
           <input value={form.title} onChange={e=>set('title',e.target.value)} placeholder="Event title" autoFocus
             style={{flex:1,background:'none',border:'none',color:'var(--text)',fontSize:17,fontWeight:700,padding:0,fontFamily:'inherit',outline:'none',letterSpacing:'-0.01em',minWidth:0}}/>
@@ -186,12 +187,12 @@ function EventModal({ event, onSave, onDelete, onClose }) {
         <div style={{flex:1,overflowY:'auto',padding:'16px 18px 24px',display:'flex',flexDirection:'column',gap:12}}>
           {/* Date — compact row, expands to the mini calendar */}
           <div style={rowStyle}>
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={iconStyle}><rect x="1.5" y="2.5" width="13" height="12" rx="2" stroke="currentColor" strokeWidth="1.4"/><line x1="5" y1="1" x2="5" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="11" y1="1" x2="11" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="1.5" y1="6.5" x2="14.5" y2="6.5" stroke="currentColor" strokeWidth="1.2"/></svg>
+            <Calendar size={15} strokeWidth={1.4} style={iconStyle} />
             <button onClick={()=>setShowDatePicker(v=>!v)}
               style={{...inputStyle,flex:1,textAlign:'left',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'space-between',
                 borderColor:showDatePicker?'var(--accent)':'var(--border)'}}>
               {dateLabel}
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{opacity:0.5,transition:'transform 0.15s',transform:showDatePicker?'rotate(180deg)':'none'}}><path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              <ChevronDown size={10} strokeWidth={1.5} style={{opacity:0.5,transition:'transform 0.15s',transform:showDatePicker?'rotate(180deg)':'none'}} />
             </button>
           </div>
           {showDatePicker && <MiniCalendar value={form.date} onChange={d=>{set('date',d);setShowDatePicker(false)}}/>}
@@ -199,7 +200,7 @@ function EventModal({ event, onSave, onDelete, onClose }) {
           {/* All-day toggle */}
           <div style={{...rowStyle,justifyContent:'space-between'}}>
             <span style={{fontSize:13,color:'var(--textDim)',display:'flex',alignItems:'center',gap:8}}>
-              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={iconStyle}><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.4"/><path d="M8 4.5v3.5l2.5 1.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              <Clock size={15} strokeWidth={1.4} style={iconStyle} />
               All day
             </span>
             <button onClick={()=>set('allDay',!form.allDay)}
@@ -212,28 +213,28 @@ function EventModal({ event, onSave, onDelete, onClose }) {
           {/* Times */}
           {!form.allDay && (
             <div style={{...rowStyle}}>
-              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={iconStyle}><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.4"/><path d="M8 4.5v3.5l2.5 1.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              <Clock size={15} strokeWidth={1.4} style={iconStyle} />
               <input type="time" value={form.startTime} onChange={e=>set('startTime',e.target.value)} style={{...inputStyle,flex:1}}/>
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{flexShrink:0,opacity:0.4}}><line x1="0" y1="6" x2="12" y2="6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><polyline points="8,3 11,6 8,9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none"/></svg>
+              <MoveRight size={12} strokeWidth={1.5} style={{flexShrink:0,opacity:0.4}} />
               <input type="time" value={form.endTime} onChange={e=>set('endTime',e.target.value)} style={{...inputStyle,flex:1}}/>
             </div>
           )}
           {/* Location + directions */}
           <div style={rowStyle}>
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={iconStyle}><path d="M8 1.5C5.515 1.5 3.5 3.515 3.5 6c0 3.75 4.5 8.5 4.5 8.5s4.5-4.75 4.5-8.5c0-2.485-2.015-4.5-4.5-4.5z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/><circle cx="8" cy="6" r="1.5" fill="currentColor" opacity="0.5"/></svg>
+            <MapPin size={15} strokeWidth={1.4} style={iconStyle} />
             <input value={form.location} onChange={e=>set('location',e.target.value)} placeholder="Add location" style={{...inputStyle,flex:1}}/>
             {form.location.trim() && (
               <button onClick={openMaps} title="Get directions"
                 style={{width:32,height:32,borderRadius:8,border:'1px solid var(--border)',background:'var(--surfaceAlt)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,color:'var(--textDim)',transition:'background 0.1s,color 0.1s'}}
                 onMouseEnter={e=>{e.currentTarget.style.background='var(--accent)';e.currentTarget.style.color='#fff'}}
                 onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)'}}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+                <Navigation size={14} strokeWidth={2} />
               </button>
             )}
           </div>
           {/* Recurrence */}
           <div style={rowStyle}>
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={iconStyle}><path d="M13.5 2.5v4h-4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/><path d="M2.5 13.5v-4h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/><path d="M13.5 6.5A5.5 5.5 0 0 0 4 3.5l-1.5 1.5M2.5 9.5A5.5 5.5 0 0 0 12 12.5l1.5-1.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+            <RefreshCw size={15} strokeWidth={1.4} style={iconStyle} />
             <select value={form.recurrence} onChange={e=>set('recurrence',e.target.value)} style={{...inputStyle,flex:1,cursor:'pointer'}}>
               {[['none','Does not repeat'],['daily','Daily'],['weekly','Weekly'],['monthly','Monthly'],['yearly','Yearly'],['custom','Custom…']].map(([v,l])=>(
                 <option key={v} value={v}>{l}</option>
@@ -272,14 +273,14 @@ function EventModal({ event, onSave, onDelete, onClose }) {
           )}
           {form.recurrence!=='none' && (
             <div style={rowStyle}>
-              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={iconStyle}><rect x="1.5" y="2.5" width="13" height="12" rx="2" stroke="currentColor" strokeWidth="1.4"/><line x1="5" y1="1" x2="5" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="11" y1="1" x2="11" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="1.5" y1="6.5" x2="14.5" y2="6.5" stroke="currentColor" strokeWidth="1.2"/></svg>
+              <Calendar size={15} strokeWidth={1.4} style={iconStyle} />
               <input type="date" value={form.recurrenceEndDate} onChange={e=>set('recurrenceEndDate',e.target.value)}
                 style={{...inputStyle,flex:1}} placeholder="Recurrence end date"/>
             </div>
           )}
           {/* Color — single row of circle swatches (sketch-picker language) */}
           <div style={rowStyle}>
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={iconStyle}><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.4"/><circle cx="5.5" cy="7" r="1.2" fill="currentColor" opacity="0.5"/><circle cx="10.5" cy="7" r="1.2" fill="currentColor" opacity="0.5"/><circle cx="8" cy="10.5" r="1.2" fill="currentColor" opacity="0.5"/></svg>
+            <Palette size={15} strokeWidth={1.4} style={iconStyle} />
             <div style={{display:'flex',flexWrap:'wrap',gap:7,flex:1,alignItems:'center'}}>
               {EVENT_COLORS.map(c=>(
                 <button key={c} onClick={()=>set('color',c)} title={c}
@@ -291,7 +292,7 @@ function EventModal({ event, onSave, onDelete, onClose }) {
           </div>
           {/* Description */}
           <div style={rowStyle}>
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={{...iconStyle,alignSelf:'flex-start',marginTop:9}}><line x1="2.5" y1="4" x2="13.5" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="2.5" y1="7.5" x2="13.5" y2="7.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><line x1="2.5" y1="11" x2="9" y2="11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+            <AlignLeft size={15} strokeWidth={1.4} style={{...iconStyle,alignSelf:'flex-start',marginTop:9}} />
             <textarea value={form.description} onChange={e=>set('description',e.target.value)} placeholder="Add notes" rows={3}
               style={{...inputStyle,flex:1,resize:'none',lineHeight:1.55}}/>
           </div>
@@ -300,9 +301,9 @@ function EventModal({ event, onSave, onDelete, onClose }) {
         <div style={{padding:'12px 18px 16px',borderTop:'1px solid var(--borderSubtle)',flexShrink:0,display:'flex',gap:8}}>
           {!isNew && (
             <button onClick={onDelete}
-              style={{padding:'9px 16px',borderRadius:10,border:'1px solid rgba(239,68,68,0.3)',background:'rgba(239,68,68,0.06)',color:'#ef4444',cursor:'pointer',fontSize:13,fontWeight:600,fontFamily:'inherit',transition:'background 0.12s',flexShrink:0}}
-              onMouseEnter={e=>e.currentTarget.style.background='rgba(239,68,68,0.14)'}
-              onMouseLeave={e=>e.currentTarget.style.background='rgba(239,68,68,0.06)'}>
+              style={{padding:'9px 16px',borderRadius:10,border:'1px solid rgba(248,81,73,0.3)',background:'rgba(248,81,73,0.06)',color:'#f85149',cursor:'pointer',fontSize:13,fontWeight:600,fontFamily:'inherit',transition:'background 0.12s',flexShrink:0}}
+              onMouseEnter={e=>e.currentTarget.style.background='rgba(248,81,73,0.14)'}
+              onMouseLeave={e=>e.currentTarget.style.background='rgba(248,81,73,0.06)'}>
               Delete
             </button>
           )}
@@ -774,13 +775,15 @@ export function FullCalendar({ notebookEvents = {}, fullHeight = false }) {
       {/* Toolbar — inline when embedded, portaled into the global header when full-page */}
       {(() => {
         const icsToast = icsResult && (
-          <div style={{fontSize:11,fontWeight:600,color:icsResult.error?'#ef5350':'var(--text)',
-            background:icsResult.error?'rgba(239,83,80,0.1)':'var(--surfaceAlt)',
-            border:`1px solid ${icsResult.error?'rgba(239,83,80,0.3)':'var(--border)'}`,
+          <div style={{fontSize:11,fontWeight:600,color:icsResult.error?'#f85149':'var(--text)',
+            background:icsResult.error?'rgba(248,81,73,0.1)':'var(--surfaceAlt)',
+            border:`1px solid ${icsResult.error?'rgba(248,81,73,0.3)':'var(--border)'}`,
             borderRadius:7,padding:'0 10px',height:28,display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap'}}>
-            {icsResult.error ? '⚠ Import failed'
-              : icsResult.added === 0 ? '✓ No new events'
-              : `✓ ${icsResult.added} event${icsResult.added!==1?'s':''} imported${icsResult.skipped?` · ${icsResult.skipped} skipped`:''}`}
+            {icsResult.error
+              ? <><AlertTriangle size={11} strokeWidth={2} />Import failed</>
+              : icsResult.added === 0
+                ? <><Check size={11} strokeWidth={2} />No new events</>
+                : <><Check size={11} strokeWidth={2} />{`${icsResult.added} event${icsResult.added!==1?'s':''} imported${icsResult.skipped?` · ${icsResult.skipped} skipped`:''}`}</>}
           </div>
         )
         const navControls = (
@@ -791,7 +794,7 @@ export function FullCalendar({ notebookEvents = {}, fullHeight = false }) {
           <button onClick={()=>setShowMonthPicker(v=>!v)}
             style={{height:28,padding:'0 10px',borderRadius:7,border:'1px solid var(--border)',background:showMonthPicker?'var(--accent)':'none',color:showMonthPicker?'#fff':'var(--text)',fontSize:13,fontWeight:700,cursor:'pointer',transition:'background 0.12s,color 0.12s',marginLeft:2,display:'flex',alignItems:'center',gap:4}}>
             {headerLabel}
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{opacity:0.6,transition:'transform 0.15s',transform:showMonthPicker?'rotate(180deg)':'none'}}><path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            <ChevronDown size={10} strokeWidth={1.5} style={{opacity:0.6,transition:'transform 0.15s',transform:showMonthPicker?'rotate(180deg)':'none'}} />
           </button>
         </div>
         )
@@ -809,11 +812,7 @@ export function FullCalendar({ notebookEvents = {}, fullHeight = false }) {
               opacity:icsImporting?0.5:1,transition:'background 0.12s,color 0.12s,border-color 0.12s'}}
             onMouseEnter={e=>{if(!icsImporting){e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--text)'}}}
             onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.color='var(--textDim)'}}>
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <rect x="2" y="3" width="12" height="11" rx="2" stroke="currentColor" strokeWidth="1.4"/>
-              <path d="M5 1v3M11 1v3M2 7h12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-              <path d="M8 10v2.5M6.5 11.5L8 13l1.5-1.5" stroke="var(--accent)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+            <CalendarArrowDown size={13} strokeWidth={1.4} />
             {icsImporting ? 'Importing…' : 'Import .ics'}
           </button>}
           <button onClick={()=>setEditingEvent({event:{date:todayKey},isNew:true})}
@@ -824,9 +823,7 @@ export function FullCalendar({ notebookEvents = {}, fullHeight = false }) {
               transition:'background 0.12s,border-color 0.12s'}}
             onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)'}}
             onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)'}}>
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-              <path d="M6 1.5v9M1.5 6h9" stroke="var(--accent)" strokeWidth="1.7" strokeLinecap="round"/>
-            </svg>
+            <Plus size={12} strokeWidth={1.7} color="var(--accent)" />
             {fullHeight ? null : 'Event'}
           </button>
           <SegmentedControl

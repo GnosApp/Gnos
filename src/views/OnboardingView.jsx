@@ -5,6 +5,7 @@ import { join } from '@tauri-apps/api/path'
 import useAppStore from '@/store/useAppStore'
 import { applyTheme } from '@/lib/themes'
 import { resetBaseDir, loadLibrary, loadNotebooksMeta, loadSketchbooksMeta, getJSON, saveLibrary } from '@/lib/storage'
+import { Check } from 'lucide-react'
 
 const STEPS = ['welcome', 'username', 'archive', 'theme', 'done']
 const TOTAL_CIRCLES = STEPS.length - 1 // 4 — "done" has no circle of its own
@@ -22,7 +23,7 @@ const THEME_OPTIONS = [
 const C  = 2 * Math.PI * 9  // ≈ 56.55
 const CK = 15               // checkmark stroke length
 
-// ─── Quill icon ───────────────────────────────────────────────────────────────
+// ─── Quill icon — brand mark, hand-drawn (not lucide; see icons.jsx) ─────────
 function QuillIcon({ accent = '#8b5e3c', size = 32, opacity = 0.4 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" fill="none" style={{ opacity }}>
@@ -141,9 +142,7 @@ function ThemeCard({ theme: t, selected, onClick, palette }) {
         transition: 'all 0.2s ease', flexShrink: 0,
       }}>
         {selected && (
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-            <path d="M2 5l2 2 4-4" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
+          <Check size={10} strokeWidth={1.5} color="#fff" />
         )}
       </div>
     </button>

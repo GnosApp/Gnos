@@ -4,6 +4,7 @@ import { loadPdfJs, openPdf } from '@/lib/pdfjs'
 import { dataUrlToBytes } from '@/lib/storage'
 import { generateCoverColor } from '@/lib/utils'
 import QuickAccess from '@/components/QuickAccess'
+import { Book } from 'lucide-react'
 
 // ── Debounced progress persistence ─────────────────────────────────────────────
 // persistLibrary() writes the entire library JSON. Page turns are rapid, so
@@ -261,9 +262,7 @@ export default function PdfView() {
 
         {error && (
           <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:16, padding:40, textAlign:'center' }}>
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" style={{ opacity:0.3 }}>
-              <path d="M4 19V5a2 2 0 0 1 2-2h13v14H6a2 2 0 0 0-2 2zm0 0a2 2 0 0 0 2 2h13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+            <Book size={48} strokeWidth={1.6} style={{ opacity: 0.3 }} />
             <p style={{ color:'var(--textDim)', fontSize:13, maxWidth:340, lineHeight:1.6 }}>{error}</p>
             <button onClick={() => setView('library')} style={{ background:'var(--accent)', color:'#fff', border:'none', borderRadius:8, padding:'8px 18px', cursor:'pointer', fontSize:13 }}>
               Back to Library

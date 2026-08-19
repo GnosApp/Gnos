@@ -4,6 +4,7 @@ import { loadArchivePointer, loadPreferences, loadLibrary, getPluginsDir } from 
 import { applyTheme, BUILT_IN_THEMES } from '@/lib/themes'
 import { SYNTAX_SUBTABS, SYNTAX_SECTIONS } from '@/lib/markdownSyntaxRef'
 import { Toggle, Select } from '@/components/Controls'
+import { Archive, BookOpen, Calendar, Contrast, Keyboard, MoveDiagonal2, NotebookText, Puzzle, Settings, StickyNote, Volume2 } from 'lucide-react'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SettingsWindowView — dedicated macOS-style settings window (label "settings").
@@ -20,16 +21,16 @@ async function broadcast() {
 }
 
 const SECTIONS = [
-  { id: 'general',    label: 'General',    icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.4"/><path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.6 3.6l1 1M11.4 11.4l1 1M12.4 3.6l-1 1M4.6 11.4l-1 1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg> },
-  { id: 'appearance', label: 'Appearance', icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.2" stroke="currentColor" strokeWidth="1.4"/><path d="M8 1.8v12.4A6.2 6.2 0 0 0 8 1.8z" fill="currentColor" opacity="0.5"/></svg> },
-  { id: 'reader',     label: 'Reader',     icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M2 3.5A1.5 1.5 0 0 1 3.5 2H8v12H3.5A1.5 1.5 0 0 1 2 12.5v-9zM14 3.5A1.5 1.5 0 0 0 12.5 2H8v12h4.5a1.5 1.5 0 0 0 1.5-1.5v-9z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/></svg> },
-  { id: 'notebook',   label: 'Notebook',   icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><rect x="2.5" y="1.5" width="11" height="13" rx="1.5" stroke="currentColor" strokeWidth="1.3"/><line x1="5.5" y1="5" x2="10.5" y2="5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="5.5" y1="8" x2="10.5" y2="8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="5.5" y1="11" x2="8.5" y2="11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg> },
-  { id: 'quicknote',  label: 'Quick Note', icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><rect x="2.5" y="2.5" width="11" height="11" rx="2.5" stroke="currentColor" strokeWidth="1.3"/><line x1="5" y1="6" x2="11" y2="6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="5" y1="9" x2="9" y2="9" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg> },
-  { id: 'audio',      label: 'Audio',      icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M2.5 6h2.5L8.5 2.5v11L5 10H2.5V6z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/><path d="M11 5c.9.8 1.4 1.8 1.4 3s-.5 2.2-1.4 3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg> },
-  { id: 'calendar',   label: 'Calendar',   icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.3"/><line x1="5" y1="1.5" x2="5" y2="4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/><line x1="11" y1="1.5" x2="11" y2="4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/><line x1="2" y1="6.5" x2="14" y2="6.5" stroke="currentColor" strokeWidth="1.3"/></svg> },
-  { id: 'archive',    label: 'Archive',    icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.6l1.8 1.8h5.6a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-8z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/></svg> },
-  { id: 'plugins',    label: 'Plugins',    icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M6 2v3H3a1 1 0 0 0-1 1v3h3a2 2 0 1 1 0 4h11-8v-3h3V7a1 1 0 0 0-1-1H7V3a2 2 0 1 0-4 0" stroke="currentColor" strokeWidth="0"/><rect x="2.5" y="5.5" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3"/><path d="M6.5 5.5V3.8a1.3 1.3 0 1 1 2.6 0v1.7M10.5 9.5h1.7a1.3 1.3 0 1 1 0 2.6h-1.7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg> },
-  { id: 'shortcuts',  label: 'Shortcuts',  icon: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="3.5" width="13" height="9" rx="1.8" stroke="currentColor" strokeWidth="1.3"/><path d="M4 6h.01M6.3 6h.01M8.6 6h.01M10.9 6h.01M4 8.3h.01M6.3 8.3h.01M8.6 8.3h.01M10.9 8.3h.01M5.3 10.4h5.4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg> },
+  { id: 'general',    label: 'General',    icon: <Settings size={15} strokeWidth={1.4} /> },
+  { id: 'appearance', label: 'Appearance', icon: <Contrast size={15} strokeWidth={1.4} /> },
+  { id: 'reader',     label: 'Reader',     icon: <BookOpen size={15} strokeWidth={1.3} /> },
+  { id: 'notebook',   label: 'Notebook',   icon: <NotebookText size={15} strokeWidth={1.3} /> },
+  { id: 'quicknote',  label: 'Quick Note', icon: <StickyNote size={15} strokeWidth={1.3} /> },
+  { id: 'audio',      label: 'Audio',      icon: <Volume2 size={15} strokeWidth={1.3} /> },
+  { id: 'calendar',   label: 'Calendar',   icon: <Calendar size={15} strokeWidth={1.3} /> },
+  { id: 'archive',    label: 'Archive',    icon: <Archive size={15} strokeWidth={1.3} /> },
+  { id: 'plugins',    label: 'Plugins',    icon: <Puzzle size={15} strokeWidth={1.3} /> },
+  { id: 'shortcuts',  label: 'Shortcuts',  icon: <Keyboard size={15} strokeWidth={1.3} /> },
 ]
 
 // Keyboard shortcut reference — grouped. `keys` render as individual <kbd> chips.
@@ -152,9 +153,7 @@ function QuickNoteSizePreview({ width, height, onCommit }) {
         <div className="sw-qn-preview-box" style={{ width: w * QN_PREVIEW_SCALE, height: h * QN_PREVIEW_SCALE }}>
           <span className="sw-qn-preview-dims">{w} × {h}</span>
           <div className="sw-qn-preview-handle" onPointerDown={onHandleDown} title="Drag to resize">
-            <svg width="9" height="9" viewBox="0 0 9 9" fill="none">
-              <path d="M8 1v3M8 8H5M8 8L1 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-            </svg>
+            <MoveDiagonal2 size={9} strokeWidth={1.2} />
           </div>
         </div>
       </div>

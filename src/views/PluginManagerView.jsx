@@ -3,15 +3,14 @@ import useAppStore from '@/store/useAppStore'
 import pluginHost from '@/lib/PluginHost'
 import { loadPlugins, reloadPlugin, fetchRegistry, installPlugin, uninstallPlugin } from '@/lib/loadPlugins'
 import { Toggle } from '@/components/Controls'
+import { Puzzle } from 'lucide-react'
 
 // ── Shared plugin card icon ───────────────────────────────────────────────────
 
 function PluginIcon() {
   return (
     <div style={{ width: 36, height: 36, borderRadius: 8, background: 'var(--surfaceAlt)', border: '1px solid var(--borderSubtle)', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-        <path d="M6 2H3a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1zM13 2h-3a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1zM6 9H3a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1zM13 9h-3a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1z" stroke="var(--textDim)" strokeWidth="1.2" strokeLinecap="round"/>
-      </svg>
+      <Puzzle size={16} strokeWidth={1.2} color="var(--textDim)" />
     </div>
   )
 }

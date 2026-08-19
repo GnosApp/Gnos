@@ -22,8 +22,8 @@ body {
   --progressTrack: #21262d;
   --buttonBorder: #30363d;
   --addBookBorder: #30363d;
-  --addBookBg: rgba(56,139,253,0.04);
-  --addBookHover: rgba(56,139,253,0.09);
+  --addBookBg: color-mix(in srgb, var(--accent) 4%, transparent);
+  --addBookHover: color-mix(in srgb, var(--accent) 9%, transparent);
   --addBookIcon: #388bfd;
   --addBookText: #8b949e;
   --tagBg: #21262d;
@@ -106,7 +106,7 @@ button { font-family: inherit; }
   font-weight: 600; cursor: pointer; white-space: nowrap;
   transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
 }
-.btn-lib-filter:hover { background: var(--hover); border-color: var(--accent); box-shadow: 0 0 0 2px rgba(56,139,253,0.1); }
+.btn-lib-filter:hover { background: var(--hover); border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent); }
 .lib-filter-dropdown {
   position: absolute; top: calc(100% + 6px); left: 0;
   background: var(--surface); border: 1px solid var(--border);
@@ -143,7 +143,7 @@ button { font-family: inherit; }
 .search-bar input { user-select: text; -webkit-user-select: text; }
 .search-bar:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(56,139,253,0.15);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent);
 }
 .search-icon { color: var(--textDim); flex-shrink: 0; }
 .search-bar input {
@@ -271,7 +271,7 @@ button { font-family: inherit; }
 .streak-dot.filled {
   background: var(--accent);
   border-color: var(--accent);
-  box-shadow: 0 0 5px rgba(56,139,253,0.35);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .streak-dot.today-empty {
   border-color: var(--accent);
@@ -314,7 +314,7 @@ button { font-family: inherit; }
 .lib-card-selected .book-cover::before {
   content: '';
   position: absolute; inset: 0; z-index: 30;
-  background: rgba(56, 139, 253, 0.22);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
   border-radius: inherit;
   pointer-events: none;
 }
@@ -336,12 +336,9 @@ button { font-family: inherit; }
 .book-card-container:hover .btn-dots, .btn-dots.active { opacity: 1; }
 .btn-dots:hover, .btn-dots.active { background: var(--surfaceAlt); border-color: var(--border); }
 
-.context-menu { position: fixed; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; min-width: 210px; box-shadow: 0 8px 32px rgba(0,0,0,0.35); z-index: 600; }
-.ctx-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 14px; border: none; background: none; cursor: pointer; color: var(--text); font-size: 13px; text-align: left; transition: background 0.1s; }
-.ctx-item:hover:not(:disabled) { background: var(--surfaceAlt); }
-.ctx-item:disabled { opacity: 0.45; cursor: default; }
-.ctx-item.danger { color: #f85149; }
-.ctx-item + .ctx-item { border-top: 1px solid var(--borderSubtle); }
+/* Full .context-menu/.ctx-item definition now lives in one place — see the
+   "RIGHT-CLICK CONTEXT MENU" block further down (src/components/
+   ContextMenu.jsx is the single component that renders it everywhere). */
 
 /* Audiobook album card dots button — always faintly visible on cover */
 .audio-album-dots-btn {
@@ -461,7 +458,7 @@ button { font-family: inherit; }
 .section-label { font-size: 11px; font-weight: 700; color: var(--textDim); letter-spacing: 0.08em; margin-bottom: 10px; text-transform: uppercase; }
 .radio-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 18px; }
 .radio-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); cursor: pointer; transition: all 0.15s; }
-.radio-item.active { border-color: var(--accent); background: rgba(56,139,253,0.1); }
+.radio-item.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .radio-item input { accent-color: var(--accent); }
 .swatch { width: 16px; height: 16px; border-radius: 3px; border: 1px solid var(--border); }
 .theme-import-box { padding: 12px 14px; border-radius: 8px; border: 1px dashed var(--border); background: var(--addBookBg); }
@@ -500,9 +497,9 @@ button { font-family: inherit; }
   cursor: default;
   min-width: 0; min-height: 0;
 }
-.heatmap-cell[data-level="1"] { background: rgba(56,139,253,0.25); border-color: rgba(56,139,253,0.3); }
-.heatmap-cell[data-level="2"] { background: rgba(56,139,253,0.50); border-color: rgba(56,139,253,0.55); }
-.heatmap-cell[data-level="3"] { background: rgba(56,139,253,0.75); border-color: rgba(56,139,253,0.8); }
+.heatmap-cell[data-level="1"] { background: color-mix(in srgb, var(--accent) 25%, transparent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.heatmap-cell[data-level="2"] { background: color-mix(in srgb, var(--accent) 50%, transparent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.heatmap-cell[data-level="3"] { background: color-mix(in srgb, var(--accent) 75%, transparent); border-color: color-mix(in srgb, var(--accent) 80%, transparent); }
 .heatmap-cell[data-level="4"] { background: var(--accent); border-color: var(--accent); }
 .heatmap-month-labels { display: flex; font-size: 9px; color: var(--textDim); margin-bottom: 3px; gap: 0; }
 .heatmap-legend { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--textDim); margin-top: 6px; }
@@ -524,12 +521,12 @@ button { font-family: inherit; }
 .gutenberg-btn {
   display: flex; align-items: center; gap: 10px;
   width: 100%; padding: 12px 14px; border-radius: 10px;
-  background: linear-gradient(135deg, rgba(56,139,253,0.08), rgba(163,113,247,0.08));
-  border: 1px solid rgba(56,139,253,0.25); cursor: pointer;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, transparent), rgba(163,113,247,0.08));
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); cursor: pointer;
   text-align: left; transition: all 0.15s; color: var(--text);
   margin-bottom: 16px; text-decoration: none;
 }
-.gutenberg-btn:hover { border-color: var(--accent); background: rgba(56,139,253,0.12); }
+.gutenberg-btn:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .gutenberg-btn-icon { font-size: 20px; }
 .gutenberg-btn-text .title { font-size: 13px; font-weight: 700; color: var(--accent); }
 .gutenberg-btn-text .sub { font-size: 11px; color: var(--textMuted); margin-top: 1px; }
@@ -591,7 +588,7 @@ button { font-family: inherit; }
   transition: all 0.15s;
 }
 .btn-reader-icon:hover { background: var(--surfaceAlt); color: var(--text); border-color: var(--accent); }
-.btn-reader-icon.playing { background: rgba(56,139,253,0.14); color: var(--accent); border-color: var(--accent); }
+.btn-reader-icon.playing { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); border-color: var(--accent); }
 
 .dropdown { position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%); background: var(--surface); border: 1px solid var(--border); border-radius: 12px; min-width: 280px; max-width: 380px; max-height: 420px; overflow-y: auto; z-index: 200; box-shadow: 0 12px 48px rgba(0,0,0,0.35); text-align: left; }
 .dropdown-header { padding: 12px 16px 10px; border-bottom: 1px solid var(--borderSubtle); position: sticky; top: 0; background: var(--surface); z-index: 1; }
@@ -600,7 +597,7 @@ button { font-family: inherit; }
 .chapter-search-input { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 6px; font-size: 12px; outline: none; }
 .chapter-item { padding: 10px 16px; cursor: pointer; border-left: 3px solid transparent; transition: background 0.1s; }
 .chapter-item:hover { background: var(--surfaceAlt); }
-.chapter-item.active { background: rgba(56,139,253,0.09); border-color: var(--accent); }
+.chapter-item.active { background: color-mix(in srgb, var(--accent) 9%, transparent); border-color: var(--accent); }
 .chapter-item .ch-flex { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .chapter-item .ch-title { font-size: 13px; color: var(--text); line-height: 1.35; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chapter-item.active .ch-title { color: var(--accent); font-weight: 600; }
@@ -823,7 +820,7 @@ button { font-family: inherit; }
 
 /* Accessibility: word highlight */
 .reader-card.highlight-words .page-content .col-word:hover {
-  background: rgba(56,139,253,0.22);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
   border-radius: 2px;
   cursor: default;
 }
@@ -831,12 +828,12 @@ button { font-family: inherit; }
 /* Accessibility: underline current line */
 .reader-card.underline-line .page-content .col-word.same-line {
   text-decoration: underline;
-  text-decoration-color: rgba(56,139,253,0.55);
+  text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent);
   text-underline-offset: 3px;
 }
 .reader-card.underline-line .page-content .col-word:hover {
   text-decoration: underline;
-  text-decoration-color: rgba(56,139,253,0.55);
+  text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent);
   text-underline-offset: 3px;
 }
 /* === WORD LOOKUP POPUP === */
@@ -1037,7 +1034,7 @@ button { font-family: inherit; }
 }
 .audio-ctrl-btn:hover { background: var(--surfaceAlt); color: var(--text); border-color: var(--accent); }
 .audio-play-btn { width: 42px; height: 42px; border-color: var(--accent); color: var(--accent); }
-.audio-play-btn:hover { background: rgba(56,139,253,0.14); }
+.audio-play-btn:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 
 /* Reader text highlight */
 .reader-highlight {
@@ -1048,15 +1045,15 @@ button { font-family: inherit; }
 
 /* Note jump persistent highlight */
 mark.reader-note-highlight {
-  background: rgba(56, 139, 253, 0.32);
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
   color: inherit;
   border-radius: 2px;
   padding: 0 1px;
   animation: noteHighlightPulse 0.4s ease;
 }
 @keyframes noteHighlightPulse {
-  0% { background: rgba(56,139,253,0.65); }
-  100% { background: rgba(56,139,253,0.32); }
+  0% { background: color-mix(in srgb, var(--accent) 65%, transparent); }
+  100% { background: color-mix(in srgb, var(--accent) 32%, transparent); }
 }
 
 /* Page indicator inline input — hide spinner arrows */
@@ -1065,30 +1062,42 @@ mark.reader-note-highlight {
 #page-indicator input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 
 /* Chapter page-jump item special style */
-.chapter-item-page-jump { background: rgba(56,139,253,0.04); }
-.chapter-item-page-jump:hover { background: rgba(56,139,253,0.1); }
-/* === RIGHT-CLICK CONTEXT MENU === */
-.lib-context-menu {
-  position: fixed; z-index: 600;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.45);
-  padding: 5px;
-  min-width: 180px;
+.chapter-item-page-jump { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.chapter-item-page-jump:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+/* === RIGHT-CLICK CONTEXT MENU ===
+   Single shared component: src/components/ContextMenu.jsx (Pass 1 of
+   PLAN_POPUP_REVAMP.md). Was three near-duplicate implementations across
+   two files, each with its own slightly-different dead/half-used CSS
+   family (.lib-context-menu, .card-ctx-menu/.lib-ctx-item, and an unused
+   .context-menu/.ctx-item pair that only the "section 6" polish pass below
+   targeted) — collapsed into the one block here. */
+.context-menu {
+  position: fixed; z-index: var(--z-popover);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 5px; padding: 3px; min-width: 160px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
 }
-.lib-context-menu.hidden { display: none; }
-.lib-ctx-item {
-  width: 100%; background: none; border: none;
-  color: var(--text); font-family: var(--font-ui); font-size: 13px; font-weight: 600;
-  padding: 8px 12px; border-radius: 6px;
-  cursor: pointer; display: flex; align-items: center; gap: 9px;
-  text-align: left; transition: background .1s;
+.ctx-item {
+  display: flex; align-items: center; gap: 8px;
+  width: calc(100% - 6px); margin: 0 3px;
+  padding: 8px; border-radius: 3px;
+  border: none; background: none; cursor: pointer;
+  color: var(--text); font-family: var(--font-ui); font-size: 12.5px; font-weight: 400;
+  text-align: left; transition: background 0.1s;
 }
-/* Icon color tracks the row's text color (currentColor) — so a normal row's
-   icon matches its label, and a danger row's icon goes red with its label. */
-.lib-ctx-item svg { color: currentColor; flex-shrink: 0; }
-.lib-ctx-item:hover { background: var(--hover); }
+.ctx-item:hover:not(:disabled) { background: var(--hover); }
+.ctx-item:disabled { opacity: 0.45; cursor: default; }
+.ctx-item.danger { color: #f85149; }
+.ctx-item.ctx-item-active:not(:disabled) { background: var(--hover); }
+.ctx-item:focus-visible { outline: 1.5px solid var(--accent); outline-offset: -1.5px; }
+/* Icon color tracks the row's text color — a normal row's icon matches its
+   label, a danger row's icon goes red with it. */
+.ctx-item-icon { color: currentColor; flex-shrink: 0; }
+.ctx-item-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-item-chevron { margin-left: auto; padding-left: 8px; opacity: 0.5; flex-shrink: 0; }
+.ctx-item-swatch { width: 13px; height: 13px; border-radius: 3px; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.15); }
+.ctx-item-empty { padding: 5px 7px; font-size: 12px; color: var(--textDim); font-style: italic; }
+.ctx-divider { height: 1px; background: var(--borderSubtle); margin: 3px 7px; }
 
 /* === COLLECTIONS === */
 .collection-card {
@@ -1159,29 +1168,27 @@ mark.reader-note-highlight {
 #collection-grid { padding: 0 4px; width: 100%; }
 
 /* === ADD CHOICE POPUP === */
-.add-choice-popup {
-  position: fixed; z-index: 800;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,0.4);
-  padding: 4px; display: flex; flex-direction: column; gap: 1px;
-  min-width: 160px; animation: toolbarPop 0.15s ease;
-}
-.add-choice-popup.hidden { display: none; }
+/* Container is the shared `.context-menu` class (ContextMenu.jsx's chrome —
+   same radius/shadow/entrance-animation as every right-click menu, per
+   Pass 1's "shared visual language" rationale). Only the row/label/sub
+   styling below is specific to AddPopup.jsx. */
 .add-choice-header {
-  font-size: 9px; font-weight: 700; letter-spacing: 0.06em;
-  text-transform: uppercase; color: var(--textDim);
-  padding: 5px 10px 2px; font-family: var(--font-ui);
+  font-size: 10px; font-weight: 700; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--textDim); opacity: 0.6;
+  padding: 4px 8px 6px; font-family: var(--font-ui);
 }
 .add-choice-btn {
-  display: flex; flex-direction: row; align-items: center;
-  gap: 8px; padding: 6px 10px; border-radius: 7px;
+  display: flex; align-items: center; gap: 9px;
+  width: calc(100% - 6px); margin: 0 3px;
+  padding: 7px 8px; border-radius: 3px;
   background: none; border: none; cursor: pointer; text-align: left;
-  color: var(--text); font-family: var(--font-ui); transition: background 0.12s;
-  width: 100%;
+  color: var(--text); font-family: var(--font-ui); transition: background 0.1s;
 }
 .add-choice-btn:hover { background: var(--hover); }
-.add-choice-btn svg { color: var(--accent); flex-shrink: 0; width: 16px; height: 16px; }
-.add-choice-label { font-size: 13px; font-weight: 600; }
+.add-choice-btn:focus-visible { outline: 1.5px solid var(--accent); outline-offset: -1.5px; }
+.add-choice-btn svg { color: var(--accent); flex-shrink: 0; }
+.add-choice-label { font-size: 12.5px; font-weight: 500; }
+.add-choice-sub { font-size: 10.5px; font-weight: 400; color: var(--textDim); margin-top: 1px; }
 
 
 /* === NOTEBOOK CARD === */
@@ -1312,7 +1319,7 @@ mark.reader-note-highlight {
   width: 100%; flex: 1; position: relative;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-.nb-search-bar:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(56,139,253,0.15); }
+.nb-search-bar:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent); }
 .nb-search-bar .search-icon { color: var(--textDim); flex-shrink: 0; }
 #nb-search-input {
   background: none; border: none; outline: none;
@@ -1438,7 +1445,7 @@ mark.nb-find-mark-active {
   opacity: 0.85; transition: opacity 0.12s;
   user-select: text;
 }
-.nb-block .wikilink:hover { opacity: 1; background: rgba(56,139,253,0.1); border-radius: 2px; }
+.nb-block .wikilink:hover { opacity: 1; background: color-mix(in srgb, var(--accent) 10%, transparent); border-radius: 2px; }
 .nb-block .wikilink-unresolved { opacity: 0.5; border-bottom-style: dashed; }
 .nb-block .wikilink-unresolved:hover { opacity: 0.8; }
 
@@ -1458,10 +1465,6 @@ mark.nb-find-mark-active {
 .card-dots-btn:hover { background: rgba(0,0,0,0.7); }
 
 .nb-dots-btn { top: 8px; right: 8px; }
-
-/* Context menu popup */
-.card-ctx-menu { animation: toolbarPop 0.12s ease; }
-.card-ctx-menu .lib-ctx-item { color: var(--text); }
 
 /* Notebook cover date */
 .nb-cover-date {
@@ -1570,7 +1573,7 @@ mark.nb-find-mark-active {
 .cm-habits-cell:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surfaceAlt)); }
 .cm-habits-cell.done { background: var(--accent); border-color: var(--accent); }
 .cm-habits-cell.today { box-shadow: 0 0 0 1.5px var(--accent); }
-.cm-habits-cell.done.today { background: var(--accent); box-shadow: 0 0 0 1.5px rgba(56,139,253,0.5); }
+.cm-habits-cell.done.today { background: var(--accent); box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--accent) 50%, transparent); }
 .cm-habits-add-row { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--borderSubtle); }
 .cm-habits-add-btn { background: var(--surfaceAlt); border: 1px solid var(--border); border-radius: 6px; color: var(--textDim); cursor: pointer; padding: 3px 11px; font-size: 15px; line-height: 1.5; flex-shrink: 0; transition: color 0.1s, border-color 0.1s, background 0.1s; }
 .cm-habits-add-btn:hover { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surfaceAlt)); }
@@ -1656,7 +1659,7 @@ mark.nb-find-mark-active {
 .nb-block dl { padding-left: 0; }
 .nb-block dt { font-weight: 700; margin-top: 8px; }
 .nb-block dd { margin-left: 20px; color: var(--textDim); }
-.nb-block .nb-inline-code { font-family: 'SF Mono', Menlo, monospace; font-size: 0.88em; background: rgba(56,139,253,0.1); padding: 1px 5px; border-radius: 3px; color: var(--accent); }
+.nb-block .nb-inline-code { font-family: 'SF Mono', Menlo, monospace; font-size: 0.88em; background: color-mix(in srgb, var(--accent) 10%, transparent); padding: 1px 5px; border-radius: 3px; color: var(--accent); }
 .nb-block sup { font-size: 0.75em; vertical-align: super; }
 .nb-block sub { font-size: 0.75em; vertical-align: sub; }
 
@@ -1971,7 +1974,7 @@ body.zen-active .nb-content-wrap {
 .nb-block.nb-raw {
   font-family: var(--font-ui, system-ui, sans-serif);
   font-size: 15px;
-  background: rgba(56,139,253,0.04);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
   border-radius: 4px;
   padding: 2px 0;   /* ← no left indent on the active line */
   color: var(--text);
@@ -2199,7 +2202,7 @@ body.zen-active .nb-content-wrap {
 .lib-empty-plus:hover {
   border-color: var(--accent);
   color: var(--accent);
-  background: rgba(56,139,253,0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 .lib-empty-hint {
   font-size: 14px;
@@ -2305,12 +2308,12 @@ body.zen-active .nb-content-wrap {
 }
 .btn-reader-icon.tts-active {
   color: var(--accent);
-  background: rgba(56,139,253,0.12);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 /* TTS sentence highlight */
 .tts-highlight {
-  background: rgba(56,139,253,0.18);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   border-radius: 3px;
   padding: 0 1px;
 }
@@ -2409,7 +2412,7 @@ body.zen-active .nb-content-wrap {
 .ap-chap-bar:nth-child(2) { height: 10px; animation-delay: 0.15s; }
 .ap-chap-bar:nth-child(3) { height: 7px; animation-delay: 0.3s; }
 @keyframes apBarBounce { from { transform: scaleY(0.4); } to { transform: scaleY(1); } }
-@keyframes ap-slide-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+@keyframes ap-slide-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
 
 /* ── Slash-command menu (CM6 autocomplete tooltip, app language) ─────────── */
 .cm-tooltip.cm-tooltip-autocomplete {
@@ -2466,7 +2469,7 @@ body.zen-active .nb-content-wrap {
 }
 .ap-cover.playing {
   transform: scale(1.03);
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5), 0 4px 20px rgba(56,139,253,0.15);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5), 0 4px 20px color-mix(in srgb, var(--accent) 15%, transparent);
 }
 .ap-cover-placeholder { display: flex; align-items: center; justify-content: center; }
 #ap-cover-img { width: 100%; height: 100%; object-fit: cover; border-radius: 14px; }
@@ -2657,7 +2660,7 @@ body.zen-active .nb-content-wrap {
   background: var(--hover); color: var(--text);
 }
 .gnos-sidebar-item.active {
-  background: rgba(56,139,253,0.1); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent);
   font-weight: 600;
 }
 .gnos-sidebar-item-icon {
@@ -2710,7 +2713,7 @@ body.zen-active .nb-content-wrap {
 }
 .cm-question-badge:hover { opacity: 0.8; }
 .cm-question-open  { background: rgba(163,113,247,0.12); color: var(--accentSecondary); border-color: rgba(163,113,247,0.3); }
-.cm-question-date  { background: rgba(56,139,253,0.08);  color: var(--text);            border-color: rgba(56,139,253,0.25); }
+.cm-question-date  { background: color-mix(in srgb, var(--accent) 8%, transparent);  color: var(--text);            border-color: color-mix(in srgb, var(--accent) 25%, transparent); }
 .cm-question-flash { background: rgba(63,185,80,0.08);   color: var(--text);            border-color: rgba(63,185,80,0.25); }
 .cm-q-mark  { font-weight: 700; opacity: 0.7; }
 .cm-q-text  { }
@@ -3345,7 +3348,7 @@ body.tabs-open .mobile-streak-float { display: none !important; }
   transition: border-color 0.15s, transform 0.12s;
   -webkit-tap-highlight-color: transparent;
 }
-.mobile-tab-card.active-tab { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 4px 20px rgba(56,139,253,0.18); }
+.mobile-tab-card.active-tab { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 4px 20px color-mix(in srgb, var(--accent) 18%, transparent); }
 .mobile-tab-card:active { transform: scale(0.96); }
 .mobile-tab-card-preview {
   height: 110px;
@@ -3447,15 +3450,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   from { opacity: 0; transform: translateY(4px) scale(0.985); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
-.context-menu, .lib-filter-dropdown, .search-dropdown, .search-results-dropdown {
+.context-menu, .ctx-submenu, .lib-filter-dropdown, .search-dropdown, .search-results-dropdown {
   animation: gnos-pop-in 0.13s cubic-bezier(0.2, 0.8, 0.3, 1);
   transform-origin: top;
   border-color: var(--borderSubtle);
   box-shadow: 0 0 0 1px rgba(0,0,0,0.04), 0 10px 24px rgba(0,0,0,0.28), 0 24px 64px rgba(0,0,0,0.22);
 }
-.ctx-item + .ctx-item { border-top: none; }
-.ctx-item { border-radius: 7px; margin: 0 4px; width: calc(100% - 8px); }
-.context-menu { padding: 4px 0; }
 
 /* 7. Library canvas — a touch more breathing room */
 .lib-tab-panel { padding: 20px 40px 28px; }

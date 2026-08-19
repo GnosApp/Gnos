@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Gnos — Live Share</title>
+    <!-- Inline, not /book.svg (that path doesn't exist anywhere in the repo —
+         a pre-existing broken reference in the main app's own index.html;
+         not copying it into a fresh page). Self-contained so this never
+         404s regardless of which deploy target ends up serving it. -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23388bfd' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19.5A2.5 2.5 0 0 1 6.5 17H20'/%3E%3Cpath d='M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z'/%3E%3C/svg%3E">
+
+    <!-- Deliberately does NOT load fonts.css's full self-hosted webfont set
+         (Clash Display, Erode, etc.) — this page never renders the app's
+         branded UI chrome, just a note. System font stack keeps this page's
+         first-load weight down, which matters here specifically: unlike the
+         desktop app (one download, ever), this loads fresh for every guest
+         on every session. -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/collab-main.jsx"></script>
+  </body>
+</html>

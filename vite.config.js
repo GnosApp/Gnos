@@ -54,6 +54,10 @@ export default defineConfig({
       '@codemirror/commands',
       '@codemirror/search',
       '@codemirror/lang-markdown',
+      // Mermaid is huge and dynamically imported (notebook diagrams). Without
+      // pre-bundling, the dev server transforms its dependency tree on first
+      // use and the first diagram hangs for a long time.
+      'mermaid',
     ],
     esbuildOptions: { target: 'esnext' },
   },
@@ -65,6 +69,19 @@ export default defineConfig({
     commonjsOptions: {
       include: [/node_modules/],
       transformMixedEsModules: true,
+    },
+    rollupOptions: {
+      // `collab` is the PLAN_CONCURRENCY.md §7 web guest client — a second,
+      // slim entry point, not a second codebase. It's a plain static page
+      // (collab.html), unrelated to the Tauri app's own window (which only
+      // ever loads dist/index.html — Tauri's `frontendDist` points at the
+      // dist FOLDER, not a specific file, so this extra output is inert for
+      // the desktop app and only matters when dist/ is deployed as the web
+      // guest client's static host, per PLAN_CONCURRENCY.md §15).
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        collab: path.resolve(__dirname, 'collab.html'),
+      },
     },
   },
 })

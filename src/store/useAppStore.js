@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { loadLibrary, saveLibrary, loadNotebooksMeta, saveNotebooksMeta, loadPreferences, savePreferences, loadSketchbooksMeta, saveSketchbooksMeta, migrateBooksToNamedFolders, migrateNotebooksToFolders, migrateSketchbooksToFolders, migrateAudiobooksToFolders, saveArchivePointer, loadArchivePointer, cleanupTrash, getJSON, setJSON, loadCalendarEvents, saveCalendarEvents } from '@/lib/storage'
+import { loadLibrary, saveLibrary, patchReadingProgress, loadNotebooksMeta, saveNotebooksMeta, loadPreferences, savePreferences, loadSketchbooksMeta, saveSketchbooksMeta, migrateBooksToFlat, migrateNotebooksToFolders, migrateSketchbooksToFolders, migrateSketchbooksToFlat, migrateAudiobooksToFlat, saveArchivePointer, loadArchivePointer, cleanupTrash, cleanupLegacyNotebookFiles, migrateNotebooksToFlat, migrateNotebookFoldersToIndex, migrateRootFilesToInternal, migrateTypeMetaCachesToInternal, migrateCachesToLocal, migrateCollectionMembershipToFolders, syncFolderCollections, getJSON, setJSON, loadCalendarEvents, saveCalendarEvents } from '@/lib/storage'
 import { applyTheme, BUILT_IN_THEMES } from '@/lib/themes'
 import { makeId } from '@/lib/utils'
 
@@ -385,28 +385,126 @@ const useAppStore = create((set, get) => ({
     return { flashcardDecks: fds }
   }),
 
+  // ── External file references ────────────────────────────────────────────────
+  // .md files edited in place from outside the archive. { id:'ext_…', path, title, pinned, addedAt }
+  externalRefs: [],
+  setExternalRefs: (externalRefs) => set({ externalRefs }),
+  addExternalRef: (ref) => set(s => ({ externalRefs: [ref, ...s.externalRefs.filter(r => r.path !== ref.path)] })),
+  updateExternalRef: (id, patch) => set(s => ({ externalRefs: s.externalRefs.map(r => r.id === id ? { ...r, ...patch } : r) })),
+  removeExternalRef: (id) => set(s => ({ externalRefs: s.externalRefs.filter(r => r.id !== id) })),
+  toggleExternalPin: (id) => set(s => ({ externalRefs: s.externalRefs.map(r => r.id === id ? { ...r, pinned: !r.pinned } : r) })),
+  async persistExternalRefs() {
+    const { saveExternalRefs } = await import('@/lib/storage')
+    // Persist pinned refs only — unpinned are transient "open once" sessions.
+    await saveExternalRefs(get().externalRefs.filter(r => r.pinned))
+  },
+  /** Pick a .md from disk and open it in a notebook tab (edits write back to the
+   *  original path). Returns the ref, or null if cancelled. */
+  async openExternalFile() {
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const sel = await open({ multiple: false, title: 'Open Markdown File',
+        filters: [{ name: 'Markdown', extensions: ['md', 'markdown', 'mdx', 'txt'] }] })
+      if (!sel) return null
+      const path = String(sel)
+      const s = get()
+      const existing = s.externalRefs.find(r => r.path === path)
+      let ref = existing
+      if (!ref) {
+        const name = (path.split(/[/\\]/).pop() || 'Untitled').replace(/\.(md|markdown|mdx|txt)$/i, '')
+        ref = { id: `ext_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, path, title: name, pinned: false, addedAt: new Date().toISOString() }
+        s.addExternalRef(ref)
+      }
+      s.setActiveNotebook(ref)
+      s.navigate({ view: 'notebook', activeNotebook: ref })
+      return ref
+    } catch (err) { console.warn('[Gnos] openExternalFile failed', err); return null }
+  },
+
   // ── Collections ─────────────────────────────────────────────────────────────
   collections: [],
   setCollections: (collections) => set({ collections }),
-  addCollection: (col) => set(s => ({ collections: [col, ...s.collections] })),
-  updateCollection: (id, patch) => set(s => ({
-    collections: s.collections.map(c => c.id === id ? { ...c, ...patch } : c),
-  })),
+  addCollection: (col) => {
+    set(s => ({ collections: [col, ...s.collections] }))
+    import('@/lib/storage').then(m => m.ensureCollectionFolder(col.name)).catch(() => {})
+  },
+  updateCollection: (id, patch) => {
+    const prev = get().collections.find(c => c.id === id)
+    set(s => ({
+      collections: s.collections.map(c => c.id === id ? { ...c, ...patch } : c),
+    }))
+    // Renaming a collection renames its folder (and repoints the notes inside).
+    if (patch?.name && prev?.name && patch.name !== prev.name) {
+      import('@/lib/storage')
+        .then(m => m.ensureCollectionFolder(patch.name, prev.name))
+        .catch(err => console.warn('[Gnos] collection rename failed', err))
+    }
+  },
   removeCollection: (id) => set(s => ({ collections: s.collections.filter(c => c.id !== id) })),
-  addToCollection: (collectionId, itemId) => set(s => ({
-    collections: s.collections.map(c =>
-      c.id === collectionId && !c.items.includes(itemId)
-        ? { ...c, items: [...c.items, itemId] }
-        : c
-    ),
-  })),
-  removeFromCollection: (collectionId, itemId) => set(s => ({
-    collections: s.collections.map(c =>
-      c.id === collectionId
-        ? { ...c, items: c.items.filter(i => i !== itemId) }
-        : c
-    ),
-  })),
+  // A collection is a real folder, and an item lives in exactly ONE of them —
+  // so adding to a collection removes it from any other and MOVES the file.
+  addToCollection: (collectionId, itemId) => {
+    const col = get().collections.find(c => c.id === collectionId)
+    set(s => ({
+      collections: s.collections.map(c =>
+        c.id === collectionId
+          ? (c.items.includes(itemId) ? c : { ...c, items: [...c.items, itemId] })
+          : { ...c, items: c.items.filter(i => i !== itemId) }   // one collection per item
+      ),
+    }))
+    if (col) get().syncCollectionFolders(col.name, itemId)
+  },
+  /** Physically move an item into its collection's folder (async, non-blocking).
+   *  A96 — collections now cover all 4 content types, not just notebooks.
+   *  Looks the item up by id to find its type and routes to the matching
+   *  mover; see _moveItemToCollection. */
+  async syncCollectionFolders(collectionName, itemId) {
+    try {
+      const storageMod = await import('@/lib/storage')
+      await storageMod.ensureCollectionFolder(collectionName)
+      await get()._moveItemToCollection(itemId, collectionName, storageMod)
+      await get().persistCollections?.()
+    } catch (err) { console.warn('[Gnos] collection folder sync failed', err) }
+  },
+  /** Shared by syncCollectionFolders/removeFromCollection. Notebooks/
+   *  sketchbooks are index-backed — the mover itself updates their index
+   *  entry, nothing else to do. Books/audio have no index (A96) — their
+   *  `collection` field lives directly on the library.json item, so a
+   *  successful move patches that field into the store + persists it here. */
+  async _moveItemToCollection(itemId, collectionName, storageMod) {
+    try {
+      const s = get()
+      const m = storageMod || await import('@/lib/storage')
+      if (s.notebooks.some(n => n.id === itemId)) {
+        await m.moveNotebookToCollection(itemId, collectionName)
+        return
+      }
+      if (s.sketchbooks.some(sb => sb.id === itemId)) {
+        await m.moveSketchbookToCollection(itemId, collectionName)
+        return
+      }
+      const book = s.library.find(b => b.id === itemId)
+      if (book) {
+        const mover = book.type === 'audio' ? m.moveAudioToCollection : m.moveBookToCollection
+        const ok = await mover(book, collectionName)
+        if (ok) {
+          set(st => ({ library: st.library.map(b => b.id === itemId ? { ...b, collection: collectionName || null } : b) }))
+          await get().persistLibrary?.()
+        }
+      }
+    } catch (err) { console.warn('[Gnos] _moveItemToCollection failed', err) }
+  },
+  removeFromCollection: (collectionId, itemId) => {
+    set(s => ({
+      collections: s.collections.map(c =>
+        c.id === collectionId
+          ? { ...c, items: c.items.filter(i => i !== itemId) }
+          : c
+      ),
+    }))
+    // Leaving a collection moves the file back to its type's default folder.
+    get()._moveItemToCollection(itemId, null)
+  },
   /** Move itemId so it sits at the position of targetItemId within the collection's items. */
   reorderCollectionItems: (collectionId, itemId, targetItemId) => set(s => ({
     collections: s.collections.map(c => {
@@ -542,6 +640,15 @@ const useAppStore = create((set, get) => ({
   updateBookProgress: (id, chapter, page) => set(s => ({
     library: s.library.map(b => b.id === id ? { ...b, currentChapter: chapter, currentPage: page } : b),
   })),
+  /** Persist ONE book's reading position to its own small file — NOT
+   *  persistLibrary(), which rewrites the entire library array. Reading
+   *  position autosaves constantly while a book is open; doing that against
+   *  the whole array was fine until one entry bloated to hundreds of MB
+   *  (A83) and every position tick paid to rewrite it. See storage.js's
+   *  reading_progress section. */
+  async persistBookProgress(id, chapter, page) {
+    await patchReadingProgress(id, { currentChapter: chapter, currentPage: page })
+  },
 
   // ── Ollama (optional AI) ─────────────────────────────────────────────────────
   ollamaUrl: '',
@@ -639,6 +746,7 @@ const useAppStore = create((set, get) => ({
       getJSON('flashcard_decks', []),
       loadCalendarEvents(),
     ])
+    getJSON('external_refs', []).then(refs => { if (Array.isArray(refs) && refs.length) set({ externalRefs: refs }) }).catch(() => {})
     set({
       library:    (fastLib?.length) ? fastLib : [],
       notebooks:  (fastNb?.length)  ? fastNb  : SEED_NOTEBOOKS,
@@ -647,6 +755,19 @@ const useAppStore = create((set, get) => ({
       flashcardDecks: flashcardDecks ?? [],
       calendarEvents: calendarEvents ?? [],
     })
+
+    // ── Step 3.5: relocate root-level bookkeeping into _internal/ BEFORE the
+    //           reconcile pass below reads nb_index/sketches_index/etc. Must be
+    //           AWAITED here, not fired-and-forgotten after — on the first
+    //           launch after A87 shipped, running it after let the reconcile
+    //           pass find _internal/nb_index.json missing (not moved yet),
+    //           treat every real note/sketchbook as an orphan, and mass-adopt
+    //           them with fresh ids; the migration then ran, saw its own
+    //           freshly-written (bad) file at the destination, and skipped —
+    //           stranding the real data at root. See A93. ──
+    await migrateRootFilesToInternal().catch(err => console.warn('[Gnos] _internal migration error:', err))
+    await migrateTypeMetaCachesToInternal().catch(err => console.warn('[Gnos] type-meta cache migration error:', err))
+    await migrateCachesToLocal().catch(err => console.warn('[Gnos] local cache migration error:', err))
 
     // ── Step 4: RECONCILE — authoritative folder scans (self-heal trash/renames,
     //           attach book covers). Overwrites the fast-pass data once ready. ──
@@ -660,11 +781,37 @@ const useAppStore = create((set, get) => ({
       notebooks:  (notebooks?.length)  ? notebooks  : SEED_NOTEBOOKS,
       sketchbooks:(sketchbooks?.length)? sketchbooks : SEED_SKETCHBOOKS,
     })
-    migrateBooksToNamedFolders(library ?? []).catch(err => console.warn('[Gnos] Migration error:', err))
-    migrateNotebooksToFolders(notebooks ?? []).catch(err => console.warn('[Gnos] Notebook migration error:', err))
-    migrateSketchbooksToFolders(sketchbooks ?? []).catch(err => console.warn('[Gnos] Sketchbook migration error:', err))
-    migrateAudiobooksToFolders(library ?? []).catch(err => console.warn('[Gnos] Audio migration error:', err))
+    const booksFlatP = migrateBooksToFlat(library ?? [])
+      .then(r => { if (r?.migrated) console.info(`[Gnos] Flattened ${r.migrated} book(s)`) })
+      .catch(err => console.warn('[Gnos] Book migration error:', err))
+    const notebookFoldersP = migrateNotebooksToFolders(notebooks ?? []).catch(err => console.warn('[Gnos] Notebook migration error:', err))
+    const sketchFlatP = migrateSketchbooksToFolders(sketchbooks ?? [])
+      .then(() => migrateSketchbooksToFlat())
+      .then(r => { if (r?.migrated) console.info(`[Gnos] Flattened ${r.migrated} sketchbook(s) → single .excalidraw files`) })
+      .catch(err => console.warn('[Gnos] Sketchbook migration error:', err))
+    const audioFlatP = migrateAudiobooksToFlat(library ?? [])
+      .then(r => { if (r?.migrated) console.info(`[Gnos] Flattened ${r.migrated} audiobook(s)`) })
+      .catch(err => console.warn('[Gnos] Audio migration error:', err))
     cleanupTrash().catch(err => console.debug('[Gnos] Trash cleanup error:', err))
+    const notebookChainP = cleanupLegacyNotebookFiles()
+      .then(r => { if (r?.removed) console.info(`[Gnos] Removed ${r.removed} legacy notebook junk file(s) → OS Trash`) })
+      .then(() => migrateNotebooksToFlat())
+      .then(r => { if (r?.migrated) console.info(`[Gnos] Flattened ${r.migrated} notebook(s) → single .md files`) })
+      .then(() => migrateNotebookFoldersToIndex())
+      .then(r => { if (r?.migrated) console.info(`[Gnos] Indexed ${r.migrated} folder-note(s), dropped their meta.json`) })
+      .catch(err => console.debug('[Gnos] Notebook flatten/cleanup error:', err))
+    // A folder at archive root IS a collection, full stop — sync collections_meta
+    // against disk (registers folders dropped in externally, fixes notebook/
+    // sketchbook membership to match physical location), THEN backfill any
+    // pre-A96 membership whose file was never physically moved. Both wait for
+    // every flatten migration above so paths resolve against their final
+    // on-disk shape (fire-and-forget overall, just internally sequenced).
+    Promise.allSettled([booksFlatP, notebookFoldersP, sketchFlatP, audioFlatP, notebookChainP])
+      .then(() => syncFolderCollections())
+      .then(() => getJSON('collections_meta', []))
+      .then(collections => { if (collections?.length) set({ collections }) })
+      .then(() => migrateCollectionMembershipToFolders())
+      .catch(err => console.warn('[Gnos] collection sync/backfill error:', err))
   },
 
   /** Re-scan notebook folders so markdown edited outside the app (synced from
@@ -675,6 +822,12 @@ const useAppStore = create((set, get) => ({
     try {
       const notebooks = await loadNotebooksMeta()
       if (notebooks?.length) set({ notebooks })
+      // Same "folder on disk = collection" reconciliation as init() — cheap,
+      // and means a folder (or a file dropped into one) shows up live instead
+      // of needing a relaunch.
+      await syncFolderCollections()
+      const collections = await getJSON('collections_meta', [])
+      if (collections?.length) set({ collections })
     } catch (err) { console.debug('[Gnos] rescanNotebooks failed', err) }
   },
 

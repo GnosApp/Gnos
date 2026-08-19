@@ -356,6 +356,48 @@ async fn quick_note_toggle(app: tauri::AppHandle) {
     toggle_quick_note(&app);
 }
 
+/// Move one or more paths (files or folders) to the OS Trash/Recycle Bin —
+/// recoverable by the user in Finder, and actually gone from the archive folder.
+/// Skips paths that don't exist (already deleted). Returns the paths that were
+/// trashed so the caller can confirm.
+#[tauri::command]
+async fn move_to_trash(paths: Vec<String>) -> Result<Vec<String>, String> {
+    let mut trashed = Vec::new();
+    for p in paths {
+        if !std::path::Path::new(&p).exists() {
+            continue;
+        }
+        trash::delete(&p).map_err(|e| format!("{p}: {e}"))?;
+        trashed.push(p);
+    }
+    Ok(trashed)
+}
+
+/// Mark a path hidden from Finder/Explorer WITHOUT renaming it — the archive's
+/// `_internal/` bookkeeping folder needs to stay out of the user's way, but a
+/// leading-dot rename is off the table (the fs capability scope rejects
+/// dot-prefixed paths outright, the exact bug that broke the notebook index
+/// twice before — see A52). This sets the OS-level hidden attribute instead:
+/// same path, same normal file access for the app, just invisible in a
+/// default Finder/Explorer browse. Best-effort — a failure here should never
+/// block the caller, so errors are swallowed rather than propagated.
+#[tauri::command]
+async fn hide_path(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("chflags")
+            .args(["hidden", &path])
+            .status();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("attrib")
+            .args(["+h", &path])
+            .status();
+    }
+    Ok(())
+}
+
 /// Resize (and reveal) the quick note window. Used by the popup on boot to
 /// restore its saved size before becoming visible, and by Settings to apply
 /// a size change live while the popup is open.
@@ -829,6 +871,8 @@ pub fn run() {
       copy_file_bytes,
       open_in_finder,
       quick_note_toggle,
+      move_to_trash,
+      hide_path,
       quick_note_set_size,
       open_settings_window,
       open_profile_window,

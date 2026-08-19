@@ -37,9 +37,12 @@ async function mount() {
     await import('@excalidraw/excalidraw/index.css')
     ;({ default: Root } = await import('./App.jsx'))
   }
+  const { IconDefaults } = await import('@/components/icons')
   root.render(
     <StrictMode>
-      <Root />
+      <IconDefaults>
+        <Root />
+      </IconDefaults>
     </StrictMode>,
   )
 }

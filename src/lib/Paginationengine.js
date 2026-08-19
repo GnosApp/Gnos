@@ -18,6 +18,8 @@
 // never disturbs the visible strip.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { markScanStep } from '@/lib/readerPerf'
+
 // ── Module state ──────────────────────────────────────────────────────────────
 let _pageStyleEl  = null
 let _wrapWords    = false
@@ -221,6 +223,7 @@ function _columnCSS(heightPx, widthPx) {
 
 export function setupColumns(cardEl, prefs) {
   if (!cardEl) return
+  _hookInputActivity()   // idempotent — powers the scan's "user is present" check
 
   cardEl.innerHTML = ''
 
@@ -527,9 +530,42 @@ export function cancelScan() {
   _scanAbort = true
 }
 
+// Yield to the browser between scan steps. NOTE: no aggressive `timeout` here.
+// A `{timeout: 2000}` defeats the entire point — requestIdleCallback fires after
+// the timeout REGARDLESS of whether the thread is idle, so during active reading
+// it fired constantly and each firing ran a ~261ms chapter layout that any page
+// flip then had to queue behind (measured: flip p95 1211ms ≈ long-frame max
+// 1202ms). We now wait for genuine idle; SCAN_FALLBACK_MS is a long backstop so
+// the index still completes when the user is simply reading slowly.
+const SCAN_FALLBACK_MS = 30000
 const _idle = typeof requestIdleCallback === 'function'
-  ? (fn) => requestIdleCallback(fn, { timeout: 2000 })
-  : (fn) => setTimeout(fn, 200)
+  ? (fn) => requestIdleCallback(fn, { timeout: SCAN_FALLBACK_MS })
+  : (fn) => setTimeout(fn, 400)
+
+// How long after the last page turn the scan stays out of the way. A page of
+// reading is tens of seconds, so the old 3s backoff meant the scan reliably woke
+// up mid-read and stalled the very next flip.
+const SCAN_NAV_BACKOFF_MS = 9000
+// Don't start a chapter layout unless the browser says there's real idle time.
+const MIN_IDLE_MS = 12
+
+// The scan used to defer only on page FLIPS — but a reader spends most of the
+// time reading, not flipping (a measured session had 17 long frames against
+// just 2 flips), so the scan happily laid out chapters while the user sat
+// looking at the page. Any real input now counts as "user is present", so the
+// expensive build only runs when they're genuinely away from the book.
+let _lastInputTime = 0
+let _inputHooked = false
+function _hookInputActivity() {
+  if (_inputHooked || typeof window === 'undefined') return
+  _inputHooked = true
+  const mark = () => { _lastInputTime = Date.now() }
+  for (const ev of ['pointerdown', 'pointermove', 'wheel', 'keydown', 'touchstart', 'scroll']) {
+    window.addEventListener(ev, mark, { passive: true, capture: true })
+  }
+}
+/** Last moment the user did anything (flip OR any input). */
+function _lastActivity() { return Math.max(_lastNavTime, _lastInputTime) }
 
 // How many chapters either side of the current one keep their PRE-RENDERED HTML
 // in the chapter cache (prewarm). Counts are kept for every chapter regardless.
@@ -562,18 +598,42 @@ export function scanAllChapters(chapters, onChapterDone, opts = {}) {
   const around = opts.around ?? null
   const order  = _scanOrder(chapters.length, around, opts.neighborsOnly)
   let i = 0
+  // Neighbour prewarm is small (radius 2) and high-value — it's what makes a
+  // chapter crossing a 5ms cache hit instead of a full re-layout, so it must
+  // stay responsive. The full-book index build is the expensive, non-urgent one
+  // that has to keep out of the reader's way.
+  const backoff = opts.neighborsOnly ? 2500 : SCAN_NAV_BACKOFF_MS
+  // WHICH activity defers this scan matters enormously:
+  //  • Neighbour prewarm — gate on PAGE TURNS only. It is small (radius 2) and
+  //    is the thing that keeps a chapter crossing at ~11ms instead of ~1111ms.
+  //    Gating it on general presence (mouse movement) meant it never ran while
+  //    the user was reading, and the cache hit rate collapsed 100% → 20%.
+  //  • Full-book index build — gate on ANY presence, since it's expensive and
+  //    entirely non-urgent.
+  const sinceActivity = opts.neighborsOnly
+    ? () => Date.now() - _lastNavTime
+    : () => Date.now() - _lastActivity()
 
-  function step() {
+  function step(deadline) {
     if (_scanAbort || !_scanEl || i >= order.length) {
       if (_scanEl) _scanEl.innerHTML = ''   // free the scan DOM when done
       return
     }
 
     // Back off while the user is reading/paging — a chapter layout here is a
-    // guaranteed dropped frame. 3s covers a normal reading cadence (a flip every
-    // 1.5–3s) so scan steps never collide with the next turn.
-    if (Date.now() - _lastNavTime < 3000) {
-      setTimeout(step, 3000)
+    // guaranteed dropped frame (and the flip that lands on it eats the whole
+    // ~261ms). Re-checked again immediately before the layout below, because a
+    // step can sit queued for a long time before it actually runs.
+    if (sinceActivity() < backoff) {
+      setTimeout(() => _idle(step), backoff)
+      return
+    }
+
+    // requestIdleCallback fires on its timeout even when the thread is busy.
+    // If there's no real idle time, don't start a multi-hundred-ms layout.
+    if (deadline && typeof deadline.timeRemaining === 'function'
+        && !deadline.didTimeout && deadline.timeRemaining() < MIN_IDLE_MS) {
+      _idle(step)
       return
     }
 
@@ -592,11 +652,21 @@ export function scanAllChapters(chapters, onChapterDone, opts = {}) {
       return
     }
 
+    // Final gate: the user may have turned a page while this step was queued.
+    // Bail rather than start an uninterruptible layout under their fingers.
+    if (sinceActivity() < backoff) {
+      i--   // retry this chapter later
+      setTimeout(() => _idle(step), backoff)
+      return
+    }
+
+    const _scanT0 = performance.now()
     _scanEl.innerHTML = blocksToDisplayHTML(chapters[chIdx].blocks)
 
     requestAnimationFrame(() => {
       if (_scanAbort || !_scanEl) return
-      const count = _measurePagesIn(_scanEl)
+      const count = _measurePagesIn(_scanEl)   // forces the chapter's full layout
+      markScanStep(performance.now() - _scanT0, chIdx)
       // Prewarm: the scan container has IDENTICAL column geometry to the strip,
       // so its rendered HTML is a valid cache entry — first visit to a nearby
       // chapter becomes an instant cache hit instead of a full re-layout.

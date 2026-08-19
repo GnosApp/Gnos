@@ -3,7 +3,7 @@ import useAppStore, { useAppStoreShallow } from '@/store/useAppStore'
 import { PaneContext } from '@/lib/PaneContext'
 import { useIsActiveTab } from '@/lib/useIsActiveTab'
 import { useIsMobile } from '@/lib/useIsMobile'
-import { loadBookContent, addReadingMinutes, loadNotebookContent, saveNotebookContent, getJSON, setJSON } from '@/lib/storage'
+import { loadBookContent, addReadingMinutes, loadNotebookContent, saveNotebookContent, getJSON, setJSON, getLocalJSON, setLocalJSON } from '@/lib/storage'
 import QuickAccess, { useTitlebarMeta } from '@/components/QuickAccess'
 import { generateCoverColor } from '@/lib/utils'
 import {
@@ -16,10 +16,12 @@ import {
   getCachedChapter, renderChapterIntoBuffer, swapBufferToStrip,
   getTotalPages, getLayoutMetrics,
 } from '@/lib/Paginationengine'
+import { markFlip, markChapterStart, markChapterEnd, markRender, perfOn } from '@/lib/readerPerf'
 
 // ── SettingsPanel ─────────────────────────────────────────────────────────────
 
 import { Toggle, Slider, Select } from '@/components/Controls'
+import { ALargeSmall, AlignJustify, Bookmark, BookText, ChevronDown, ChevronLeft, ChevronRight, Copy, Globe, Highlighter, Languages, Pause, Play, Share2, SkipBack, SkipForward, StretchVertical, Trash2, Volume2, X } from 'lucide-react'
 
 function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose, piperVoices = [] }) {
   const { fontSize, lineSpacing, fontFamily, justifyText, tapToTurn, twoPage, highlightWords, underlineLine, pageTransition, fontWeight, ttsRate } = prefs
@@ -28,7 +30,7 @@ function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose, piperVoices = 
     <div className="settings-panel" style={{ display: 'block' }} onClick={e => e.stopPropagation()}>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14,paddingBottom:12,borderBottom:'1px solid var(--borderSubtle)'}}>
         <span style={{fontSize:13,fontWeight:700,color:'var(--text)'}}>Reader Settings</span>
-        <button className="settings-panel-close" onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg></button>
+        <button className="settings-panel-close" onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><X size={9} strokeWidth={1.5} /></button>
       </div>
       <div className="section-label">DISPLAY</div>
       <div className="reader-slider-row">
@@ -40,20 +42,12 @@ function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose, piperVoices = 
         <span className="reader-slider-icon-lg" style={{ fontFamily: 'Georgia, serif', fontWeight: 700 }}>A</span>
       </div>
       <div className="reader-slider-row">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
-          <line x1="2" y1="4" x2="14" y2="4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-          <line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-          <line x1="2" y1="12" x2="14" y2="12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-        </svg>
+        <AlignJustify size={16} strokeWidth={1.4} style={{ flexShrink: 0 }} />
         <Slider min={1.4} max={2.4} step={0.1} value={lineSpacing}
           onChange={v => onPrefChange('lineSpacing', v)}
           onCommit={onRebuild}
           style={{ flex: 1 }} />
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
-          <line x1="2" y1="2" x2="14" y2="2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-          <line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-          <line x1="2" y1="14" x2="14" y2="14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-        </svg>
+        <StretchVertical size={16} strokeWidth={1.4} style={{ flexShrink: 0 }} />
       </div>
       <label style={{ display: 'block', fontSize: 12, marginBottom: 12 }}>
         <div style={{ marginBottom: 5 }}>Font</div>
@@ -96,7 +90,7 @@ function SettingsPanel({ prefs, onPrefChange, onRebuild, onClose, piperVoices = 
                 style={{
                   padding: '3px 10px', fontSize: 11, fontWeight: 600, borderRadius: 6, cursor: 'pointer',
                   border: `1px solid ${pageTransition === opt ? 'var(--accent)' : 'var(--border)'}`,
-                  background: pageTransition === opt ? 'rgba(56,139,253,0.12)' : 'var(--surfaceAlt)',
+                  background: pageTransition === opt ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'var(--surfaceAlt)',
                   color: pageTransition === opt ? 'var(--accent)' : 'var(--textDim)',
                   transition: 'all 0.1s',
                   textTransform: 'capitalize',
@@ -209,15 +203,15 @@ function ReviewPanel({ highlights, bookmarks, chapters, onJump, onLocate, onClos
             <button onClick={onToggleBookmark} title={isBookmarked ? 'Remove bookmark' : 'Bookmark this page'}
               style={{ height: 24, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surfaceAlt)', color: isBookmarked ? 'var(--accent)' : 'var(--textDim)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, padding: '0 8px', fontSize: 10.5, fontWeight: 600, fontFamily: 'inherit' }}>
               {isBookmarked
-                ? <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M3 2h10a1 1 0 0 1 1 1v11l-6-3.5L2 14V3a1 1 0 0 1 1-1z"/></svg>
-                : <svg width="10" height="10" viewBox="0 0 16 16" fill="none"><path d="M3 2h10a1 1 0 0 1 1 1v11l-6-3.5L2 14V3a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/></svg>}
+                ? <Bookmark size={10} strokeWidth={1.6} fill="currentColor" />
+                : <Bookmark size={10} strokeWidth={1.6} />}
               {isBookmarked ? 'Bookmarked' : 'Bookmark page'}
             </button>
           )}
           <button onClick={onClose} title="Close" style={{ width: 24, height: 24, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surfaceAlt)', color: 'var(--textDim)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
             onMouseEnter={e => { e.currentTarget.style.background = 'rgba(248,81,73,0.12)'; e.currentTarget.style.color = '#f85149' }}
             onMouseLeave={e => { e.currentTarget.style.background = 'var(--surfaceAlt)'; e.currentTarget.style.color = 'var(--textDim)' }}>
-            <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+            <X size={9} strokeWidth={1.5} />
           </button>
         </div>
       </div>
@@ -293,9 +287,7 @@ function ReviewPanel({ highlights, bookmarks, chapters, onJump, onLocate, onClos
                     <button onClick={e => { e.stopPropagation(); onDeleteHighlight(hl.id) }}
                       style={{ background: 'none', border: 'none', color: 'var(--textDim)', cursor: 'pointer', padding: '0 2px', flexShrink: 0 }}
                       title="Delete">
-                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-                        <path d="M3 4h10M5 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1M6 7v5M10 7v5M4 4l.7 9h6.6L12 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-                      </svg>
+                      <Trash2 size={12} strokeWidth={1.4} />
                     </button>
                   </div>
                   {hl.note && editingNoteId !== hl.id && (
@@ -356,9 +348,7 @@ function ReviewPanel({ highlights, bookmarks, chapters, onJump, onLocate, onClos
               onMouseEnter={e => e.currentTarget.style.background = 'var(--hover)'}
               onMouseLeave={e => e.currentTarget.style.background = 'none'}
               onClick={() => { onJump(bm.chapterIdx, bm.page); onClose() }}>
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="var(--accent)" style={{ flexShrink: 0 }}>
-                <path d="M3 2h10a1 1 0 0 1 1 1v11l-6-3.5L2 14V3a1 1 0 0 1 1-1z"/>
-              </svg>
+              <Bookmark size={12} strokeWidth={1.4} color="var(--accent)" fill="var(--accent)" style={{ flexShrink: 0 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12, color: 'var(--text)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bm.label}</div>
                 <div style={{ fontSize: 10, color: 'var(--textDim)' }}>{chapters[bm.chapterIdx]?.title || `Chapter ${bm.chapterIdx}`} · p.{bm.page + 1}</div>
@@ -366,9 +356,7 @@ function ReviewPanel({ highlights, bookmarks, chapters, onJump, onLocate, onClos
               <button onClick={e => { e.stopPropagation(); onDeleteBookmark(bm.id) }}
                 style={{ background: 'none', border: 'none', color: 'var(--textDim)', cursor: 'pointer', padding: '0 2px', flexShrink: 0 }}
                 title="Delete">
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-                  <path d="M3 4h10M5 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1M6 7v5M10 7v5M4 4l.7 9h6.6L12 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
+                <Trash2 size={12} strokeWidth={1.4} />
               </button>
             </div>
           ))}
@@ -490,6 +478,11 @@ export default function ReaderView() {
     ttsRate:         s.ttsRate ?? 1.0,
     piperVoice:      s.piperVoice ?? '',
   }))
+
+  // perf: time this render pass (no-op unless __readerPerf.on()). Paired with the
+  // useLayoutEffect below, which fires after React has committed to the DOM.
+  const _renderT0 = perfOn() ? performance.now() : 0
+  useLayoutEffect(() => { if (_renderT0) markRender(performance.now() - _renderT0) })
 
   const cardRef      = useRef(null)
   const containerRef = useRef(null)
@@ -679,7 +672,7 @@ export default function ReaderView() {
       bookIdRef.current = activeBook.id
       setIndexComplete(false)
 
-      const rawChapters = await loadBookContent(activeBook.id)
+      const rawChapters = await loadBookContent(activeBook)
       if (cancelled) return
       if (!rawChapters) { setLoading(false); return }
 
@@ -783,10 +776,12 @@ export default function ReaderView() {
     // Cache hit (visited or prewarmed): buffer gets the prebuilt HTML.
     const cached = getCachedChapter(chapterAtRender)
     if (cached) {
+      const _t = markChapterStart()
       renderChapterIntoBuffer(null, cached.html)
       requestAnimationFrame(() => {
         if (prevChapterRef.current !== chapterAtRender) return
         const count = swapBufferToStrip(curPageRef.current) ?? cached.count
+        markChapterEnd(_t, { chapter: chapterAtRender, cached: true, count })
         chapterPageCountsRef.current[chapterAtRender] = count
         setPageCount(count)
         resolvePendingLocate(chapterAtRender)
@@ -801,11 +796,13 @@ export default function ReaderView() {
     clearTimeout(chapterRenderRef.current)
     chapterRenderRef.current = setTimeout(() => {
       if (prevChapterRef.current !== chapterAtRender) return
+      const _t = markChapterStart()
       renderChapterIntoBuffer(chapters[chapterAtRender].blocks)
       requestAnimationFrame(() => requestAnimationFrame(() => {
         if (prevChapterRef.current !== chapterAtRender) return
         const count = swapBufferToStrip(curPageRef.current)
         if (count == null) return
+        markChapterEnd(_t, { chapter: chapterAtRender, cached: false, count })
         chapterPageCountsRef.current[chapterAtRender] = count
         setPageCount(count)
         cacheCurrentChapter(chapterAtRender, count)
@@ -845,6 +842,12 @@ export default function ReaderView() {
   // which re-renders every subscriber (incl. the kept-alive LibraryView grid) —
   // doing that per page flip was the main source of flip lag. Local refs/state
   // stay current; the store catches up 400ms after the user pauses.
+  //
+  // The disk write itself goes to persistBookProgress (its own small
+  // reading_progress.json), NOT persistLibrary — this used to rewrite the
+  // ENTIRE library array on every settle-after-pause while reading, which was
+  // fine until one book's metadata bloated to hundreds of MB (A83) and every
+  // position tick paid to rewrite all of it, for every book, repeatedly.
   const progressWriteRef = useRef(null)
   function saveProgress(chapter, page) {
     clearTimeout(progressWriteRef.current)
@@ -854,11 +857,11 @@ export default function ReaderView() {
       const savedChapter = Math.max(0, chapter - 1)
       const savedPage    = chapter === 0 ? 0 : page
       useAppStore.getState().updateBookProgress(book.id, savedChapter, savedPage)
-      // Debounce the localStorage write — updateBookProgress keeps state current,
-      // persistLibrary only needs to flush once the user pauses.
+      // Debounce the disk write — updateBookProgress keeps in-memory state
+      // current, the small progress file only needs to flush once the user pauses.
       clearTimeout(persistTimerRef.current)
       persistTimerRef.current = setTimeout(() => {
-        useAppStore.getState().persistLibrary()
+        useAppStore.getState().persistBookProgress(book.id, savedChapter, savedPage)
       }, 500)
     }, 400)
   }
@@ -871,8 +874,9 @@ export default function ReaderView() {
     const id = bookIdRef.current
     if (!id) return
     const ch = curChapterRef.current, pg = curPageRef.current
-    useAppStore.getState().updateBookProgress(id, Math.max(0, ch - 1), ch === 0 ? 0 : pg)
-    useAppStore.getState().persistLibrary()
+    const savedChapter = Math.max(0, ch - 1), savedPage = ch === 0 ? 0 : pg
+    useAppStore.getState().updateBookProgress(id, savedChapter, savedPage)
+    useAppStore.getState().persistBookProgress(id, savedChapter, savedPage)
   }, [])
 
   // Schedules the settle render: 180ms after the last rapid tap, show the page
@@ -895,6 +899,7 @@ export default function ReaderView() {
   // rapid. Number update is immediate when slow, deferred to settle when rapid.
   function flipTo(np, ch, trans, rapid) {
     curPageRef.current = np
+    markFlip(np)                         // perf: input → painted frame (no-op unless __readerPerf.on())
     showPage(np, rapid ? false : trans)  // showPage also self-detects rapid → instant
     if (rapid) {
       scheduleSettle()
@@ -975,7 +980,7 @@ export default function ReaderView() {
     const key = computeLayoutKey()
     layoutKeyRef.current = key
     const nCh = chaptersRef.current.length
-    const store = (await getJSON(pageIndexStoreKey(), {})) || {}
+    const store = (await getLocalJSON(pageIndexStoreKey(), {})) || {}
     const stored = store[key]
     if (Array.isArray(stored) && stored.length === nCh && layoutKeyRef.current === key) {
       for (let i = 0; i < nCh; i++) {
@@ -1015,10 +1020,10 @@ export default function ReaderView() {
       }
       setIndexBuilding(false)
       setIndexComplete(true)
-      getJSON(pageIndexStoreKey(), {}).then(s => {
+      getLocalJSON(pageIndexStoreKey(), {}).then(s => {
         const store = s || {}
         store[key] = counts
-        setJSON(pageIndexStoreKey(), store).catch(() => {})
+        setLocalJSON(pageIndexStoreKey(), store).catch(() => {})
       })
     }, { around: currentChapterIdx, hasCount: (i) => chapterPageCountsRef.current[i] != null })
   }
@@ -1864,13 +1869,13 @@ export default function ReaderView() {
       <style>{`
         /* ── Word hover features ──────────────────────────────────────────── */
         .highlight-words .col-word:hover {
-          background: rgba(56,139,253,0.22);
+          background: color-mix(in srgb, var(--accent) 22%, transparent);
           border-radius: 2px;
           cursor: pointer;
         }
         .underline-line .col-word.same-line {
           text-decoration: underline;
-          text-decoration-color: rgba(56,139,253,0.5);
+          text-decoration-color: color-mix(in srgb, var(--accent) 50%, transparent);
           text-underline-offset: 2px;
         }
 
@@ -1988,9 +1993,9 @@ export default function ReaderView() {
         .tts-ctrl.primary {
           border-color: var(--accent); color: var(--accent);
           width: 36px; height: 36px; border-radius: 9px;
-          box-shadow: 0 0 0 2px rgba(56,139,253,0.15);
+          box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent);
         }
-        .tts-ctrl.primary:hover { background: rgba(56,139,253,0.1); }
+        .tts-ctrl.primary:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
         /* X close button */
         .tts-close-btn {
           width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0;
@@ -2061,7 +2066,7 @@ export default function ReaderView() {
 
         /* ── TTS word highlight ───────────────────────────────────────────── */
         .col-word.tts-word-active {
-          background: rgba(56,139,253,0.28);
+          background: color-mix(in srgb, var(--accent) 28%, transparent);
           border-radius: 2px;
           outline: none;
         }
@@ -2069,7 +2074,7 @@ export default function ReaderView() {
         /* ── TTS sentence underline ──────────────────────────────────────── */
         .col-word.tts-sentence-active {
           text-decoration: underline;
-          text-decoration-color: rgba(56,139,253,0.55);
+          text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent);
           text-underline-offset: 2px;
           text-decoration-thickness: 1.5px;
         }
@@ -2095,9 +2100,7 @@ export default function ReaderView() {
               <span style={{ flex: 1, minWidth: 0, fontSize: 11, fontWeight: 700, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {activeBook?.title || ''}
               </span>
-              <svg width="7" height="7" viewBox="0 0 10 10" fill="none" style={{ flexShrink: 0, opacity: 0.45 }}>
-                <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <ChevronDown size={7} strokeWidth={1.6} style={{ flexShrink: 0, opacity: 0.45 }} />
             </div>
             {/* Row 2: Chapter · page X/Y · N left */}
             <div style={{ width: '100%', minWidth: 0, fontSize: 9, color: 'var(--textDim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -2127,25 +2130,17 @@ export default function ReaderView() {
         {/* Bookmarks & Notes — combined panel (bookmark toggle lives inside) */}
         <button className={`gnos-settings-btn${reviewOpen ? ' active' : ''}`} title="Bookmarks & notes"
           onClick={e => { e.stopPropagation(); setReviewOpen(o => !o); setSettingsOpen(false); setDropdownOpen(false) }}>
-          <svg width="14" height="14" viewBox="0 0 16 16" fill={isCurrentPageBookmarked() ? 'currentColor' : 'none'}>
-            <path d="M3 2h10a1 1 0 0 1 1 1v11l-6-3.5L2 14V3a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
-          </svg>
+          <Bookmark size={14} strokeWidth={1.7} fill={isCurrentPageBookmarked() ? 'currentColor' : 'none'} />
         </button>
         {/* TTS playback */}
         <button className={`gnos-settings-btn${ttsActive ? ' active' : ''}`} title="Read aloud (TTS)"
           onClick={() => ttsActive ? ttsStop() : ttsStart(null)}>
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <path d="M2 5.5h3l4-3.5v11L5 9.5H2v-4z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
-            <path d="M11 5c.9.8 1.5 1.8 1.5 3s-.6 2.2-1.5 3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
-          </svg>
+          <Volume2 size={14} strokeWidth={1.7} />
         </button>
         {/* Reader settings (viewer + audio combined in one panel) — "Aa" text-size icon */}
         <button className={`gnos-settings-btn${settingsOpen ? ' active' : ''}`} title="Reader settings"
           onClick={e => { e.stopPropagation(); setSettingsOpen(o => !o); setDropdownOpen(false); setReviewOpen(false) }}>
-          <svg width="17" height="17" viewBox="0 0 20 20" fill="none">
-            <path d="M3 13.5L6.6 5h.9L11 13.5M4 10.5h5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-            <path d="M12.5 9c.5-.6 1.3-1 2.1-1 1.4 0 2.4 1 2.4 2.5v3M17 12.5a2.1 2.1 0 1 1-2.1-2h2.1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
+          <ALargeSmall size={17} strokeWidth={1.6} />
         </button>
       </QuickAccess>
 
@@ -2197,16 +2192,12 @@ export default function ReaderView() {
           <div className="tap-zone left" onClick={prevPage}
             style={sideNavOpen ? { left: 238 } : undefined}>
             <div className="tap-icon">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M9 2L4 7l5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <ChevronLeft size={14} strokeWidth={1.8} />
             </div>
           </div>
           <div className="tap-zone right" onClick={nextPage}>
             <div className="tap-icon">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M5 2l5 5-5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <ChevronRight size={14} strokeWidth={1.8} />
             </div>
           </div>
         </>
@@ -2228,9 +2219,7 @@ export default function ReaderView() {
             style={{ position:'absolute', top:0, bottom:0, left:0, width:'12%', zIndex:10,
               display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer' }}
           >
-            <svg className="reader-margin-arrow" width="20" height="36" viewBox="0 0 20 36" fill="none">
-              <path d="M14 4L4 18l10 14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+            <ChevronLeft className="reader-margin-arrow" size={28} strokeWidth={2.5} />
           </div>
         )}
         {/* Right margin hover chevron — always available */}
@@ -2241,9 +2230,7 @@ export default function ReaderView() {
             style={{ position:'absolute', top:0, bottom:0, right:0, width:'12%', zIndex:10,
               display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer' }}
           >
-            <svg className="reader-margin-arrow" width="20" height="36" viewBox="0 0 20 36" fill="none">
-              <path d="M6 4l10 14-10 14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+            <ChevronRight className="reader-margin-arrow" size={28} strokeWidth={2.5} />
           </div>
         )}
 
@@ -2327,22 +2314,16 @@ export default function ReaderView() {
       {isMobile && ttsActive && (
         <div className="mobile-tts-bar">
           <button className="mobile-tts-bar-btn" onClick={() => ttsNav(-1)} title="Previous sentence">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-              <polygon points="19,4 9,12 19,20" fill="currentColor"/>
-              <line x1="5" y1="4" x2="5" y2="20" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
-            </svg>
+            <SkipBack size={14} strokeWidth={2} fill="currentColor" />
           </button>
           <button className="mobile-tts-bar-btn primary" onClick={ttsTogglePause} title={ttsPaused ? 'Resume' : 'Pause'}>
             {ttsPaused
-              ? <svg width="15" height="15" viewBox="0 0 12 12" fill="none"><polygon points="2,1 11,6 2,11" fill="currentColor"/></svg>
-              : <svg width="15" height="15" viewBox="0 0 12 12" fill="none"><rect x="2" y="1" width="3" height="10" rx="0.5" fill="currentColor"/><rect x="7" y="1" width="3" height="10" rx="0.5" fill="currentColor"/></svg>
+              ? <Play size={15} strokeWidth={1} fill="currentColor" />
+              : <Pause size={15} strokeWidth={1} fill="currentColor" />
             }
           </button>
           <button className="mobile-tts-bar-btn" onClick={() => ttsNav(1)} title="Next sentence">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-              <polygon points="5,4 15,12 5,20" fill="currentColor"/>
-              <line x1="19" y1="4" x2="19" y2="20" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
-            </svg>
+            <SkipForward size={14} strokeWidth={2} fill="currentColor" />
           </button>
         </div>
       )}
@@ -2428,13 +2409,7 @@ export default function ReaderView() {
                     }
                     setWordMenu(null)
                   }}>
-                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                      <circle cx="12" cy="3" r="1.8" stroke="currentColor" strokeWidth="1.3"/>
-                      <circle cx="12" cy="13" r="1.8" stroke="currentColor" strokeWidth="1.3"/>
-                      <circle cx="3" cy="8" r="1.8" stroke="currentColor" strokeWidth="1.3"/>
-                      <line x1="4.7" y1="7" x2="10.3" y2="4" stroke="currentColor" strokeWidth="1.3"/>
-                      <line x1="4.7" y1="9" x2="10.3" y2="12" stroke="currentColor" strokeWidth="1.3"/>
-                    </svg>
+                    <Share2 size={13} strokeWidth={1.3} />
                     Share
                   </button>
                   <div className="word-menu-sep" />
@@ -2451,7 +2426,7 @@ export default function ReaderView() {
                     }
                     setWordMenu(null)
                   }}>
-                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M1 1l14 14M15 1L1 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                    <X size={13} strokeWidth={1.5} />
                     Remove
                   </button>
                 </>
@@ -2487,11 +2462,7 @@ export default function ReaderView() {
               })
               .catch(() => setDefPopup(p => p && ({ ...p, loading: false, content: 'Could not load definition.' })))
           }}>
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <path d="M3 14V3a1.5 1.5 0 0 1 1.5-1.5h9V14H4.5A1.5 1.5 0 0 1 3 12.5v0A1.5 1.5 0 0 1 4.5 11H13.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-              <line x1="6" y1="5.5" x2="11" y2="5.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-              <line x1="6" y1="8" x2="10" y2="8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-            </svg>
+            <BookText size={14} strokeWidth={1.3} />
             Define
           </button>
           <div className="word-menu-sep" />
@@ -2550,9 +2521,7 @@ export default function ReaderView() {
             doTranslate()
           }}>
             {/* Language translation icon from svgrepo.com/svg/324210/language-translation */}
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z" fill="currentColor"/>
-            </svg>
+            <Languages size={14} strokeWidth={1.6} />
             Translate
           </button>
           <div className="word-menu-sep" />
@@ -2560,9 +2529,7 @@ export default function ReaderView() {
             ttsStart(wordMenu.sentence || wordMenu.word)
             setWordMenu(null)
           }}>
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <polygon points="4,3 13,8 4,13" fill="currentColor"/>
-            </svg>
+            <Play size={14} strokeWidth={1} fill="currentColor" />
             Play
           </button>
           <div className="word-menu-sep" />
@@ -2578,19 +2545,13 @@ export default function ReaderView() {
             }).catch(() => {})
             setWordMenu(null)
           }}>
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <rect x="5" y="3" width="9" height="11" rx="1" stroke="currentColor" strokeWidth="1.3"/>
-              <path d="M3 13H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-            </svg>
+            <Copy size={13} strokeWidth={1.3} />
             Copy quote
           </button>
           <div className="word-menu-sep" />
           {/* Highlight button → triggers color picker */}
           <button className="word-menu-item" onClick={() => setWordMenuColorPick(true)}>
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <rect x="2" y="5" width="12" height="7" rx="1" fill="rgba(255,210,0,0.5)" stroke="currentColor" strokeWidth="1.3"/>
-              <path d="M5 5V3.5a3 3 0 0 1 6 0V5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-            </svg>
+            <Highlighter size={13} strokeWidth={1.3} />
             Highlight
           </button>
             </>
@@ -2622,10 +2583,7 @@ export default function ReaderView() {
           {/* Language selector — only in translate mode, at top of popup */}
           {defPopup.mode === 'translate' && (
             <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:8, padding:'6px 8px', background:'var(--surfaceAlt)', borderRadius:6, border:'1px solid var(--border)' }}>
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ color:'var(--textDim)', flexShrink:0 }}>
-                <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.3"/>
-                <path d="M8 1.5C8 1.5 5.5 4 5.5 8s2.5 6.5 2.5 6.5M8 1.5C8 1.5 10.5 4 10.5 8s-2.5 6.5-2.5 6.5M1.5 8h13" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-              </svg>
+              <Globe size={13} strokeWidth={1.3} style={{ color: 'var(--textDim)', flexShrink: 0 }} />
               <span style={{ fontSize:11, color:'var(--textDim)', flexShrink:0 }}>Translate to</span>
               <select
                 value={translateLang}
@@ -2721,29 +2679,21 @@ export default function ReaderView() {
           <div className="tts-top-row">
             <div className="tts-controls-row">
               <button className="tts-ctrl" onClick={() => ttsNav(-1)} title="Previous sentence">
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                  <polygon points="10,2 3,6 10,10" fill="currentColor"/>
-                  <rect x="1" y="2" width="2" height="8" rx="0.5" fill="currentColor"/>
-                </svg>
+                <SkipBack size={12} strokeWidth={1} fill="currentColor" />
               </button>
               <button className="tts-ctrl primary" onClick={ttsTogglePause} title={ttsPaused ? 'Resume' : 'Pause'}>
                 {ttsPaused
-                  ? <svg width="13" height="13" viewBox="0 0 12 12" fill="none"><polygon points="2,1 11,6 2,11" fill="currentColor"/></svg>
-                  : <svg width="13" height="13" viewBox="0 0 12 12" fill="none"><rect x="2" y="1" width="3" height="10" rx="0.5" fill="currentColor"/><rect x="7" y="1" width="3" height="10" rx="0.5" fill="currentColor"/></svg>
+                  ? <Play size={13} strokeWidth={1} fill="currentColor" />
+                  : <Pause size={13} strokeWidth={1} fill="currentColor" />
                 }
               </button>
               <button className="tts-ctrl" onClick={() => ttsNav(1)} title="Next sentence">
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                  <polygon points="2,2 9,6 2,10" fill="currentColor"/>
-                  <rect x="9" y="2" width="2" height="8" rx="0.5" fill="currentColor"/>
-                </svg>
+                <SkipForward size={12} strokeWidth={1} fill="currentColor" />
               </button>
             </div>
             {/* × close — pinned to far right */}
             <button className="tts-close-btn" onClick={ttsStop} title="Stop reading" style={{marginLeft:'auto'}}>
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                <path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-              </svg>
+              <X size={10} strokeWidth={1.6} />
             </button>
           </div>
           <div className="tts-progress-bar">

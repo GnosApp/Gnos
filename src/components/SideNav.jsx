@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useContext, useCallback } from 'react'
+import { useEffect, useRef, useState, useContext, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { PaneContext } from '@/lib/PaneContext'
 import useAppStore from '@/store/useAppStore'
@@ -7,86 +7,71 @@ import { useIsMobile } from '@/lib/useIsMobile'
 import { resetBaseDir, loadLibrary, loadNotebooksMeta, loadSketchbooksMeta, getJSON } from '@/lib/storage'
 import { Toggle, Slider } from '@/components/Controls'
 import { IconQuill } from '@/components/icons'
+import { ContextMenu } from '@/components/ContextMenu'
+import { AddPopup } from '@/components/AddPopup'
+import { buildAddToCollectionSubmenu } from '@/lib/collectionSubmenu'
+import { CollectionFace } from '@/lib/collectionIcons'
+import { COLLECTION_ICONS } from '@/lib/collectionIconData'
+import { Archive, ArrowRight, Book, Check, ChevronLeft, ChevronRight, Download, Ellipsis, Folder, House, Layers, Library, Link, NotebookText, PanelLeft, PanelLeftClose, Plus, RefreshCw, Search, Settings, SquarePen, StickyNote, Upload, Volume2, X } from 'lucide-react'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Icons
 // ─────────────────────────────────────────────────────────────────────────────
 const PlusIcon = () => (
-  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-    <path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-  </svg>
+  <Plus size={14} strokeWidth={1.8} />
 )
 
 const ChevronIcon = ({ open }) => (
-  <svg width="10" height="10" viewBox="0 0 10 10" fill="none"
-    style={{ transition: 'transform 0.18s', transform: open ? 'rotate(90deg)' : 'rotate(0deg)', flexShrink: 0 }}>
-    <path d="M3.5 2L7 5l-3.5 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-  </svg>
+  <ChevronRight size={9} strokeWidth={1.5} style={{ transition: 'transform 0.18s', transform: open ? 'rotate(90deg)' : 'rotate(0deg)', flexShrink: 0 }} />
 )
 
 const SettingsIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-    <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.4"/>
-    <path d="M8 1.5v1M8 13.5v1M1.5 8h1M13.5 8h1M3.3 3.3l.7.7M12 12l.7.7M12 3.3l-.7.7M4 12l-.7.7"
-      stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-  </svg>
+  <Settings size={15} strokeWidth={1.4} />
 )
 
+// Icon sizes here (11px, was 14) are part of the ~25% overall nav shrink —
+// see .sidenav-nav-item/.sidenav-nav-expand/NavDropdown/MiniCover below.
+// The single top-level accordion row. Its own expand/collapse state governs
+// whether everything below (type-folders, Quicknotes, collections) is shown
+// at all — a separate, outer level from each child's own expand state.
+const LIBRARY_ITEM = {
+  id: 'library', label: 'Library',
+  icon: (
+    <Library size={13} strokeWidth={1.3} />
+  ),
+}
+
+// Nests one level inside LIBRARY_ITEM. Mutually-exclusive accordion among
+// themselves (opening one collapses the others) — see toggleExpanded.
 const NAV_ITEMS = [
-  {
-    id: 'library', label: 'Library',
-    icon: (
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-        <rect x="2" y="2" width="5" height="12" rx="1" stroke="currentColor" strokeWidth="1.3"/>
-        <rect x="9" y="2" width="5" height="12" rx="1" stroke="currentColor" strokeWidth="1.3"/>
-      </svg>
-    ),
-  },
   {
     id: 'books', label: 'Books',
     icon: (
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-        <path d="M3 14V3a1.5 1.5 0 0 1 1.5-1.5h9V14H4.5A1.5 1.5 0 0 1 3 12.5v0A1.5 1.5 0 0 1 4.5 11H13.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-      </svg>
+      <Book size={13} strokeWidth={1.3} />
     ),
   },
   {
     id: 'audiobooks', label: 'Audiobooks',
     icon: (
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-        <path d="M3 6h3l3-3.5v11L6 10H3V6z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
-        <path d="M11 5c.8.7 1.3 1.6 1.3 3s-.5 2.3-1.3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-      </svg>
+      <Volume2 size={13} strokeWidth={1.4} />
     ),
   },
   {
     id: 'notebooks', label: 'Notebooks',
     icon: (
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-        <rect x="2" y="1" width="12" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
-        <line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-        <line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-        <line x1="5" y1="11" x2="8" y2="11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-      </svg>
+      <NotebookText size={13} strokeWidth={1.4} />
+    ),
+  },
+  {
+    id: 'sketchbooks', label: 'Sketchbooks',
+    icon: (
+      <SquarePen size={13} strokeWidth={1.3} />
     ),
   },
   {
     id: 'flashcards', label: 'Flashcards',
     icon: (
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-        <rect x="1.5" y="4.5" width="10" height="9" rx="1.4" stroke="currentColor" strokeWidth="1.3"/>
-        <path d="M5 3.2A1.4 1.4 0 0 1 6.3 2.5h6.3A1.4 1.4 0 0 1 14 3.9v7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-      </svg>
-    ),
-  },
-  {
-    id: 'collections', label: 'Collections',
-    icon: (
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-        <rect x="2" y="7" width="12" height="8" rx="1" stroke="currentColor" strokeWidth="1.4"/>
-        <rect x="1" y="4.5" width="14" height="3" rx="1" stroke="currentColor" strokeWidth="1.2"/>
-        <rect x="4.5" y="9.5" width="7" height="3" rx="0.6" stroke="currentColor" strokeWidth="1.1"/>
-      </svg>
+      <Layers size={13} strokeWidth={1.3} />
     ),
   },
 ]
@@ -141,10 +126,14 @@ function MiniCover({ item }) {
   const isAudio = item.type === 'audio'
   return (
     <div style={{
-      width: 20, height: isMobile ? 34 : 28, borderRadius: 4, flexShrink: 0,
+      width: 18, height: isMobile ? 30 : 25, borderRadius: 4, flexShrink: 0,
       overflow: 'hidden', position: 'relative',
       background: item._isNotebook || item._isSketchbook || item._isDeck
-        ? (item.coverColor || (item._isDeck ? '#7a3b8f' : '#1a1a2e'))
+        // Defaults must match the library cards: NotebookCard #2d1b69,
+        // SketchbookCard #0d5eaf, FlashcardDeckCard #7a3b8f. (Was a single
+        // near-black #1a1a2e, so uncoloured notes showed black in the sidebar
+        // but purple in the grid.)
+        ? (item.coverColor || (item._isDeck ? '#7a3b8f' : item._isSketchbook ? '#0d5eaf' : '#2d1b69'))
         : `linear-gradient(135deg,${c1},${c2})`,
       boxShadow: '0 1px 5px rgba(0,0,0,0.4)',
     }}>
@@ -165,12 +154,25 @@ function MiniCover({ item }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // NavDropdown — 10% shorter vertical padding on rows
 // ─────────────────────────────────────────────────────────────────────────────
-function NavDropdown({ items, onOpen, onMenu, onReorder, activeId }) {
+function NavDropdown({ items, onOpen, onMenu, onReorder, activeId, revealSignal }) {
   const [draggingId, setDraggingId] = useState(null)
   const [dropId,     setDropId]     = useState(null)
   const dragRef = useRef(null) // { idx, id, startX, startY, dragging }
+  const scrollRef = useRef(null)
   const onReorderRef = useRef(onReorder)
   useEffect(() => { onReorderRef.current = onReorder }, [onReorder])
+
+  // Reveal the open item in place — scroll its row into view when this list
+  // mounts (section just expanded) or the sidebar re-opens, so the user sees
+  // where the current file sits in the nav instead of just a highlight.
+  useEffect(() => {
+    if (!activeId || !scrollRef.current) return
+    const id = requestAnimationFrame(() => {
+      const el = scrollRef.current?.querySelector(`[data-nav-item="${CSS.escape(activeId)}"]`)
+      el?.scrollIntoView({ block: 'nearest' })
+    })
+    return () => cancelAnimationFrame(id)
+  }, [activeId, revealSignal])
 
   // Pointer-based drag for sidebar items (HTML5 drag API unreliable in Tauri/WebKit)
   useEffect(() => {
@@ -231,7 +233,7 @@ function NavDropdown({ items, onOpen, onMenu, onReorder, activeId }) {
   }
 
   return (
-    <div className="nav-dropdown-scroll" style={{ paddingBottom: 2 }}>
+    <div className="nav-dropdown-scroll" ref={scrollRef} style={{ paddingBottom: 2 }}>
       {items.map((item, i) => (
         <div key={item.id}
           data-nav-item={item.id} data-nav-idx={i}
@@ -255,8 +257,8 @@ function NavDropdown({ items, onOpen, onMenu, onReorder, activeId }) {
           <button
             onClick={() => onOpen(item)}
             style={{
-              display: 'flex', alignItems: 'center', gap: 8, flex:1,
-              padding: '2px 6px 2px 16px',
+              display: 'flex', alignItems: 'center', gap: 7, flex:1,
+              padding: '2px 6px 2px 14px',
               background: 'none', border: 'none', cursor: 'pointer',
               textAlign: 'left', minWidth:0,
             }}
@@ -264,7 +266,7 @@ function NavDropdown({ items, onOpen, onMenu, onReorder, activeId }) {
             <MiniCover item={item} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{
-                fontSize: 11, fontWeight: 600, color: 'var(--text)',
+                fontSize: 10, fontWeight: 600, color: 'var(--text)',
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                 lineHeight: 1.3,
               }}>{item.title}</div>
@@ -280,7 +282,7 @@ function NavDropdown({ items, onOpen, onMenu, onReorder, activeId }) {
                   const timeStr = (h || m) ? ` @${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}` : ''
                   const col = overdue ? '#ff8080' : today ? '#ffc060' : '#a0b8ff'
                   return (
-                    <div style={{ fontSize:10, color: col, marginTop:1, fontWeight:600,
+                    <div style={{ fontSize:9, color: col, marginTop:1, fontWeight:600,
                       whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
                       {dateStr}{timeStr}
                     </div>
@@ -288,7 +290,7 @@ function NavDropdown({ items, onOpen, onMenu, onReorder, activeId }) {
                 } catch { return null }
               })() : item.author ? (
                 <div style={{
-                  fontSize: 10, color: 'var(--textDim)', marginTop: 1,
+                  fontSize: 9, color: 'var(--textDim)', marginTop: 1,
                   whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                 }}>{item.author}</div>
               ) : null}
@@ -308,7 +310,7 @@ function NavDropdown({ items, onOpen, onMenu, onReorder, activeId }) {
               })()}
             </div>
             <div style={{
-              fontSize: 9, fontWeight: 700, color: 'var(--textDim)',
+              fontSize: 8, fontWeight: 700, color: 'var(--textDim)',
               letterSpacing: '0.05em', flexShrink: 0,
               background: 'var(--surfaceAlt)', borderRadius: 3,
               padding: '2px 4px', border: '1px solid var(--borderSubtle)',
@@ -321,7 +323,7 @@ function NavDropdown({ items, onOpen, onMenu, onReorder, activeId }) {
             onClick={e => { e.stopPropagation(); onMenu && onMenu(e, item) }}
             title="More options"
             style={{
-              width:24, height:24, borderRadius:5, flexShrink:0, marginRight:6,
+              width:22, height:22, borderRadius:5, flexShrink:0, marginRight:6,
               border:'none', background:'none', color:'var(--textDim)', cursor:'pointer',
               display:'flex', alignItems:'center', justifyContent:'center',
               opacity:0, transition:'opacity 0.1s, background 0.1s',
@@ -330,120 +332,11 @@ function NavDropdown({ items, onOpen, onMenu, onReorder, activeId }) {
             onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.opacity='0'}}
             ref={el => { if (el) { const p = el.closest('div[style]'); if (p) { p.addEventListener('mouseenter', ()=>el.style.opacity='1'); p.addEventListener('mouseleave', ()=>el.style.opacity='0') } } }}
           >
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-              <circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/>
-            </svg>
+            <Ellipsis size={12} strokeWidth={2} />
           </button>
         </div>
       ))}
       {/* Hover preview removed per user request */}
-    </div>
-  )
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SidebarAddPopup — same style as library add popup
-// ─────────────────────────────────────────────────────────────────────────────
-function SidebarAddPopup({ onClose, onAddBook, onAddAudio, addNotebook, setActiveNotebook, setView, closeSideNav }) {
-  const choices = [
-    {
-      icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 14V3a1.5 1.5 0 0 1 1.5-1.5h9V14H4.5A1.5 1.5 0 0 1 3 12.5v0A1.5 1.5 0 0 1 4.5 11H13.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>,
-      label: 'Import Book',
-      sub: 'EPUB · TXT · PDF',
-      action: () => { onAddBook(); onClose() },
-    },
-    {
-      icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 6h3l3-3.5v11L6 10H3V6z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/><path d="M11 5c.8.7 1.3 1.6 1.3 3s-.5 2.3-1.3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>,
-      label: 'Import Audiobook',
-      sub: 'MP3 · M4B · FLAC',
-      action: () => { onAddAudio(); onClose() },
-    },
-    {
-      icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="12" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.4"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><line x1="5" y1="11" x2="8" y2="11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>,
-      label: 'New Notebook',
-      sub: 'Markdown · live preview',
-      action: () => {
-        const s = useAppStore.getState()
-        const nb = { id: makeId('nb'), title: 'Untitled Note', wordCount: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
-        addNotebook(nb); s.persistNotebooks()
-        if (s.activeCollectionId) { s.addToCollection(s.activeCollectionId, nb.id); s.persistCollections() }
-        setActiveNotebook(nb); setView('notebook')
-        onClose(); closeSideNav()
-      },
-    },
-    {
-      icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M9 3H3a1.5 1.5 0 0 0-1.5 1.5v9A1.5 1.5 0 0 0 3 15h10a1.5 1.5 0 0 0 1.5-1.5V7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/><path d="M14.5 1.5a1.5 1.5 0 0 1 0 2.12L9 9l-3 .5.5-3 5.88-5.88a1.5 1.5 0 0 1 2.12 0z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>,
-      label: 'New Sketchbook',
-      sub: 'Excalidraw canvas',
-      action: () => {
-        const s = useAppStore.getState()
-        const COLORS = ['#2d1b69','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#6b3fa0','#2e7d32']
-        const sb = { id: makeId('sb'), title: 'Untitled Sketch', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), coverColor: COLORS[Math.floor((s.sketchbooks?.length || 0) % COLORS.length)] }
-        s.addSketchbook?.(sb); s.persistSketchbooks?.()
-        if (s.activeCollectionId) { s.addToCollection(s.activeCollectionId, sb.id); s.persistCollections() }
-        s.setActiveSketchbook?.(sb)
-        setView('sketchbook'); onClose(); closeSideNav()
-      },
-    },
-    {
-      icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="2" width="10" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3"/><rect x="5" y="6" width="10" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3"/></svg>,
-      label: 'New Flashcard Deck',
-      sub: 'Spaced repetition',
-      action: () => {
-        const s = useAppStore.getState()
-        const COLORS = ['#6b3fa0','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#2e7d32','#c0392b']
-        const deck = { id: makeId('deck'), title: 'Untitled Deck', cards: [], color: COLORS[Math.floor((s.flashcardDecks?.length || 0) % COLORS.length)], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
-        s.addDeck?.(deck); s.persistFlashcardDecks?.()
-        if (s.activeCollectionId) { s.addToCollection(s.activeCollectionId, deck.id); s.persistCollections() }
-        s.setActiveFlashcardDeck?.(deck)
-        setView('flashcard'); onClose(); closeSideNav()
-      },
-    },
-    {
-      icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="7" width="12" height="8" rx="1" stroke="currentColor" strokeWidth="1.3"/><rect x="1" y="4.5" width="14" height="3" rx="1" stroke="currentColor" strokeWidth="1.2"/><rect x="4.5" y="9.5" width="7" height="3" rx="0.6" stroke="currentColor" strokeWidth="1.1"/></svg>,
-      label: 'New Collection',
-      sub: 'Group items',
-      action: () => {
-        const s = useAppStore.getState()
-        const COLLECTION_COLORS = ['#388bfd', '#e05c7a', '#4a7c3f', '#e8922a', '#8250df', '#f0883e', '#56d4dd']
-        const col = { id: makeId('col'), name: 'New Collection', items: [], color: COLLECTION_COLORS[(s.collections?.length || 0) % COLLECTION_COLORS.length], createdAt: new Date().toISOString() }
-        s.addCollection(col); s.persistCollections()
-        s.setActiveLibTab('collections')
-        setView('library')
-        onClose(); closeSideNav()
-      },
-    },
-  ]
-
-  return (
-    <div
-      style={{
-        position: 'absolute', bottom: 40, right: 0,
-        background: 'var(--surface)', border: '1px solid var(--border)',
-        borderRadius: 10, padding: '6px 0', minWidth: 220,
-        boxShadow: '0 8px 32px rgba(0,0,0,0.35)', zIndex: 20,
-      }}
-      onClick={e => e.stopPropagation()}
-    >
-      <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.07em', textTransform: 'uppercase', color: 'var(--textDim)', padding: '6px 14px 4px', opacity: 0.6 }}>Add to Library</div>
-      {choices.map(({ icon, label, sub, action }) => (
-        <button key={label} onClick={action} style={{
-          display: 'flex', alignItems: 'center', gap: 10,
-          width: '100%', padding: '8px 14px',
-          background: 'none', border: 'none', cursor: 'pointer',
-          color: 'var(--text)', fontSize: 12, fontWeight: 500,
-          transition: 'background 0.1s', textAlign: 'left',
-        }}
-          onMouseEnter={e => e.currentTarget.style.background = 'var(--hover)'}
-          onMouseLeave={e => e.currentTarget.style.background = 'none'}
-        >
-          <span style={{ color: 'var(--textDim)', display: 'flex', flexShrink: 0 }}>{icon}</span>
-          <div>
-            <div>{label}</div>
-            {sub && <div style={{ fontSize: 10, color: 'var(--textDim)', marginTop: 1 }}>{sub}</div>}
-          </div>
-        </button>
-      ))}
     </div>
   )
 }
@@ -464,7 +357,7 @@ function CollectionSwitcher({ collections, activeCollectionId, onSwitch }) {
 
   const workspaces = [
     { id: null, name: 'Home', color: null },
-    ...collections.filter(c => !c.parentId),
+    ...collections.filter(c => !c.parentId && c.name !== 'quicknotes'),
   ]
   const currentIdx = activeCollectionId
     ? workspaces.findIndex(w => w.id === activeCollectionId)
@@ -483,8 +376,8 @@ function CollectionSwitcher({ collections, activeCollectionId, onSwitch }) {
       {pickerOpen && (
         <div ref={pickerRef} style={{
           position: 'absolute', bottom: '100%', left: 8, right: 8, marginBottom: 4,
-          background: 'var(--bg)', border: '1px solid var(--borderSubtle)',
-          borderRadius: 10, padding: '6px 0', zIndex: 50,
+          background: 'var(--surface)', border: '1px solid var(--border)',
+          borderRadius: 8, padding: '6px 0', zIndex: 50,
           boxShadow: '0 8px 32px rgba(0,0,0,0.35)',
         }}>
           <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.07em', textTransform: 'uppercase', color: 'var(--textDim)', padding: '4px 12px 6px', opacity: 0.6 }}>Collections</div>
@@ -493,7 +386,11 @@ function CollectionSwitcher({ collections, activeCollectionId, onSwitch }) {
             return (
               <button key={ws.id ?? '__home__'} onClick={() => { onSwitch(ws.id); setPickerOpen(false) }} style={{
                 display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-                padding: '6px 12px', background: active ? 'var(--accent)14' : 'none',
+                // Was the invalid CSS string 'var(--accent)14' (a typo'd attempt
+                // at a translucent accent tint) — silently produced no
+                // background at all, so the active row never actually
+                // highlighted.
+                padding: '6px 12px', background: active ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'none',
                 border: 'none', cursor: 'pointer', color: active ? 'var(--accent)' : 'var(--text)',
                 fontSize: 12, fontWeight: active ? 700 : 500, fontFamily: 'inherit', textAlign: 'left',
                 transition: 'background 0.1s',
@@ -501,18 +398,12 @@ function CollectionSwitcher({ collections, activeCollectionId, onSwitch }) {
                 onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--hover)' }}
                 onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'none' }}
               >
-                {ws.emoji
-                  ? <span style={{ fontSize: 13, flexShrink: 0 }}>{ws.emoji}</span>
-                  : ws.color
-                    ? <span style={{ width: 10, height: 10, borderRadius: 3, background: ws.color, flexShrink: 0 }} />
-                    : <svg width="10" height="10" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
-                        <path d="M2 8L8 2l6 6v6H10V11H6v3H2V8z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
-                      </svg>
+                {ws.id === null
+                  ? <House size={10} strokeWidth={1.4} style={{ flexShrink: 0 }} />
+                  : <CollectionFace col={ws} size={13} />
                 }
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ws.name}</span>
-                {active && <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ flexShrink: 0 }}>
-                  <path d="M1.5 5l2.5 2.5 4.5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>}
+                {active && <Check size={10} strokeWidth={1.5} style={{ flexShrink: 0 }} />}
               </button>
             )
           })}
@@ -531,9 +422,7 @@ function CollectionSwitcher({ collections, activeCollectionId, onSwitch }) {
           onMouseEnter={e => { if (workspaces.length > 1) e.currentTarget.style.background = 'var(--hover)' }}
           onMouseLeave={e => e.currentTarget.style.background = 'none'}
         >
-          <svg width="9" height="9" viewBox="0 0 9 9" fill="none">
-            <path d="M5.5 1.5L2.5 4.5l3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
+          <ChevronLeft size={9} strokeWidth={1.5} />
         </button>
 
         {/* Center: icon + name */}
@@ -545,13 +434,9 @@ function CollectionSwitcher({ collections, activeCollectionId, onSwitch }) {
           onMouseEnter={e => e.currentTarget.style.background = 'var(--hover)'}
           onMouseLeave={e => { if (!pickerOpen) e.currentTarget.style.background = 'none' }}
         >
-          {current.emoji
-            ? <span style={{ fontSize: 14, flexShrink: 0 }}>{current.emoji}</span>
-            : current.color
-              ? <span style={{ width: 10, height: 10, borderRadius: 3, background: current.color, flexShrink: 0 }} />
-              : <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, color: 'var(--textDim)' }}>
-                  <path d="M2 8L8 2l6 6v6H10V11H6v3H2V8z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
-                </svg>
+          {current.id === null
+            ? <House size={11} strokeWidth={1.4} style={{ flexShrink: 0, color: 'var(--textDim)' }} />
+            : <CollectionFace col={current} size={14} />
           }
           <span style={{
             fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -572,9 +457,7 @@ function CollectionSwitcher({ collections, activeCollectionId, onSwitch }) {
           onMouseEnter={e => { if (workspaces.length > 1) e.currentTarget.style.background = 'var(--hover)' }}
           onMouseLeave={e => e.currentTarget.style.background = 'none'}
         >
-          <svg width="9" height="9" viewBox="0 0 9 9" fill="none">
-            <path d="M3.5 1.5L6.5 4.5l-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
+          <ChevronRight size={9} strokeWidth={1.5} />
         </button>
       </div>
     </div>
@@ -640,10 +523,9 @@ function PiperStatusRow() {
   return (
     <div style={{ marginTop: 8 }}>
       <div style={{ padding: '8px 12px', background: 'var(--surfaceAlt)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11, color: 'var(--textDim)', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ flex: 1 }}>
-          {installed === null ? 'Checking Piper…' : installed
-            ? '✓ Piper is installed'
-            : 'Piper not found'}
+        <span style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6 }}>
+          {installed && <Check size={12} strokeWidth={2} style={{ flexShrink: 0, color: 'var(--accent)' }} />}
+          {installed === null ? 'Checking Piper…' : installed ? 'Piper is installed' : 'Piper not found'}
         </span>
         {!installed && installed !== null && (
           <button onClick={openDownload} style={{ padding: '3px 10px', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 5, fontSize: 10, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
@@ -793,7 +675,7 @@ export function UniversalSettingsModal({ onClose }) {
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 20000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
       onClick={isMobile ? undefined : onClose}>
       <div style={{ position: 'relative', background: 'var(--surface)', border: '1px solid var(--border)',
-        borderRadius: isMobile ? 0 : 14,
+        borderRadius: isMobile ? 0 : 10,
         width: isMobile ? '100vw' : 620,
         maxWidth: isMobile ? '100%' : '95vw',
         height: isMobile ? '100vh' : 460,
@@ -804,7 +686,7 @@ export function UniversalSettingsModal({ onClose }) {
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px 12px', borderBottom: '1px solid var(--borderSubtle)', flexShrink: 0 }}>
           <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>Settings</span>
-          <button onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg></button>
+          <button onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><X size={9} strokeWidth={1.5} /></button>
         </div>
 
         {/* Tab strip */}
@@ -832,7 +714,7 @@ export function UniversalSettingsModal({ onClose }) {
                     display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px',
                     borderRadius: 8, cursor: 'pointer',
                     border: themeKey === k ? '1px solid var(--accent)' : '1px solid var(--border)',
-                    background: themeKey === k ? 'rgba(56,139,253,0.06)' : 'transparent',
+                    background: themeKey === k ? 'color-mix(in srgb, var(--accent) 6%, transparent)' : 'transparent',
                   }}>
                     <input type="radio" name="theme" value={k} checked={themeKey === k}
                       onChange={() => { pref('themeKey', k); useAppStore.getState().setTheme?.(k) }}
@@ -921,15 +803,12 @@ export function UniversalSettingsModal({ onClose }) {
                 borderRadius: 8, marginBottom: 6, textDecoration: 'none', color: 'var(--text)',
                 transition: 'border-color 0.15s',
               }}>
-                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" style={{ flexShrink:0 }}>
-                  <rect x="3" y="2" width="5" height="16" rx="1" stroke="currentColor" strokeWidth="1.4"/>
-                  <rect x="10" y="2" width="5" height="16" rx="1" stroke="currentColor" strokeWidth="1.4"/>
-                </svg>
+                <Library size={20} strokeWidth={1.4} style={{ flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 600 }}>Project Gutenberg</div>
                   <div style={{ fontSize: 11, color: 'var(--textDim)' }}>Free public domain ebooks — 70,000+ titles</div>
                 </div>
-                <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M3 7h8M8 4l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                <ArrowRight size={12} strokeWidth={1.5} />
               </a>
               <a href="https://librivox.org" target="_blank" rel="noopener" style={{
                 display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
@@ -937,15 +816,12 @@ export function UniversalSettingsModal({ onClose }) {
                 borderRadius: 8, marginBottom: 6, textDecoration: 'none', color: 'var(--text)',
                 transition: 'border-color 0.15s',
               }}>
-                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" style={{ flexShrink:0 }}>
-                  <path d="M4 8h3l3.5-4.5v13L7 12H4V8z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
-                  <path d="M13 6.5c1 .9 1.6 2.1 1.6 3.5s-.6 2.6-1.6 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-                </svg>
+                <Volume2 size={20} strokeWidth={1.4} style={{ flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 600 }}>LibriVox</div>
                   <div style={{ fontSize: 11, color: 'var(--textDim)' }}>Free public domain audiobooks — 20,000+ titles</div>
                 </div>
-                <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M3 7h8M8 4l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                <ArrowRight size={12} strokeWidth={1.5} />
               </a>
 
               <SettingsSectionLabel>Archive Location</SettingsSectionLabel>
@@ -954,9 +830,7 @@ export function UniversalSettingsModal({ onClose }) {
                 background: 'var(--surfaceAlt)', border: '1px solid var(--border)',
                 borderRadius: 8, padding: '9px 12px', marginBottom: 8,
               }}>
-                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, color: 'var(--textDim)' }}>
-                  <path d="M1 4a1 1 0 0 1 1-1h4l2 2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V4z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
-                </svg>
+                <Folder size={15} strokeWidth={1.3} style={{ flexShrink: 0, color: 'var(--textDim)' }} />
                 <span style={{ fontSize: 11, color: 'var(--textDim)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace' }}>
                   {archivePath || 'No archive selected'}
                 </span>
@@ -966,12 +840,14 @@ export function UniversalSettingsModal({ onClose }) {
                 disabled={switchingArchive}
                 style={{
                   width: '100%', padding: '8px 0', marginBottom: 12,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
                   background: 'var(--surfaceAlt)', border: '1px solid var(--border)',
                   borderRadius: 7, color: 'var(--text)', fontSize: 12,
                   fontWeight: 500, cursor: switchingArchive ? 'wait' : 'pointer',
                   fontFamily: 'inherit', opacity: switchingArchive ? 0.6 : 1,
                 }}>
-                {switchingArchive ? 'Switching…' : '⇄ Switch Archive'}
+                <RefreshCw size={12} strokeWidth={1.8} />
+                {switchingArchive ? 'Switching…' : 'Switch Archive'}
               </button>
 
               <SettingsSectionLabel>Quick Note</SettingsSectionLabel>
@@ -984,9 +860,7 @@ export function UniversalSettingsModal({ onClose }) {
                 background: 'var(--surfaceAlt)', border: '1px solid var(--border)',
                 borderRadius: 8, padding: '9px 12px', marginBottom: 8,
               }}>
-                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, color: 'var(--textDim)' }}>
-                  <path d="M1 4a1 1 0 0 1 1-1h4l2 2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V4z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
-                </svg>
+                <Folder size={15} strokeWidth={1.3} style={{ flexShrink: 0, color: 'var(--textDim)' }} />
                 <span style={{ fontSize: 11, color: 'var(--textDim)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace' }}>
                   {quickNoteDir || 'Archive (default)'}
                 </span>
@@ -1018,17 +892,17 @@ export function UniversalSettingsModal({ onClose }) {
                 Export your archive as <strong>gnos-library.json</strong> to back it up.
               </div>
               <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-                <button style={{ flex: 1, padding: '8px 0', background: 'var(--surfaceAlt)', border: '1px solid var(--border)', borderRadius: 7, color: 'var(--text)', fontSize: 12, cursor: 'pointer', fontWeight: 500 }}
+                <button style={{ flex: 1, padding: '8px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: 'var(--surfaceAlt)', border: '1px solid var(--border)', borderRadius: 7, color: 'var(--text)', fontSize: 12, cursor: 'pointer', fontWeight: 500, fontFamily: 'inherit' }}
                   onClick={() => {
                     const blob = new Blob([JSON.stringify({ _readme: 'Gnos Archive', books: library }, null, 2)], { type: 'application/json' })
                     const url = URL.createObjectURL(blob)
                     Object.assign(document.createElement('a'), { href: url, download: 'gnos-library.json' }).click()
                     URL.revokeObjectURL(url)
-                  }}>↓ Export</button>
-                <button style={{ flex: 1, padding: '8px 0', background: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 7, color: '#fff', fontSize: 12, cursor: 'pointer', fontWeight: 500 }}
-                  onClick={() => importInputRef.current?.click()}>↑ Import</button>
+                  }}><Download size={12} strokeWidth={1.8} />Export</button>
+                <button style={{ flex: 1, padding: '8px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 7, color: '#fff', fontSize: 12, cursor: 'pointer', fontWeight: 500, fontFamily: 'inherit' }}
+                  onClick={() => importInputRef.current?.click()}><Upload size={12} strokeWidth={1.8} />Import</button>
               </div>
-              <input ref={fileInputRef} type="file" accept=".epub,.txt,.md,.pdf" multiple style={{ display: 'none' }}
+              <input ref={fileInputRef} type="file" accept=".epub,.pdf" multiple style={{ display: 'none' }}
                 onChange={async e => {
                   const { importBooks } = await import('@/lib/bookImport')
                   const { added } = await importBooks(e.target.files)
@@ -1185,25 +1059,12 @@ function PluginsSettingsPanel() {
       )}
       {installedPlugins.map(p => (
         <SettingsRow key={p.id} label={p.name} desc={p.bundled ? 'Built-in' : (p.description || p.id)}>
-          <div
+          <Toggle
+            on={enabledPluginIds.includes(p.id)}
+            disabled={p.bundled}
             title={p.bundled ? 'Built-in plugins are always active' : undefined}
-            style={{
-              width: 34, height: 20, borderRadius: 10, position: 'relative',
-              cursor: p.bundled ? 'default' : 'pointer',
-              background: enabledPluginIds.includes(p.id) ? 'var(--accent)' : 'var(--surfaceAlt)',
-              border: '1px solid var(--border)', transition: 'background 0.15s',
-              opacity: p.bundled ? 0.45 : 1, flexShrink: 0,
-            }}
-            onClick={() => { if (!p.bundled) setPluginEnabled(p.id, !enabledPluginIds.includes(p.id)) }}
-          >
-            <div style={{
-              position: 'absolute', top: 2,
-              left: enabledPluginIds.includes(p.id) ? 16 : 2,
-              width: 14, height: 14, borderRadius: '50%',
-              background: '#fff', transition: 'left 0.15s',
-              boxShadow: '0 1px 2px rgba(0,0,0,0.25)',
-            }} />
-          </div>
+            onChange={next => setPluginEnabled(p.id, next)}
+          />
         </SettingsRow>
       ))}
     </div>
@@ -1216,86 +1077,9 @@ function PluginsSettingsPanel() {
 // The chevron flips direction when the sidebar is open, staying INSIDE the
 // button — no translation outside the button boundaries.
 // ─────────────────────────────────────────────────────────────────────────────
-function SideNavCtxMenu({ x, y, items, onClose }) {
-  const ref = useRef()
-  const [openSub, setOpenSub] = useState(null)
-  useEffect(() => {
-    const h = e => { if (ref.current && !ref.current.contains(e.target)) onClose() }
-    setTimeout(() => document.addEventListener('mousedown', h), 0)
-    return () => document.removeEventListener('mousedown', h)
-  }, [onClose])
-  useLayoutEffect(() => {
-    if (!ref.current) return
-    const el = ref.current
-    const { offsetWidth: w, offsetHeight: h } = el
-    const clampedLeft = Math.max(8, Math.min(x, window.innerWidth - w - 8))
-    const clampedTop  = Math.max(60, Math.min(y, window.innerHeight - h - 8))
-    el.style.left = clampedLeft + 'px'
-    el.style.top  = clampedTop  + 'px'
-  }, [x, y])
-  const safeX = Math.max(8, Math.min(x, window.innerWidth - 180))
-  const subLeft = safeX + 310 > window.innerWidth ? 'auto' : '100%'
-  const subRight = safeX + 310 > window.innerWidth ? '100%' : 'auto'
-  return (
-    <div ref={ref} style={{
-      position:'fixed', left:safeX, top:y, zIndex:99999,
-      background:'var(--surface)', border:'1px solid var(--border)',
-      borderRadius:10, padding:4, minWidth:168,
-      boxShadow:'0 10px 28px rgba(0,0,0,0.5)',
-    }}>
-      {items.map((item,i) => (
-        <div key={i} style={{ position:'relative' }}
-          onMouseEnter={()=>item.submenu && setOpenSub(i)}
-          onMouseLeave={()=>item.submenu && setOpenSub(null)}
-        >
-          <button style={{
-            width:'100%', display:'flex', alignItems:'center', gap:8,
-            padding:'7px 10px', background:'none', border:'none', cursor:'pointer',
-            color: item.danger ? '#ef5350' : 'var(--text)', fontSize:12, fontWeight:500,
-            textAlign:'left', borderRadius:6, transition:'background 0.1s',
-          }}
-            onMouseEnter={e=>e.currentTarget.style.background='var(--hover)'}
-            onMouseLeave={e=>e.currentTarget.style.background='none'}
-            onClick={()=>{ if (!item.submenu) { item.action(); onClose() } }}
-          >
-            {item.icon && <svg width="13" height="13" viewBox="0 0 16 16" fill="none" dangerouslySetInnerHTML={{__html:item.icon}}/>}
-            {item.label}
-            {item.submenu && <svg width="8" height="8" viewBox="0 0 8 8" fill="none" style={{marginLeft:'auto',opacity:0.5}}><path d="M2 1l4 3-4 3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-          </button>
-          {item.submenu && openSub === i && (
-            <div style={{
-              position:'absolute', left:subLeft, right:subRight, top:-4, zIndex:100000,
-              background:'var(--surface)', border:'1px solid var(--border)',
-              borderRadius:10, padding:4, minWidth:130,
-              boxShadow:'0 8px 24px rgba(0,0,0,0.4)',
-            }}>
-              {item.submenu.map((sub,j)=>(
-                <button key={j} style={{
-                  width:'100%', display:'flex', alignItems:'center', gap:8,
-                  padding:'6px 10px', background:'none', border:'none', cursor:'pointer',
-                  color:'var(--text)', fontSize:12, fontWeight:500,
-                  textAlign:'left', borderRadius:6, transition:'background 0.1s',
-                }}
-                  onMouseEnter={e=>e.currentTarget.style.background='var(--hover)'}
-                  onMouseLeave={e=>e.currentTarget.style.background='none'}
-                  onClick={()=>{ sub.action(); onClose() }}
-                >
-                  {sub.label?.startsWith('#') && (
-                    <span style={{ width:14, height:14, borderRadius:3, background:sub.label, flexShrink:0, border:'1px solid rgba(255,255,255,0.15)' }} />
-                  )}
-                  {sub.label?.startsWith('#') ? '' : sub.label}
-                </button>
-              ))}
-              {item.submenu.length === 0 && (
-                <div style={{padding:'6px 10px',fontSize:11,color:'var(--textDim)',fontStyle:'italic'}}>No collections</div>
-              )}
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
+// SideNavCtxMenu removed (Pass 1 of PLAN_POPUP_REVAMP.md) — the sidebar's
+// right-click menu now renders through the shared `ContextMenu` component
+// (src/components/ContextMenu.jsx), same one LibraryView uses.
 
 export function GnosNavButton() {
   const paneTabId         = useContext(PaneContext)
@@ -1326,11 +1110,7 @@ export function GnosNavButton() {
       onClick={handleToggle}
       title={sideNavOpen ? 'Close sidebar (⌘\\)' : 'Open sidebar (⌘\\)'}
     >
-      <svg width="17" height="15" viewBox="0 0 20 18" fill="none">
-        <rect x="1" y="1" width="18" height="16" rx="3" stroke="currentColor" strokeWidth="1.6"/>
-        <line x1="7" y1="1" x2="7" y2="17" stroke="currentColor" strokeWidth="1.6"/>
-        {sideNavOpen && <rect x="2.2" y="2.4" width="3.6" height="13.2" rx="1.2" fill="currentColor" opacity="0.55"/>}
-      </svg>
+      {sideNavOpen ? <PanelLeftClose size={17} strokeWidth={1.6} /> : <PanelLeft size={17} strokeWidth={1.6} />}
     </button>
   )
 }
@@ -1384,10 +1164,7 @@ function SideNavSearch({ library, notebooks, sketchbooks, flashcardDecks, onOpen
   return (
     <div className="sidenav-search-wrap">
       <div className="sidenav-search-bar">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, opacity: 0.5 }}>
-          <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.6"/>
-          <path d="M10 10l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-        </svg>
+        <Search size={12} strokeWidth={1.6} style={{ flexShrink: 0, opacity: 0.5 }} />
         <input
           ref={inputRef}
           className="sidenav-search-input"
@@ -1521,6 +1298,7 @@ const COLLECTION_COLORS_ALL = [
 function CollectionEditModal({ col, onClose, onSave }) {
   const [name, setName] = useState(col.name || '')
   const [emoji, setEmoji] = useState(col.emoji || '')
+  const [icon, setIcon] = useState(col.icon || '')
   const [color, setColor] = useState(col.color || '')
   const nameRef = useRef()
   useEffect(() => { nameRef.current?.focus() }, [])
@@ -1538,17 +1316,31 @@ function CollectionEditModal({ col, onClose, onSave }) {
         <div style={{ marginBottom:14 }}>
           <div style={{ fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'var(--textDim)',marginBottom:5 }}>Name</div>
           <input ref={nameRef} value={name} onChange={e => setName(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') { if (name.trim()) onSave({ name: name.trim(), emoji, color }); onClose() } }}
+            onKeyDown={e => { if (e.key === 'Enter') { if (name.trim()) onSave({ name: name.trim(), emoji, icon, color }); onClose() } }}
             style={{ width:'100%',background:'var(--bg)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:7,padding:'7px 10px',fontSize:13,outline:'none',boxSizing:'border-box',fontFamily:'inherit' }} />
         </div>
         <div style={{ marginBottom:14 }}>
-          <div style={{ fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'var(--textDim)',marginBottom:5 }}>Emoji</div>
-          <input value={emoji} onChange={e => {
-            const chars = [...e.target.value]
-            setEmoji(chars.length > 1 ? chars[chars.length - 1] : e.target.value)
-          }}
-            placeholder="e.g. 📚"
-            style={{ width:'100%',background:'var(--bg)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:7,padding:'7px 10px',fontSize:18,outline:'none',boxSizing:'border-box',fontFamily:'inherit' }} />
+          <div style={{ fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'var(--textDim)',marginBottom:8 }}>Icon</div>
+          <div style={{ display:'flex',gap:6,flexWrap:'wrap' }}>
+            <button onClick={() => setIcon('')} title="No icon" style={{
+              width:26,height:26,borderRadius:6,background:'var(--surfaceAlt)',
+              border: !icon ? '2px solid var(--accent)' : '1px solid var(--border)',
+              cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',
+              fontSize:12,color:'var(--textDim)',
+            }}>✕</button>
+            {COLLECTION_ICONS.map(opt => (
+              // Picking an icon also clears any legacy emoji this collection
+              // still has (the emoji picker is gone — "isn't necessary" —
+              // but old data can still carry one, which would otherwise
+              // outrank the newly-picked icon in CollectionFace's precedence).
+              <button key={opt.key} onClick={() => { setIcon(opt.key); if (emoji) setEmoji('') }} title={opt.key} style={{
+                width:26,height:26,borderRadius:6,background:'var(--surfaceAlt)',
+                border: icon === opt.key ? '2px solid var(--accent)' : '1px solid var(--border)',
+                cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',
+                color: icon === opt.key ? 'var(--accent)' : 'var(--text)',
+              }}><opt.Icon size={14} strokeWidth={1.4} /></button>
+            ))}
+          </div>
         </div>
         <div style={{ marginBottom:20 }}>
           <div style={{ fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',color:'var(--textDim)',marginBottom:8 }}>Color</div>
@@ -1569,7 +1361,7 @@ function CollectionEditModal({ col, onClose, onSave }) {
         </div>
         <div style={{ display:'flex',gap:8,justifyContent:'flex-end' }}>
           <button onClick={onClose} style={{ background:'none',border:'1px solid var(--border)',color:'var(--textDim)',borderRadius:7,padding:'7px 16px',fontSize:13,cursor:'pointer',fontFamily:'inherit' }}>Cancel</button>
-          <button onClick={() => { if (name.trim()) onSave({ name: name.trim(), emoji, color }); onClose() }}
+          <button onClick={() => { if (name.trim()) onSave({ name: name.trim(), emoji, icon, color }); onClose() }}
             style={{ background:'var(--accent)',border:'none',color:'#fff',borderRadius:7,padding:'7px 16px',fontSize:13,cursor:'pointer',fontWeight:600,fontFamily:'inherit' }}>Save</button>
         </div>
       </div>
@@ -1604,6 +1396,7 @@ export default function SideNav({ isSplitPane = false }) {
   const library             = useAppStore(s => s.library)
   const notebooks           = useAppStore(s => s.notebooks)
   const flashcardDecks      = useAppStore(s => s.flashcardDecks)
+  const externalRefs        = useAppStore(s => s.externalRefs)
   const sketchbooks         = useAppStore(s => s.sketchbooks)
   const collections           = useAppStore(s => s.collections)
   const activeCollectionId    = useAppStore(s => s.activeCollectionId)
@@ -1630,7 +1423,7 @@ export default function SideNav({ isSplitPane = false }) {
     return null
   })()
 
-  const VIEW_TO_TAB = { reader:'books', pdf:'books', 'audio-player':'audiobooks', notebook:'notebooks', sketchbook:'notebooks', flashcard:'flashcards' }
+  const VIEW_TO_TAB = { reader:'books', pdf:'books', 'audio-player':'audiobooks', notebook:'notebooks', sketchbook:'sketchbooks', flashcard:'flashcards' }
 
   // User-controlled expand/collapse state. Auto-expansion of the active section
   // is derived at render time (see isOpen below) so no effect is needed.
@@ -1689,6 +1482,14 @@ export default function SideNav({ isSplitPane = false }) {
       return next
     })
   }
+  // Library is the single outer accordion — its own open/closed state is
+  // independent of the type-folder sweep above (collapsing Library must not
+  // clobber which type-folder was open inside it). Starts expanded.
+  function isLibraryExpanded() { return expanded.library !== undefined ? !!expanded.library : true }
+  function toggleLibraryExpanded(e) {
+    e.stopPropagation()
+    setExpanded(p => ({ ...p, library: !isLibraryExpanded() }))
+  }
   // Zen-style: switching tabs keeps the sidebar open
   function handleTabSwitch(tabId) { switchTab(tabId) }
   function handleTabClose(e, tabId) { e.stopPropagation(); closeTab(tabId) }
@@ -1726,9 +1527,9 @@ export default function SideNav({ isSplitPane = false }) {
       case 'library':     return [...books, ...audios, ...nbs, ...sbs, ...fds]
       case 'books':       return books
       case 'audiobooks':  return audios
-      case 'notebooks':   return [...nbs, ...sbs]
+      case 'notebooks':   return nbs
+      case 'sketchbooks': return sbs
       case 'flashcards':  return fds
-      case 'collections': return collections || []
       default:            return []
     }
   }
@@ -1749,6 +1550,9 @@ export default function SideNav({ isSplitPane = false }) {
 
   // openItemInNewTab — explicitly opens a new tab (used by context menu)
   function openItemInNewTab(item) {
+    // Epub whose kept .epub source went missing (A86) — hand off to
+    // LibraryView's remove-or-keep prompt instead of opening a broken reader.
+    if (item.sourceMissing) { window.dispatchEvent(new CustomEvent('gnos:missing-book-prompt', { detail: item })); closeSideNav(); return }
     const store = useAppStore.getState()
     if (item._isNotebook) {
       store.setActiveNotebook(item)
@@ -1771,6 +1575,7 @@ export default function SideNav({ isSplitPane = false }) {
 
   // openItemInCurrentTab — replaces the active tab's view
   function openItemInCurrentTab(item) {
+    if (item.sourceMissing) { window.dispatchEvent(new CustomEvent('gnos:missing-book-prompt', { detail: item })); closeSideNav(); return }
     let newView, patch
     const store = useAppStore.getState()
     if (item._isNotebook)           { store.setActiveNotebook(item);   newView = 'notebook';     patch = { view: newView, activeNotebook: item } }
@@ -1835,7 +1640,7 @@ export default function SideNav({ isSplitPane = false }) {
         }
         .sidenav-search-bar:focus-within {
           border-color: var(--accent);
-          box-shadow: 0 0 0 2px rgba(56,139,253,0.12);
+          box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent);
         }
         .sidenav-search-input {
           flex: 1; min-width: 0;
@@ -2058,12 +1863,12 @@ export default function SideNav({ isSplitPane = false }) {
            (was flat full-bleed rows, which read as unfinished). Side margin +
            reduced left padding keeps the icon aligned with the section label. */
         .sidenav-nav-item {
-          display: flex; align-items: center; gap: 9px;
-          padding: 7px 8px 7px 8px; margin: 0 8px 1px;
+          display: flex; align-items: center; gap: 8px;
+          padding: 6px 7px 6px 7px; margin: 0 8px 1px;
           border: none; background: none; width: calc(100% - 16px);
-          border-radius: 8px;
+          border-radius: 7px;
           color: var(--textDim); cursor: pointer; text-align: left;
-          font-size: 12.5px; font-weight: 600;
+          font-size: 11px; font-weight: 600;
           transition: background 0.1s, color 0.1s;
         }
         .sidenav-nav-item:hover { background: var(--hover); color: var(--text); }
@@ -2074,7 +1879,7 @@ export default function SideNav({ isSplitPane = false }) {
         .sidenav-nav-icon { display: flex; align-items: center; flex-shrink: 0; opacity: 0.8; }
         .sidenav-nav-item.active .sidenav-nav-icon { opacity: 1; color: var(--accent); }
         .sidenav-nav-expand {
-          padding: 3px; border-radius: 4px; display: flex; align-items: center;
+          padding: 2px; border-radius: 4px; display: flex; align-items: center;
           color: var(--textDim); opacity: 0; transition: opacity 0.1s, background 0.1s;
           background: none; border: none; cursor: pointer; flex-shrink: 0;
         }
@@ -2110,7 +1915,7 @@ export default function SideNav({ isSplitPane = false }) {
       `}</style>
 
       {/* Hidden file inputs */}
-      <input ref={fileInputRef}  type="file" accept=".epub,.txt" multiple style={{ display: 'none' }} onChange={handleBookFiles} />
+      <input ref={fileInputRef}  type="file" accept=".epub,.pdf" multiple style={{ display: 'none' }} onChange={handleBookFiles} />
       <input ref={audioInputRef} type="file" accept="audio/*"   multiple style={{ display: 'none' }} onChange={handleAudioFiles} />
 
       {/* Backdrop — only for split-pane float. The main sidebar is now flush +
@@ -2141,9 +1946,7 @@ export default function SideNav({ isSplitPane = false }) {
           </button>
           <button className="sidenav-close-btn" onClick={closeSideNav} title="Close navigation">
             {/* < chevron — starts rotated 180° (= >) and flips to < when open */}
-            <svg className="sidenav-close-chevron" width="11" height="11" viewBox="0 0 12 12" fill="none">
-              <path d="M7.5 2.5L4 6l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+            <ChevronLeft className="sidenav-close-chevron" size={11} strokeWidth={1.6} />
           </button>
         </div>
 
@@ -2161,169 +1964,103 @@ export default function SideNav({ isSplitPane = false }) {
 
           {/* Library Navigation */}
           <div className="sidenav-section">
-            <div className="sidenav-section-label">Library</div>
+            {/* "Library" section-label dropped (A100) — the Library
+                accordion row directly below now says the same thing, so the
+                heading was pure duplication (user flagged this live). The
+                "Collection" label stays for the workspace case since nothing
+                else in that view repeats it. */}
+            {activeCollectionId && <div className="sidenav-section-label">Collection</div>}
+            {activeCollectionId ? (() => {
+              // Collection workspace (A99) — one flat list of just this
+              // collection's contents, not the Books/Audiobooks/Notebooks/…
+              // buckets. SideNavSearch above stays unscoped, so the user can
+              // still find and open anything else in the library without
+              // leaving this workspace first.
+              const activeCol = (collections || []).find(c => c.id === activeCollectionId)
+              if (!activeCol) return null
+              const wsItems = getItemsForTab('library')
+              const ICON_EDIT_WS = '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+              const ICON_NEWTAB_WS = '<path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1h4v4M14 1l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+              const ICON_REMOVE_WS = '<path d="M4 8h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2"/>'
+              return (
+                <div key={activeCol.id}>
+                  <div className="sidenav-nav-item active" style={{ cursor: 'default' }}>
+                    <span className="sidenav-nav-icon"><CollectionFace col={activeCol} /></span>
+                    <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeCol.name}</span>
+                  </div>
+                  <NavDropdown items={wsItems} onOpen={openItem} activeId={activeItemId} revealSignal={sideNavOpen} onMenu={(e, ci) => {
+                    e.stopPropagation()
+                    setSideNavMenu({ x: e.clientX, y: e.clientY, items: [
+                      { label: 'Edit', icon: ICON_EDIT_WS, action: () => { setEditSideItem(ci); setSideNavMenu(null) } },
+                      { label: 'Open in New Tab', icon: ICON_NEWTAB_WS, action: () => openItemInNewTab(ci) },
+                      { label: 'Remove from Collection', icon: ICON_REMOVE_WS, danger: true, action: () => {
+                        useAppStore.getState().removeFromCollection(activeCol.id, ci.id)
+                        useAppStore.getState().persistCollections()
+                      }},
+                    ]})
+                  }} />
+                </div>
+              )
+            })() : (<>
+            {/* Library — the single top-level accordion. Plain click expands/
+                collapses everything nested below (type-folders, Quicknotes,
+                collections); ⌘/Ctrl+click navigates to the unified Library
+                tab instead, same as the old plain-click behavior. */}
+            {(() => {
+              const libraryOpen = isLibraryExpanded()
+              const isLibActive = view === 'library' && activeLibTab === 'library'
+              const onLibraryClick = e => {
+                if (e.metaKey || e.ctrlKey) handleNavItem('library')
+                else toggleLibraryExpanded(e)
+              }
+              return (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className={`sidenav-nav-item${isLibActive ? ' active' : ''}`}
+                  onClick={onLibraryClick}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onLibraryClick(e) } }}
+                >
+                  <span className="sidenav-nav-icon">{LIBRARY_ITEM.icon}</span>
+                  <span style={{ flex: 1, textAlign: 'left' }}>{LIBRARY_ITEM.label}</span>
+                  <span className="sidenav-nav-expand" style={{ opacity: 0.65 }}>
+                    <ChevronIcon open={libraryOpen} />
+                  </span>
+                </div>
+              )
+            })()}
+
+            {isLibraryExpanded() && (
+            <div style={{ paddingLeft: 14 }}>
             {NAV_ITEMS.map(item => {
               const isActive = view === 'library' && activeLibTab === item.id
               const autoOpen = sideNavOpen && VIEW_TO_TAB[view] === item.id
               const isOpen   = expanded[item.id] !== undefined ? !!expanded[item.id] : autoOpen
               const items    = getItemsForTab(item.id)
+              const onRowClick = e => {
+                if (e.metaKey || e.ctrlKey) handleNavItem(item.id)
+                else toggleExpanded(item.id, e)
+              }
               return (
                 <div key={item.id}>
                   <div
                     role="button"
                     tabIndex={0}
                     className={`sidenav-nav-item${isActive ? ' active' : ''}`}
-                    onClick={() => handleNavItem(item.id)}
-                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleNavItem(item.id) } }}
+                    onClick={onRowClick}
+                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRowClick(e) } }}
                   >
                     <span className="sidenav-nav-icon">{item.icon}</span>
                     <span style={{ flex: 1, textAlign: 'left' }}>{item.label}</span>
                     {items.length > 0 && (
-                      <button
-                        className="sidenav-nav-expand"
-                        onClick={e => toggleExpanded(item.id, e)}
-                        title={isOpen ? 'Collapse' : 'Expand'}
-                      >
+                      <span className="sidenav-nav-expand" style={{ opacity: 0.65 }}>
                         <ChevronIcon open={isOpen} />
-                      </button>
+                      </span>
                     )}
                   </div>
-                  {isOpen && item.id === 'collections' ? (() => {
-                    const COLLECTION_COLORS = ['#388bfd', '#e05c7a', '#4a7c3f', '#e8922a', '#8250df', '#f0883e', '#56d4dd']
-                    const ICON_EDIT = '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
-                    const ICON_COLOR = '<circle cx="8" cy="8" r="5" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2" fill="currentColor"/>'
-                    const ICON_TRASH = '<polyline points="3,6 5,6 13,6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 6V4H5v2M14 6l-.867 9.143A1.5 1.5 0 0 1 11.64 16.5H4.36A1.5 1.5 0 0 1 2.867 15.143L2 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
-                    const ICON_MOVE = '<rect x="2" y="7" width="12" height="8" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M5 4.5h6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>'
-
-                    const renderCollection = (col, depth = 0) => {
-                      const colOpen = !!expanded[`col_${col.id}`]
-                      const colItems = resolveCollectionItems(col)
-                      const childCollections = (collections || []).filter(c => c.parentId === col.id)
-                      const totalCount = (col.items?.length || 0) + childCollections.length
-                      const indent = 24 + depth * 14
-
-                      return (
-                        <div key={col.id}>
-                          <div
-                            data-collection-id={col.id}
-                            style={{
-                              display: 'flex', alignItems: 'center', gap: 6,
-                              padding: `4px 6px 4px ${indent}px`, cursor: 'pointer',
-                              margin: '0 8px 1px', borderRadius: 8,
-                              transition: 'background 0.1s',
-                            }}
-                            onMouseEnter={e => e.currentTarget.style.background='var(--hover)'}
-                            onMouseLeave={e => e.currentTarget.style.background='none'}
-                            onClick={() => setExpanded(p => ({ ...p, [`col_${col.id}`]: !p[`col_${col.id}`] }))}
-                            onContextMenu={e => {
-                              e.preventDefault()
-                              e.stopPropagation()
-                              const otherCols = (collections || []).filter(c => c.id !== col.id && c.id !== col.parentId)
-                              const moveItems = otherCols.length ? [{
-                                label: 'Move Into…', icon: ICON_MOVE,
-                                submenu: [
-                                  ...otherCols.map(c => ({
-                                    label: c.name,
-                                    action: () => { useAppStore.getState().moveCollection(col.id, c.id); useAppStore.getState().persistCollections() },
-                                  })),
-                                  ...(col.parentId ? [{
-                                    label: '— Move to Root —',
-                                    action: () => { useAppStore.getState().moveCollection(col.id, null); useAppStore.getState().persistCollections() },
-                                  }] : []),
-                                ],
-                              }] : []
-                              setSideNavMenu({ x: e.clientX, y: e.clientY, items: [
-                                { label: 'Edit Collection…', icon: ICON_EDIT, action: () => {
-                                  setSideNavMenu(null)
-                                  setEditColModal({ id: col.id, name: col.name, color: col.color || '', emoji: col.emoji || '' })
-                                }},
-                                ...moveItems,
-                                { label: 'Delete', icon: ICON_TRASH, danger: true, action: () => { useAppStore.getState().removeCollection(col.id); useAppStore.getState().persistCollections() } },
-                              ]})
-                            }}
-                          >
-                            {col.emoji
-                              ? <span style={{ fontSize: 14, flexShrink: 0, lineHeight: 1 }}>{col.emoji}</span>
-                              : col.color
-                                ? <span style={{ width: 13, height: 13, borderRadius: 4, background: col.color, flexShrink: 0 }} />
-                                : <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, opacity: 0.6 }}>
-                                    <rect x="2" y="3" width="12" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
-                                    <path d="M2 6h12" stroke="currentColor" strokeWidth="1" opacity="0.5"/>
-                                    <path d="M2 9h12" stroke="currentColor" strokeWidth="1" opacity="0.3"/>
-                                  </svg>
-                            }
-                            {editSideColId === col.id ? (
-                              <input
-                                autoFocus
-                                value={editSideColName}
-                                onChange={e => setEditSideColName(e.target.value)}
-                                onBlur={() => {
-                                  if (editSideColName.trim()) { useAppStore.getState().updateCollection(col.id, { name: editSideColName.trim() }); useAppStore.getState().persistCollections() }
-                                  setEditSideColId(null)
-                                }}
-                                onKeyDown={e => {
-                                  e.stopPropagation()
-                                  if (e.key === 'Enter') e.target.blur()
-                                  if (e.key === 'Escape') setEditSideColId(null)
-                                }}
-                                onClick={e => e.stopPropagation()}
-                                style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--text)', background: 'none', border: '1px solid var(--accent)', borderRadius: 3, padding: '0 4px', outline: 'none', fontFamily: 'inherit', minWidth: 0 }}
-                              />
-                            ) : (
-                              <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {col.name}
-                              </span>
-                            )}
-                            <span style={{ fontSize: 10, color: 'var(--textDim)', flexShrink: 0, marginRight: 2 }}>
-                              {totalCount > 0 ? totalCount : ''}
-                            </span>
-                            <ChevronIcon open={colOpen} />
-                          </div>
-                          {colOpen && (
-                            <div style={{ paddingLeft: 0 }}>
-                              {/* Render child collections first */}
-                              {childCollections.map(child => renderCollection(child, depth + 1))}
-                              {/* Then render items */}
-                              {colItems.length > 0 && (
-                                <div style={{ paddingLeft: depth > 0 ? 14 : 12 }}>
-                                  <NavDropdown items={colItems} onOpen={openItem} activeId={activeItemId} onMenu={(e, ci) => {
-                                    e.stopPropagation()
-                                    const ICON_EDIT_CI = '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
-                                    const ICON_NEWTAB = '<path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1h4v4M14 1l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
-                                    const ICON_REMOVE = '<path d="M4 8h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2"/>'
-                                    setSideNavMenu({ x: e.clientX, y: e.clientY, items: [
-                                      { label: 'Edit', icon: ICON_EDIT_CI, action: () => { setEditSideItem(ci); setSideNavMenu(null) } },
-                                      { label: 'Open in New Tab', icon: ICON_NEWTAB, action: () => openItemInNewTab(ci) },
-                                      { label: 'Remove from Collection', icon: ICON_REMOVE, danger: true, action: () => {
-                                        useAppStore.getState().removeFromCollection(col.id, ci.id)
-                                        useAppStore.getState().persistCollections()
-                                      }},
-                                    ]})
-                                  }} />
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )
-                    }
-
-                    // Only render root-level collections (no parentId)
-                    const rootCollections = (collections || []).filter(c => !c.parentId)
-
-                    return (
-                      <div style={{ paddingBottom: 2 }}>
-                        {(!collections || !collections.length) && (
-                          <div style={{ padding: '5px 16px 8px 38px', fontSize: 11, color: 'var(--textDim)', fontStyle: 'italic' }}>
-                            No collections yet
-                          </div>
-                        )}
-                        {rootCollections.map(col => renderCollection(col, 0))}
-                      </div>
-                    )
-                  })() : isOpen && (
-                    <NavDropdown items={items} onOpen={openItem} activeId={activeItemId}
-                      onReorder={(item.id === 'notebooks' || item.id === 'books' || item.id === 'audiobooks' || item.id === 'library') ? (from, to, fromId, toId) => {
+                  {isOpen && (
+                    <NavDropdown items={items} onOpen={openItem} activeId={activeItemId} revealSignal={sideNavOpen}
+                      onReorder={(item.id === 'notebooks' || item.id === 'books' || item.id === 'audiobooks') ? (from, to, fromId, toId) => {
                         const store = useAppStore.getState()
                         if (item.id === 'notebooks') {
                           const sbs = store.sketchbooks || []
@@ -2359,20 +2096,18 @@ export default function SideNav({ isSplitPane = false }) {
                     const ICON_COL = '<rect x="2" y="7" width="12" height="8" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="1" y="4.5" width="14" height="3" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="4.5" y="9.5" width="7" height="3" rx="0.6" stroke="currentColor" stroke-width="1.1"/>'
                     const colSub = [{
                       label:'Add to Collection', icon:ICON_COL,
-                      submenu: [
-                        { label: '+ New Collection', action: () => {
-                            const s = useAppStore.getState()
-                            const newCol = { id: makeId('col'), name: 'New Collection', items: [item.id], color: '' }
-                            s.addCollection(newCol); s.addToCollection(newCol.id, item.id); s.persistCollections()
-                            s.setActiveLibTab('collections'); s.setView('library')
-                            if (activeTabId) s.updateTab(activeTabId, { view: 'library', activeLibTab: 'collections' })
-                            setSideNavMenu(null)
-                          }
+                      submenu: buildAddToCollectionSubmenu({
+                        collections, itemId: item.id,
+                        onCreateNew: id => {
+                          const s = useAppStore.getState()
+                          const newCol = { id: makeId('col'), name: 'New Collection', items: [id], color: '' }
+                          s.addCollection(newCol); s.addToCollection(newCol.id, id); s.persistCollections()
+                          s.setActiveLibTab('collections'); s.setView('library')
+                          if (activeTabId) s.updateTab(activeTabId, { view: 'library', activeLibTab: 'collections' })
+                          setSideNavMenu(null)
                         },
-                        ...collections.map(c => ({
-                          label: c.name, action: () => { useAppStore.getState().addToCollection(c.id, item.id); useAppStore.getState().persistCollections() }
-                        }))
-                      ],
+                        onAdd: (colId, id) => { useAppStore.getState().addToCollection(colId, id); useAppStore.getState().persistCollections() },
+                      }),
                     }]
                     const editAction = () => {
                       setEditSideItem(item)
@@ -2383,32 +2118,262 @@ export default function SideNav({ isSplitPane = false }) {
                           { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
                           { label:'Open Here', icon:ICON_BOOK, action:()=>openItemInCurrentTab(item) },
                           ...colSub,
-                          { label:'Delete', icon:ICON_TRASH, danger:true, action:()=>{ useAppStore.getState().removeNotebook?.(item.id); useAppStore.getState().persistNotebooks?.() } } ]
+                          { label:'Delete', icon:ICON_TRASH, danger:true, action: async ()=>{ const { moveToTrash } = await import('@/lib/storage'); await moveToTrash('notebook', item.id, item.title); useAppStore.getState().removeNotebook?.(item.id); useAppStore.getState().persistNotebooks?.() } } ]
                       : isSb
                       ? [ { label:'Edit', icon:ICON_EDIT_ITEM, action: editAction },
                           { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
                           { label:'Open Here', icon:ICON_BOOK, action:()=>openItemInCurrentTab(item) },
                           ...colSub,
-                          { label:'Delete', icon:ICON_TRASH, danger:true, action: async ()=>{ const { deleteSketchbookContent } = await import('@/lib/storage'); await deleteSketchbookContent(item.id); useAppStore.getState().removeSketchbook?.(item.id); useAppStore.getState().persistSketchbooks?.() } } ]
+                          { label:'Delete', icon:ICON_TRASH, danger:true, action: async ()=>{ const { moveToTrash } = await import('@/lib/storage'); await moveToTrash('sketchbook', item.id, item.title); useAppStore.getState().removeSketchbook?.(item.id); useAppStore.getState().persistSketchbooks?.() } } ]
                       : isAudio
                       ? [ { label:'Edit', icon:ICON_EDIT_ITEM, action: editAction },
                           { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
                           { label:'Open Here', icon:ICON_BOOK, action:()=>openItemInCurrentTab(item) },
                           ...colSub,
-                          { label:'Delete', icon:ICON_TRASH, danger:true, action:()=>useAppStore.getState().removeBook?.(item.id) } ]
+                          { label:'Delete', icon:ICON_TRASH, danger:true, action: async ()=>{ const { moveToTrash } = await import('@/lib/storage'); await moveToTrash('audio', item.id, item.title, item); useAppStore.getState().removeBook?.(item.id) } } ]
                       : [ { label:'Edit', icon:ICON_EDIT_ITEM, action: editAction },
                           { label:'Open in New Tab', icon:ICON_NEWTAB, action:()=>openItemInNewTab(item) },
                           { label:'Open Here', icon:ICON_BOOK, action:()=>openItemInCurrentTab(item) },
                           { label:'Search title', icon:ICON_SEARCH, action:()=>window.open(`https://www.google.com/search?q=${encodeURIComponent(item.title)}`,'_blank') },
                           { label:'Search author', icon:ICON_SEARCH, action:()=>window.open(`https://www.google.com/search?q=${encodeURIComponent(item.author||item.title+' author')}`,'_blank') },
                           ...colSub,
-                          { label:'Delete', icon:ICON_TRASH, danger:true, action:()=>useAppStore.getState().removeBook?.(item.id) } ]
+                          { label:'Delete', icon:ICON_TRASH, danger:true, action: async ()=>{ const { moveToTrash } = await import('@/lib/storage'); await moveToTrash('book', item.id, item.title, item); useAppStore.getState().removeBook?.(item.id) } } ]
                     setSideNavMenu({ x: e.clientX, y: e.clientY, items: items2 })
                   }} />)}
                 </div>
               )
             })}
+
+            {/* Quicknotes — a real collection under the hood (auto-managed
+                since A61's addToQuickNotesCollection(), matched by name
+                below) but styled as a type-folder, not a collection card:
+                plain Folder icon, same row component as Books/Audiobooks/…
+                above. Positioned right after Flashcards; excluded from the
+                ordinary collections sweep further down so it doesn't also
+                show up there with the colored-dot/emoji + count treatment. */}
+            {(() => {
+              const qnCol = (collections || []).find(c => c.name === 'quicknotes')
+              if (!qnCol) return null
+              const qnItems = resolveCollectionItems(qnCol)
+              const qnOpen  = !!expanded[`col_${qnCol.id}`]
+              return (
+                <div key={qnCol.id}>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    className="sidenav-nav-item"
+                    onClick={() => setExpanded(p => ({ ...p, [`col_${qnCol.id}`]: !p[`col_${qnCol.id}`] }))}
+                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(p => ({ ...p, [`col_${qnCol.id}`]: !p[`col_${qnCol.id}`] })) } }}
+                  >
+                    <span className="sidenav-nav-icon"><StickyNote size={13} strokeWidth={1.3} /></span>
+                    <span style={{ flex: 1, textAlign: 'left' }}>Quicknotes</span>
+                    {qnItems.length > 0 && (
+                      <span className="sidenav-nav-expand" style={{ opacity: 0.65 }}>
+                        <ChevronIcon open={qnOpen} />
+                      </span>
+                    )}
+                  </div>
+                  {qnOpen && (
+                    <NavDropdown items={qnItems} onOpen={openItem} activeId={activeItemId} revealSignal={sideNavOpen} onMenu={(e, ci) => {
+                      e.stopPropagation()
+                      const ICON_EDIT_QN = '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+                      const ICON_NEWTAB_QN = '<path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1h4v4M14 1l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+                      const ICON_REMOVE_QN = '<path d="M4 8h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2"/>'
+                      setSideNavMenu({ x: e.clientX, y: e.clientY, items: [
+                        { label: 'Edit', icon: ICON_EDIT_QN, action: () => { setEditSideItem(ci); setSideNavMenu(null) } },
+                        { label: 'Open in New Tab', icon: ICON_NEWTAB_QN, action: () => openItemInNewTab(ci) },
+                        { label: 'Remove from Collection', icon: ICON_REMOVE_QN, danger: true, action: () => {
+                          useAppStore.getState().removeFromCollection(qnCol.id, ci.id)
+                          useAppStore.getState().persistCollections()
+                        }},
+                      ]})
+                    }} />
+                  )}
+                </div>
+              )
+            })()}
+
+            {/* Collections — nested one level under Library (not a separate
+                "Collections" bucket, not flush siblings of the type buckets
+                either — reverses A99's flatten). Reads as a real disclosure
+                tree: Library > Books/Audiobooks/…/Quicknotes/Collection A/
+                Collection B. Quicknotes (above) is excluded from this sweep. */}
+            {(() => {
+              const ICON_EDIT = '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+              const ICON_TRASH = '<polyline points="3,6 5,6 13,6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 6V4H5v2M14 6l-.867 9.143A1.5 1.5 0 0 1 11.64 16.5H4.36A1.5 1.5 0 0 1 2.867 15.143L2 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+              // Folder outline + an arrow entering it — reads as "move into a
+              // folder" more clearly than the old plain-drawer glyph did.
+              const ICON_MOVE = '<path d="M2 4.5A1 1 0 0 1 3 3.5h3l1.2 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z" stroke="currentColor" stroke-width="1.2"/><path d="M8 6.5v4M6 8.5l2 2 2-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+
+              const renderCollection = (col, depth = 0) => {
+                const colOpen = !!expanded[`col_${col.id}`]
+                const colItems = resolveCollectionItems(col)
+                const childCollections = (collections || []).filter(c => c.parentId === col.id)
+                const totalCount = (col.items?.length || 0) + childCollections.length
+                // depth 0 sits at the same indent as the type-bucket rows above
+                // (their icon starts right after 8px of padding); each nested
+                // level adds the same 14px NAV_ITEMS/collections always used.
+                const indent = 8 + depth * 14
+
+                return (
+                  <div key={col.id}>
+                    <div
+                      data-collection-id={col.id}
+                      role="button" tabIndex={0}
+                      // Same row class as the type-folders above (Books/
+                      // Audiobooks/…) — was a bespoke inline-styled row before,
+                      // which read as visually distinct (brighter resting text,
+                      // different icon opacity, unpadded chevron => misaligned
+                      // with the type-folder chevrons above it). Only the
+                      // per-depth left indent stays as an inline override.
+                      className="sidenav-nav-item"
+                      style={{ paddingLeft: indent }}
+                      onClick={() => setExpanded(p => ({ ...p, [`col_${col.id}`]: !p[`col_${col.id}`] }))}
+                      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(p => ({ ...p, [`col_${col.id}`]: !p[`col_${col.id}`] })) } }}
+                      onContextMenu={e => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        const otherCols = (collections || [])
+                          .filter(c => c.id !== col.id && c.id !== col.parentId && c.name !== 'quicknotes')
+                          .slice().sort((a, b) => a.name.localeCompare(b.name))
+                        const moveItems = otherCols.length ? [{
+                          label: 'Move Into', icon: ICON_MOVE,
+                          submenu: [
+                            ...otherCols.map(c => ({
+                              label: c.name,
+                              iconNode: <CollectionFace col={c} size={13} />,
+                              action: () => { useAppStore.getState().moveCollection(col.id, c.id); useAppStore.getState().persistCollections() },
+                            })),
+                            ...(col.parentId ? [{
+                              label: '— Move to Root —',
+                              action: () => { useAppStore.getState().moveCollection(col.id, null); useAppStore.getState().persistCollections() },
+                            }] : []),
+                          ],
+                        }] : []
+                        setSideNavMenu({ x: e.clientX, y: e.clientY, items: [
+                          { label: 'Edit Collection…', icon: ICON_EDIT, action: () => {
+                            setSideNavMenu(null)
+                            setEditColModal({ id: col.id, name: col.name, color: col.color || '', emoji: col.emoji || '', icon: col.icon || '' })
+                          }},
+                          ...moveItems,
+                          { label: 'Delete', icon: ICON_TRASH, danger: true, action: () => { useAppStore.getState().removeCollection(col.id); useAppStore.getState().persistCollections() } },
+                        ]})
+                      }}
+                    >
+                      <span className="sidenav-nav-icon"><CollectionFace col={col} /></span>
+                      {editSideColId === col.id ? (
+                        <input
+                          autoFocus
+                          value={editSideColName}
+                          onChange={e => setEditSideColName(e.target.value)}
+                          onBlur={() => {
+                            if (editSideColName.trim()) { useAppStore.getState().updateCollection(col.id, { name: editSideColName.trim() }); useAppStore.getState().persistCollections() }
+                            setEditSideColId(null)
+                          }}
+                          onKeyDown={e => {
+                            e.stopPropagation()
+                            if (e.key === 'Enter') e.target.blur()
+                            if (e.key === 'Escape') setEditSideColId(null)
+                          }}
+                          onClick={e => e.stopPropagation()}
+                          style={{ flex: 1, fontSize: 11, fontWeight: 600, color: 'var(--text)', background: 'none', border: '1px solid var(--accent)', borderRadius: 3, padding: '0 4px', outline: 'none', fontFamily: 'inherit', minWidth: 0 }}
+                        />
+                      ) : (
+                        <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {col.name}
+                        </span>
+                      )}
+                      {totalCount > 0 && (
+                        <span style={{ fontSize: 9, color: 'var(--textDim)', flexShrink: 0 }}>{totalCount}</span>
+                      )}
+                      <span className="sidenav-nav-expand" style={{ opacity: 0.65 }}>
+                        <ChevronIcon open={colOpen} />
+                      </span>
+                    </div>
+                    {colOpen && (
+                      <div style={{ paddingLeft: 0 }}>
+                        {/* Render child collections first */}
+                        {childCollections.map(child => renderCollection(child, depth + 1))}
+                        {/* Then render items */}
+                        {colItems.length > 0 && (
+                          <div style={{ paddingLeft: depth > 0 ? 14 : 12 }}>
+                            <NavDropdown items={colItems} onOpen={openItem} activeId={activeItemId} onMenu={(e, ci) => {
+                              e.stopPropagation()
+                              const ICON_EDIT_CI = '<path d="M11.5 1.5l3 3L5 14H2v-3l9.5-9.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+                              const ICON_NEWTAB = '<path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1h4v4M14 1l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+                              const ICON_REMOVE = '<path d="M4 8h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2"/>'
+                              setSideNavMenu({ x: e.clientX, y: e.clientY, items: [
+                                { label: 'Edit', icon: ICON_EDIT_CI, action: () => { setEditSideItem(ci); setSideNavMenu(null) } },
+                                { label: 'Open in New Tab', icon: ICON_NEWTAB, action: () => openItemInNewTab(ci) },
+                                { label: 'Remove from Collection', icon: ICON_REMOVE, danger: true, action: () => {
+                                  useAppStore.getState().removeFromCollection(col.id, ci.id)
+                                  useAppStore.getState().persistCollections()
+                                }},
+                              ]})
+                            }} />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              }
+
+              // Only render root-level collections (no parentId) — children
+              // render recursively inside their parent's expansion. Quicknotes
+              // is excluded — it already rendered above with folder styling.
+              const rootCollections = (collections || []).filter(c => !c.parentId && c.name !== 'quicknotes')
+              return rootCollections.map(col => renderCollection(col, 0))
+            })()}
+            </div>
+            )}
+            </>)}
           </div>
+
+          {/* External files — pinned .md references living outside the archive */}
+          {(() => {
+            // Show every ref currently in memory (pinned persist; unpinned are
+            // this-session "open once" until pinned or the app restarts).
+            const pinned = externalRefs || []
+            const openBtnRow = (
+              <div
+                role="button" tabIndex={0}
+                className="sidenav-nav-item"
+                onClick={() => { useAppStore.getState().openExternalFile(); closeSideNav() }}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); useAppStore.getState().openExternalFile(); closeSideNav() } }}
+                style={{ opacity: 0.85 }}
+              >
+                <span className="sidenav-nav-icon"><Link size={14} strokeWidth={1.5} /></span>
+                <span style={{ flex: 1, textAlign: 'left' }}>Open File…</span>
+              </div>
+            )
+            return (
+              <div className="sidenav-section">
+                <div className="sidenav-section-label">External</div>
+                {pinned.map(ref => {
+                  const isActive = curView === 'notebook' && activeItemId === ref.id
+                  return (
+                    <div key={ref.id} className={`sidenav-nav-item${isActive ? ' active' : ''}`}
+                      role="button" tabIndex={0}
+                      style={{ opacity: ref.pinned ? 1 : 0.6 }}
+                      onClick={() => { const s = useAppStore.getState(); s.setActiveNotebook(ref); s.navigate({ view: 'notebook', activeNotebook: ref }); closeSideNav() }}
+                      onContextMenu={e => {
+                        e.preventDefault(); e.stopPropagation()
+                        setSideNavMenu({ x: e.clientX, y: e.clientY, items: [
+                          { label: ref.pinned ? 'Unpin' : 'Pin', icon: ICON_EDIT_ITEM, action: () => { const s = useAppStore.getState(); s.toggleExternalPin(ref.id); s.persistExternalRefs() } },
+                          { label: 'Remove', icon: ICON_TRASH, danger: true, action: () => { const s = useAppStore.getState(); s.removeExternalRef(ref.id); s.persistExternalRefs() } },
+                        ] })
+                      }}
+                      title={ref.path}>
+                      <span className="sidenav-nav-icon"><Link size={13} strokeWidth={1.5} /></span>
+                      <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ref.title}</span>
+                    </div>
+                  )
+                })}
+                {openBtnRow}
+              </div>
+            )
+          })()}
 
         </div>
 
@@ -2425,15 +2390,13 @@ export default function SideNav({ isSplitPane = false }) {
                 <span className="sidenav-tab-name">{getTabLabel(tab, { notebooks, flashcardDecks, sketchbooks, library })}</span>
                 {tabs.length > 1 && (
                   <div className="sidenav-tab-close" role="button" tabIndex={-1} onClick={e => handleTabClose(e, tab.id)} title="Close tab">
-                    <svg width="8" height="8" viewBox="0 0 10 10" fill="none">
-                      <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                    </svg>
+                    <X size={8} strokeWidth={1.5} />
                   </div>
                 )}
               </button>
             ))}
             <button className="sidenav-tab-new" onClick={() => openNewTab({ view: 'library', activeLibTab: 'library' })}>
-              <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M6 1.5v9M1.5 6h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+              <Plus size={11} strokeWidth={1.5} />
               New tab
             </button>
           </div>
@@ -2467,14 +2430,46 @@ export default function SideNav({ isSplitPane = false }) {
 
           <div style={{ position: 'relative' }}>
             {addOpen && (
-              <SidebarAddPopup
+              <AddPopup
+                variant="up"
                 onClose={() => setAddOpen(false)}
                 onAddBook={() => fileInputRef.current?.click()}
                 onAddAudio={() => audioInputRef.current?.click()}
-                addNotebook={addNotebook}
-                setActiveNotebook={setActiveNotebook}
-                setView={setView}
-                closeSideNav={closeSideNav}
+                onNewNotebook={() => {
+                  const s = useAppStore.getState()
+                  const nb = { id: makeId('nb'), title: 'Untitled Note', wordCount: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+                  addNotebook(nb); s.persistNotebooks()
+                  if (s.activeCollectionId) { s.addToCollection(s.activeCollectionId, nb.id); s.persistCollections() }
+                  setActiveNotebook(nb); setView('notebook')
+                  closeSideNav()
+                }}
+                onNewSketchbook={() => {
+                  const s = useAppStore.getState()
+                  const COLORS = ['#2d1b69','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#6b3fa0','#2e7d32']
+                  const sb = { id: makeId('sb'), title: 'Untitled Sketch', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), coverColor: COLORS[Math.floor((s.sketchbooks?.length || 0) % COLORS.length)] }
+                  s.addSketchbook?.(sb); s.persistSketchbooks?.()
+                  if (s.activeCollectionId) { s.addToCollection(s.activeCollectionId, sb.id); s.persistCollections() }
+                  s.setActiveSketchbook?.(sb)
+                  setView('sketchbook'); closeSideNav()
+                }}
+                onNewFlashcardDeck={() => {
+                  const s = useAppStore.getState()
+                  const COLORS = ['#6b3fa0','#0d5eaf','#1a6b3a','#7a1f6e','#b91c1c','#1565c0','#2e7d32','#c0392b']
+                  const deck = { id: makeId('deck'), title: 'Untitled Deck', cards: [], color: COLORS[Math.floor((s.flashcardDecks?.length || 0) % COLORS.length)], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+                  s.addDeck?.(deck); s.persistFlashcardDecks?.()
+                  if (s.activeCollectionId) { s.addToCollection(s.activeCollectionId, deck.id); s.persistCollections() }
+                  s.setActiveFlashcardDeck?.(deck)
+                  setView('flashcard'); closeSideNav()
+                }}
+                onNewCollection={() => {
+                  const s = useAppStore.getState()
+                  const COLLECTION_COLORS = ['#388bfd', '#e05c7a', '#4a7c3f', '#e8922a', '#8250df', '#f0883e', '#56d4dd']
+                  const col = { id: makeId('col'), name: 'New Collection', items: [], color: COLLECTION_COLORS[(s.collections?.length || 0) % COLLECTION_COLORS.length], createdAt: new Date().toISOString() }
+                  s.addCollection(col); s.persistCollections()
+                  s.setActiveLibTab('collections')
+                  setView('library')
+                  closeSideNav()
+                }}
               />
             )}
             <button
@@ -2493,7 +2488,7 @@ export default function SideNav({ isSplitPane = false }) {
       {settingsOpen && <UniversalSettingsModal onClose={() => setSettingsOpen(false)} />}
       {/* SideNav item context menu */}
       {sideNavMenu && (
-        <SideNavCtxMenu
+        <ContextMenu
           x={sideNavMenu.x} y={sideNavMenu.y}
           items={sideNavMenu.items}
           onClose={() => setSideNavMenu(null)}

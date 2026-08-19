@@ -7,6 +7,7 @@ import QuickAccess from '@/components/QuickAccess'
 import { Slider } from '@/components/Controls'
 import { TITLEBAR_H } from '@/App'
 import { getGlobalAudio } from '@/lib/globalAudio'
+import { CircleAlert, List, Music, Pause, Play, RotateCcw, RotateCw, SkipBack, SkipForward, Volume2, X } from 'lucide-react'
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
 
@@ -385,11 +386,7 @@ export default function AudioPlayerView() {
           title={chapOpen ? 'Hide chapters' : 'Show chapters'}
           onClick={() => setChapOpen(o => !o)}
         >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <line x1="3" y1="4" x2="13" y2="4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
-            <line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
-            <line x1="3" y1="12" x2="10" y2="12" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
-          </svg>
+          <List size={14} strokeWidth={1.7} />
         </button>
         <div className="ap-settings-area" style={{ position: 'relative', flexShrink: 0, display: 'flex' }}>
         <button
@@ -397,10 +394,7 @@ export default function AudioPlayerView() {
           title="Playback settings"
           onClick={() => setShowSettings(s => !s)}
         >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M2 6.5h2l2.5-3v9L4 9.5H2v-3z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/>
-            <path d="M9.5 5.5c.9.7 1.5 1.6 1.5 2.5s-.6 1.8-1.5 2.5M11.7 3.7c1.5 1.2 2.3 2.7 2.3 4.3s-.8 3.1-2.3 4.3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-          </svg>
+          <Volume2 size={16} strokeWidth={1.6} />
         </button>
 
         {/* Settings dropdown */}
@@ -472,12 +466,12 @@ export default function AudioPlayerView() {
         {/* ── Chapters sidebar — toggled from the quick-access strip ── */}
         {chapOpen && (
           <aside style={{
-            // Zen-sidebar language: floating rounded card inset from the left
-            // edge (matches body.zen-active .sidenav-panel.pinned)
-            position: 'fixed', left: 8, top: TITLEBAR_H + 6, bottom: 8, width: 270, zIndex: 1100,
+            // Zen-sidebar language: floating rounded card inset from the right
+            // edge (matches body.zen-active .sidenav-panel.pinned, mirrored)
+            position: 'fixed', right: 8, top: TITLEBAR_H + 6, bottom: 8, width: 270, zIndex: 1100,
             background: 'var(--surface)', border: '1px solid var(--borderSubtle)',
             borderRadius: 12,
-            boxShadow: '8px 0 32px rgba(0,0,0,0.22)',
+            boxShadow: '-8px 0 32px rgba(0,0,0,0.22)',
             display: 'flex', flexDirection: 'column', overflow: 'hidden',
             animation: 'ap-slide-in 0.2s ease',
           }}>
@@ -501,9 +495,7 @@ export default function AudioPlayerView() {
                 onMouseEnter={e => { e.currentTarget.style.background = 'var(--surfaceAlt)'; e.currentTarget.style.color = 'var(--text)' }}
                 onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--textDim)' }}
               >
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                  <path d="M1 1l8 8M9 1L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                </svg>
+                <X size={10} strokeWidth={1.5} />
               </button>
             </div>
             <div className="ap-chapter-list" style={{ flex: 1, overflow: 'auto', padding: '0 6px 12px' }}>
@@ -545,10 +537,7 @@ export default function AudioPlayerView() {
               borderRadius: 10, padding: '12px 16px', margin: '0 0 16px',
               display: 'flex', alignItems: 'flex-start', gap: 10,
             }}>
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
-                <circle cx="8" cy="8" r="7" stroke="#f85149" strokeWidth="1.4"/>
-                <path d="M8 4.5v4M8 10.5v1" stroke="#f85149" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
+              <CircleAlert size={16} strokeWidth={1.4} color="#f85149" style={{ flexShrink: 0, marginTop: 1 }} />
               <div style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.5 }}>
                 <strong style={{ display: 'block', marginBottom: 2 }}>Audio not available</strong>
                 <span style={{ color: 'var(--textDim)' }}>
@@ -567,10 +556,7 @@ export default function AudioPlayerView() {
                 ? <img src={book.coverDataUrl} alt="" style={{ width:'100%',height:'100%',objectFit:'cover',borderRadius:14 }} />
                 : <div className="ap-cover-placeholder"
                     style={{ width:'100%',height:'100%',background:`linear-gradient(135deg,${c1},${c2})`,borderRadius:14,display:'flex',alignItems:'center',justifyContent:'center' }}>
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
-                      <path d="M9 18c0 1.66-1.34 3-3 3H4c-1.66 0-3-1.34-3-3v-1c0-1.66 1.34-3 3-3h2c1.66 0 3 1.34 3 3v1zM22 15c0 1.66-1.34 3-3 3h-2c-1.66 0-3-1.34-3-3v-1c0-1.66 1.34-3 3-3h2c1.66 0 3 1.34 3 3v1z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                      <path d="M9 19V8l13-3v10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
+                    <Music size={48} strokeWidth={1.5} />
                   </div>
               }
             </div>
@@ -606,16 +592,10 @@ export default function AudioPlayerView() {
           {/* Controls */}
           <div className="ap-controls">
             <button className="ap-ctrl-btn ap-skip" onClick={() => skipBy(-30)} title="Back 30s">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                <path d="M12 5V2L7 7l5 5V8a7 7 0 1 1-5.3 11.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                <text x="6" y="16" fontSize="6" fill="currentColor" fontFamily="sans-serif" textAnchor="middle">30</text>
-              </svg>
+              <RotateCcw size={22} strokeWidth={1.8}><text x="12" y="15.5" fontSize="8" fill="currentColor" stroke="none" fontFamily="sans-serif" textAnchor="middle">30</text></RotateCcw>
             </button>
             <button className="ap-ctrl-btn ap-prev" onClick={() => chapIdx > 0 && loadAndPlayChapter(chapIdx - 1, true)} title="Previous chapter">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                <polygon points="19,5 9,12 19,19" fill="currentColor"/>
-                <rect x="5" y="5" width="3" height="14" rx="1" fill="currentColor"/>
-              </svg>
+              <SkipBack size={22} strokeWidth={1} fill="currentColor" />
             </button>
             <button onClick={togglePlay}
               style={{
@@ -636,28 +616,17 @@ export default function AudioPlayerView() {
               onMouseLeave={e => { e.currentTarget.style.transform='scale(1)'; e.currentTarget.style.boxShadow='0 2px 8px rgba(0,0,0,0.2)'; e.currentTarget.style.background='var(--surface)' }}
             >
               {playing
-                ? <svg width="22" height="22" viewBox="0 0 24 24" fill="none" style={{ display:'block' }}>
-                    <rect x="6" y="5" width="4" height="14" rx="1.5" fill="currentColor"/>
-                    <rect x="14" y="5" width="4" height="14" rx="1.5" fill="currentColor"/>
-                  </svg>
-                : <svg width="22" height="22" viewBox="0 0 24 24" fill="none" style={{ display:'block', marginLeft: 2 }}>
-                    <polygon points="6,4 20,12 6,20" fill="currentColor"/>
-                  </svg>
+                ? <Pause size={22} strokeWidth={1} fill="currentColor" style={{ display: 'block' }} />
+                : <Play size={22} strokeWidth={1} fill="currentColor" style={{ display: 'block', marginLeft: 2 }} />
               }
             </button>
             <button className="ap-ctrl-btn ap-next"
               onClick={() => isMulti && chapIdx < chaps.length - 1 && loadAndPlayChapter(chapIdx + 1, true)}
               title="Next chapter">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                <polygon points="5,5 15,12 5,19" fill="currentColor"/>
-                <rect x="16" y="5" width="3" height="14" rx="1" fill="currentColor"/>
-              </svg>
+              <SkipForward size={22} strokeWidth={1} fill="currentColor" />
             </button>
             <button className="ap-ctrl-btn ap-skip" onClick={() => skipBy(30)} title="Forward 30s">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                <path d="M12 5V2l5 5-5 5V8a7 7 0 1 0 5.3 11.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                <text x="18" y="16" fontSize="6" fill="currentColor" fontFamily="sans-serif" textAnchor="middle">30</text>
-              </svg>
+              <RotateCw size={22} strokeWidth={1.8}><text x="12" y="15.5" fontSize="8" fill="currentColor" stroke="none" fontFamily="sans-serif" textAnchor="middle">30</text></RotateCw>
             </button>
           </div>
 

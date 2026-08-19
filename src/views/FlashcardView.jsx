@@ -13,6 +13,7 @@ import { useIsMobile } from '@/lib/useIsMobile'
 import { saveNotebookImage } from '@/lib/storage'
 import JSZip from 'jszip'
 import initSqlJs from 'sql.js/dist/sql-asm.js'
+import { Pause, Play, Plus, Share, SquareArrowLeft, SquareArrowRight } from 'lucide-react'
 
 // ─── SM-2 Algorithm ──────────────────────────────────────────────────────────
 function sm2(card, quality) {
@@ -332,9 +333,7 @@ function AudioPlayBtn({ src }) {
   useEffect(() => () => { if (audioRef.current) { audioRef.current.pause(); audioRef.current = null } }, [])
   return (
     <button className="fc-audio-play" onClick={play} title="Play audio">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-        {playing ? <><line x1="6" y1="4" x2="6" y2="20"/><line x1="18" y1="4" x2="18" y2="20"/></> : <polygon points="5,3 19,12 5,21" fill="currentColor" stroke="none"/>}
-      </svg>
+      {playing ? <Pause size={14} strokeWidth={2.5} /> : <Play size={14} strokeWidth={2.5} fill="currentColor" />}
     </button>
   )
 }
@@ -745,10 +744,7 @@ export default function FlashcardView() {
       {/* Mobile floating add card button (edit mode only) */}
       {isMobile && (mode === 'edit' || mode === 'list') && (
         <button onClick={addCard} className="mobile-add-card-btn">
-          <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
-            <line x1="7" y1="1.5" x2="7" y2="12.5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/>
-            <line x1="1.5" y1="7" x2="12.5" y2="7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/>
-          </svg>
+          <Plus size={12} strokeWidth={2.2} />
           Add Card
         </button>
       )}
@@ -804,10 +800,7 @@ export default function FlashcardView() {
             }
           }}
         >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <path d="M8 11V3M5 6l3-3 3 3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
-            <path d="M3 11v1a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
-          </svg>
+          <Share size={14} strokeWidth={1.7} />
         </button>
       </QuickAccess>
 
@@ -1126,14 +1119,8 @@ export default function FlashcardView() {
               style={{ display: 'flex', alignItems: 'center', gap: 6 }}
             >
               {studySide === 'front'
-                ? <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                    <rect x="1" y="3" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-                    <path d="M5 8h6M9 6l2 2-2 2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                : <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                    <rect x="1" y="3" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.5"/>
-                    <path d="M11 8H5M7 10L5 8l2-2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>}
+                ? <SquareArrowRight size={13} strokeWidth={1.5} />
+                : <SquareArrowLeft size={13} strokeWidth={1.5} />}
               {studySide === 'front' ? 'Front first' : 'Back first'}
             </button>
           )}

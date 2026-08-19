@@ -6,6 +6,7 @@ import { Toggle, Slider, Select } from '@/components/Controls'
 import QuickAccess from '@/components/QuickAccess'
 import SegmentedControl from '@/components/SegmentedControl'
 import { hexLuminance, isThemeDark, DOT_BASE, DOT_RADIUS, DOT_ALPHA } from '@/lib/canvasSurface'
+import { Orbit, RotateCcw, Settings, Share2, Tag, X } from 'lucide-react'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const LERP_RATE    = 0.035
@@ -94,7 +95,7 @@ function headerBtn(active = false) {
   return {
     height: BTN_H, padding: '0 10px', fontSize: 11, fontWeight: 600, border: '1px solid',
     borderColor: active ? 'var(--accent)' : 'var(--border)',
-    background: active ? 'var(--accent)18' : 'none',
+    background: active ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'none',
     color: active ? 'var(--accent)' : 'var(--textDim)',
     borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
     display: 'flex', alignItems: 'center', gap: 5,
@@ -1027,36 +1028,22 @@ export default function GraphView() {
         <div style={{ display:'flex', alignItems:'center', gap:6 }}>
           {/* Reset camera — reload glyph */}
           <button onClick={resetCamera} style={{ ...headerBtn(), padding:'0 8px' }} title="Reset camera">
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-              <path d="M12.5 1.5v3h-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+            <RotateCcw size={13} strokeWidth={1.5} />
           </button>
 
           {/* Settings — gear */}
           <button onClick={() => setSettingsOpen(o => !o)} style={{ ...headerBtn(settingsOpen), padding:'0 8px' }} title="Nebuli settings">
-            <svg width="13" height="13" viewBox="0 0 12 12" fill="none">
-              <circle cx="6" cy="6" r="2" stroke="currentColor" strokeWidth="1.3"/>
-              <path d="M6 1v1M6 10v1M1 6h1M10 6h1M2.4 2.4l.7.7M8.9 8.9l.7.7M9.6 2.4l-.7.7M3.1 8.9l-.7.7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-            </svg>
+            <Settings size={13} strokeWidth={1.3} />
           </button>
 
           <SegmentedControl
             value={graphTab} onChange={setGraphTab}
             options={[
               { value:'connections', label:'Connections', icon:(
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                  <circle cx="4" cy="12" r="2" stroke="currentColor" strokeWidth="1.4"/>
-                  <circle cx="12" cy="11" r="2" stroke="currentColor" strokeWidth="1.4"/>
-                  <circle cx="8" cy="4" r="2" stroke="currentColor" strokeWidth="1.4"/>
-                  <path d="M6.9 5.6L5 10.2M9.1 5.6l1.9 3.7M6 11.7l4-.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-                </svg>
+                <Share2 size={14} strokeWidth={1.4} />
               )},
               { value:'tags', label:'Tags', icon:(
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                  <path d="M2 2h5.2a1 1 0 0 1 .7.3l6 6a1 1 0 0 1 0 1.4l-4.2 4.2a1 1 0 0 1-1.4 0l-6-6A1 1 0 0 1 2 7.2V2z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
-                  <circle cx="5.2" cy="5.2" r="1.1" fill="currentColor"/>
-                </svg>
+                <Tag size={14} strokeWidth={1.4} />
               )},
             ]} />
         </div>
@@ -1220,9 +1207,7 @@ function NebuliSettings({
           background: 'none', border: 'none', cursor: 'pointer', color: 'var(--textDim)',
           padding: 4, borderRadius: 5, display: 'flex', alignItems: 'center',
         }}>
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-          </svg>
+          <X size={12} strokeWidth={1.6} />
         </button>
       </div>
 
@@ -1242,7 +1227,7 @@ function NebuliSettings({
                 <button key={label} onClick={() => onChange(vals)} style={{
                   flex: 1, height: 26, borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
                   fontSize: 11, fontWeight: active ? 600 : 400,
-                  background: active ? 'var(--accent)18' : 'var(--surfaceAlt)',
+                  background: active ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'var(--surfaceAlt)',
                   border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
                   color: active ? 'var(--accent)' : 'var(--textDim)',
                   transition: 'all 0.1s',
@@ -1323,7 +1308,7 @@ function NebuliSettings({
           {[['always','Always'],['linked','Linked & hovered'],['hovered','Hovered only']].map(([k,l]) => (
             <button key={k} onClick={() => onChange({ showLabels: k })} style={{
               width: '100%', textAlign: 'left', padding: '6px 10px', marginBottom: 3,
-              background: settings.showLabels === k ? 'var(--accent)18' : 'var(--surfaceAlt)',
+              background: settings.showLabels === k ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'var(--surfaceAlt)',
               border: `1px solid ${settings.showLabels === k ? 'var(--accent)' : 'var(--border)'}`,
               borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
               fontSize: 11, fontWeight: settings.showLabels === k ? 600 : 400,
@@ -1367,7 +1352,7 @@ function NebuliSettings({
                   flex: 1, padding: '5px 0', fontSize: 10, fontWeight: 600, cursor: 'pointer',
                   borderRadius: 6, border: '1px solid',
                   borderColor: filterLinked===k ? 'var(--accent)' : 'var(--border)',
-                  background: filterLinked===k ? 'var(--accent)18' : 'none',
+                  background: filterLinked===k ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'none',
                   color: filterLinked===k ? 'var(--accent)' : 'var(--textDim)',
                   fontFamily: 'inherit', transition: 'all 0.1s',
                 }}>{l}</button>
@@ -1420,7 +1405,7 @@ function NebuliSettings({
                     <button key={tag} onClick={() => onToggleTag(tag)} style={{
                       height: 20, padding: '0 7px', fontSize: 9, fontWeight: 600, cursor: 'pointer',
                       borderRadius: 20, border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
-                      background: active ? 'var(--accent)22' : 'none',
+                      background: active ? 'color-mix(in srgb, var(--accent) 22%, transparent)' : 'none',
                       color: active ? 'var(--accent)' : 'var(--textDim)',
                       fontFamily: 'inherit', transition: 'all 0.1s',
                     }}>#{tag}</button>
@@ -1563,9 +1548,7 @@ function NodeInfoPanel({ node, allNodes, onOpen, onUnpin, onClose }) {
           color:'var(--textDim)', padding:2, borderRadius:4, flexShrink:0,
           display:'flex', alignItems:'center',
         }}>
-          <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-            <path d="M1 1l9 9M10 1L1 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-          </svg>
+          <X size={11} strokeWidth={1.5} />
         </button>
       </div>
 
@@ -1576,10 +1559,7 @@ function NodeInfoPanel({ node, allNodes, onOpen, onUnpin, onClose }) {
         {parentNodes.length > 0 && (
           <div>
             <div style={{ display:'flex', alignItems:'center', gap:5, marginBottom:5 }}>
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ flexShrink:0 }}>
-                <circle cx="5" cy="5" r="1.8" fill={color}/>
-                <path d="M5 1.5A3.5 3.5 0 0 1 8.5 5" stroke={color} strokeWidth="1.2" strokeLinecap="round" fill="none"/>
-              </svg>
+              <Orbit size={10} strokeWidth={1.2} color={color} style={{ flexShrink: 0 }} />
               <span style={{ fontSize:9, fontWeight:700, color:'var(--textDim)', textTransform:'uppercase', letterSpacing:'0.08em' }}>
                 Orbits around
               </span>
@@ -1597,10 +1577,7 @@ function NodeInfoPanel({ node, allNodes, onOpen, onUnpin, onClose }) {
         {childNodes.length > 0 && (
           <div>
             <div style={{ display:'flex', alignItems:'center', gap:5, marginBottom:5 }}>
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ flexShrink:0 }}>
-                <circle cx="5" cy="5" r="2.2" stroke={color} strokeWidth="1.2" fill="none"/>
-                <circle cx="8.2" cy="5" r="1.2" fill={color}/>
-              </svg>
+              <Orbit size={10} strokeWidth={1.2} color={color} style={{ flexShrink: 0, transform: 'scaleX(-1)' }} />
               <span style={{ fontSize:9, fontWeight:700, color:'var(--textDim)', textTransform:'uppercase', letterSpacing:'0.08em' }}>
                 Orbited by
               </span>
@@ -1765,11 +1742,11 @@ function TagsHeatmap({ tagFrequencies, onTagClick }) {
                   <span style={{ fontSize:11, color:'var(--text)', width:120, flexShrink:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{tag}</span>
                   <div style={{ flex:1, height:8, background:'var(--surfaceAlt)', borderRadius:4, overflow:'hidden' }}>
                     <div style={{
-                      height:'100%', borderRadius:4,
-                      width:`${ratio * 100}%`,
+                      height:'100%', width:'100%', borderRadius:4,
+                      transformOrigin:'left', transform:`scaleX(${ratio})`,
                       background:color,
                       boxShadow: ratio > 0.7 ? `0 0 6px ${color}88` : 'none',
-                      transition:'width 0.3s ease',
+                      transition:'transform 0.3s ease',
                     }} />
                   </div>
                   <span style={{ fontSize:10, color:'var(--textDim)', width:24, textAlign:'right', flexShrink:0 }}>{count}</span>

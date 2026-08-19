@@ -1,0 +1,44 @@
+/* Minimal, self-contained token set for the web guest client — deliberately
+ * NOT src/styles/global.css (3500+ lines, coupled to the desktop app shell:
+ * titlebar chrome, every view's own styling, light/dark theme machinery none
+ * of which this single-purpose page needs). Dark-only, values match the
+ * desktop app's own dark theme defaults (src/styles/global.css :root) so a
+ * guest's note doesn't look like a visually unrelated product, but nothing
+ * here is wired to the app's live theme switcher — this page never sees it.
+ */
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surfaceAlt: #21262d;
+  --border: #30363d;
+  --borderSubtle: #21262d;
+  --text: #e6edf3;
+  --textDim: #6e7681;
+  --accent: #388bfd;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+/* Preview mode (renderMarkdown.js) — same centered-column rhythm as
+ * CollabEditor.jsx's own `notebookTheme()`, so switching Edit ⇄ Preview
+ * doesn't visibly jump the layout. */
+.gm-prose { max-width: 780px; margin: 0 auto; padding: 28px 48px 40vh; line-height: 1.8; }
+.gm-prose h1, .gm-prose h2, .gm-prose h3, .gm-prose h4, .gm-prose h5, .gm-prose h6 { margin: 1.4em 0 0.5em; font-weight: 650; line-height: 1.3; }
+.gm-prose h1 { font-size: 1.7em; } .gm-prose h2 { font-size: 1.4em; } .gm-prose h3 { font-size: 1.2em; }
+.gm-prose p { margin: 0.9em 0; }
+.gm-prose a { color: var(--accent); }
+.gm-prose code { background: var(--surfaceAlt); padding: 2px 5px; border-radius: 4px; font-size: 0.9em; font-family: ui-monospace, monospace; }
+.gm-prose pre { background: var(--surfaceAlt); padding: 12px 14px; border-radius: 8px; overflow-x: auto; }
+.gm-prose pre code { background: none; padding: 0; }
+.gm-prose blockquote { margin: 0.9em 0; padding-left: 14px; border-left: 3px solid var(--border); color: var(--textDim); }
+.gm-prose ul, .gm-prose ol { margin: 0.9em 0; padding-left: 1.5em; }
+.gm-prose li { margin: 0.3em 0; }
+.gm-prose hr { border: none; border-top: 1px solid var(--border); margin: 2em 0; }
+.gm-img { max-width: 100%; display: block; margin: 10px 0; border-radius: 6px; }
+.gm-imgph { display: inline-block; padding: 6px 10px; border: 1px dashed var(--border); border-radius: 6px; color: var(--textDim); font-size: 0.85em; }

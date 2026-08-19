@@ -24,19 +24,29 @@
  *   use the autocomplete tooltip.
  */
 
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useContext, createElement } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useContext, createElement, lazy, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
 import useAppStore from '@/store/useAppStore'
 import { PaneContext, PaneChromeContext } from '@/lib/PaneContext'
 import { useIsActiveTab } from '@/lib/useIsActiveTab'
+import { mergeSilently } from '@/lib/merge3'
+import { snapshot as _histSnap, diffLines as _historyDiff, prune as _histPrune } from '@/lib/history'
+const historySnapshot = (id, text, kind) => { _histSnap(id, text, kind).catch(() => {}) }
+const historyPrune = (id) => { _histPrune(id).catch(() => {}) }
 import { loadNotebookContent, saveNotebookContent, saveNotebookImage, getNotebookFolderPath, addReadingMinutes,
-         resolveNotebookMdPath, getFileMtimeMs, readNotebookMdAt, stampNotebookSynced } from '@/lib/storage'
+         resolveNotebookMdPath, getNotebookMdPath, getFileMtimeMs, readNotebookMdAt, stampNotebookSynced } from '@/lib/storage'
 import QuickAccess, { useTitlebarMeta } from '@/components/QuickAccess'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { Slider } from '@/components/Controls'
-import { IconQuill } from '@/components/icons'
+import { IconQuill, IconDefaults } from '@/components/icons'
 import { makeMathCalcPlugin } from '@/lib/notebookEditor'
 import { listen } from '@tauri-apps/api/event'
+import { AlignCenter, AlignJustify, AlignLeft, AlignRight, Eye, FileText, Image, Link2, NotebookText, Pencil, Search, Share, TriangleAlert, Users, X } from 'lucide-react'
+
+// Lazy: only imports yjs/y-webrtc/y-codemirror.next (real weight) the moment
+// a user actually starts a Live Share — see NoteCollabPanel.jsx's own header
+// comment for why this boundary matters.
+const NoteCollabPanel = lazy(() => import('@/components/NoteCollabPanel'))
 
 
 // ─── Tauri convertFileSrc cache (loaded once, used synchronously in widgets) ───
@@ -161,7 +171,50 @@ function getMQ() {
 // ─── HTML escape ──────────────────────────────────────────────────────────────
 const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
 
+// ─── Live Share collab-compartment content ──────────────────────────────────
+// `bits` is null (not sharing / not ready yet) or { canonicalText, awareness,
+// yCollab } from NoteCollabPanel.jsx. No `undoManager` passed to yCollab —
+// stated limitation, not an oversight: CM6's own `history()` extension stays
+// the editor's undo source during a share, same as when not sharing, so a
+// Ctrl-Z performed right after a remote edit lands is not guaranteed to be
+// collaboration-aware (it could in principle undo the remote insert rather
+// than the host's own last edit). Giving yCollab its own Y.UndoManager would
+// fix that but means running two undo systems side by side during a share;
+// not done here — pass a `Y.UndoManager` in when that's worth the added
+// surface.
+//
+// Second stated limitation, checked against y-codemirror.next's own source
+// (node_modules/y-codemirror.next/src/y-sync.js): its sync plugin does NOT
+// reconcile the editor's current doc against `ytext` when it first attaches
+// — it only observes both for CHANGES from that point on. `canonicalText`
+// is seeded once from `contentRef.current` at the moment the share panel
+// opens (NoteCollabPanel's `seedText` prop); if the host keeps typing during
+// the brief async gap before this compartment actually reconfigures
+// (WebrtcProvider/awareness setup), those few keystrokes exist in the
+// host's own doc but never reached `canonicalText`, so a guest's very first
+// view of the note can be missing them. Self-healing the moment the host
+// edits again afterward (that edit DOES flow through, same as any other),
+// and nothing is ever lost from the host's own saved file — only a guest's
+// initial view can be transiently behind. Not a repeat of the seeding bugs
+// documented in src/lib/collab/engine.js (those were permanent silent
+// failures from missing CRDT dependencies); this is a narrow, self-healing
+// window. Noted rather than engineered around, given how small it is.
+//
+// Guest edits arriving through this binding are ordinary CM6
+// transactions, so the existing `updateListener` below (docChanged →
+// contentRef → scheduleSave) already persists them — no separate save path
+// needed for collaboration.
+function buildCollabExt(bits) {
+  if (!bits?.canonicalText || !bits?.awareness || !bits?.yCollab) return []
+  return [bits.yCollab(bits.canonicalText, bits.awareness, {})]
+}
+
 // ─── Inline markdown → HTML ───────────────────────────────────────────────────
+// Notebook folder used to resolve relative image paths in the HTML renderers.
+// Set by renderMarkdown; module-level so inlineToHtml doesn't need the arg
+// threaded through every caller.
+let _imgBaseDir = null
+
 function inlineToHtml(text, notebooks = [], library = [], sketchbooks = [], flashcardDecks = []) {
   const buckets = []
   const ph = html => { const k = `\x02${buckets.length}\x03`; buckets.push(html); return k }
@@ -171,9 +224,26 @@ function inlineToHtml(text, notebooks = [], library = [], sketchbooks = [], flas
   // Obsidian comments %%…%% — stripped from rendered output
   s = s.replace(/%%[\s\S]*?%%/g, '')
 
-  // Images  ![alt](src)
-  s = s.replace(/!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)/g, (_, alt, src, title) =>
-    ph(`<img src="${esc(src)}" alt="${esc(alt)}"${title ? ` title="${esc(title)}"` : ''} class="nb-img" loading="lazy">`))
+  // Images  ![alt](src)  — with an optional `=600x` width spec.
+  // Dragging the resize handle writes that spec into the link. The live editor
+  // has always parsed it, but this renderer did not, so its regex failed to
+  // match the whole image and the markdown leaked through as literal text —
+  // i.e. resizing an image "broke" it everywhere except the live view.
+  s = s.replace(/!\[([^\]]*)\]\(([^\s)]+)(?:\s+=(\d+)x)?(?:\s+"([^"]*)")?\)/g, (_, alt, src, w, title) => {
+    const a = parseImgAlt(alt)              // `caption:center|600` → width + align
+    const width = a.width || (w ? +w : 0)   // legacy `=600x` still honoured
+    // Alignment must survive into preview/export too — it was live-only before.
+    // No floats — the image owns its line, text never wraps beside it (matches
+    // the live editor). Alignment is just which side of the line it sits on.
+    const style = [
+      'display:block',
+      width ? `width:${width}px` : '',
+      a.align === 'center' ? 'margin-left:auto;margin-right:auto' : '',
+      a.align === 'right'  ? 'margin-left:auto;margin-right:0'    : '',
+      a.align === 'left'   ? 'margin-left:0;margin-right:auto'    : '',
+    ].filter(Boolean).join(';')
+    return ph(`<img src="${esc(resolveImgSrc(src, _imgBaseDir))}" alt="${esc(a.alt)}"${title ? ` title="${esc(title)}"` : ''}${style ? ` style="${style}"` : ''} class="nb-img" loading="lazy">`)
+  })
 
   // Links  [text](url)
   s = s.replace(/\[([^\]]+)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)/g, (_, txt, url, title) =>
@@ -268,12 +338,107 @@ function renderList(rawLines, il) {
   return html
 }
 
+/** Strip anything executable from author-supplied SVG before it goes into the
+ *  DOM: <script>, event handlers (onclick=…), and javascript: URLs. Notes can
+ *  arrive from outside the archive (sync, external refs), so treat their SVG as
+ *  untrusted. */
+function _sanitizeSvg(src) {
+  let s = String(src || '')
+  // Drop an XML prolog / DOCTYPE and any trailing junk, keeping just the root
+  // <svg>…</svg>. Exported files routinely carry these and they confuse parsing.
+  const start = s.search(/<svg[\s>]/i)
+  if (start === -1) return `<div class="nb-diagram-error">Not valid SVG</div>`
+  const end = s.toLowerCase().lastIndexOf('</svg>')
+  s = end === -1 ? s.slice(start) : s.slice(start, end + 6)
+
+  try {
+    // Parse as real SVG and prune dangerous NODES/ATTRS, rather than deleting
+    // whole elements by regex. An earlier version removed every <foreignObject>,
+    // which is where many exported diagrams keep their visible content — the
+    // graphic came out blank with only stray <title> text showing.
+    const doc = new DOMParser().parseFromString(s, 'image/svg+xml')
+    const root = doc.documentElement
+    if (!root || root.nodeName.toLowerCase() === 'parsererror' || doc.querySelector('parsererror')) {
+      return `<div class="nb-diagram-error">Could not parse SVG</div>`
+    }
+    root.querySelectorAll('script').forEach(n => n.remove())
+    root.querySelectorAll('*').forEach(el => {
+      for (const attr of [...el.attributes]) {
+        const n = attr.name.toLowerCase(), v = (attr.value || '').trim().toLowerCase()
+        if (n.startsWith('on')) el.removeAttribute(attr.name)
+        else if ((n === 'href' || n === 'xlink:href') && v.startsWith('javascript:')) el.removeAttribute(attr.name)
+      }
+    })
+    return new XMLSerializer().serializeToString(root)
+  } catch {
+    // Parsing failed — fall back to the conservative string scrub.
+    return s
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .replace(/(href|xlink:href)\s*=\s*("|')\s*javascript:[^"']*\2/gi, '')
+  }
+}
+
+// Mermaid is a very large dependency — loaded on first use only, then reused.
+let _mermaidPromise = null
+function getMermaid() {
+  if (!_mermaidPromise) {
+    _mermaidPromise = import('mermaid').then(m => {
+      const mer = m.default || m
+      // Follow the app's theme — a light-on-white diagram in a dark notebook is
+      // unreadable. Read the real background so custom themes work too.
+      let dark = true
+      try {
+        const bg = getComputedStyle(document.body).backgroundColor || ''
+        const n = bg.match(/\d+/g)
+        if (n && n.length >= 3) dark = (+n[0] * 299 + +n[1] * 587 + +n[2] * 114) / 1000 < 128
+      } catch { /* default dark */ }
+      mer.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme: dark ? 'dark' : 'default',
+        fontFamily: "'trebuchet ms', verdana, arial, sans-serif",
+        fontSize: 16,
+      })
+      return mer
+    })
+  }
+  return _mermaidPromise
+}
+
+/** Render any pending `.nb-mermaid` placeholders inside `root`. Idempotent —
+ *  each node is marked done, so re-running after a re-render is cheap. */
+export async function hydrateDiagrams(root) {
+  if (!root) return
+  const nodes = [...root.querySelectorAll('.nb-mermaid:not([data-rendered])')]
+  if (!nodes.length) return
+  let mer
+  try { mer = await getMermaid() }
+  catch { nodes.forEach(n => { n.dataset.rendered = '1'; n.innerHTML = '<div class="nb-diagram-error">Mermaid failed to load</div>' }); return }
+  for (const n of nodes) {
+    n.dataset.rendered = '1'
+    const src = n.dataset.mermaid || ''
+    try {
+      const id = `mmd-${Math.random().toString(36).slice(2, 9)}`
+      const { svg } = await mer.render(id, src)
+      n.innerHTML = svg
+    } catch (err) {
+      n.innerHTML = `<div class="nb-diagram-error">${esc(String(err?.message || err).split('\n')[0])}</div>`
+    }
+  }
+}
+
 function blockToHtml(raw, notebooks, library, footnotesBuf, sketchbooks = [], flashcardDecks = []) {
   const il = t => inlineToHtml(t, notebooks, library, sketchbooks, flashcardDecks)
   const lines = raw.split('\n')
   const first = lines[0]
 
-  const hm = first.match(/^(#{1,6})\s+(.+?)(?:\s+\{#([^}]+)\})?$/)
+  // Space after the hashes is OPTIONAL — `## Title` and `##Title` both render.
+  // The live editor already accepted both (see the no-space heading pass in
+  // makeLivePlugin), but preview/export required the space, so the same note
+  // looked different in the two modes. `[^\s#]` guards against a bare `###` and
+  // against eating a 7th hash.
+  const hm = first.match(/^(#{1,6})(?:[ \t]+|(?=[^\s#]))(.+?)(?:\s+\{#([^}]+)\})?$/)
   if (hm) {
     const lv = hm[1].length
     const id = ` id="${esc(hm[3] || _slugify(hm[2]))}"`
@@ -310,9 +475,26 @@ function blockToHtml(raw, notebooks, library, footnotesBuf, sketchbooks = [], fl
     return `<div class="nb-rating">${stars}</div>`
   }
 
+  // status:: Todo  →  status badge
+  const statusM = first.trim().match(/^status::\s*(\w+)$/i)
+  if (statusM) {
+    const def = _STATUS_DEFS[_statusDefIdx(statusM[1])]
+    return `<div class="nb-status-badge" style="color:${def.color};background:${def.color}18;border-color:${def.color}40">${def.icon}<span>${esc(def.value)}</span></div>`
+  }
+
   if (/^(`{3,}|~{3,})/.test(first)) {
     const lang = first.replace(/^`{3,}|^~{3,}/, '').trim()
     const body = raw.replace(/^[^\n]*\n/, '').replace(/\n[`~]{3,}\s*$/, '')
+    // ```mermaid — emit a placeholder carrying the source; hydrateDiagrams()
+    // renders it after paint. Mermaid is ~1.4MB, so it is imported lazily and
+    // ONLY when a diagram actually exists — it must never touch startup.
+    if (/^mermaid$/i.test(lang)) {
+      return `<div class="nb-mermaid" data-mermaid="${esc(body)}"><div class="nb-diagram-pending">rendering diagram…</div></div>`
+    }
+    // ```svg — render the markup inline (sanitised: no scripts/handlers).
+    if (/^svg$/i.test(lang)) {
+      return `<div class="nb-svg">${_sanitizeSvg(body)}</div>`
+    }
     return `<pre class="nb-pre${lang ? ' lang-'+esc(lang) : ''}"><code>${esc(body)}</code></pre>`
   }
 
@@ -418,8 +600,10 @@ function blockToHtml(raw, notebooks, library, footnotesBuf, sketchbooks = [], fl
     } catch { return '' }
   }
 
-  // /task block — render as a kanban board (matches widget CSS)
-  if (/^\/task(?::.*)?$/.test(first)) {
+  // /kanban block — render as a kanban board (matches widget CSS). Accepts
+  // the old '/task' header too so notebooks written before the rename
+  // still render.
+  if (/^\/(?:task|kanban)(?::.*)?$/.test(first)) {
     const block = parseTaskBlock(raw, 0)
     if (block) {
       const colsHtml = block.columns.map(col => {
@@ -514,8 +698,8 @@ function parseBlocks(text) {
     if (line.trim() === '$$') { buf.push(line); continue }
     if (line.trim() === '') { flush(); continue }
 
-    // Keep /task block lines together (column headers == ... == and task items - [ ] ...)
-    const wasTaskBlock = buf.length > 0 && /^\/task(?::.*)?$/.test(buf[0])
+    // Keep /kanban block lines together (column headers == ... == and task items - [ ] ...)
+    const wasTaskBlock = buf.length > 0 && /^\/(?:task|kanban)(?::.*)?$/.test(buf[0])
     if (wasTaskBlock) { buf.push(line); continue }
 
     const isTable   = /^\s*\|/.test(line)
@@ -582,7 +766,7 @@ function _slugify(t) {
   return String(t).toLowerCase().replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-').slice(0, 64)
 }
 
-function renderMarkdown(text, notebooks = [], library = [], sketchbooks = [], flashcardDecks = []) {
+function renderMarkdown(text, notebooks = [], library = [], sketchbooks = [], flashcardDecks = [], notebookDir = null) {
   if (!text?.trim()) return ''
   const footnotes = []
   // Leading YAML frontmatter → properties card, stripped before block parsing
@@ -591,9 +775,10 @@ function renderMarkdown(text, notebooks = [], library = [], sketchbooks = [], fl
   if (fm) { fmHtml = frontmatterHtml(fm.props); text = text.slice(fm.length) }
   const blocks = parseBlocks(text)
   // Collect headings for /toc (level + visible text + slug for anchors)
+  _imgBaseDir = notebookDir
   _tocHeadings = []
   for (const b of blocks) {
-    const hm = b.match(/^(#{1,6})\s+(.+?)(?:\s+\{#([^}]+)\})?\s*$/)
+    const hm = b.match(/^(#{1,6})(?:[ \t]+|(?=[^\s#]))(.+?)(?:\s+\{#([^}]+)\})?\s*$/)
     if (hm) _tocHeadings.push({ level: hm[1].length, text: hm[2], slug: hm[3] || _slugify(hm[2]) })
   }
   // Merge standalone [caption] blocks with adjacent table blocks
@@ -651,11 +836,11 @@ function makeTheme(cm) {
     '.cm-content': { caretColor: 'var(--accent)', padding: '16px 0' },
     '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)' },
     '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
-      background: 'var(--nb-sel, rgba(56,139,253,0.28)) !important',
+      background: 'var(--nb-sel, color-mix(in srgb, var(--accent) 28%, transparent)) !important',
     },
     '.cm-activeLine': { background: 'transparent' },
     '.cm-searchMatch': { background: 'rgba(210,153,34,0.35)', borderRadius: '2px' },
-    '.cm-searchMatch.cm-searchMatch-selected': { background: 'rgba(56,139,253,0.45)' },
+    '.cm-searchMatch.cm-searchMatch-selected': { background: 'color-mix(in srgb, var(--accent) 45%, transparent)' },
     '.cm-panels': { display: 'none' },
     '.cm-panel': { display: 'none' },
     '.cm-panel button': { background: 'var(--surfaceAlt)', border: '1px solid var(--border)', borderRadius: '6px', color: 'var(--text)', cursor: 'pointer', padding: '3px 8px', fontFamily: 'inherit', fontSize: '12px' },
@@ -667,10 +852,18 @@ function makeHighlight(cm) {
   const { tags } = cm.highlight
   const { HighlightStyle } = cm.language
   return HighlightStyle.define([
-    { tag: tags.heading1, color: 'var(--text)', fontWeight: '600', fontSize: '1.6em', fontFamily: 'Switzer, Satoshi, sans-serif', letterSpacing: '-0.3px' },
-    { tag: tags.heading2, color: 'var(--text)', fontWeight: '600', fontSize: '1.35em', fontFamily: 'Switzer, Satoshi, sans-serif', letterSpacing: '-0.2px' },
-    { tag: tags.heading3, color: 'var(--text)', fontWeight: '600', fontSize: '1.15em', fontFamily: 'Satoshi, Author, sans-serif' },
-    { tag: tags.heading4, color: 'var(--text)', fontWeight: '600', fontFamily: 'Satoshi, Author, sans-serif' },
+    // Headings: weight/family ONLY — never fontSize or color.
+    // Heading appearance is owned by the `.cm-lv-hN` LINE classes (which carry
+    // --nb-hN / --nb-hN-color). These tag styles land on a span INSIDE that
+    // line, so a `fontSize: '1.35em'` here multiplied the line's already-scaled
+    // size (18.9px → 25.5px) and `color: var(--text)` overrode the heading
+    // colour. Only *spaced* headings were affected, because `##Text` isn't
+    // parsed as an ATXHeading and so never received these tag styles — which is
+    // why the two forms looked different.
+    { tag: tags.heading1, fontWeight: '600', fontFamily: 'Switzer, Satoshi, sans-serif', letterSpacing: '-0.3px' },
+    { tag: tags.heading2, fontWeight: '600', fontFamily: 'Switzer, Satoshi, sans-serif', letterSpacing: '-0.2px' },
+    { tag: tags.heading3, fontWeight: '600', fontFamily: 'Satoshi, Author, sans-serif' },
+    { tag: tags.heading4, fontWeight: '600', fontFamily: 'Satoshi, Author, sans-serif' },
     { tag: tags.strong,   color: 'var(--nb-bold-color)', fontWeight: '700' },
     { tag: tags.emphasis, color: 'var(--nb-italic-color)', fontStyle: 'italic' },
     { tag: tags.strikethrough, color: 'var(--textDim)', textDecoration: 'line-through' },
@@ -1121,9 +1314,14 @@ function makeSlashSource() {
   })
 
   const OPTIONS = [
-    machinery('/table', 'Insert a table (or /table 4x3)'),
-    machinery('/todo',  'To-do list block'),
-    machinery('/task',  'Task with date'),
+    machinery('/table',  'Insert a table (or /table 4x3)'),
+    // '/todo' removed — it inserted plain text with no widget ever built to
+    // render it (dead: no code created a `.cm-todo-block-w` element, only
+    // orphaned CSS + a click handler remained). '/task' already IS a real
+    // multi-column kanban board (see parseTaskBlock/serializeTaskBlock
+    // below) — consolidated the two under one clearer name instead of
+    // shipping a second, differently-named trigger for the same widget.
+    machinery('/kanban', 'Task board (kanban)'),
     machinery('/math',  'Math zone (calculator)'),
     machinery('/timer', 'Countdown timer'),
     machinery('/linkf', 'Link a file'),
@@ -1141,6 +1339,7 @@ function makeSlashSource() {
     snippet('/toc',      'Table of contents', '/toc\n'),
     snippet('/progress', 'Progress bar',    'progress:: 7/10 Label\n'),
     snippet('/rating',   'Star rating',     'rating:: 4/5\n'),
+    snippet('/status',   'Status badge (click to cycle Todo/Doing/Blocked/Review/Done)', 'status:: Todo\n'),
     snippet('/code',     'Code block',     '```\n\n```', 5),
     snippet('/mermaid',  'Mermaid diagram', '```mermaid\nflowchart TD\n  A --> B\n```\n', 0),
     snippet('/date',     "Today's date",   new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })),
@@ -1158,6 +1357,32 @@ function makeSlashSource() {
 }
 
 // ─── Widgets ─────────────────────────────────────────────────────────────────
+
+// Heading fold arrow — replaces the (already-hidden) # marks when a heading has
+// foldable content below it. Click toggles CM6's native fold state for the
+// section (this heading's line-end through the line before the next heading of
+// equal-or-higher level). Chevron rotates 90deg when expanded, lucide chevron-right.
+class FoldArrowWidget {
+  constructor(collapsed, foldFrom, foldTo) {
+    this.collapsed = collapsed; this.foldFrom = foldFrom; this.foldTo = foldTo
+  }
+  toDOM() {
+    const btn = document.createElement('span')
+    btn.className = 'cm-fold-arrow' + (this.collapsed ? '' : ' cm-fold-arrow-open')
+    btn.dataset.foldFrom = String(this.foldFrom)
+    btn.dataset.foldTo = String(this.foldTo)
+    btn.title = this.collapsed ? 'Expand section' : 'Collapse section'
+    btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>'
+    return btn
+  }
+  eq(o) { return o instanceof FoldArrowWidget && o.collapsed === this.collapsed && o.foldFrom === this.foldFrom && o.foldTo === this.foldTo }
+  compare(o) { return this.eq(o) }
+  destroy() {}
+  ignoreEvent() { return false }
+  get estimatedHeight() { return -1 }
+  coordsAt() { return null }
+}
+
 class HRWidget {
   toDOM() {
     const d = document.createElement('div')
@@ -1205,6 +1430,61 @@ class CheckboxWidget {
   coordsAt() { return null }
 }
 
+/**
+ * Turn a markdown image `src` into something the webview can actually load.
+ *
+ * Relative paths are resolved against the notebook's folder — and crucially NOT
+ * just `./`-prefixed ones. The app's own inserter writes `./images/x.png`, but
+ * markdown written by hand, by another editor, or by an export tool normally
+ * writes `images/x.png`. Those were left untouched, so the webview resolved
+ * them against the page origin, 404'd, and the note showed the alt text in an
+ * error pill instead of the picture.
+ */
+/**
+ * Split an image's alt text into its display text and an optional width.
+ *
+ * Width is stored Obsidian-style INSIDE the alt (`![caption|600](src)`) rather
+ * than as `![caption](src =600x)`. The `=600x` form is not valid CommonMark —
+ * a space inside the parens that isn't a quoted title makes the whole thing not
+ * an image, so the parser produced no Image node and the markdown leaked
+ * through as raw text. That's why resizing an image always "broke" it.
+ * Legacy `=Nx` is still read (see callers) so old notes keep working.
+ */
+function parseImgAlt(alt) {
+  let s = String(alt ?? '')
+  let width = 0, align = null
+  // Strip trailing `|600` and `:center` in EITHER order, repeatedly, so
+  // `caption:center|600` and `caption|600:center` both work — and so neither
+  // suffix leaks into the caption the reader sees.
+  for (let i = 0; i < 2; i++) {
+    let m = /^(.*)\|\s*(\d+)\s*$/.exec(s)
+    if (m) { s = m[1]; width = parseInt(m[2], 10) || width; continue }
+    m = /^(.*?):(left|right|center)\s*$/i.exec(s)
+    if (m) { s = m[1]; align = m[2].toLowerCase(); continue }
+    break
+  }
+  return { alt: s, width, align }
+}
+
+/** Rebuild an alt string from its parts — inverse of parseImgAlt. */
+function composeImgAlt(alt, width, align) {
+  return `${alt}${align ? `:${align}` : ''}${width ? `|${width}` : ''}`
+}
+
+function resolveImgSrc(src, notebookDir) {
+  const s = String(src || '')
+  if (!s) return s
+  // Already loadable: data/blob URIs, or anything with an explicit scheme.
+  if (/^(data:|blob:|[a-z][a-z0-9+.-]*:)/i.test(s)) return s
+  if (!_convertFileSrc) return s
+  // Absolute filesystem paths (POSIX or Windows).
+  if (s.startsWith('/') || /^[A-Za-z]:[\\/]/.test(s)) return _convertFileSrc(s)
+  if (!notebookDir) return s
+  // Everything else is relative to the notebook: "./images/x", "images/x", "x".
+  const rel = s.replace(/^\.\//, '')
+  return _convertFileSrc(`${notebookDir.replace(/\/+$/, '')}/${rel}`)
+}
+
 class ImgWidget {
   constructor(src, alt, notebookDir = null, from = -1, width = 0, align = null) {
     this.src = src; this.alt = alt; this.notebookDir = notebookDir
@@ -1212,15 +1492,55 @@ class ImgWidget {
     this.width = width  // user-set pixel width (0 = auto)
     this.align = align  // null | 'left' | 'right' | 'center'
   }
+  /** Keep the wrapper hugging the image so the overlay controls (resize handle,
+   *  align bar) sit on the image's own corners. Without this the wrapper can be
+   *  full-width — the `.svg` no-intrinsic-size rule does exactly that — and the
+   *  handle floats off to the right of the page instead of tracking the image. */
+  /**
+   * The widget's CURRENT document offset.
+   *
+   * `this.from` is captured when the widget is built, but `updateDOM` reuses the
+   * existing DOM — so the resize/align handlers keep a closure over an OLD
+   * widget whose `from` is stale as soon as anything above it edits the doc.
+   * Writing back at a stale offset sliced the markdown mid-token, producing
+   * corruption like `…maps to eac](…svg )` and `:cr|405`. A corrupted file then
+   * no longer matched what the app held, which tripped the conflict-fork and
+   * duplicated the note. Ask the view where this DOM node actually is instead.
+   */
+  _livePos(view, wrap) {
+    try {
+      const p = view.posAtDOM(wrap)
+      if (Number.isInteger(p) && p >= 0 && p <= view.state.doc.length) return p
+    } catch { /* fall back below */ }
+    return this.from
+  }
+  _applySize(wrap, img) {
+    if (this.width) {
+      wrap.style.width = this.width + 'px'
+      img.style.width = '100%'
+    } else {
+      wrap.style.width = ''
+      img.style.width = ''
+    }
+  }
+  /** Reflect the current alignment on the buttons (called on create AND update —
+   *  updateDOM reuses the DOM, so without this the active state never changed
+   *  and clicking a button looked like it did nothing). */
+  _syncAlignButtons(wrap) {
+    wrap.querySelectorAll('.cm-img-align-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.align === (this.align || ''))
+    })
+  }
   _applyAlign(wrap) {
+    // NO FLOATS — an image owns its whole line and text never wraps beside it.
+    // Alignment is purely which side of that line the image sits on, done with
+    // auto margins so the resize handle and align bar stay on the image.
     wrap.style.float = ''
-    wrap.style.marginLeft = ''
-    wrap.style.marginRight = ''
     wrap.style.marginBottom = ''
-    wrap.style.display = ''
-    if (this.align === 'left')   { wrap.style.float = 'left';  wrap.style.marginRight = '1em'; wrap.style.marginBottom = '0.5em' }
-    if (this.align === 'right')  { wrap.style.float = 'right'; wrap.style.marginLeft  = '1em'; wrap.style.marginBottom = '0.5em' }
-    if (this.align === 'center') { wrap.style.display = 'block'; wrap.style.marginLeft = 'auto'; wrap.style.marginRight = 'auto' }
+    wrap.style.display = 'block'
+    if (this.align === 'center')     { wrap.style.marginLeft = 'auto'; wrap.style.marginRight = 'auto' }
+    else if (this.align === 'right') { wrap.style.marginLeft = 'auto'; wrap.style.marginRight = '0' }
+    else                             { wrap.style.marginLeft = '0';    wrap.style.marginRight = 'auto' }  // left / default
   }
   toDOM(view) {
     const wrap = document.createElement('div')
@@ -1228,23 +1548,45 @@ class ImgWidget {
     this._applyAlign(wrap)
     const img = document.createElement('img')
     // Resolve relative paths (./images/...) or absolute paths to Tauri asset:// URLs
-    let resolvedSrc = this.src
-    if (this.src.startsWith('./') && this.notebookDir && _convertFileSrc) {
-      resolvedSrc = _convertFileSrc(this.notebookDir + '/' + this.src.slice(2))
-    } else if (_convertFileSrc && (this.src.startsWith('/') || /^[A-Za-z]:\\/.test(this.src))) {
-      resolvedSrc = _convertFileSrc(this.src)
-    }
+    const resolvedSrc = resolveImgSrc(this.src, this.notebookDir)
     img.src = resolvedSrc; img.alt = this.alt; img.loading = 'lazy'
     img.className = 'cm-img'
     img.draggable = false
     img.setAttribute('draggable', 'false')
-    if (this.width) img.style.width = this.width + 'px'
+    this._applySize(wrap, img)
     img.onerror = () => {
       img.style.display = 'none'
       const ph = document.createElement('span')
       ph.className = 'cm-img-err'
       ph.textContent = this.alt || this.src || 'image'
       wrap.appendChild(ph)
+    }
+    // Safety net for images with no intrinsic size (SVG with only a viewBox):
+    // they load successfully but lay out at 0×0. Detect after layout and give
+    // the wrapper a definite width so the aspect ratio has something to resolve
+    // against. Covers sources the `[src*=".svg"]` rule can't match.
+    img.addEventListener('load', () => {
+      requestAnimationFrame(() => {
+        if (!img.isConnected) return
+        if (img.getBoundingClientRect().width < 1) wrap.classList.add('cm-img-nosize')
+      })
+    })
+
+    // CodeMirror caches the height of every block widget. An image changes size
+    // AFTER that measurement — it decodes asynchronously, the no-size fallback
+    // above may widen it, and dragging the handle resizes it live. Without
+    // telling the view, those cached heights go stale and the editor paints
+    // blank regions / mis-positioned content. Re-measure on any size change.
+    if (view && typeof ResizeObserver !== 'undefined') {
+      let lastH = -1
+      const ro = new ResizeObserver(() => {
+        const h = Math.round(wrap.getBoundingClientRect().height)
+        if (h === lastH) return
+        lastH = h
+        try { view.requestMeasure() } catch { /* view torn down */ }
+      })
+      ro.observe(wrap)
+      this._ro = ro   // disconnected in destroy()
     }
     wrap.appendChild(img)
 
@@ -1257,21 +1599,46 @@ class ImgWidget {
       handle.addEventListener('pointerdown', e => {
         e.preventDefault(); e.stopPropagation()
         startX = e.clientX
-        startW = img.offsetWidth || this.width || 200
+        startW = wrap.offsetWidth || img.offsetWidth || this.width || 200
         handle.setPointerCapture(e.pointerId)
+        // Widest the image may become: the editor line it sits on.
+        const maxW = Math.max(80, (wrap.parentElement?.clientWidth || startW))
+        let liveW = startW
         const onMove = ev => {
-          const newW = Math.max(60, startW + (ev.clientX - startX))
-          img.style.width = newW + 'px'
+          // Size the WRAPPER, not just the image. The image is width:100% of the
+          // wrapper, so setting the image alone could never grow past the
+          // wrapper's fixed width — that's why resizing only ever shrank. Moving
+          // the wrapper also keeps the handle glued to the corner DURING the
+          // drag instead of snapping into place afterwards.
+          liveW = Math.min(maxW, Math.max(60, startW + (ev.clientX - startX)))
+          wrap.style.width = liveW + 'px'
+          img.style.width = '100%'
         }
         const onUp = () => {
           handle.removeEventListener('pointermove', onMove)
-          const newW = Math.max(60, Math.round(img.offsetWidth || startW))
-          if (!view.state || this.from >= view.state.doc.length) return
-          const line = view.state.doc.lineAt(this.from)
+          const newW = Math.max(60, Math.round(liveW || wrap.offsetWidth || startW))
+          if (!view.state) return
+          const pos = this._livePos(view, wrap)
+          if (!(pos >= 0) || pos >= view.state.doc.length) return
+          const line = view.state.doc.lineAt(pos)
           const raw = line.text
-          // Remove existing =Nx spec then append new width before closing )
-          const base = raw.replace(/\s+=\d+x(?=\s*\))/, '')
-          const updated = base.replace(/\)(\s*)$/, ` =${newW}x)$1`)
+          // Rewrite THIS image's width spec, located at the widget's own offset.
+          // The previous version anchored on the line's trailing ")", so an
+          // image with any text after it on the line was rewritten wrongly (or
+          // not at all).
+          const col = Math.max(0, pos - line.from)
+          // Safety: only write if an image starts EXACTLY here. A drifted
+          // offset used to slice mid-token and corrupt the markdown.
+          if (raw.slice(col, col + 2) !== '![') return
+          const m = /^!\[([^\]]*)\]\(([^\s)]+)(?:\s+=\d+x)?(?:\s+"([^"]*)")?\)/.exec(raw.slice(col))
+          if (!m) return
+          const title = m[3] ? ` "${m[3]}"` : ''
+          // Write the width into the ALT (`caption|600`) — valid CommonMark, so
+          // the image still parses. Any legacy `=Nx` is dropped in the process.
+          // Alignment is preserved rather than clobbered by a resize.
+          const pa = parseImgAlt(m[1])
+          const replacement = `![${composeImgAlt(pa.alt, newW, pa.align)}](${m[2]}${title})`
+          const updated = raw.slice(0, col) + replacement + raw.slice(col + m[0].length)
           if (updated !== raw) {
             view.dispatch({ changes: { from: line.from, to: line.to, insert: updated }, scrollIntoView: false })
           }
@@ -1280,6 +1647,52 @@ class ImgWidget {
         handle.addEventListener('pointerup', onUp, { once: true })
       })
       wrap.appendChild(handle)
+
+      // ── Alignment buttons ────────────────────────────────────────────────
+      // Alignment was already understood by the renderer but there was no way
+      // to set it short of hand-editing the alt text. Same hover affordance as
+      // the resize handle; writes `:left|:center|:right` into the alt.
+      const bar = document.createElement('div')
+      bar.className = 'cm-img-align-bar'
+      const setAlign = (next) => {
+        if (!view.state) return
+        const pos = this._livePos(view, wrap)
+        if (!(pos >= 0) || pos >= view.state.doc.length) return
+        const line = view.state.doc.lineAt(pos)
+        const raw = line.text
+        const col = Math.max(0, pos - line.from)
+        if (raw.slice(col, col + 2) !== '![') return
+        const mm = /^!\[([^\]]*)\]\(([^\s)]+)(?:\s+=(\d+)x)?(?:\s+"([^"]*)")?\)/.exec(raw.slice(col))
+        if (!mm) return
+        const pa = parseImgAlt(mm[1])
+        const width = pa.width || (mm[3] ? parseInt(mm[3], 10) : 0)
+        const title = mm[4] ? ` "${mm[4]}"` : ''
+        // Clicking the active alignment clears it (back to default flow).
+        const align = pa.align === next ? null : next
+        const updated = raw.slice(0, col)
+          + `![${composeImgAlt(pa.alt, width, align)}](${mm[2]}${title})`
+          + raw.slice(col + mm[0].length)
+        if (updated !== raw) {
+          view.dispatch({ changes: { from: line.from, to: line.to, insert: updated }, scrollIntoView: false })
+        }
+      }
+      for (const [key, label, title] of [
+        ['left', '⇤', 'Align left (wrap text)'],
+        ['center', '↔', 'Center'],
+        ['right', '⇥', 'Align right (wrap text)'],
+      ]) {
+        const b = document.createElement('button')
+        b.type = 'button'
+        b.className = 'cm-img-align-btn'
+        b.dataset.align = key
+        b.textContent = label
+        b.title = title
+        b.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation() })
+        b.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); setAlign(key) })
+        bar.appendChild(b)
+      }
+      wrap.appendChild(bar)
+      this._syncAlignButtons(wrap)
     }
 
     return wrap
@@ -1290,18 +1703,14 @@ class ImgWidget {
   updateDOM(dom) {
     const img = dom.querySelector('.cm-img')
     if (!img) return false
-    let resolvedSrc = this.src
-    if (this.src.startsWith('./') && this.notebookDir && _convertFileSrc) {
-      resolvedSrc = _convertFileSrc(this.notebookDir + '/' + this.src.slice(2))
-    } else if (_convertFileSrc && (this.src.startsWith('/') || /^[A-Za-z]:\\/.test(this.src))) {
-      resolvedSrc = _convertFileSrc(this.src)
-    }
+    const resolvedSrc = resolveImgSrc(this.src, this.notebookDir)
     img.src = resolvedSrc
-    img.style.width = this.width ? this.width + 'px' : ''
+    this._applySize(dom, img)
     this._applyAlign(dom)
+    this._syncAlignButtons(dom)
     return true  // reuse DOM, no remount flash
   }
-  destroy() {}
+  destroy() { try { this._ro?.disconnect() } catch { /* already gone */ } }
   ignoreEvent() { return false }
   get estimatedHeight() { return 160 }
   coordsAt() { return null }
@@ -1598,6 +2007,52 @@ class TagWidget {
   coordsAt() { return null }
 }
 
+// ─── status:: field — clickable status badge (Todo/Doing/Blocked/Review/Done) ─
+// Icons are lucide glyphs (Circle/CircleDot/CircleSlash/Eye/CircleCheck), inlined
+// as raw SVG strings — CM6 widgets are plain DOM, not JSX, so they can't use the
+// lucide-react components directly. Same convention as _LINK_ICONS/_GLOBE_ICON.
+const _STATUS_DEFS = [
+  { value: 'Todo', color: '#8b949e',
+    icon: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/></svg>` },
+  { value: 'Doing', color: '#388bfd',
+    icon: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/></svg>` },
+  { value: 'Blocked', color: '#f85149',
+    icon: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="9" x2="15" y1="15" y2="9"/></svg>` },
+  { value: 'Review', color: '#a371f7',
+    icon: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>` },
+  { value: 'Done', color: '#3fb950',
+    icon: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>` },
+]
+function _statusDefIdx(value) {
+  const i = _STATUS_DEFS.findIndex(d => d.value.toLowerCase() === String(value || '').toLowerCase())
+  return i === -1 ? 0 : i
+}
+class StatusWidget {
+  constructor(value, pos) { this.idx = _statusDefIdx(value); this.pos = pos }
+  toDOM() {
+    const def = _STATUS_DEFS[this.idx]
+    const span = document.createElement('span')
+    span.className = 'cm-status-badge'
+    span.dataset.pos = String(this.pos)
+    span.title = 'Click to change status'
+    span.style.color = def.color
+    span.style.background = def.color + '18'
+    span.style.borderColor = def.color + '40'
+    span.innerHTML = def.icon
+    const label = document.createElement('span')
+    label.className = 'cm-status-label'
+    label.textContent = def.value
+    span.appendChild(label)
+    return span
+  }
+  eq(o) { return o instanceof StatusWidget && o.idx === this.idx && o.pos === this.pos }
+  compare(o) { return this.eq(o) }
+  destroy() {}
+  ignoreEvent() { return false }
+  get estimatedHeight() { return -1 }
+  coordsAt() { return null }
+}
+
 // List marker widget — shows styled bullet or number when cursor is off the line
 class ListMarkerWidget {
   constructor(text, isOrdered) { this.text = text; this.isOrdered = isOrdered }
@@ -1845,7 +2300,7 @@ class HabitsWidget {
       toggleBtn.className = 'cm-habits-view-toggle'
       toggleBtn.dataset.view = data.view
       toggleBtn.title = data.view === 'grid' ? 'Switch to graph' : 'Switch to grid'
-      toggleBtn.innerHTML = `<svg class="cm-habits-toggle-icon" data-for="grid" width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="4" height="4" rx="1"/><rect x="7" y="1" width="4" height="4" rx="1"/><rect x="1" y="7" width="4" height="4" rx="1"/><rect x="7" y="7" width="4" height="4" rx="1"/></svg><svg class="cm-habits-toggle-icon" data-for="graph" width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1,10 3.5,6 6,8 8.5,3.5 11,1.5"/></svg>`
+      toggleBtn.innerHTML = `<svg class="cm-habits-toggle-icon" data-for="grid" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M3 12h18"/><rect x="3" y="3" width="18" height="18" rx="2"/></svg><svg class="cm-habits-toggle-icon" data-for="graph" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m19 9-5 5-4-4-3 3"/></svg>`
       toggleBtn.onclick = e => { e.stopPropagation(); data.view = data.view === 'grid' ? 'graph' : 'grid'; save(); render() }
       hdr.appendChild(toggleBtn)
 
@@ -1853,7 +2308,7 @@ class HabitsWidget {
       const deleteBtn = document.createElement('button')
       deleteBtn.className = 'cm-habits-delete-btn'
       deleteBtn.title = 'Delete habits tracker'
-      deleteBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="2" y1="2" x2="10" y2="10"/><line x1="10" y1="2" x2="2" y2="10"/></svg>'
+      deleteBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>'
       deleteBtn.onclick = e => {
         e.stopPropagation()
         if (!cmView) return
@@ -1991,7 +2446,7 @@ class HabitsWidget {
             // capture-phase dragover intercept that blocks HTML5 DnD in live mode.
             const dragHandle = document.createElement('span')
             dragHandle.className = 'cm-habits-drag-handle'
-            dragHandle.innerHTML = '<svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor"><circle cx="3" cy="3" r="1.3"/><circle cx="7" cy="3" r="1.3"/><circle cx="3" cy="7" r="1.3"/><circle cx="7" cy="7" r="1.3"/><circle cx="3" cy="11" r="1.3"/><circle cx="7" cy="11" r="1.3"/></svg>'
+            dragHandle.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/></svg>'
             dragHandle.title = 'Drag to reorder'
             dragHandle.addEventListener('mousedown', e => {
               e.preventDefault(); e.stopPropagation()
@@ -2259,7 +2714,10 @@ class TaskBlockWidget {
     this._needsDefault = !columns.length
   }
   _serialize(title, cols) {
-    const lines = [`/task${title ? ':' + title : ''}`]
+    // Always '/kanban' going forward — mirrors serializeTaskBlock's same
+    // migration (an old '/task'-headed board still parses via
+    // parseTaskBlock, but rewrites itself to the new header on next edit).
+    const lines = [`/kanban${title ? ':' + title : ''}`]
     for (const col of cols) {
       lines.push(`== ${col.title} ==`)
       for (const t of col.tasks) {
@@ -2505,7 +2963,7 @@ class TaskBlockWidget {
       wrap.innerHTML = ''
       const errEl = document.createElement('div')
       errEl.style.cssText = 'padding:8px 12px;color:var(--textDim,#888);font-size:12px;border-left:3px solid var(--border,#ccc);margin:4px 0;'
-      errEl.textContent = '/task — render error: ' + (err?.message || err)
+      errEl.textContent = '/kanban — render error: ' + (err?.message || err)
       wrap.appendChild(errEl)
     }
     return wrap
@@ -2532,7 +2990,9 @@ class TaskBlockWidget {
 function parseTaskBlock(docStr, startLineIdx) {
   const lines = docStr.split('\n')
   const hdrLine = lines[startLineIdx]
-  const hdrM = hdrLine.match(/^\/task(?::(.*))?$/)
+  // Accepts both headers: '/kanban' is the current trigger, '/task' stays
+  // recognized so notebooks written before the rename still render.
+  const hdrM = hdrLine.match(/^\/(?:task|kanban)(?::(.*))?$/)
   if (!hdrM) return null
   const boardTitle = (hdrM[1] || '').trim()
   let endLine = startLineIdx + 1
@@ -2577,7 +3037,10 @@ function parseTaskBlock(docStr, startLineIdx) {
 
 /** Serialize a parsed task board back to markdown lines */
 function serializeTaskBlock(boardTitle, columns) {
-  const lines = [`/task${boardTitle ? ':' + boardTitle : ''}`]
+  // Always writes '/kanban' — an old '/task'-headed board still parses (see
+  // parseTaskBlock) but migrates to the new header the next time it's
+  // touched.
+  const lines = [`/kanban${boardTitle ? ':' + boardTitle : ''}`]
   for (const col of columns) {
     lines.push(`== ${col.title} ==`)
     for (const t of col.tasks) {
@@ -2992,6 +3455,55 @@ class HtmlBlockWidget {
   destroy() {}
   ignoreEvent() { return false }
   coordsAt() { return null }
+}
+
+// Live-mode ```mermaid / ```svg block. Renders the diagram in place of the
+// fence; editing the block (cursor inside) reveals the raw source, matching how
+// every other live widget behaves. Mermaid renders asynchronously — toDOM
+// returns immediately with a placeholder and hydrateDiagrams fills it in.
+class DiagramWidget {
+  constructor(kind, src) { this.kind = kind; this.src = src }
+  toDOM() {
+    const el = document.createElement('div')
+    el.className = 'nb-live-widget nb-diagram-live'
+    if (this.kind === 'svg') {
+      el.innerHTML = `<div class="nb-svg">${_sanitizeSvg(this.src)}</div>`
+    } else {
+      el.innerHTML = `<div class="nb-mermaid" data-mermaid="${esc(this.src)}"><div class="nb-diagram-pending">rendering diagram…</div></div>`
+      hydrateDiagrams(el)
+    }
+    return el
+  }
+  eq(o) { return o instanceof DiagramWidget && o.kind === this.kind && o.src === this.src }
+  compare(o) { return this.eq(o) }
+  destroy() {}
+  ignoreEvent() { return true }
+  coordsAt() { return null }
+}
+
+/** Block decorations for ```mermaid / ```svg fences (live + preview). */
+function _buildDiagramDecos(state, Decoration, RangeSetBuilder, isPreview) {
+  const builder = new RangeSetBuilder()
+  try {
+    const full = docString(state.doc)
+    if (!/```\s*(mermaid|svg)/i.test(full)) return builder.finish()
+    const cur = state.selection.main.head
+    const re = /^[ \t]*```[ \t]*(mermaid|svg)[ \t]*\r?\n([\s\S]*?)^[ \t]*```[ \t]*$/gim
+    let m
+    while ((m = re.exec(full)) !== null) {
+      const blockFrom = state.doc.lineAt(m.index).from
+      const blockTo   = state.doc.lineAt(Math.min(m.index + m[0].length, state.doc.length)).to
+      // Editing the block? Show the source instead of the render.
+      if (!isPreview && cur >= blockFrom && cur <= blockTo) continue
+      const kind = m[1].toLowerCase()
+      const src  = m[2].replace(/\s+$/, '')
+      if (!src.trim()) continue
+      try {
+        builder.add(blockFrom, blockTo, Decoration.replace({ widget: new DiagramWidget(kind, src), block: true }))
+      } catch { /**/ }
+    }
+  } catch { /**/ }
+  return builder.finish()
 }
 
 class SubWidget {
@@ -3454,7 +3966,9 @@ class CalendarWidget {
     import('./LibraryView').then(({ FullCalendar }) => {
       if (this._root) return // already mounted
       this._root = createRoot(wrap)
-      this._root.render(createElement(FullCalendar, null))
+      // Nested root → React context from the app root doesn't reach it, so the
+      // lucide defaults (see components/icons.jsx) have to be re-provided here.
+      this._root.render(createElement(IconDefaults, null, createElement(FullCalendar, null)))
     })
     return wrap
   }
@@ -3476,17 +3990,17 @@ class CalendarWidget {
 
 // SVG icon strings keyed by category
 const _LINK_ICONS = {
-  image:  `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="2" width="14" height="12" rx="1.5"/><circle cx="5.5" cy="6.5" r="1.5"/><path d="M1.5 12l3.5-3 3 3 2.5-2 4 3.5"/></svg>`,
-  audio:  `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3L5 6.5H2.5a1 1 0 00-1 1v1a1 1 0 001 1H5L9 13V3z"/><path d="M12 5.5c.9.8 1.5 1.9 1.5 2.5S12.9 9.7 12 10.5"/></svg>`,
-  video:  `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3.5" width="10" height="9" rx="1.5"/><path d="M11 6.5l4-2v7l-4-2"/></svg>`,
-  pdf:    `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 1H3a1 1 0 00-1 1v12a1 1 0 001 1h10a1 1 0 001-1V6L9.5 1z"/><path d="M9.5 1v5H14.5"/><path d="M5 10.5h2a1 1 0 010 2H5V9h2a1 1 0 010 2"/></svg>`,
-  doc:    `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 1H3a1 1 0 00-1 1v12a1 1 0 001 1h10a1 1 0 001-1V6L9.5 1z"/><path d="M9.5 1v5H14.5"/><path d="M5 8.5h6M5 11h6M5 13.5h4"/></svg>`,
-  sheet:  `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="1"/><path d="M2 6h12M2 10h12M7 2v12"/></svg>`,
-  archive:`<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="5" width="14" height="9" rx="1"/><path d="M1 5l2-4h10l2 4"/><path d="M6 9h4"/></svg>`,
-  code:   `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4L1 8l4 4M11 4l4 4-4 4M9.5 2l-3 12"/></svg>`,
-  text:   `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h10M8 3v10M5 13h6"/></svg>`,
-  config: `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.2 3.2l1.4 1.4M11.4 11.4l1.4 1.4M3.2 12.8l1.4-1.4M11.4 4.6l1.4-1.4"/></svg>`,
-  file:   `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 1H3a1 1 0 00-1 1v12a1 1 0 001 1h10a1 1 0 001-1V6L9.5 1z"/><path d="M9.5 1v5H14.5"/></svg>`,
+  image:  `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>`,
+  audio:  `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/></svg>`,
+  video:  `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg>`,
+  pdf:    `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>`,
+  doc:    `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>`,
+  sheet:  `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/></svg>`,
+  archive:`<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><path d="M13.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v11.5"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M8 12v-1"/><path d="M8 18v-2"/><path d="M8 7V6"/><circle cx="8" cy="20" r="2"/></svg>`,
+  code:   `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg>`,
+  text:   `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16"/><path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2"/><path d="M9 20h6"/></svg>`,
+  config: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>`,
+  file:   `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.57" stroke-linecap="round" stroke-linejoin="round"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/></svg>`,
 }
 
 function _fileLinkIcon(ext) {
@@ -3505,8 +4019,8 @@ function _fileLinkIcon(ext) {
 }
 
 // SVG icon for the web link widget
-const _GLOBE_ICON = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="7"/><path d="M8 1c-2 2-3 4.5-3 7s1 5 3 7M8 1c2 2 3 4.5 3 7s-1 5-3 7"/><path d="M1 8h14"/></svg>`
-const _OPEN_ICON  = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3H3a1 1 0 00-1 1v9a1 1 0 001 1h9a1 1 0 001-1V9"/><path d="M10 2h4v4"/><path d="M14 2L8 8"/></svg>`
+const _GLOBE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.77" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>`
+const _OPEN_ICON  = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>`
 
 class FileLinkWidget {
   constructor(path, name) { this.path = path; this.name = name }
@@ -3720,7 +4234,7 @@ class VideoLinkWidget {
 
     const iconEl = document.createElement('span')
     iconEl.className = 'cm-linkv-icon'
-    iconEl.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>'
+    iconEl.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.43" stroke-linecap="round" stroke-linejoin="round"><path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg>'
 
     const titleText = (() => {
       if (this.title) return this.title
@@ -4022,10 +4536,10 @@ function makeInlineCmdCloseHandler(cm) {
 function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [], flashcardDecks = [], notebookDir = null, isPreview = false) {
   const { ViewPlugin, Decoration, WidgetType } = cm.view
   const { StateField } = cm.state
-  const { syntaxTree } = cm.language
+  const { syntaxTree, foldedRanges, foldEffect, unfoldEffect } = cm.language
 
   // Patch widget classes to extend WidgetType so CM6 properly handles them
-  for (const Cls of [HRWidget, ColumnsWidget, CheckboxWidget, ImgWidget, ListMarkerWidget, MathWidget, WikiWidget, LinkWidget, TableWidget, HabitsWidget, TaskBlockWidget, SupWidget, SubWidget, TimerWidget, MathZoneWidget, CalendarWidget, TimeRefWidget, FnRefWidget, DueDateWidget, TagWidget, QuestionWidget, FileLinkWidget, WebLinkWidget, VideoLinkWidget]) {
+  for (const Cls of [HRWidget, ColumnsWidget, CheckboxWidget, ImgWidget, ListMarkerWidget, MathWidget, WikiWidget, LinkWidget, TableWidget, HabitsWidget, TaskBlockWidget, SupWidget, SubWidget, TimerWidget, MathZoneWidget, CalendarWidget, TimeRefWidget, FnRefWidget, DueDateWidget, TagWidget, QuestionWidget, FileLinkWidget, WebLinkWidget, VideoLinkWidget, StatusWidget, FoldArrowWidget, DiagramWidget]) {
     if (!(Cls.prototype instanceof WidgetType)) {
       Object.setPrototypeOf(Cls.prototype, WidgetType.prototype)
     }
@@ -4155,6 +4669,39 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
     const _fm = parseFrontmatter(fullDoc)
     const fmEnd = _fm && _fm.props.length ? _fm.length : 0
 
+    // ── Heading fold-range pre-scan ─────────────────────────────────────────
+    // A section's fold range (end of heading line → last line before the next
+    // heading of equal-or-higher level, or doc end) needs the full heading list
+    // up front, so this runs as its own light pass before the main walk below.
+    const _foldInfo = new Map() // headingLinePos -> { foldFrom, foldTo, collapsed }
+    if (!isPreview) {
+      try {
+        const _headings = []
+        syntaxTree(state).iterate({
+          enter(node) {
+            if (LINE_MAP[node.name]) {
+              _headings.push({ pos: doc.lineAt(node.from).from, level: +node.name.slice(-1) })
+            }
+          },
+        })
+        const folded = foldedRanges(state)
+        for (let i = 0; i < _headings.length; i++) {
+          const h = _headings[i]
+          const hLine = doc.lineAt(h.pos)
+          let endPos = doc.length
+          for (let j = i + 1; j < _headings.length; j++) {
+            if (_headings[j].level <= h.level) { endPos = doc.lineAt(_headings[j].pos).from; break }
+          }
+          const foldFrom = hLine.to
+          const foldTo = endPos > foldFrom ? (endPos - (endPos < doc.length ? 1 : 0)) : foldFrom
+          if (foldTo <= foldFrom) continue // nothing below this heading — no arrow
+          let collapsed = false
+          folded.between(foldFrom, foldFrom, (rf) => { if (rf === foldFrom) collapsed = true })
+          _foldInfo.set(h.pos, { foldFrom, foldTo, collapsed })
+        }
+      } catch { /**/ }
+    }
+
     try {
       syntaxTree(state).iterate({
         enter(node) {
@@ -4203,12 +4750,14 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
             const m   = raw.match(/!\[([^\]]*)\]\(([^\s)]+)(?:\s+=(\d+)x)?/)
             if (m) {
               if (!inCur(from, to)) {
-                const imgWidth = m[3] ? parseInt(m[3]) : 0
-                // Parse alignment from end of alt text: :left, :right, :center
-                const alignMatch = m[1].match(/:(?:left|right|center)$/i)
-                const align = alignMatch ? alignMatch[0].slice(1).toLowerCase() : null
+                // Width comes from the alt (`caption|600`), falling back to the
+                // legacy `=600x` spec so existing notes still size correctly.
+                // Width and alignment both live in the alt (`caption:center|600`)
+                // and are stripped from the caption the reader sees.
+                const parsedAlt = parseImgAlt(m[1])
+                const imgWidth = parsedAlt.width || (m[3] ? parseInt(m[3]) : 0)
                 // Replace only the image syntax, not the whole line
-                inlines.push({ from, to, deco: Decoration.replace({ widget: new ImgWidget(m[2], m[1], notebookDir, from, imgWidth, align), block: false }) })
+                inlines.push({ from, to, deco: Decoration.replace({ widget: new ImgWidget(m[2], parsedAlt.alt, notebookDir, from, imgWidth, parsedAlt.align), block: false }) })
                 return false
               }
             }
@@ -4272,15 +4821,25 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
             try {
               const headingLine = doc.lineAt(from)
               const cursorOnLine = cur >= headingLine.from && cur <= headingLine.to
+              const fi = _foldInfo.get(headingLine.from)
               let child = node.node.firstChild
               while (child) {
                 if (child.name === 'HeaderMark') {
                   // +1 to also hide the space after the #
                   const markTo = Math.min(child.to + 1, headingLine.to)
-                  inlines.push({
-                    from: child.from, to: markTo,
-                    deco: Decoration.mark({ class: cursorOnLine ? 'cm-lv-p' : 'cm-lv-hidden' }),
-                  })
+                  if (!cursorOnLine && fi) {
+                    // Foldable heading, not being edited — show the fold arrow
+                    // in place of the (still hidden) # marks instead of just hiding them.
+                    inlines.push({
+                      from: child.from, to: markTo,
+                      deco: Decoration.replace({ widget: new FoldArrowWidget(fi.collapsed, fi.foldFrom, fi.foldTo) }),
+                    })
+                  } else {
+                    inlines.push({
+                      from: child.from, to: markTo,
+                      deco: Decoration.mark({ class: cursorOnLine ? 'cm-lv-p' : 'cm-lv-hidden' }),
+                    })
+                  }
                 }
                 child = child.nextSibling
               }
@@ -4484,6 +5043,29 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
       console.warn('[LivePreview] tree walk error (suppressed):', e?.message)
     }
 
+    // ── Legacy `![alt](src =600x)` images ─────────────────────────────────
+    // That width syntax isn't valid CommonMark, so the parser never emits an
+    // Image node for it and the markdown would show as raw text. Notes written
+    // before the switch to `![alt|600](src)` still contain it, so match them
+    // directly here. New resizes write the `|600` form (see the resize handle).
+    try {
+      const reLegacy = /!\[([^\]]*)\]\(([^\s)]+)\s+=(\d+)x\)/g
+      let lm
+      while ((lm = reLegacy.exec(fullDoc)) !== null) {
+        const from = lm.index, to = from + lm[0].length
+        if (inCur(from, to)) continue
+        // Don't add a second widget over one the tree already produced.
+        if (inlines.some(d => d.deco.spec?.widget && d.from < to && d.to > from)) continue
+        // Marks the parser emitted inside this range (the bare URL, etc.) are
+        // stripped later by the existing replace-vs-mark reconciliation.
+        const pa = parseImgAlt(lm[1])
+        inlines.push({
+          from, to,
+          deco: Decoration.replace({ widget: new ImgWidget(lm[2], pa.alt, notebookDir, from, pa.width || parseInt(lm[3], 10) || 0, pa.align), block: false }),
+        })
+      }
+    } catch { /**/ }
+
     // ── Headings without space (e.g. #Title treated same as # Title) ──────
     try {
       for (let li = 1; li <= doc.lines; li++) {
@@ -4635,7 +5217,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
         } else if (/^(?:\/toc|\[toc\]|\{toc\})$/i.test(t)) {
           const heads = []
           for (let h = 1; h <= doc.lines; h++) {
-            const hmm = doc.line(h).text.match(/^(#{1,6})\s+(.+?)(?:\s+\{#([^}]+)\})?\s*$/)
+            const hmm = doc.line(h).text.match(/^(#{1,6})(?:[ \t]+|(?=[^\s#]))(.+?)(?:\s+\{#([^}]+)\})?\s*$/)
             if (hmm) heads.push({ level: hmm[1].length, text: hmm[2] })
           }
           const items = heads.length
@@ -4921,6 +5503,18 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
       }
     } catch { /**/ }
 
+    // ── status:: field → clickable status badge ──────────────────────────
+    try {
+      const full = fullDoc
+      const statusRe = /^[ \t]*status::[ \t]*(\w+)[ \t]*$/gim
+      let sm
+      while ((sm = statusRe.exec(full)) !== null) {
+        const from = sm.index, to = sm.index + sm[0].length
+        if (inCur(from, to)) continue
+        inlines.push({ from, to, deco: Decoration.replace({ widget: new StatusWidget(sm[1], from) }) })
+      }
+    } catch { /**/ }
+
     // ── ?[question](ref) review/flashcard widgets ────────────────────────
     try {
       const qRe = /\?\[([^\]]*)\]\(([^)]*)\)/g
@@ -5202,14 +5796,29 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
     provide: f => cm.view.EditorView.decorations.from(f),
   })
 
-  return [taskDecoField, tableDecoField, columnsDecoField, ViewPlugin.fromClass(
+  // ```mermaid / ```svg → rendered diagram (block widget, same pattern as columns)
+  const diagramDecoField = StateField.define({
+    create(state) { return _buildDiagramDecos(state, Decoration, RangeSetBuilder, isPreview) },
+    update(decos, tr) {
+      if (!tr.docChanged && !tr.selectionSet) return decos
+      return _buildDiagramDecos(tr.state, Decoration, RangeSetBuilder, isPreview)
+    },
+    provide: f => cm.view.EditorView.decorations.from(f),
+  })
+
+  return [taskDecoField, tableDecoField, columnsDecoField, diagramDecoField, ViewPlugin.fromClass(
     class {
       constructor(view) {
         try { const r = build(view); this.decorations = r.spans; this.lineDecos = r.lines }
         catch { this.decorations = Decoration.none; this.lineDecos = Decoration.none }
       }
       update(upd) {
-        if (upd.docChanged || upd.selectionSet) {
+        // Fold/unfold changes neither the doc nor the selection, so without this
+        // the heading fold-arrow widget never rebuilds and its chevron keeps
+        // pointing "open" even after the section collapses.
+        const foldChanged = upd.transactions.some(tr =>
+          tr.effects.some(e => e.is(foldEffect) || e.is(unfoldEffect)))
+        if (upd.docChanged || upd.selectionSet || foldChanged) {
           try { const r = build(upd.view); this.decorations = r.spans; this.lineDecos = r.lines }
           catch { this.decorations = Decoration.none; this.lineDecos = Decoration.none }
         }
@@ -5231,7 +5840,7 @@ function makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks = [
 function _buildTaskDecos(fullDoc, Decoration, RangeSetBuilder) {
   const builder = new RangeSetBuilder()
   try {
-    if (!fullDoc.includes('/task')) return builder.finish() // no boards — skip line scan
+    if (!fullDoc.includes('/kanban') && !fullDoc.includes('/task')) return builder.finish() // no boards — skip line scan
     const lines = fullDoc.split('\n')
     const lineStarts = []
     let pos = 0
@@ -5239,7 +5848,7 @@ function _buildTaskDecos(fullDoc, Decoration, RangeSetBuilder) {
 
     const decos = []
     for (let li = 0; li < lines.length; li++) {
-      if (!lines[li].match(/^\/task(?::.*)?$/)) continue
+      if (!lines[li].match(/^\/(?:task|kanban)(?::.*)?$/)) continue
       const block = parseTaskBlock(fullDoc, li)
       if (!block) continue
 
@@ -5307,6 +5916,47 @@ function makeCheckboxHandler(cm) {
         e.preventDefault()
         return true
       } catch { return false }
+    },
+  })
+}
+
+// ─── status:: badge click handler — cycles Todo → Doing → Blocked → Review → Done ──
+function makeStatusHandler(cm) {
+  return cm.view.EditorView.domEventHandlers({
+    mousedown(e, view) {
+      const el = e.target.closest('.cm-status-badge')
+      if (!el) return false
+      e.preventDefault()
+      const pos = parseInt(el.dataset.pos || '0', 10)
+      if (isNaN(pos)) return true
+      try {
+        const line = view.state.doc.lineAt(pos)
+        const m = line.text.match(/^([ \t]*status::[ \t]*)(\w+)([ \t]*)$/i)
+        if (!m) return true
+        const nextIdx = (_statusDefIdx(m[2]) + 1) % _STATUS_DEFS.length
+        const newTxt = m[1] + _STATUS_DEFS[nextIdx].value + m[3]
+        view.dispatch({ changes: { from: line.from, to: line.to, insert: newTxt } })
+      } catch { /**/ }
+      return true
+    },
+  })
+}
+
+// ─── Heading fold-arrow click handler — toggles CM6's native fold state ──────
+function makeHeadingFoldHandler(cm) {
+  const { foldEffect, unfoldEffect, foldedRanges } = cm.language
+  return cm.view.EditorView.domEventHandlers({
+    mousedown(e, view) {
+      const el = e.target.closest('.cm-fold-arrow')
+      if (!el) return false
+      e.preventDefault()
+      const from = parseInt(el.dataset.foldFrom || '-1', 10)
+      const to = parseInt(el.dataset.foldTo || '-1', 10)
+      if (from < 0 || to <= from) return true
+      let isFolded = false
+      try { foldedRanges(view.state).between(from, from, (rf) => { if (rf === from) isFolded = true }) } catch { /**/ }
+      view.dispatch({ effects: (isFolded ? unfoldEffect : foldEffect).of({ from, to }) })
+      return true
     },
   })
 }
@@ -5693,16 +6343,10 @@ function makeSourcePlugin(cm) {
 // ─── View mode button ─────────────────────────────────────────────────────────
 const VIEW_MODE_CYCLE = ['live', 'source', 'preview']
 const IconSrc = () => (
-  <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-    <path d="M11.5 2.5l2 2-8 8H3.5v-2l8-8z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" strokeLinecap="round"/>
-    <path d="M3.5 13.5h9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-  </svg>
+  <Pencil size={15} strokeWidth={1.4} />
 )
 const IconPrev = () => (
-  <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-    <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
-    <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.4"/>
-  </svg>
+  <Eye size={15} strokeWidth={1.4} />
 )
 const IconLive = () => <IconQuill size={15} />
 const MODE_META = {
@@ -5765,7 +6409,7 @@ function ViewModeBtn({ viewMode, setViewMode }) {
   )
 }
 
-function NbShareMenu({ noteTitle, notebookTitle, contentRef, previewHtml }) {
+function NbShareMenu({ noteTitle, notebookTitle, contentRef, previewHtml, sharing, guestCount, onStartLiveShare, onOpenLiveShare }) {
   const [open, setOpen] = useState(false)
   const wrapRef = useRef(null)
   useEffect(() => {
@@ -5820,10 +6464,7 @@ function NbShareMenu({ noteTitle, notebookTitle, contentRef, previewHtml }) {
     setTimeout(() => { w.print() }, 400)
   }
 
-  const SHARE_ICON = <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-    <path d="M8 11V3M5 6l3-3 3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-    <path d="M3 11v1a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-  </svg>
+  const SHARE_ICON = <Share size={14} strokeWidth={1.5} />
 
   return (
     <div style={{ position:'relative', flexShrink:0 }} ref={wrapRef}>
@@ -5836,8 +6477,11 @@ function NbShareMenu({ noteTitle, notebookTitle, contentRef, previewHtml }) {
       {open && (
         <div style={{ position:'absolute', top:'calc(100% + 6px)', right:0, background:'var(--surface)', border:'1px solid var(--border)', borderRadius:10, overflow:'hidden', boxShadow:'0 12px 40px rgba(0,0,0,.45)', minWidth:160, zIndex:9300 }}>
           {[
-            { label: 'Share / Export Markdown', action: shareMarkdown, icon: <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M8 11V3M5 6l3-3 3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M3 11v1a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> },
-            { label: 'Export as PDF', action: exportPdf, icon: <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="10" height="13" rx="1" stroke="currentColor" strokeWidth="1.4"/><path d="M5 5h6M5 8h6M5 11h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><path d="M10 1v4h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg> },
+            sharing
+              ? { label: `Live Share panel${guestCount ? ` (${guestCount} connected)` : ''}`, action: () => { setOpen(false); onOpenLiveShare?.() }, icon: <Users size={12} strokeWidth={1.6} /> }
+              : { label: 'Start Live Share…', action: () => { setOpen(false); onStartLiveShare?.() }, icon: <Users size={12} strokeWidth={1.6} /> },
+            { label: 'Share / Export Markdown', action: shareMarkdown, icon: <Share size={12} strokeWidth={1.5} /> },
+            { label: 'Export as PDF', action: exportPdf, icon: <FileText size={12} strokeWidth={1.4} /> },
           ].map(({ label, action, icon }) => (
             <button key={label} onMouseDown={e => { e.preventDefault(); action() }}
               style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 14px', border:'none', background:'none', width:'100%', cursor:'pointer', textAlign:'left', fontSize:13, fontFamily:'inherit', color:'var(--text)', transition:'background .08s' }}
@@ -5908,6 +6552,34 @@ export default function NotebookView() {
   const [selectionWC, setSelectionWC] = useState(0)
   const [findOpen, setFindOpen] = useState(false)
   const [editModal, setEditModal]= useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  // Live Share (PLAN_CONCURRENCY.md §6 steps 7–9, wired into production).
+  // `sharing` = a session is live (mounts <NoteCollabPanel>, which owns the
+  // WebrtcProvider connection). `collabOpen` = the panel is visually shown —
+  // deliberately separate so closing the panel doesn't end the session, same
+  // relationship as `historyOpen` has to the note's actual history.
+  const [sharing, setSharing] = useState(false)
+  const [collabOpen, setCollabOpen] = useState(false)
+  const [collabGuestCount, setCollabGuestCount] = useState(0)
+  // Set by NoteCollabPanel once its canonicalDoc/awareness/yCollab are ready
+  // (one tick after the panel mounts — WebrtcProvider awareness arrives
+  // async). Consumed by the collab-compartment effect below to bind the
+  // REAL editor, not a separate one.
+  const [collabBits, setCollabBits] = useState(null) // { canonicalText, awareness, yCollab }
+  const collabBitsRef = useRef(null) // mirror of collabBits — read by the CM6 mount effect, which intentionally does NOT depend on collabBits itself (that would force a full remount, losing cursor/scroll, every time a share connects)
+  useEffect(() => { collabBitsRef.current = sharing ? collabBits : null }, [sharing, collabBits])
+  const collabCompartmentRef = useRef(null) // created fresh each editor mount — see the CM6 mount effect
+  // Reconfigure the live compartment in place when collabBits/sharing
+  // changes AFTER the editor already mounted (the normal case: a share
+  // connects ~1s after the panel opens). No remount — that's the whole
+  // point of the compartment: the host never loses cursor/scroll/undo
+  // position just from starting or stopping a share.
+  useEffect(() => {
+    const view = cmRef.current
+    const compartment = collabCompartmentRef.current
+    if (!view || !compartment) return
+    view.dispatch({ effects: compartment.reconfigure(buildCollabExt(sharing ? collabBits : null)) })
+  }, [sharing, collabBits])
   const [showMobileViewMenu, setShowMobileViewMenu] = useState(false)
 
   const editorRef     = useRef(null)
@@ -5937,6 +6609,7 @@ export default function NotebookView() {
   // Body text as of the last time editor and disk agreed — anything else in the
   // editor means unsaved local edits, which must not be silently replaced.
   const syncedTextRef = useRef('')
+  const lastAutoSnapRef = useRef(0)   // throttles periodic history snapshots
   const flushSaveRef = useRef(null) // set to flushSave; lets the disk watcher save without a forward ref
   const [extConflict, setExtConflict] = useState(null) // { text, title, mtimeMs } — legacy banner, unused since auto-fork
   // Timestamp set by DOM drop handler when it inserts an image; checked by the
@@ -5984,7 +6657,7 @@ export default function NotebookView() {
   }, [nbCacheEntry, isLoaded]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const previewHtml = useMemo(
-    () => renderMarkdown(content, notebooks, library, sketchbooks, flashcardDecks),
+    () => renderMarkdown(content, notebooks, library, sketchbooks, flashcardDecks, notebookDirRef.current),
     [content, notebooks, library, sketchbooks, flashcardDecks]
   )
 
@@ -5992,6 +6665,7 @@ export default function NotebookView() {
   useEffect(() => {
     if (viewMode !== 'preview' || !previewRef.current) return
     hydrateMathNodes(previewRef.current)
+    hydrateDiagrams(previewRef.current)   // mermaid — lazy, no-op without diagrams
   }, [viewMode, previewHtml])
 
   // Pre-load KaTeX and MathQuill so they're ready when live mode starts
@@ -6014,10 +6688,10 @@ export default function NotebookView() {
       mdPathRef.current = null
       diskMtimeRef.current = 0
       setExtConflict(null)
-      resolveNotebookMdPath(folderPath).then(async p => {
+      getNotebookMdPath(nb || notebookId).then(async p => {
         if (gone) return
         mdPathRef.current = p
-        diskMtimeRef.current = await getFileMtimeMs(p)
+        diskMtimeRef.current = p ? await getFileMtimeMs(p) : 0
       }).catch(() => {})
       let text  = typeof raw === 'string' ? raw : ''
       let title = notebookTitle
@@ -6026,6 +6700,11 @@ export default function NotebookView() {
       titleRef.current = title; setTitle(title)
       contentRef.current = text; setContent(text)
       syncedTextRef.current = text
+      // Baseline snapshot on open, so History always has a recovery point rather
+      // than nothing until the first 3-minute tick. Deduped by history.js.
+      lastAutoSnapRef.current = Date.now()
+      historySnapshot(notebookId, raw, 'auto')
+      historyPrune?.(notebookId)
       // Restore cover image if one was saved with this notebook
       const savedCover = nb?.coverImage || null
       if (savedCover && _convertFileSrc && folderPath) {
@@ -6109,6 +6788,10 @@ export default function NotebookView() {
       const p = mdPathRef.current
       if (!p) return
       busy = true
+      // perf: this polls the filesystem every 1.5s per open notebook — and the
+      // archive lives in iCloud, where a stat can be slow. Suspect for the
+      // reading-time stalls when a notebook tab is open alongside the reader.
+      const _t0 = window.__perfTask ? performance.now() : 0
       try {
         const mt = await getFileMtimeMs(p)
         if (!mt || mt <= diskMtimeRef.current) return
@@ -6120,17 +6803,29 @@ export default function NotebookView() {
           diskMtimeRef.current = disk.mtimeMs
           return
         }
-        // Unsaved local edits + an external change = both are real. Don't prompt
-        // and don't lose either: persist local now (doSave → saveNotebookContent
-        // forks the external/offline version into its own note), keeping local as
-        // this note. No overwrite, no dialog.
+        // Unsaved local edits + an external change = both are real. Merge them
+        // in place, silently: disjoint paragraphs combine, a genuine overlap
+        // keeps ours and the other side is kept in history. No prompt, no fork.
         if (contentRef.current !== syncedTextRef.current) {
-          flushSaveRef.current?.()
+          const r = mergeSilently(syncedTextRef.current, contentRef.current, text)
+          if (r.needsSnapshot) historySnapshot(notebookId, contentRef.current, 'local')
+          historySnapshot(notebookId, text, 'remote')
+          applyExternal(r.text, title, disk.mtimeMs)
+          flushSaveRef.current?.()          // persist the merged result
         } else {
+          // No local edits — we simply adopt what arrived. This is the COMMON
+          // external case (you aren't typing; Obsidian/another device saved),
+          // and it previously recorded nothing, so most external edits never
+          // showed up in History. Snapshot both sides of the swap.
+          historySnapshot(notebookId, syncedTextRef.current, 'local')
+          historySnapshot(notebookId, text, 'remote')
           applyExternal(text, title, disk.mtimeMs)
         }
       } catch { /* transient FS error — next tick retries */ }
-      finally { busy = false }
+      finally {
+        busy = false
+        if (_t0) window.__perfTask('notebookWatcherTick', performance.now() - _t0)
+      }
     }
 
     const iv = setInterval(check, 1500)
@@ -6285,7 +6980,7 @@ export default function NotebookView() {
       if (dead || !editorRef.current) return
       cmMods.current = cm
       const {
-        state: { EditorState, RangeSetBuilder, Prec },
+        state: { EditorState, RangeSetBuilder, Prec, Compartment },
         view: { EditorView, drawSelection, dropCursor, keymap, placeholder },
         commands: { defaultKeymap, indentWithTab, history, historyKeymap },
         language: { indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap },
@@ -6343,9 +7038,15 @@ export default function NotebookView() {
         ...safeExt('math-calc', () => makeMathCalcPlugin(cm, viewMode === 'live' ? [makeSlashSource()] : [])),
         // Live decorations (widgets, hiding syntax) — shared between live + preview
         ...(isLive ? safeExt('live-decorations', () => makeLivePlugin(cm, RangeSetBuilder, notebooks, library, sketchbooks, flashcardDecks, notebookDirRef.current, viewMode === 'preview')) : []),
+        // Heading fold state field — live mode only (arrow widgets only render there).
+        // Empty placeholderDOM: the collapsed section's height simply drops to zero;
+        // no "···" marker needed since the fold arrow itself shows the collapsed state.
+        ...(viewMode === 'live' ? safeExt('code-folding', () => cm.language.codeFolding({ placeholderDOM: () => document.createElement('span') })) : []),
         // Interaction handlers — live mode only (preview is read-only)
         ...(viewMode === 'live' ? safeExt('interaction-handlers', () => [
           makeCheckboxHandler(cm),
+          makeStatusHandler(cm),
+          makeHeadingFoldHandler(cm),
           makeWikiHandler(cm, wikiNavRef),
           makeMathClickHandler(cm),
           makeTodoHandler(cm),
@@ -6375,6 +7076,16 @@ export default function NotebookView() {
           { key: 'Mod-s', run: () => { flushSave(); return true } },
           { key: 'Mod-f', run: () => { findRef.current?.focus(); findRef.current?.select(); return true } },
         ]),
+        // Live Share binding slot — empty unless a share is already active
+        // when this editor (re)mounts (viewMode/notebook change while
+        // sharing). A fresh Compartment every mount, re-seeded from
+        // `collabBitsRef` immediately below, so a remount mid-share doesn't
+        // silently drop the binding. Toggling share on/off afterward
+        // reconfigures this same compartment directly via `view.dispatch`
+        // (see the effect below) — it does NOT remount the editor, so the
+        // host never loses cursor/scroll/undo position just from starting
+        // or stopping a share.
+        (collabCompartmentRef.current = new Compartment()).of(buildCollabExt(collabBitsRef.current)),
         EditorView.updateListener.of(upd => {
           if (dead) return
           if (upd.docChanged) {
@@ -6449,13 +7160,17 @@ export default function NotebookView() {
               } else if (notebook?.id) {
                 domDropRef.current = Date.now()
                 ;(async () => {
+                  // dropPos was captured before this await — doc may have changed
+                  // length by now (remote edit, fast local typing), so clamp
+                  // against the CURRENT doc rather than trusting it unconditionally.
+                  const safePos = () => Math.min(dropPos, view.state.doc.length)
                   try {
                     const buf = new Uint8Array(await imgFile.arrayBuffer())
                     const fname = `${Date.now()}_${imgFile.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
                     const relPath = await saveNotebookImage(notebook.id, fname, buf)
-                    view.dispatch({ changes: { from: dropPos, insert: `![${name}](${relPath || name})` } })
+                    view.dispatch({ changes: { from: safePos(), insert: `![${name}](${relPath || name})` } })
                   } catch {
-                    view.dispatch({ changes: { from: dropPos, insert: `![${name}](${name})` } })
+                    view.dispatch({ changes: { from: safePos(), insert: `![${name}](${name})` } })
                   }
                 })()
               } else {
@@ -6585,6 +7300,20 @@ export default function NotebookView() {
 
   const doSave = useCallback(async (text, title) => {
     if (!notebook) return
+    // ── External reference — write straight back to the file; no notebook meta,
+    // no folder, no wikilink propagation. Update the ref's title in the store.
+    if (notebook._external || (typeof notebook.id === 'string' && notebook.id.startsWith('ext_'))) {
+      setSaving(true)
+      await saveNotebookContent(notebook, title ? `# ${title}\n${text}` : text)
+      syncedTextRef.current = text
+      if (mdPathRef.current) diskMtimeRef.current = await getFileMtimeMs(mdPathRef.current)
+      const st = useAppStore.getState()
+      if (title && title !== notebook.title) st.updateExternalRef?.(notebook.id, { title })
+      st.persistExternalRefs?.()
+      lastSavedTextRef.current = text
+      setSaving(false); animateSave()
+      return
+    }
     // Conflict guard — if the file changed on disk under us we do NOT overwrite
     // and we do NOT prompt: saveNotebookContent auto-forks the external/offline
     // version into its own note, then writes our edits here. Both are kept. We
@@ -6605,14 +7334,39 @@ export default function NotebookView() {
       }
     }
     setSaving(true)
-    await saveNotebookContent(notebook, title ? `# ${title}\n${text}` : text)
-    syncedTextRef.current = text
+    // Periodic history snapshot. Conflict snapshots only fire when something
+    // else edited the file, so without this the History panel stays empty during
+    // ordinary work — which is exactly what it did. Throttled so an 800ms
+    // autosave can't spam it; history.js additionally skips identical text.
+    {
+      const now = Date.now()
+      const AUTO_EVERY_MS = 3 * 60 * 1000
+      if (!lastAutoSnapRef.current || now - lastAutoSnapRef.current > AUTO_EVERY_MS) {
+        lastAutoSnapRef.current = now
+        historySnapshot(notebookId, title ? `# ${title}\n${text}` : text, 'auto')
+      }
+    }
+    // Pass the last text we agreed with disk on as the merge BASE. If the file
+    // changed underneath (Obsidian, another device via iCloud, a peer), storage
+    // merges the two silently and hands back what it actually wrote.
+    const full = title ? `# ${title}\n${text}` : text
+    const written = await saveNotebookContent(notebook, full, {
+      baseText: titleRef.current ? `# ${titleRef.current}\n${syncedTextRef.current}` : syncedTextRef.current,
+    })
+    // A merge means the file now holds more than we typed — adopt the result so
+    // the editor, the base, and disk all agree. Silent, per the design.
+    if (typeof written === 'string' && written !== full) {
+      const merged = splitTitle(written)
+      applyExternal(merged.text, merged.title, await getFileMtimeMs(mdPathRef.current))
+    } else {
+      syncedTextRef.current = text
+    }
     if (mdPathRef.current) diskMtimeRef.current = await getFileMtimeMs(mdPathRef.current)
     else {
-      // First save created the folder — resolve the path now so the watcher works
-      resolveNotebookMdPath(notebookDirRef.current).then(async p => {
+      // First save created the flat file/folder — resolve the path now so the watcher works
+      getNotebookMdPath(notebook).then(async p => {
         mdPathRef.current = p
-        diskMtimeRef.current = await getFileMtimeMs(p)
+        diskMtimeRef.current = p ? await getFileMtimeMs(p) : 0
       }).catch(() => {})
     }
     const wc = (text.match(/\b\w+\b/g) || []).length
@@ -6993,7 +7747,7 @@ export default function NotebookView() {
     @keyframes vm-drop { from{opacity:0;transform:translateY(-6px) scale(.96)} to{opacity:1;transform:none} }
 
     /* ── Light-mode selection fix ──────────────────────── */
-    .nb-root ::selection { background: var(--nb-sel, rgba(56,139,253,0.28)); }
+    .nb-root ::selection { background: var(--nb-sel, color-mix(in srgb, var(--accent) 28%, transparent)); }
     [data-theme="light"] .nb-root, .light .nb-root { --nb-sel: rgba(9,105,218,0.22); }
 
     /* ══════════════════════════════════════════════════════
@@ -7029,7 +7783,7 @@ export default function NotebookView() {
       --nb-wikilink-color: var(--accent);
       --nb-hl-bg:          rgba(210,153,34,.28);
       --nb-code-color:     var(--accent);
-      --nb-code-bg:        rgba(56,139,253,.12);
+      --nb-code-bg:        color-mix(in srgb, var(--accent) 12%, transparent);
     }
 
     /* ── CM host ───────────────────────────────────────── */
@@ -7100,6 +7854,29 @@ export default function NotebookView() {
        These must match the .nb-prev selectors exactly.
     ══════════════════════════════════════════════════════ */
 
+    /* Heading fold arrow — parked in the left gutter, out of the text flow, so
+       every heading's text lines up with the body text and the arrows form one
+       consistent column regardless of heading level (was inline, shifting each
+       heading right by the arrow's width). */
+    .nb-live .cm-line.cm-lv-h1,
+    .nb-live .cm-line.cm-lv-h2,
+    .nb-live .cm-line.cm-lv-h3,
+    .nb-live .cm-line.cm-lv-h4,
+    .nb-live .cm-line.cm-lv-h5,
+    .nb-live .cm-line.cm-lv-h6 { position: relative; }
+    .cm-fold-arrow {
+      position: absolute; left: -22px; top: 0; bottom: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 16px; height: 100%;
+      color: var(--textDim); cursor: pointer; border-radius: 3px;
+      transition: transform .12s ease, color .12s, background .12s;
+    }
+    .cm-fold-arrow svg { transition: transform .12s ease; }
+    .cm-fold-arrow.cm-fold-arrow-open svg { transform: rotate(90deg); }
+    .cm-fold-arrow:hover { color: var(--text); background: var(--surfaceAlt); }
+    /* Narrow the gutter reach on small screens so the arrow doesn't clip out */
+    @media (max-width: 640px) { .cm-fold-arrow { left: -18px; } }
+
     /* Headings — weight, size, rhythm identical to preview */
     .nb-live .cm-lv-h1 {
       font-size: var(--nb-h1); font-weight: 600; line-height: 1.25;
@@ -7160,12 +7937,32 @@ export default function NotebookView() {
       cursor: default; user-select: none; font-family: inherit;
     }
 
+    /* status:: badge — clickable, cycles Todo/Doing/Blocked/Review/Done */
+    .cm-status-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 0.7em; font-weight: 700; letter-spacing: .02em;
+      padding: 1px 7px 2px; border-radius: 6px; line-height: 1.7;
+      border: 1.5px solid; vertical-align: middle;
+      cursor: pointer; user-select: none; font-family: inherit;
+      transition: opacity .1s;
+    }
+    .cm-status-badge:hover { opacity: .78; }
+    .cm-status-badge svg { flex-shrink: 0; }
+    .cm-status-label { white-space: nowrap; }
+    .nb-status-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: .8em; font-weight: 700; letter-spacing: .02em;
+      padding: 2px 8px 3px; border-radius: 6px; border: 1.5px solid;
+      margin: .2em 0;
+    }
+    .nb-status-badge svg { flex-shrink: 0; }
+
     .cm-time-badge {
       display: inline-flex; align-items: center;
       font-size: 0.7em; font-weight: 700; letter-spacing: .02em;
       padding: 1px 6px 2px; border-radius: 5px; line-height: 1.7;
-      background: rgba(56,139,253,0.1); color: var(--accent);
-      border: 1px solid rgba(56,139,253,0.25); vertical-align: middle;
+      background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent);
+      border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); vertical-align: middle;
       cursor: default; user-select: none; font-family: inherit;
     }
 
@@ -7223,6 +8020,34 @@ export default function NotebookView() {
     /* Image widget */
     .cm-img-wrap { display:block; margin:6px 0; line-height:0; background:none; box-shadow:none; }
     .cm-img { max-width:100%; max-height:340px; border-radius:6px; object-fit:contain; display:block; background:none; }
+    /* An SVG authored with only a viewBox (no width/height attributes) has no
+       intrinsic size. Inside a width:fit-content wrapper that resolves
+       circularly to 0x0 — the image loads fine but renders invisibly. Give such
+       images a definite width to size against. */
+    /* Only stretch when JS hasn't given the wrapper an explicit width — an
+       inline width means the user sized the image, and the wrapper must hug it
+       so the resize handle / align bar stay on the image's corners. */
+    .cm-img-wrap:has(.cm-img[src*=".svg"]):not([style*="width"]) { width:100%; }
+    .cm-img-wrap.cm-img-nosize:not([style*="width"]) { width:100%; }
+    .cm-img-wrap.cm-img-nosize .cm-img { width:100%; height:auto; max-height:70vh; }
+    /* Alignment controls — revealed on hover, like the resize handle */
+    .cm-img-align-bar {
+      position:absolute; top:6px; left:6px; display:flex; gap:2px;
+      opacity:0; transition:opacity .12s; pointer-events:none;
+    }
+    .cm-img-wrap:hover .cm-img-align-bar { opacity:1; pointer-events:auto; }
+    .cm-img-align-btn {
+      width:22px; height:22px; line-height:1; padding:0; cursor:pointer;
+      border:1px solid var(--border); border-radius:5px;
+      background:color-mix(in srgb, var(--surface) 88%, transparent);
+      color:var(--textDim); font-size:12px; font-family:inherit;
+      -webkit-backdrop-filter:blur(6px); backdrop-filter:blur(6px);
+    }
+    .cm-img-align-btn:hover { color:var(--text); background:var(--surfaceAlt); }
+    .cm-img-align-btn.active { color:#fff; background:var(--accent); border-color:var(--accent); }
+    /* A floated image must not overlap the controls' hit area */
+    .cm-img-wrap { position:relative; }
+
     .cm-img-err { display:inline-block; padding:4px 8px; background:var(--surfaceAlt); border:1px dashed var(--border); border-radius:4px; font-size:12px; color:var(--textDim); }
 
     /* Checkbox widget */
@@ -7252,13 +8077,13 @@ export default function NotebookView() {
       color:var(--text); cursor:pointer;
       padding: 0 2px;
     }
-    .cm-math-inline:hover { background: rgba(56,139,253,.1); border-radius:3px; }
+    .cm-math-inline:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); border-radius:3px; }
     .cm-math-block {
       display:block; text-align:center; margin:0.5em 0;
       overflow-x:auto; color:var(--text); padding:4px 0;
       cursor:pointer;
     }
-    .cm-math-block:hover { background: rgba(56,139,253,.06); border-radius:4px; }
+    .cm-math-block:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); border-radius:4px; }
 
     /* ── Table widget in live view ── */
     .cm-table-outer { padding: 5px 0 7px; }
@@ -7512,7 +8337,7 @@ export default function NotebookView() {
     }
     .cm-task-date-cell:hover { background: var(--surfaceAlt); }
     .cm-task-date-today { color: var(--accent); font-weight: 700; }
-    .cm-task-date-selected { background: rgba(56,139,253,.15) !important; color: var(--accent); font-weight: 600; }
+    .cm-task-date-selected { background: color-mix(in srgb, var(--accent) 15%, transparent) !important; color: var(--accent); font-weight: 600; }
     .cm-task-add-row { padding: 3px 5px 6px; }
     .cm-task-add-input {
       width: 100%; background: transparent; border: 1px dashed var(--borderSubtle);
@@ -7864,7 +8689,7 @@ export default function NotebookView() {
       background: var(--accent); color: #fff; border-radius: 50%; width: 20px; height: 20px;
       display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700;
     }
-    .cm-cal-selected { background: rgba(56,139,253,0.06) !important; }
+    .cm-cal-selected { background: color-mix(in srgb, var(--accent) 6%, transparent) !important; }
     .cm-cal-has-event::after {
       content: ''; position: absolute; top: 5px; right: 5px;
       width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
@@ -7874,7 +8699,7 @@ export default function NotebookView() {
     .cm-cal-day-evt {
       font-size: 9px; color: var(--text); white-space: nowrap; overflow: hidden;
       text-overflow: ellipsis; margin-top: 2px; line-height: 1.2;
-      background: rgba(56,139,253,.08); border-radius: 2px; padding: 1px 3px;
+      background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 2px; padding: 1px 3px;
       border-left: 2px solid var(--accent);
     }
 
@@ -7923,9 +8748,9 @@ export default function NotebookView() {
       flex: 1; min-height: 28px; cursor: pointer; padding: 1px 4px;
       transition: background .1s; position: relative;
     }
-    .cm-cal-time-slot:hover { background: rgba(56,139,253,.04); }
+    .cm-cal-time-slot:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
     .cm-cal-time-evt {
-      font-size: 10px; color: var(--text); background: rgba(56,139,253,.1);
+      font-size: 10px; color: var(--text); background: color-mix(in srgb, var(--accent) 10%, transparent);
       border-left: 2px solid var(--accent); border-radius: 2px;
       padding: 1px 6px; margin: 1px 0; display: flex; align-items: center; gap: 4px;
     }
@@ -7961,7 +8786,7 @@ export default function NotebookView() {
       border-left: 1px solid var(--borderSubtle);
       transition: background .1s; position: relative;
     }
-    .cm-cal-week-cell:hover { background: rgba(56,139,253,.04); }
+    .cm-cal-week-cell:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
 
     /* ── Day view ── */
     .cm-cal-day-panel {
@@ -8004,6 +8829,45 @@ export default function NotebookView() {
       background: var(--nb-quote-bg); font-style: italic;
     }
     .nb-prev pre.nb-pre { background:var(--surfaceAlt); border:1px solid var(--border); border-radius:8px; padding:14px 16px; overflow-x:auto; margin:.8em 0; }
+    /* Mermaid diagrams + inline SVG — centred, never wider than the page.
+       An author SVG can carry width/height:100% (or none at all), which without
+       these constraints expands to cover the page and blanks the content behind
+       it. Clamp the box, force the SVG to lay out inside it, and contain paint
+       so it can never draw outside its own block. */
+    .nb-mermaid, .nb-svg {
+      margin:.9em 0; text-align:center; overflow:auto;
+      width:100%; max-width:100%; max-height:70vh; contain:paint;
+    }
+    /* Clamp with max-* only. Forcing width/height:auto collapses an SVG that
+       has no viewBox (no intrinsic size) to 0×0 — which is what made the block
+       look like it blanked the page. */
+    .nb-mermaid svg, .nb-svg svg {
+      max-width:100%; max-height:70vh;
+      display:inline-block; position:static !important;
+    }
+    /* Mermaid sizes every node box by measuring its label FIRST, then emits
+       fixed geometry. The notebook's own font-size/line-height cascade into the
+       SVG afterwards and the text no longer fits — labels render clipped. Pin
+       the typography mermaid assumed, and let labels overflow rather than crop. */
+    .nb-mermaid svg { font-size:16px; line-height:normal; }
+    .nb-mermaid svg text,
+    .nb-mermaid svg .nodeLabel,
+    .nb-mermaid svg foreignObject div,
+    .nb-mermaid svg foreignObject span {
+      font-family:'trebuchet ms', verdana, arial, sans-serif !important;
+      font-size:16px !important;
+      line-height:normal !important;
+      letter-spacing:normal !important;
+      text-indent:0 !important;
+    }
+    .nb-mermaid svg foreignObject { overflow:visible; }
+    .nb-diagram-live { margin:.4em 0; }
+    .nb-diagram-pending { color:var(--textDim); font-size:.88em; font-style:italic; padding:10px; }
+    .nb-diagram-error {
+      color:#f85149; font-size:.85em; font-family:SF Mono,Menlo,monospace; text-align:left;
+      background:rgba(248,81,73,0.08); border:1px solid rgba(248,81,73,0.3);
+      border-radius:6px; padding:8px 12px;
+    }
     .nb-prev code { font-family:SF Mono,Menlo,Consolas,monospace; font-size:.87em; }
     .nb-ic { background:var(--nb-code-bg); border-radius:4px; padding:1px 5px; font-family:SF Mono,Menlo,Consolas,monospace; font-size:.87em; color:var(--nb-code-color); }
     .nb-prev table.nb-table { border-collapse:collapse; width:100%; margin:.8em 0; font-size:.93em; }
@@ -8048,7 +8912,7 @@ export default function NotebookView() {
     .cm-cal-prev-day { display: flex; align-items: baseline; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--borderSubtle); flex-wrap: wrap; }
     .cm-cal-prev-day:last-child { border-bottom: none; }
     .cm-cal-prev-date { font-size: 10px; font-weight: 600; color: var(--textDim); min-width: 80px; font-family: 'Stack Sans Text','Switzer',system-ui,sans-serif; }
-    .cm-cal-prev-evt { font-size: 11px; color: var(--text); background: rgba(56,139,253,.08); border-left: 2px solid var(--accent); border-radius: 2px; padding: 1px 6px; }
+    .cm-cal-prev-evt { font-size: 11px; color: var(--text); background: color-mix(in srgb, var(--accent) 8%, transparent); border-left: 2px solid var(--accent); border-radius: 2px; padding: 1px 6px; }
     /* Preview-mode timer block */
     .cm-timer-prev { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid var(--borderSubtle); border-radius: 8px; margin: .4em 0; background: var(--surfaceAlt); }
     .cm-timer-prev-time { font-size: 18px; font-weight: 600; color: var(--text); font-family: 'Stack Sans Text','Satoshi','Switzer',sans-serif; font-variant-numeric: tabular-nums; }
@@ -8069,7 +8933,7 @@ export default function NotebookView() {
     /* Footnote ref widget in live mode */
     .cm-fn-ref-widget {
       font-size: .72em; vertical-align: super; color: var(--accent);
-      background: rgba(56,139,253,.08); border-radius: 3px;
+      background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 3px;
       padding: 0 3px; cursor: default; font-weight: 600;
       font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
     }
@@ -8131,7 +8995,7 @@ export default function NotebookView() {
       animation-iteration-count: 1;
       animation-fill-mode: none;
     }
-    mark.nb-fhl-a { background:rgba(56,139,253,.5); outline:2px solid var(--accent); }
+    mark.nb-fhl-a { background:color-mix(in srgb, var(--accent) 50%, transparent); outline:2px solid var(--accent); }
 
     /* ── Cover banner ─────────────────────────────────── */
     .nb-cover-banner {
@@ -8576,7 +9440,7 @@ export default function NotebookView() {
     dark: {
       italic:'#79b8ff', bold:'#f0883e', bi:'#d2a8ff', h1:'#e6edf3', h2:'#79b8ff', h3:'#56d4dd',
       h4:'#b392f0', h5:'#f97583', h6:'#8b949e',
-      quote:'#8b949e', quoteBg:'rgba(56,139,253,.07)', quoteBorder:'#388bfd',
+      quote:'#8b949e', quoteBg:'color-mix(in srgb, var(--accent) 7%, transparent)', quoteBorder:'#388bfd',
       link:'#58a6ff', wiki:'#58a6ff', hl:'rgba(255,212,59,.35)',
       code:'#e2c08d', codeBg:'rgba(255,218,120,.10)',
       strike:'#f85149',
@@ -8659,10 +9523,7 @@ export default function NotebookView() {
             if (findOpen) { setFindOpen(false); setFindQ(''); doFind('') }
             else { setFindOpen(true); setTimeout(() => findRef.current?.focus(), 30) }
           }}>
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.7"/>
-            <path d="M10 10l3.5 3.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
-          </svg>
+          <Search size={14} strokeWidth={1.7} />
         </button>
         <ViewModeBtn viewMode={viewMode} setViewMode={switchMode} />
         <NbShareMenu
@@ -8670,22 +9531,25 @@ export default function NotebookView() {
           notebookTitle={notebook?.title}
           contentRef={contentRef}
           previewHtml={previewHtml}
+          sharing={sharing}
+          guestCount={collabGuestCount}
+          onStartLiveShare={() => { setSharing(true); setCollabOpen(true) }}
+          onOpenLiveShare={() => setCollabOpen(true)}
         />
-        <button className="gnos-settings-btn" onClick={() => setEditModal(true)} title="Backlinks & tags">
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-            <path d="M6.5 9.5a3 3 0 0 0 4.24 0l2-2a3 3 0 0 0-4.24-4.24l-1 1" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
-            <path d="M9.5 6.5a3 3 0 0 0-4.24 0l-2 2a3 3 0 0 0 4.24 4.24l1-1" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+        <button className="gnos-settings-btn" onClick={() => setHistoryOpen(true)} title="Version history">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 3v5h5" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /><path d="M12 7v5l3 2" />
           </svg>
+        </button>
+        <button className="gnos-settings-btn" onClick={() => setEditModal(true)} title="Backlinks & tags">
+          <Link2 size={15} strokeWidth={1.7} />
         </button>
       </QuickAccess>
 
       {/* Floating find bar — appears on ⌘F or via the quick-access button */}
       {(findOpen || findQ) && (
         <div className="nb-findbar">
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink:0, opacity:.55 }}>
-            <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.6"/>
-            <path d="M10 10l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-          </svg>
+          <Search size={12} strokeWidth={1.6} style={{ flexShrink: 0, opacity: .55 }} />
           <input ref={findRef} id="nb-search-input"
             placeholder="Find in note…" value={findQ}
             onChange={e => { setFindQ(e.target.value); doFind(e.target.value) }}
@@ -8797,11 +9661,7 @@ export default function NotebookView() {
                 <div className="nb-title-meta-row">
                   {!coverImage && (
                     <button className="nb-title-meta-btn" onClick={() => coverInputRef.current?.click()}>
-                      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ marginRight:5, flexShrink:0 }}>
-                        <rect x="1" y="3" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.4"/>
-                        <circle cx="5.5" cy="7" r="1.5" stroke="currentColor" strokeWidth="1.2"/>
-                        <path d="M1.5 11.5l3.5-3 3 3 2.5-2.5 4 4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-                      </svg>
+                      <Image size={13} strokeWidth={1.4} style={{ marginRight: 5, flexShrink: 0 }} />
                       Add cover
                     </button>
                   )}
@@ -8838,10 +9698,7 @@ export default function NotebookView() {
               border: '1px solid color-mix(in srgb, #f0883e 40%, transparent)',
               fontSize: 12, color: 'var(--text)', lineHeight: 1.4,
             }}>
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
-                <path d="M8 1.5L15 14H1L8 1.5z" stroke="#f0883e" strokeWidth="1.4" strokeLinejoin="round"/>
-                <path d="M8 6v3.5M8 11.5v.5" stroke="#f0883e" strokeWidth="1.4" strokeLinecap="round"/>
-              </svg>
+              <TriangleAlert size={13} strokeWidth={1.4} color="#f0883e" style={{ flexShrink: 0 }} />
               <span style={{ flex: 1 }}>{nbError}</span>
               <button onClick={() => setNbError(null)} style={{ border: 'none', background: 'none', color: 'var(--textDim)', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: '0 2px' }}>×</button>
             </div>
@@ -8922,7 +9779,7 @@ export default function NotebookView() {
                       gap: 8,
                       cursor: 'pointer',
                       transition: 'background 0.08s',
-                      background: i === wikiDrop.selectedIdx ? 'rgba(56,139,253,0.18)' : 'transparent',
+                      background: i === wikiDrop.selectedIdx ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'transparent',
                       color: i === wikiDrop.selectedIdx ? 'var(--accent)' : 'var(--text)',
                     }}>
                     <span style={{ flex: 1, fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{opt.label}</span>
@@ -9025,7 +9882,7 @@ export default function NotebookView() {
                         style={{
                           padding: '8px 12px', borderRadius: 8, margin: '1px 0',
                           display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
-                          background: i === activeIdx ? 'rgba(56,139,253,0.18)' : 'transparent',
+                          background: i === activeIdx ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'transparent',
                           color: i === activeIdx ? 'var(--accent)' : 'var(--text)',
                         }}>
                         {type === 'font' && (
@@ -9047,18 +9904,16 @@ export default function NotebookView() {
                           </>
                         )}
                         {type === 'align' && (() => {
-                          const lines = opt.value === 'left'
-                            ? [[0,14],[0,9],[0,11]]
+                          const Glyph = opt.value === 'left'
+                            ? AlignLeft
                             : opt.value === 'center'
-                            ? [[1,14],[3,9],[2,11]]
+                            ? AlignCenter
                             : opt.value === 'right'
-                            ? [[2,14],[7,9],[5,11]]
-                            : [[0,16],[0,16],[0,10]] // justify
+                            ? AlignRight
+                            : AlignJustify
                           return (
                             <>
-                              <svg width="16" height="12" viewBox="0 0 16 12" style={{ flexShrink: 0, opacity: 0.7 }} fill="currentColor">
-                                {lines.map(([x, w], i) => <rect key={i} x={x} y={i * 4} width={w} height="2" rx="1" />)}
-                              </svg>
+                              <Glyph size={16} strokeWidth={1.5} style={{ flexShrink: 0, opacity: 0.7 }} />
                               <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{opt.name}</span>
                             </>
                           )
@@ -9083,6 +9938,68 @@ export default function NotebookView() {
       )}
 
       {editModal && <NotebookBacklinksPanel notebook={notebook} notebooks={notebooks} onClose={() => setEditModal(false)} />}
+      {historyOpen && (
+        <NotebookHistoryPanel
+          notebook={notebook}
+          currentText={titleRef.current ? `# ${titleRef.current}\n${contentRef.current}` : contentRef.current}
+          onRestore={(text) => {
+            // Reuse the external-adopt path: pushes into CM6 with the cursor kept,
+            // refreshes the card, and re-bases the merge baseline.
+            const r = splitTitle(text)
+            applyExternal(r.text, r.title, Date.now())
+            flushSaveRef.current?.()
+          }}
+          onClose={() => setHistoryOpen(false)}
+        />
+      )}
+
+      {sharing && (
+        <Suspense fallback={null}>
+          <NoteCollabPanel
+            notebookId={notebookId}
+            noteTitle={titleRef.current || noteTitle}
+            notebookDir={notebookDirRef.current}
+            seedText={contentRef.current}
+            visible={collabOpen}
+            onClose={(ended) => { setCollabOpen(false); if (ended) { setSharing(false); setCollabBits(null) } }}
+            onReady={setCollabBits}
+            onGuestCount={setCollabGuestCount}
+          />
+        </Suspense>
+      )}
+
+      {/* Ambient "this note is live" reminder — the panel itself can be
+          closed while the session keeps running (same relationship as
+          History has to collabOpen), so without this there'd be no visible
+          sign a note is being shared once you dismiss the panel. Icon-only
+          (matches gnos-settings-btn's own economy), guest count as a small
+          badge rather than inline text. `absolute` within .nb-root (which
+          is `position: relative`), not `fixed` to the window, so split-pane
+          notes each get their own, correctly scoped to their own pane
+          rather than one indicator fixed to a window corner regardless of
+          which pane is actually sharing. */}
+      {sharing && !collabOpen && (
+        <button
+          onClick={() => setCollabOpen(true)}
+          title={`This note is being live-shared${collabGuestCount ? ` — ${collabGuestCount} connected` : ''} — click to open the panel`}
+          style={{
+            position: 'absolute', bottom: 14, right: 14, zIndex: 1080,
+            width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            borderRadius: '50%', background: 'var(--surface)', border: '1px solid var(--borderSubtle)',
+            boxShadow: '0 4px 16px rgba(0,0,0,.25)', color: 'var(--text)', cursor: 'pointer', padding: 0,
+          }}
+        >
+          <Users size={14} strokeWidth={1.8} />
+          {collabGuestCount > 0 && (
+            <span style={{
+              position: 'absolute', top: -3, right: -3, minWidth: 14, height: 14, padding: '0 3px', borderRadius: 7,
+              background: '#2eaf7d', color: '#fff', fontSize: 9.5, fontWeight: 700, lineHeight: '14px', textAlign: 'center',
+            }}>
+              {collabGuestCount}
+            </span>
+          )}
+        </button>
+      )}
 
       {showMobileViewMenu && (
         <div style={{ position:'fixed', bottom:'calc(max(12px,env(safe-area-inset-bottom,0px)+6px)+45px+8px)',
@@ -9207,6 +10124,235 @@ export default function NotebookView() {
         </div>
       )}
     </div>
+  )
+}
+
+
+// ─── Version history panel ────────────────────────────────────────────────────
+// The retrospective "merge chooser". Merges are silent by design, so this is
+// where they become visible: `remote` entries are what arrived from disk/a peer,
+// `local` entries are what a conflict discarded. That audit trail is what makes
+// silent merging safe rather than lossy. See PLAN_CONCURRENCY.md.
+// App.jsx exports TITLEBAR_H, but App imports this file — importing back would
+// be circular. The chapters pop-in uses the same 34px offset.
+const NB_TITLEBAR_H = 34
+
+function NotebookHistoryPanel({ notebook, currentText, onRestore, onClose }) {
+  const [versions, setVersions] = useState(null)
+  const [openFile, setOpenFile] = useState(null)   // which row is expanded
+  const [texts, setTexts] = useState({})           // file -> loaded text
+  const [busy, setBusy] = useState(false)
+  const [H, setH] = useState(null)
+
+  useEffect(() => {
+    let gone = false
+    ;(async () => {
+      try {
+        const h = await import('@/lib/history')
+        const list = await h.listVersions(notebook?.id)
+        if (!gone) { setH(h); setVersions(list) }
+      } catch { if (!gone) setVersions([]) }
+    })()
+    return () => { gone = true }
+  }, [notebook?.id])
+
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose?.() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  async function toggle(v) {
+    if (openFile === v.file) { setOpenFile(null); return }
+    setOpenFile(v.file)
+    if (texts[v.file] == null && H) {
+      const t = await H.readVersion(notebook.id, v.file)
+      setTexts(prev => ({ ...prev, [v.file]: t ?? '' }))
+    }
+  }
+
+  async function doRestore(v) {
+    if (busy || !H) return
+    setBusy(true)
+    try {
+      const text = await H.restoreVersion(notebook.id, v.file, currentText)
+      if (text != null) { onRestore?.(text); onClose?.() }
+    } finally { setBusy(false) }
+  }
+
+  // "Was this me, or something outside Gnos?" is the first question — so origin
+  // is the row's primary label, not a footnote.
+  const ORIGIN = {
+    external: { color: '#4a90e2', icon: 'M12 5v14M19 12l-7 7-7-7' },
+    internal: { color: '#8b949e', icon: 'M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z' },
+    merged:   { color: '#2eaf7d', icon: 'M7 3v12a4 4 0 0 0 4 4h6M17 3v6' },
+  }
+  const metaOf = k => {
+    const o = H ? H.originOf(k) : { origin: 'internal', label: k, hint: '' }
+    return { ...o, ...ORIGIN[o.origin] }
+  }
+
+  const dayLabel = ts => {
+    const d = new Date(ts), now = new Date()
+    const same = (a, b) => a.toDateString() === b.toDateString()
+    if (same(d, now)) return 'Today'
+    const y = new Date(now); y.setDate(y.getDate() - 1)
+    if (same(d, y)) return 'Yesterday'
+    return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+  }
+  const timeLabel = ts => new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+
+  const groups = []
+  for (const v of (versions || [])) {
+    const label = dayLabel(v.ts)
+    if (!groups.length || groups[groups.length - 1].label !== label) groups.push({ label, items: [] })
+    groups[groups.length - 1].items.push(v)
+  }
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 1099 }} />
+      <aside style={{
+        // Same language as the audiobook chapters pop-in: a floating rounded
+        // card tucked under the title bar, not a full-bleed panel.
+        position: 'fixed', right: 8, top: NB_TITLEBAR_H + 6, bottom: 8, width: 340, maxWidth: '92vw', zIndex: 1100,
+        background: 'var(--surface)', border: '1px solid var(--borderSubtle)',
+        borderRadius: 12, boxShadow: '-8px 0 32px rgba(0,0,0,0.22)',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        animation: 'nbh-in .18s cubic-bezier(.16,1,.3,1)',
+      }}>
+        <style>{`
+          @keyframes nbh-in { from { opacity:0; transform: translateX(8px) } to { opacity:1; transform:none } }
+          @keyframes nbh-open { from { opacity:0 } to { opacity:1 } }
+          .nbh-row { display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+                     padding:6px 8px; border:none; background:none; cursor:pointer;
+                     font-family:inherit; transition:background .1s }
+          .nbh-row:hover { background: var(--hover) }
+          .nbh-item[data-on="1"] { background: var(--surfaceAlt) }
+          .nbh-scroll::-webkit-scrollbar { width:8px }
+          .nbh-scroll::-webkit-scrollbar-thumb { background:var(--border); border-radius:6px; border:2px solid var(--surface) }
+          .nbh-scroll::-webkit-scrollbar-track { background:transparent }
+          .nbh-day { position:sticky; top:0; z-index:1; padding:7px 14px 3px; font-size:10px; font-weight:700;
+                     letter-spacing:.06em; text-transform:uppercase; color:var(--textDim); background:var(--surface) }
+        `}</style>
+
+        {/* Header — no divider rule; the spacing carries the separation */}
+        <div style={{
+          padding: '11px 12px 4px 14px', display: 'flex', alignItems: 'center',
+          justifyContent: 'space-between', flexShrink: 0,
+        }}>
+          <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.07em', textTransform: 'uppercase', color: 'var(--textDim)' }}>
+            History
+          </span>
+          <button onClick={onClose} title="Close (Esc)" style={{
+            width: 20, height: 20, padding: 0, border: 'none', background: 'none',
+            color: 'var(--textDim)', cursor: 'pointer', display: 'flex',
+            alignItems: 'center', justifyContent: 'center', transition: 'color .12s',
+          }}
+            onMouseEnter={e => { e.currentTarget.style.color = '#f85149' }}
+            onMouseLeave={e => { e.currentTarget.style.color = 'var(--textDim)' }}>
+            <X size={13} strokeWidth={2.2} />
+          </button>
+        </div>
+
+        <div className="nbh-scroll" style={{ overflowY: 'auto', flex: 1, minHeight: 0, paddingBottom: 8 }}>
+          {versions === null && <div style={{ padding: '12px 14px', fontSize: 12, color: 'var(--textDim)' }}>Loading…</div>}
+
+          {versions?.length === 0 && (
+            <div style={{ padding: '26px 20px', textAlign: 'center' }}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--border)" strokeWidth="1.6" strokeLinecap="round" style={{ marginBottom: 9 }}>
+                <circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" />
+              </svg>
+              <div style={{ fontSize: 12.5, color: 'var(--text)', fontWeight: 550, marginBottom: 3 }}>No earlier versions</div>
+              <div style={{ fontSize: 11, color: 'var(--textDim)', lineHeight: 1.5 }}>
+                Snapshots are taken as you write, and when changes arrive from elsewhere. Kept 7 days.
+              </div>
+            </div>
+          )}
+
+          {groups.map(g => (
+            <div key={g.label}>
+              <div className="nbh-day">{g.label}</div>
+              {g.items.map(v => {
+                const m = metaOf(v.kind)
+                const on = openFile === v.file
+                const text = texts[v.file]
+                const rows = (on && H && text != null) ? H.diffRows(text, currentText) : null
+                const stats = (on && H && text != null) ? H.diffLines(text, currentText) : null
+                return (
+                  <div key={v.file} className="nbh-item" data-on={on ? '1' : '0'}
+                    style={{ borderRadius: 8, margin: '0 6px 1px', overflow: 'hidden' }}>
+                    {/* Accordion header */}
+                    <button className="nbh-row" onClick={() => toggle(v)} title={m.hint}>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--textDim)"
+                        strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
+                        style={{ flexShrink: 0, transform: on ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }}>
+                        <path d="m9 18 6-6-6-6" />
+                      </svg>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={m.color}
+                        strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                        <path d={m.icon} />
+                      </svg>
+                      <span style={{ fontSize: 12, color: 'var(--text)', width: 58, flexShrink: 0 }}>{timeLabel(v.ts)}</span>
+                      <span style={{ fontSize: 11.5, color: m.color, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {m.label}
+                      </span>
+                    </button>
+
+                    {/* Accordion body */}
+                    {on && (
+                      <div style={{ animation: 'nbh-open .15s ease', padding: '0 8px 8px 8px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '1px 2px 8px' }}>
+                          {stats && (
+                            <span style={{ fontSize: 10.5, fontFamily: 'SF Mono,Menlo,monospace', display: 'flex', gap: 5 }}>
+                              <span style={{ color: '#2eaf7d' }}>+{stats.added}</span>
+                              <span style={{ color: '#f85149' }}>−{stats.removed}</span>
+                            </span>
+                          )}
+                          <span style={{ flex: 1 }} />
+                          <button onClick={() => doRestore(v)} disabled={busy} style={{
+                            padding: '4px 12px', borderRadius: 7, border: 'none', flexShrink: 0,
+                            background: busy ? 'var(--surfaceAlt)' : 'var(--accent)',
+                            color: busy ? 'var(--textDim)' : '#fff',
+                            fontSize: 11, fontWeight: 600, fontFamily: 'inherit', cursor: busy ? 'wait' : 'pointer',
+                          }}>{busy ? '…' : 'Restore'}</button>
+                        </div>
+                        {text == null ? (
+                          <div style={{ fontSize: 11, color: 'var(--textDim)', padding: '4px 2px' }}>Loading…</div>
+                        ) : (
+                          <div style={{
+                            borderRadius: 7, overflow: 'hidden',
+                            border: '1px solid var(--borderSubtle)',
+                            fontSize: 11, lineHeight: 1.55, fontFamily: 'SF Mono,Menlo,Consolas,monospace',
+                            background: 'color-mix(in srgb, var(--surfaceAlt) 50%, transparent)',
+                          }}>
+                            {(rows || []).map((r, i) => {
+                              if (r.type === 'skip') return (
+                                <div key={i} style={{ padding: '2px 9px', color: 'var(--textDim)', fontSize: 10 }}>
+                                  ⋯ {r.count} unchanged {r.count === 1 ? 'line' : 'lines'}
+                                </div>
+                              )
+                              const tint = r.type === 'add' ? 'rgba(46,175,125,.13)' : r.type === 'del' ? 'rgba(248,81,73,.12)' : 'transparent'
+                              const col  = r.type === 'add' ? '#2eaf7d' : r.type === 'del' ? '#f85149' : 'var(--textDim)'
+                              return (
+                                <div key={i} style={{ display: 'flex', gap: 7, padding: '1px 9px', background: tint, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                  <span style={{ color: col, flexShrink: 0, userSelect: 'none' }}>{r.type === 'add' ? '+' : r.type === 'del' ? '−' : ' '}</span>
+                                  <span style={{ color: r.type === 'ctx' ? 'var(--textDim)' : 'var(--text)', flex: 1 }}>{r.text || ' '}</span>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+      </aside>
+    </>
   )
 }
 
@@ -9398,7 +10544,7 @@ function NotebookBacklinksPanel({ notebook, notebooks, onClose }) {
         {/* Header — markdown syntax reference moved to Settings → Notebook */}
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'14px 20px', flexShrink:0 }}>
           <span style={{ fontSize:13, fontWeight:700, color:'var(--text)' }}>Backlinks & Tags</span>
-          <button onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1 1l7 7M8 1l-7 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg></button>
+          <button onClick={onClose} title="Close" style={{width:24,height:24,borderRadius:6,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.1s,color 0.1s,border-color 0.1s'}} onMouseEnter={e=>{e.currentTarget.style.background='rgba(248,81,73,0.12)';e.currentTarget.style.color='#f85149';e.currentTarget.style.borderColor='rgba(248,81,73,0.4)'}} onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}><X size={9} strokeWidth={1.5} /></button>
         </div>
         <div style={{ borderTop:'1px solid var(--border)', marginTop:0 }} />
 
@@ -9408,7 +10554,7 @@ function NotebookBacklinksPanel({ notebook, notebooks, onClose }) {
             <div>
               <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:'var(--textDim)', opacity:.6, marginBottom:8 }}>Search by Tag</div>
               <div style={{ display:'flex', alignItems:'center', gap:6, background:'var(--surfaceAlt)', border:'1px solid var(--border)', borderRadius:7, padding:'5px 10px', marginBottom:8 }}>
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ opacity:.5, flexShrink:0 }}><circle cx="6" cy="6" r="4" stroke="currentColor" strokeWidth="1.5"/><path d="M10 10l3.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                <Search size={12} strokeWidth={1.5} style={{ opacity: .5, flexShrink: 0 }} />
                 <input
                   value={tagSearch}
                   onChange={e => setTagSearch(e.target.value)}
@@ -9433,7 +10579,7 @@ function NotebookBacklinksPanel({ notebook, notebooks, onClose }) {
                   : <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
                       {tagResults.map(({ nb, tags, dueLabel, dueState }) => (
                         <div key={nb.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 11px', borderRadius:7, border:'1px solid var(--border)', background:'var(--surfaceAlt)' }}>
-                          <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="12" height="14" rx="2" stroke="currentColor" strokeWidth="1.3"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/></svg>
+                          <NotebookText size={13} strokeWidth={1.3} />
                           <span style={{ fontSize:12, color:'var(--text)', fontWeight:500, flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{nb.title}</span>
                           <div style={{ display:'flex', gap:4, flexShrink:0 }}>
                             {dueLabel
@@ -9482,7 +10628,7 @@ function NotebookBacklinksPanel({ notebook, notebooks, onClose }) {
                     <div style={{ display:'flex', flexDirection:'column', gap:4, marginBottom:12 }}>
                       {backlinks.map(nb => (
                         <div key={nb.id} onClick={() => { const s = useAppStore.getState(); s.setActiveNotebook(nb); s.updateTab(s.activeTabId, { view: 'notebook', activeNotebook: nb }); s.setView('notebook') }} style={{ display:'flex', alignItems:'center', gap:10, padding:'7px 12px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surfaceAlt)', cursor:'pointer' }}>
-                          <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="12" height="14" rx="2" stroke="currentColor" strokeWidth="1.3"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/><line x1="5" y1="11" x2="8" y2="11" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/></svg>
+                          <NotebookText size={13} strokeWidth={1.3} />
                           <span style={{ fontSize:12, color:'var(--text)', fontWeight:500 }}>{nb.title}</span>
                         </div>
                       ))}
@@ -9501,7 +10647,7 @@ function NotebookBacklinksPanel({ notebook, notebooks, onClose }) {
                     <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
                       {forwardsLinks.map(nb => (
                         <div key={nb.id} onClick={() => { const s = useAppStore.getState(); s.setActiveNotebook(nb); s.updateTab(s.activeTabId, { view: 'notebook', activeNotebook: nb }); s.setView('notebook') }} style={{ display:'flex', alignItems:'center', gap:10, padding:'7px 12px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surfaceAlt)', cursor:'pointer' }}>
-                          <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="12" height="14" rx="2" stroke="currentColor" strokeWidth="1.3"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/><line x1="5" y1="8" x2="11" y2="8" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/><line x1="5" y1="11" x2="8" y2="11" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/></svg>
+                          <NotebookText size={13} strokeWidth={1.3} />
                           <span style={{ fontSize:12, color:'var(--text)', fontWeight:500 }}>{nb.title}</span>
                         </div>
                       ))}
