@@ -1,5 +1,69 @@
 # UI Changes — July 2026 pass
 
+## A127. FlashcardView.jsx — Quizlet-inspired list redesign + choice/typed study modes
+
+User shared Quizlet create-set/Learn/Flashcards reference screenshots and asked for
+three things: (1) visual harmony (not colors/layout) matching Quizlet's editing UI,
+(2) multiple-choice and typed-answer as study modes alongside the existing flip
+card, (3) remove the single-card "Edit" viewport as redundant. Confirmed scope via
+3 clarifying questions before building: new per-deck Study Mode setting (not a
+replacement for flip), auto-grade correct/incorrect straight to SM-2 quality (no
+manual rate buttons in choice/type), multiple choice shows however many distractors
+exist rather than falling back to flip mode on a small deck.
+
+**List mode redesign**: `.fc-list-row` restructured from a stacked single-column
+layout to a Quizlet-style numbered row — header line (number, color dot, due
+badge/date, inline color-swatch picker, delete) above a 2-column grid (Front |
+Back, stacking to 1 column under 620px). Caption labels moved below each field
+(not above, matching the reference), field text bumped 14→16px, field borders
+simplified to an underline instead of a boxed input — visual rhythm only, no
+colors or exact layout copied per the user's own framing.
+
+**Edit-mode viewport removed** — the single-card chevron-nav view (`mode==='edit'`,
+~150 lines) is gone; List mode already covers add/delete/edit fully and was the
+only place either mode's "Add Card"/"Import" buttons did anything different. The
+done-screen's "Add more cards" button now opens List mode instead.
+
+**New: per-deck `studyMode`** (`'flip' | 'choice' | 'type'`, persisted on the deck,
+default `'flip'`) — a 3-way segmented control in the footer (`Cards`/`Choice`/
+`Type`, lucide `Layers`/`ListChecks`/`Keyboard`), visible only in Study mode.
+- **Choice**: `QuestionFace` (new shared component, factored out of the flip
+  card's front/back face JSX so it's not duplicated a third time) shows the
+  question in a static (non-flip) card; up to 4 options below it — the correct
+  answer plus up to 3 distractors pulled from other cards' answer-side text in
+  the same deck (`sideText()` helper, falls back to stripping `frontHtml`/
+  `backHtml` for Anki-imported cards with no plain-text field), shuffled once
+  per card via `useMemo`. Click or press 1-4 to answer; correct/incorrect
+  colors in green/red (`#4caf50`/`#f85149`), auto-grades SM-2 (3/1) and
+  advances after a short pause, or immediately via "Continue"/any key.
+- **Type**: same static question card + text input, Enter or the Answer button
+  submits. Comparison is case/whitespace/punctuation-insensitive
+  (`normalizeAnswer()`) — a real simplification versus Quizlet's actual fuzzy
+  "close enough" matching (no Levenshtein), noted rather than silently
+  under-delivered. Shows the correct answer on a miss, same auto-grade +
+  continue pattern as choice mode.
+
+**A real bug the live-verification caught, not just reasoned about**: the first
+version reset `revealed`/`selectedOption` inside `gradeAndAdvance`'s existing
+520ms `setTimeout` (copied from the flip card's own transition delay). But
+`dueCards`/`studyCard` are derived from the store, so the displayed question
+already swaps to the next card the instant `updateDeck` lands — well before
+that 520ms timer fires. Result: the next card rendered for ~500ms still showing
+the *previous* card's revealed colors (confirmed live: card 2 briefly rendered
+as "already answered wrong" with the previous card's picked option, before the
+user had touched anything). Fixed by resetting answer state synchronously right
+alongside `updateDeck`, not in the delayed timer — the timer still exists but
+now only handles the currentIdx out-of-bounds safety check.
+
+**Verified live**: full round-trip in both new modes — choice mode's correct/
+incorrect coloring, distractor generation from a 4-card test deck, keyboard
+number-key answering; type mode's Enter-to-submit and Answer-button paths, both
+correct and incorrect text; the "Add more cards" → List mode routing; List
+mode's new grid layout rendering real card data (color dots, due badges,
+image/audio tools all still functional). `npx eslint` dropped from 2 to 1
+pre-existing unrelated error (the `useCallback` import is now actually used).
+`npx vite build` green. `impeccable` detector clean (0 findings).
+
 ## A126. FlashcardView.jsx — full pass (first real audit of this file)
 
 Per PLAN_POPUP_REVAMP.md's open-item list — this file had only ever gotten

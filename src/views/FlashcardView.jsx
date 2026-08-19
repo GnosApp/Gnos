@@ -1,11 +1,15 @@
 /* FlashcardView.jsx — Anki/Quizlet-style spaced repetition flashcard view
  *
- * Two modes: Study and Edit
- * - Study: shows cards one at a time with flip animation, rate with SM-2
- * - Edit: list all cards, add/delete/edit inline
+ * Two modes: Study and List
+ * - Study: quiz one card at a time, in one of three studyModes (per-deck,
+ *   persisted): 'flip' (flip + manual Again/Hard/Good/Easy), 'choice'
+ *   (multiple choice, auto-graded), 'type' (typed answer, auto-graded).
+ * - List: every card as an editable term/definition row, add/delete/edit
+ *   inline — also the only place cards are added/removed now (the old
+ *   single-card "Edit" viewport was removed as redundant with this).
  */
 
-import { useState, useEffect, useRef, useCallback, useContext } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback, useContext } from 'react'
 import useAppStore from '@/store/useAppStore'
 import QuickAccess from '@/components/QuickAccess'
 import { PaneContext } from '@/lib/PaneContext'
@@ -13,7 +17,7 @@ import { useIsMobile } from '@/lib/useIsMobile'
 import { saveNotebookImage } from '@/lib/storage'
 import JSZip from 'jszip'
 import initSqlJs from 'sql.js/dist/sql-asm.js'
-import { ChevronLeft, ChevronRight, Pause, Play, Plus, Share, SquareArrowLeft, SquareArrowRight, X } from 'lucide-react'
+import { Check, Keyboard, Layers, ListChecks, Pause, Play, Plus, Share, SquareArrowLeft, SquareArrowRight, X } from 'lucide-react'
 
 // ─── SM-2 Algorithm ──────────────────────────────────────────────────────────
 function sm2(card, quality) {
@@ -144,18 +148,70 @@ const FLASHCARD_CSS = `
   .fc-done-msg h3 { font-size: 20px; margin: 0 0 8px; color: var(--text); }
   .fc-done-msg p { font-size: 13px; }
 
-  /* Edit mode */
-  .fc-edit {
-    flex: 1; overflow-y: auto; padding: 18px;
+  /* Study mode — per-deck mode toggle (flip / choice / type) */
+  .fc-study-mode-toggle {
+    display: flex; gap: 2px; background: var(--surfaceAlt);
+    border-radius: 7px; padding: 2px;
   }
-  .fc-card-input {
-    width: 100%; padding: 5px 8px; border-radius: 6px;
-    border: 1px solid var(--borderSubtle); background: var(--bg);
-    color: var(--text); font-size: 13px; font-family: inherit;
-    outline: none; resize: none;
+  .fc-study-mode-btn {
+    padding: 5px 9px; border-radius: 5px; border: none; background: none;
+    color: var(--textDim); cursor: pointer; font-family: inherit;
+    display: flex; align-items: center; gap: 5px;
+    font-size: 11px; font-weight: 600; transition: all 0.12s;
   }
-  .fc-card-input:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
-  .fc-card-input::placeholder { color: var(--textDim); opacity: 0.5; }
+  .fc-study-mode-btn.active { background: var(--surface); color: var(--text); }
+  .fc-study-mode-btn:hover:not(.active) { color: var(--text); }
+
+  /* Study mode — static (non-flip) question card for choice/type modes */
+  .fc-static-card { position: relative; width: 100%; max-width: 500px; aspect-ratio: 5/3; }
+
+  /* Study mode — multiple choice */
+  .fc-choice-list { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 500px; }
+  .fc-choice-btn {
+    display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+    border-radius: 10px; border: 1px solid var(--border); background: var(--surface);
+    color: var(--text); font-size: 14px; font-family: inherit; cursor: pointer;
+    text-align: left; transition: border-color 0.12s, background 0.12s;
+  }
+  .fc-choice-btn:hover:not(:disabled) { border-color: var(--accent); background: var(--surfaceAlt); }
+  .fc-choice-btn:disabled { cursor: default; }
+  .fc-choice-btn.correct { border-color: #4caf50; background: rgba(76,175,80,0.12); color: #4caf50; }
+  .fc-choice-btn.incorrect { border-color: #f85149; background: rgba(248,81,73,0.12); color: #f85149; }
+  .fc-choice-num {
+    width: 20px; height: 20px; border-radius: 50%; background: var(--surfaceAlt);
+    color: var(--textDim); font-size: 11px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .fc-choice-btn.correct .fc-choice-num, .fc-choice-btn.incorrect .fc-choice-num { background: transparent; }
+
+  /* Study mode — typed answer */
+  .fc-type-input-row { display: flex; gap: 8px; width: 100%; max-width: 500px; }
+  .fc-type-input {
+    flex: 1; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); font-size: 14px;
+    font-family: inherit; outline: none;
+  }
+  .fc-type-input:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
+  .fc-type-input:disabled { opacity: 0.6; }
+  .fc-type-submit {
+    padding: 10px 18px; border-radius: 10px; border: none; background: var(--accent);
+    color: #fff; font-size: 13px; font-weight: 600; font-family: inherit; cursor: pointer;
+  }
+  .fc-type-submit:disabled { opacity: 0.4; cursor: default; }
+  .fc-type-feedback {
+    width: 100%; max-width: 500px; padding: 12px 16px; border-radius: 10px;
+    font-size: 13px; display: flex; flex-direction: column; gap: 4px;
+  }
+  .fc-type-feedback.correct { background: rgba(76,175,80,0.12); color: #4caf50; }
+  .fc-type-feedback.incorrect { background: rgba(248,81,73,0.12); color: #f85149; }
+  .fc-type-feedback .fc-type-answer { color: var(--text); font-weight: 600; }
+  .fc-continue-btn {
+    padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border);
+    background: none; color: var(--textDim); font-size: 12px; font-family: inherit;
+    cursor: pointer;
+  }
+  .fc-continue-btn:hover { color: var(--text); border-color: var(--accent); }
+
   .fc-add-btn {
     width: 100%; padding: 10px; border: 1px dashed var(--border);
     border-radius: 10px; background: none; color: var(--textDim);
@@ -193,21 +249,25 @@ const FLASHCARD_CSS = `
   }
   .fc-audio-remove:hover { opacity: 1; color: #f85149; }
 
-  /* List mode */
+  /* List mode — Quizlet create-set inspired: numbered row, term/definition
+     side by side, caption labels below each field (not above). Visual
+     rhythm only — no colors/layout copied, just the same typographic
+     hierarchy (bigger field text, small tracked captions underneath). */
   .fc-list {
     flex: 1; overflow-y: auto; padding: 20px 22px;
   }
   .fc-list-row {
-    display: flex; align-items: flex-start; gap: 12px;
-    padding: 14px 16px; border-radius: 12px;
+    padding: 16px; border-radius: 12px;
     border: 1px solid var(--borderSubtle);
-    margin-bottom: 8px; background: var(--surface);
+    margin-bottom: 10px; background: var(--surface);
     transition: border-color 0.12s, box-shadow 0.12s;
   }
   .fc-list-row:hover { border-color: var(--border); box-shadow: 0 2px 10px rgba(0,0,0,0.18); }
-  .fc-list-status {
-    flex-shrink: 0; padding-top: 3px;
-    display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 62px;
+  .fc-list-row-hdr {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+  }
+  .fc-list-num {
+    font-size: 13px; font-weight: 700; color: var(--textDim); min-width: 18px;
   }
   .fc-list-badge {
     font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 5px;
@@ -217,25 +277,9 @@ const FLASHCARD_CSS = `
   .fc-list-badge.due { background: rgba(255,152,0,0.18); color: #ff9800; }
   .fc-list-badge.learned { background: rgba(76,175,80,0.15); color: #4caf50; }
   .fc-list-due-date {
-    font-size: 10px; color: var(--textDim); text-align: center; line-height: 1.3;
+    font-size: 10px; color: var(--textDim);
   }
-  .fc-list-color-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 1px; }
-  .fc-list-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-  .fc-list-field {
-    width: 100%; padding: 7px 10px; border-radius: 7px;
-    border: 1px solid transparent; background: transparent;
-    color: var(--text); font-size: 14px; font-family: inherit;
-    outline: none; resize: none; line-height: 1.5;
-    overflow: hidden; box-sizing: border-box;
-    transition: background 0.1s, border-color 0.1s;
-  }
-  .fc-list-field:focus { background: var(--bg); border-color: var(--focusBorder); box-shadow: var(--focusRing); }
-  .fc-list-field::placeholder { color: var(--textDim); opacity: 0.5; }
-  .fc-list-field-label {
-    font-size: 10px; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.06em; color: var(--textDim); padding: 0 10px 1px;
-  }
-  .fc-list-img { max-height: 64px; border-radius: 7px; object-fit: contain; margin: 4px 10px 6px; }
+  .fc-list-color-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
   .fc-list-del {
     background: none; border: none; color: var(--textDim); cursor: pointer;
     padding: 5px 6px; border-radius: 5px; opacity: 0; transition: opacity 0.12s;
@@ -243,6 +287,29 @@ const FLASHCARD_CSS = `
   }
   .fc-list-row:hover .fc-list-del { opacity: 0.4; }
   .fc-list-del:hover { opacity: 1 !important; color: #f85149; }
+  .fc-list-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+  }
+  @media (max-width: 620px) {
+    .fc-list-grid { grid-template-columns: 1fr; }
+  }
+  .fc-list-col { min-width: 0; display: flex; flex-direction: column; }
+  .fc-list-field {
+    width: 100%; padding: 8px 0; border: none; border-bottom: 1px solid var(--borderSubtle);
+    background: transparent;
+    color: var(--text); font-size: 16px; font-family: inherit;
+    outline: none; resize: none; line-height: 1.5;
+    overflow: hidden; box-sizing: border-box;
+    transition: border-color 0.1s;
+  }
+  .fc-list-field:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
+  .fc-list-field::placeholder { color: var(--textDim); opacity: 0.5; }
+  .fc-list-field-label {
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--textDim); padding-top: 5px;
+  }
+  .fc-list-col-tools { display: flex; align-items: center; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+  .fc-list-img { max-height: 64px; border-radius: 7px; object-fit: contain; margin-top: 8px; }
   .fc-list-section {
     font-size: 11px; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.08em; color: var(--textDim);
@@ -293,6 +360,22 @@ function AudioPlayBtn({ src }) {
   )
 }
 
+/** Static (non-flip) question face — shared by choice/type study modes,
+ * same visual language as the flip card's front/back faces. */
+function QuestionFace({ data, colorDot }) {
+  return (
+    <div className="fc-card-face fc-card-front" style={{ flexDirection: 'column', gap: 8 }}>
+      <div className="fc-card-label">{colorDot}{data.label}</div>
+      {data.html
+        ? <div className="fc-card-html" dangerouslySetInnerHTML={{ __html: data.html }} />
+        : data.text || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>Empty card</span>}
+      {!data.html && data.img && <img src={data.img} alt="" style={{ maxWidth: '70%', maxHeight: 100, borderRadius: 8, objectFit: 'contain' }} />}
+      {data.sketch && <img src={data.sketch} alt="" style={{ maxWidth: '80%', maxHeight: 80, borderRadius: 6 }} />}
+      {data.audio && <AudioPlayBtn src={data.audio} />}
+    </div>
+  )
+}
+
 /** Strip HTML tags and decode entities, extract [sound:xxx] references */
 function stripHtml(html) {
   if (!html) return { text: '', sounds: [] }
@@ -301,6 +384,33 @@ function stripHtml(html) {
   cleaned = cleaned.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '')
   const el = document.createElement('div'); el.innerHTML = cleaned
   return { text: el.textContent?.trim() || '', sounds }
+}
+
+/** Fisher-Yates shuffle, returns a new array */
+function shuffle(arr) {
+  const a = arr.slice()
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[a[i], a[j]] = [a[j], a[i]]
+  }
+  return a
+}
+
+/** Plain-text answer for one side of a card — used by choice/type study
+ * modes, which need real text to compare/display, not HTML. Falls back to
+ * stripping frontHtml/backHtml (Anki imports often only populate the HTML
+ * field) when the plain field is empty. */
+function sideText(card, isFront) {
+  if (isFront) return card.front || stripHtml(card.frontHtml || '').text
+  return card.back || stripHtml(card.backHtml || '').text
+}
+
+/** Loose equality for typed-answer grading: case/whitespace/punctuation
+ * insensitive, not a full fuzzy/Levenshtein match — "close enough" in the
+ * Quizlet sense would need more; this covers the common case (extra
+ * spaces, a trailing period, different casing) without overbuilding. */
+function normalizeAnswer(s) {
+  return (s || '').trim().toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ')
 }
 
 /** Inline media data URLs into HTML and strip [sound:] refs */
@@ -445,7 +555,7 @@ export default function FlashcardView() {
   const [mode, setMode] = useState(() => {
     const c = (flashcardDecks.find(d => d.id === deck?.id) || deck)?.cards
     return (!c || c.length === 0) ? 'list' : 'study'
-  }) // 'study' | 'edit' | 'list'
+  }) // 'study' | 'list'
   const [flipped, setFlipped] = useState(false)
   const [currentIdx, setCurrentIdx] = useState(0)
   const [title, setTitle] = useState(deck?.title || 'Untitled Deck')
@@ -453,24 +563,38 @@ export default function FlashcardView() {
   const [editingDeckTitle, setEditingDeckTitle] = useState(false)
   const titleTimeout = useRef(null)
 
+  // Choice/type study-mode answer state — reset whenever the card being
+  // studied changes (gradeAndAdvance) or the question side is flipped.
+  const [selectedOption, setSelectedOption] = useState(null)
+  const [answerText, setAnswerText] = useState('')
+  const [revealed, setRevealed] = useState(false)
+  const [wasCorrect, setWasCorrect] = useState(false)
+  const advanceTimeoutRef = useRef(null)
+
   const isMobile = useIsMobile()
+
+  const resetAnswerState = useCallback(() => {
+    setSelectedOption(null); setAnswerText(''); setRevealed(false); setWasCorrect(false)
+    if (advanceTimeoutRef.current) { clearTimeout(advanceTimeoutRef.current); advanceTimeoutRef.current = null }
+  }, [])
 
   // Mobile event bridge
   useEffect(() => {
     if (!isMobile) return
     const h = e => {
       const { cmd } = e.detail || {}
-      if (cmd === 'studyside') { setStudySide(s => s === 'front' ? 'back' : 'front'); setFlipped(false) }
-      if (cmd === 'study') { setMode('study'); setFlipped(false); setCurrentIdx(0) }
+      if (cmd === 'studyside') { setStudySide(s => s === 'front' ? 'back' : 'front'); setFlipped(false); resetAnswerState() }
+      if (cmd === 'study') { setMode('study'); setFlipped(false); setCurrentIdx(0); resetAnswerState() }
       if (cmd === 'list') setMode('list')
     }
     window.addEventListener('gnos:mobile-fc-cmd', h)
     return () => window.removeEventListener('gnos:mobile-fc-cmd', h)
-  }, [isMobile])
+  }, [isMobile, resetAnswerState])
 
   // Get the live deck from store (in case cards have been updated)
   const liveDeck = flashcardDecks.find(d => d.id === deck?.id) || deck
   const cards = liveDeck?.cards || []
+  const studyMode = liveDeck?.studyMode || 'flip' // 'flip' | 'choice' | 'type'
 
   // Due cards for study
   const now = Date.now()
@@ -479,32 +603,69 @@ export default function FlashcardView() {
   // Study card
   const studyCard = dueCards[currentIdx] || null
 
+  // Which side is the question vs. the answer, and the answer's plain text
+  // (choice/type modes need real text to compare/display, not just HTML).
+  const qFront = studySide === 'front'
+  const correctAnswerText = studyCard ? sideText(studyCard, !qFront) : ''
+
+  // Multiple-choice options: correct answer + up to 3 distractors pulled
+  // from other cards' answer-side text in this deck, shuffled once per
+  // card (not on every render/store update, so the options don't reshuffle
+  // out from under a mid-answer click — see the eslint-disable below).
+  const choiceOptions = useMemo(() => {
+    if (!studyCard || studyMode !== 'choice') return []
+    const pool = cards
+      .filter(c => c.id !== studyCard.id)
+      .map(c => sideText(c, !qFront))
+      .filter(t => t && t.trim() && t.trim() !== correctAnswerText.trim())
+    const uniqueDistractors = [...new Set(pool.map(t => t.trim()))]
+    const distractors = shuffle(uniqueDistractors).slice(0, 3)
+    return shuffle([correctAnswerText, ...distractors])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [studyCard?.id, studyMode, qFront])
+
   useEffect(() => {
     setTitle(liveDeck?.title || 'Untitled Deck')
   }, [liveDeck?.title])
 
-  // Keyboard: space/click to flip, 1-4 to rate
+  function setStudyMode(next) {
+    if (!liveDeck) return
+    updateDeck(liveDeck.id, { studyMode: next, updatedAt: new Date().toISOString() })
+    persistFlashcardDecks()
+    resetAnswerState()
+  }
+
+  // Keyboard: space/click to flip (flip mode), 1-4 to rate (flip mode) or
+  // pick an option (choice mode), any key to continue once an answer's
+  // been revealed (choice/type modes).
   useEffect(() => {
     if (mode !== 'study' || !isActivePane) return
     const handler = (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
-      if (e.code === 'Space') {
-        e.preventDefault()
-        setFlipped(f => !f)
-      }
-      if (flipped && studyCard) {
-        if (e.key === '1') rateCard(1)
-        if (e.key === '2') rateCard(2)
-        if (e.key === '3') rateCard(3)
-        if (e.key === '4') rateCard(4)
+      if (studyMode === 'flip') {
+        if (e.code === 'Space') { e.preventDefault(); setFlipped(f => !f) }
+        if (flipped && studyCard) {
+          if (e.key === '1') rateCard(1)
+          if (e.key === '2') rateCard(2)
+          if (e.key === '3') rateCard(3)
+          if (e.key === '4') rateCard(4)
+        }
+      } else if (studyMode === 'choice') {
+        if (revealed) { continueNow(); return }
+        const idx = parseInt(e.key, 10) - 1
+        if (idx >= 0 && idx < choiceOptions.length) submitChoice(choiceOptions[idx])
+      } else if (studyMode === 'type') {
+        if (revealed && e.key !== 'Enter') continueNow()
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, flipped, studyCard, currentIdx, isActivePane])
+  }, [mode, flipped, studyCard, currentIdx, isActivePane, studyMode, revealed, choiceOptions])
 
-  function rateCard(quality) {
+  /** SM-2 update + streak tracking + advance to the next due card. Shared
+   * by flip mode's manual rate buttons and choice/type's auto-grade path. */
+  function gradeAndAdvance(quality) {
     if (!studyCard || !liveDeck) return
     const updated = sm2(studyCard, quality)
     const newCards = cards.map(c => c.id === updated.id ? updated : c)
@@ -522,12 +683,45 @@ export default function FlashcardView() {
 
     updateDeck(liveDeck.id, { cards: newCards, updatedAt: new Date().toISOString(), streak, lastStudyDate: today })
     persistFlashcardDecks()
-    // Flip to the question side first (hide answer), then advance after animation completes
-    setFlipped(false)
+    // `cards`/`dueCards`/`studyCard` are derived from the store, so the
+    // displayed card already swaps to the next one the instant updateDeck
+    // lands — reset synchronously here too, or the next card would render
+    // for one tick with the previous card's revealed/selected-option state
+    // still showing (a real bug this caught live: a fresh choice-mode card
+    // briefly flashed as already-answered-wrong).
+    resetAnswerState()
     setTimeout(() => {
       const newDue = newCards.filter(c => !c.nextReview || c.nextReview <= now)
       if (currentIdx >= newDue.length) setCurrentIdx(0)
-    }, 520) // slightly longer than the 0.5s CSS transition
+    }, 520) // slightly longer than the flip card's 0.5s CSS transition
+  }
+
+  function rateCard(quality) {
+    // Flip to the question side first (hide answer), then advance.
+    setFlipped(false)
+    gradeAndAdvance(quality)
+  }
+
+  function submitChoice(optionText) {
+    if (revealed || !studyCard) return
+    const correct = optionText.trim() === correctAnswerText.trim()
+    setSelectedOption(optionText); setWasCorrect(correct); setRevealed(true)
+    advanceTimeoutRef.current = setTimeout(() => gradeAndAdvance(correct ? 3 : 1), 900)
+  }
+
+  function submitTyped() {
+    if (revealed || !studyCard || !answerText.trim()) return
+    const correct = normalizeAnswer(answerText) === normalizeAnswer(correctAnswerText)
+    setWasCorrect(correct); setRevealed(true)
+    advanceTimeoutRef.current = setTimeout(() => gradeAndAdvance(correct ? 3 : 1), correct ? 700 : 1600)
+  }
+
+  /** Skip the rest of the post-answer delay and advance immediately —
+   * mirrors Quizlet's "press any key to continue". */
+  function continueNow() {
+    if (!revealed) return
+    if (advanceTimeoutRef.current) { clearTimeout(advanceTimeoutRef.current); advanceTimeoutRef.current = null }
+    gradeAndAdvance(wasCorrect ? 3 : 1)
   }
 
   function handleTitleChange(val) {
@@ -697,7 +891,7 @@ export default function FlashcardView() {
       <style>{FLASHCARD_CSS}</style>
 
       {/* Mobile floating add card button (edit mode only) */}
-      {isMobile && (mode === 'edit' || mode === 'list') && (
+      {isMobile && mode === 'list' && (
         <button onClick={addCard} className="mobile-add-card-btn">
           <Plus size={12} strokeWidth={2.2} />
           Add Card
@@ -764,10 +958,9 @@ export default function FlashcardView() {
         <div className="fc-study">
           {studyCard ? (
             <>
-              {/* studySide='front': front face shown first; studySide='back': back face shown first */}
+              {/* studySide='front': front face shown first; studySide='back': back face shown first.
+                  "question" = the side shown first; "answer" = the side revealed/graded against. */}
               {(() => {
-                // "question" = the side shown first; "answer" = the side revealed on flip
-                const qFront = studySide === 'front'
                 const qData = qFront
                   ? { text: studyCard.front, html: studyCard.frontHtml, img: studyCard.imageUrl, sketch: studyCard.sketchUrl, audio: studyCard.audioUrl,    label: 'Front' }
                   : { text: studyCard.back,  html: studyCard.backHtml,  img: studyCard.backImageUrl,                           audio: studyCard.backAudioUrl, label: 'Back'  }
@@ -777,45 +970,101 @@ export default function FlashcardView() {
                 const cardColorDot = studyCard.color && studyCard.color !== 'transparent'
                   ? <span className="fc-card-color-dot" style={{ background: studyCard.color }} title="Card color" />
                   : null
-                return (
-                  <div className="fc-card-wrapper" onClick={() => setFlipped(f => !f)}>
-                    <div className={`fc-card-inner${flipped ? ' flipped' : ''}`}>
-                      {/* Question face (always visible when not flipped) */}
-                      <div className="fc-card-face fc-card-front" style={{ flexDirection: 'column', gap: 8 }}>
-                        <div className="fc-card-label">{cardColorDot}{qData.label}</div>
-                        {qData.html
-                          ? <div className="fc-card-html" dangerouslySetInnerHTML={{ __html: qData.html }} />
-                          : qData.text || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>Empty card</span>}
-                        {!qData.html && qData.img && <img src={qData.img} alt="" style={{ maxWidth: '70%', maxHeight: 100, borderRadius: 8, objectFit: 'contain' }} />}
-                        {qData.sketch && <img src={qData.sketch} alt="" style={{ maxWidth: '80%', maxHeight: 80, borderRadius: 6 }} />}
-                        {qData.audio && <AudioPlayBtn src={qData.audio} />}
+
+                if (studyMode === 'choice') {
+                  return (
+                    <>
+                      <div className="fc-static-card"><QuestionFace data={qData} colorDot={cardColorDot} /></div>
+                      <div className="fc-choice-list">
+                        {choiceOptions.map((opt, i) => {
+                          const isCorrect = opt.trim() === correctAnswerText.trim()
+                          const isPicked = selectedOption === opt
+                          const cls = revealed ? (isCorrect ? 'correct' : isPicked ? 'incorrect' : '') : ''
+                          return (
+                            <button key={opt + i} className={`fc-choice-btn ${cls}`} disabled={revealed} onClick={() => submitChoice(opt)}>
+                              <span className="fc-choice-num">
+                                {revealed && isCorrect ? <Check size={12} strokeWidth={2.5} /> : revealed && isPicked ? <X size={12} strokeWidth={2.5} /> : i + 1}
+                              </span>
+                              {opt}
+                            </button>
+                          )
+                        })}
                       </div>
-                      {/* Answer face — hidden until flipped to prevent sneak-peek */}
-                      <div className="fc-card-face fc-card-back" style={{ flexDirection: 'column', gap: 8, visibility: flipped ? 'visible' : 'hidden' }}>
-                        <div className="fc-card-label">{cardColorDot}{aData.label}</div>
-                        {aData.html
-                          ? <div className="fc-card-html" dangerouslySetInnerHTML={{ __html: aData.html }} />
-                          : aData.text || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>No answer</span>}
-                        {!aData.html && aData.img && <img src={aData.img} alt="" style={{ maxWidth: '70%', maxHeight: 100, borderRadius: 8, objectFit: 'contain' }} />}
-                        {aData.audio && <AudioPlayBtn src={aData.audio} />}
+                      {revealed
+                        ? <button className="fc-continue-btn" onClick={continueNow}>Continue</button>
+                        : <div className="fc-hint-text">Click an answer, or press its number</div>}
+                    </>
+                  )
+                }
+
+                if (studyMode === 'type') {
+                  return (
+                    <>
+                      <div className="fc-static-card"><QuestionFace data={qData} colorDot={cardColorDot} /></div>
+                      <div className="fc-type-input-row">
+                        <input
+                          className="fc-type-input" autoFocus disabled={revealed}
+                          value={answerText} placeholder="Type your answer…"
+                          onChange={e => setAnswerText(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); revealed ? continueNow() : submitTyped() } }}
+                        />
+                        <button className="fc-type-submit" disabled={revealed || !answerText.trim()} onClick={submitTyped}>Answer</button>
+                      </div>
+                      {revealed && (
+                        <div className={`fc-type-feedback ${wasCorrect ? 'correct' : 'incorrect'}`}>
+                          <span>{wasCorrect ? 'Correct!' : 'Not quite'}</span>
+                          {!wasCorrect && <span>Answer: <span className="fc-type-answer">{correctAnswerText || '(empty)'}</span></span>}
+                        </div>
+                      )}
+                      {revealed
+                        ? <button className="fc-continue-btn" onClick={continueNow}>Continue</button>
+                        : <div className="fc-hint-text">Type the answer and press Enter</div>}
+                    </>
+                  )
+                }
+
+                // flip (default)
+                return (
+                  <>
+                    <div className="fc-card-wrapper" onClick={() => setFlipped(f => !f)}>
+                      <div className={`fc-card-inner${flipped ? ' flipped' : ''}`}>
+                        {/* Question face (always visible when not flipped) */}
+                        <div className="fc-card-face fc-card-front" style={{ flexDirection: 'column', gap: 8 }}>
+                          <div className="fc-card-label">{cardColorDot}{qData.label}</div>
+                          {qData.html
+                            ? <div className="fc-card-html" dangerouslySetInnerHTML={{ __html: qData.html }} />
+                            : qData.text || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>Empty card</span>}
+                          {!qData.html && qData.img && <img src={qData.img} alt="" style={{ maxWidth: '70%', maxHeight: 100, borderRadius: 8, objectFit: 'contain' }} />}
+                          {qData.sketch && <img src={qData.sketch} alt="" style={{ maxWidth: '80%', maxHeight: 80, borderRadius: 6 }} />}
+                          {qData.audio && <AudioPlayBtn src={qData.audio} />}
+                        </div>
+                        {/* Answer face — hidden until flipped to prevent sneak-peek */}
+                        <div className="fc-card-face fc-card-back" style={{ flexDirection: 'column', gap: 8, visibility: flipped ? 'visible' : 'hidden' }}>
+                          <div className="fc-card-label">{cardColorDot}{aData.label}</div>
+                          {aData.html
+                            ? <div className="fc-card-html" dangerouslySetInnerHTML={{ __html: aData.html }} />
+                            : aData.text || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>No answer</span>}
+                          {!aData.html && aData.img && <img src={aData.img} alt="" style={{ maxWidth: '70%', maxHeight: 100, borderRadius: 8, objectFit: 'contain' }} />}
+                          {aData.audio && <AudioPlayBtn src={aData.audio} />}
+                        </div>
                       </div>
                     </div>
-                  </div>
+                    {flipped ? (
+                      <div className="fc-rating-bar">
+                        <button className="fc-rate-btn again" onClick={() => rateCard(1)}>Again <span style={{ fontSize: 10, opacity: 0.6 }}>(1)</span></button>
+                        <button className="fc-rate-btn hard" onClick={() => rateCard(2)}>Hard <span style={{ fontSize: 10, opacity: 0.6 }}>(2)</span></button>
+                        <button className="fc-rate-btn good" onClick={() => rateCard(3)}>Good <span style={{ fontSize: 10, opacity: 0.6 }}>(3)</span></button>
+                        <button className="fc-rate-btn easy" onClick={() => rateCard(4)}>Easy <span style={{ fontSize: 10, opacity: 0.6 }}>(4)</span></button>
+                      </div>
+                    ) : (
+                      <div className="fc-hint-text">Click card or press Space to flip</div>
+                    )}
+                  </>
                 )
               })()}
-              {flipped ? (
-                <div className="fc-rating-bar">
-                  <button className="fc-rate-btn again" onClick={() => rateCard(1)}>Again <span style={{ fontSize: 10, opacity: 0.6 }}>(1)</span></button>
-                  <button className="fc-rate-btn hard" onClick={() => rateCard(2)}>Hard <span style={{ fontSize: 10, opacity: 0.6 }}>(2)</span></button>
-                  <button className="fc-rate-btn good" onClick={() => rateCard(3)}>Good <span style={{ fontSize: 10, opacity: 0.6 }}>(3)</span></button>
-                  <button className="fc-rate-btn easy" onClick={() => rateCard(4)}>Easy <span style={{ fontSize: 10, opacity: 0.6 }}>(4)</span></button>
-                </div>
-              ) : (
-                <div className="fc-hint-text">Click card or press Space to flip</div>
-              )}
               <div style={{ fontSize: 11, color: 'var(--textDim)', textAlign: 'center' }}>
                 Card {currentIdx + 1} of {dueCards.length} due
-                {studyCard?.interval > 1 && (
+                {studyMode === 'flip' && studyCard?.interval > 1 && (
                   <div style={{ marginTop: 4, fontSize: 10, opacity: 0.7 }}>
                     Next review in ~{studyCard.interval} day{studyCard.interval !== 1 ? 's' : ''} if rated Good
                   </div>
@@ -830,7 +1079,7 @@ export default function FlashcardView() {
               <button
                 className="fc-mode-btn"
                 style={{ marginTop: 16 }}
-                onClick={() => setMode('edit')}
+                onClick={() => setMode('list')}
               >Add more cards</button>
             </div>
           )}
@@ -871,82 +1120,85 @@ export default function FlashcardView() {
             {sections.map(({ label, items, badgeClass }) => (
               <div key={label}>
                 <div className="fc-list-section">{label} ({items.length})</div>
-                {items.map(card => (
+                {items.map((card, i) => (
                   <div key={card.id} className="fc-list-row">
-                    <div className="fc-list-status">
+                    <div className="fc-list-row-hdr">
+                      <span className="fc-list-num">{i + 1}</span>
                       {card.color && card.color !== 'transparent' && <span className="fc-list-color-dot" style={{ background: card.color }} title="Card color" />}
                       <span className={`fc-list-badge ${badgeClass}`}>{label === 'Due Now' ? 'Due' : label}</span>
                       {card.nextReview > 0 && <span className="fc-list-due-date">{formatDue(card.nextReview)}</span>}
                       {card.interval > 1 && <span className="fc-list-due-date" style={{ opacity: 0.5 }}>~{card.interval}d</span>}
+                      <span style={{ flex: 1 }} />
+                      {CARD_COLORS.map(c => (
+                        <span key={c} className={`fc-color-dot${card.color === c ? ' active' : ''}`}
+                          style={{ background: c === 'transparent' ? 'var(--surfaceAlt)' : c, width: 11, height: 11 }}
+                          onClick={() => updateCard(card.id, { color: c })} />
+                      ))}
+                      <button className="fc-list-del" title="Delete card"
+                        onClick={() => { deleteCard(card.id) }}><X size={13} strokeWidth={2} /></button>
                     </div>
-                    <div className="fc-list-fields">
-                      <div className="fc-list-field-label">Front</div>
-                      <textarea
-                        className="fc-list-field"
-                        rows={1}
-                        value={card.front}
-                        placeholder="Front…"
-                        onChange={e => updateCard(card.id, { front: e.target.value })}
-                        ref={el => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' } }}
-                        onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }}
-                      />
-                      {card.imageUrl && (
-                        <div style={{ position:'relative', display:'inline-block' }}>
-                          <img className="fc-list-img" src={card.imageUrl} alt="" />
-                          <button onClick={() => updateCard(card.id, { imageUrl: '' })}
-                            style={{ position:'absolute', top:2, right:2, width:16, height:16, borderRadius:8, background:'rgba(0,0,0,0.55)', border:'none', color:'#fff', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}><X size={9} strokeWidth={2.5} /></button>
+                    <div className="fc-list-grid">
+                      <div className="fc-list-col">
+                        <textarea
+                          className="fc-list-field"
+                          rows={1}
+                          value={card.front}
+                          placeholder="Front…"
+                          onChange={e => updateCard(card.id, { front: e.target.value })}
+                          ref={el => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' } }}
+                          onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }}
+                        />
+                        <div className="fc-list-field-label">Front</div>
+                        {card.imageUrl && (
+                          <div style={{ position:'relative', display:'inline-block' }}>
+                            <img className="fc-list-img" src={card.imageUrl} alt="" />
+                            <button onClick={() => updateCard(card.id, { imageUrl: '' })}
+                              style={{ position:'absolute', top:10, right:2, width:16, height:16, borderRadius:8, background:'rgba(0,0,0,0.55)', border:'none', color:'#fff', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}><X size={9} strokeWidth={2.5} /></button>
+                          </div>
+                        )}
+                        {card.audioUrl && (
+                          <div className="fc-audio-row">
+                            <AudioPlayBtn src={card.audioUrl} />
+                            <span className="fc-audio-label">Front audio</span>
+                            <button className="fc-audio-remove" onClick={() => updateCard(card.id, { audioUrl: '' })}><X size={11} strokeWidth={2.2} /></button>
+                          </div>
+                        )}
+                        <div className="fc-list-col-tools">
+                          <ImageUploadBtn label="Image" onUpload={url => updateCard(card.id, { imageUrl: url })} />
+                          <AudioUploadBtn label="Audio" onUpload={url => updateCard(card.id, { audioUrl: url })} />
                         </div>
-                      )}
-                      {card.audioUrl && (
-                        <div className="fc-audio-row">
-                          <AudioPlayBtn src={card.audioUrl} />
-                          <span className="fc-audio-label">Front audio</span>
-                          <button className="fc-audio-remove" onClick={() => updateCard(card.id, { audioUrl: '' })}><X size={11} strokeWidth={2.2} /></button>
-                        </div>
-                      )}
-                      <div style={{ display:'flex', gap:4, marginTop:3 }}>
-                        <ImageUploadBtn label="Image" onUpload={url => updateCard(card.id, { imageUrl: url })} />
-                        <AudioUploadBtn label="Audio" onUpload={url => updateCard(card.id, { audioUrl: url })} />
                       </div>
-                      <div className="fc-list-field-label" style={{ marginTop:6 }}>Back</div>
-                      <textarea
-                        className="fc-list-field"
-                        rows={1}
-                        value={card.back}
-                        placeholder="Back…"
-                        onChange={e => updateCard(card.id, { back: e.target.value })}
-                        ref={el => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' } }}
-                        onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }}
-                      />
-                      {card.backImageUrl && (
-                        <div style={{ position:'relative', display:'inline-block' }}>
-                          <img className="fc-list-img" src={card.backImageUrl} alt="" />
-                          <button onClick={() => updateCard(card.id, { backImageUrl: '' })}
-                            style={{ position:'absolute', top:2, right:2, width:16, height:16, borderRadius:8, background:'rgba(0,0,0,0.55)', border:'none', color:'#fff', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}><X size={9} strokeWidth={2.5} /></button>
+                      <div className="fc-list-col">
+                        <textarea
+                          className="fc-list-field"
+                          rows={1}
+                          value={card.back}
+                          placeholder="Back…"
+                          onChange={e => updateCard(card.id, { back: e.target.value })}
+                          ref={el => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' } }}
+                          onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }}
+                        />
+                        <div className="fc-list-field-label">Back</div>
+                        {card.backImageUrl && (
+                          <div style={{ position:'relative', display:'inline-block' }}>
+                            <img className="fc-list-img" src={card.backImageUrl} alt="" />
+                            <button onClick={() => updateCard(card.id, { backImageUrl: '' })}
+                              style={{ position:'absolute', top:10, right:2, width:16, height:16, borderRadius:8, background:'rgba(0,0,0,0.55)', border:'none', color:'#fff', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}><X size={9} strokeWidth={2.5} /></button>
+                          </div>
+                        )}
+                        {card.backAudioUrl && (
+                          <div className="fc-audio-row">
+                            <AudioPlayBtn src={card.backAudioUrl} />
+                            <span className="fc-audio-label">Back audio</span>
+                            <button className="fc-audio-remove" onClick={() => updateCard(card.id, { backAudioUrl: '' })}><X size={11} strokeWidth={2.2} /></button>
+                          </div>
+                        )}
+                        <div className="fc-list-col-tools">
+                          <ImageUploadBtn label="Image" onUpload={url => updateCard(card.id, { backImageUrl: url })} />
+                          <AudioUploadBtn label="Audio" onUpload={url => updateCard(card.id, { backAudioUrl: url })} />
                         </div>
-                      )}
-                      {card.backAudioUrl && (
-                        <div className="fc-audio-row">
-                          <AudioPlayBtn src={card.backAudioUrl} />
-                          <span className="fc-audio-label">Back audio</span>
-                          <button className="fc-audio-remove" onClick={() => updateCard(card.id, { backAudioUrl: '' })}><X size={11} strokeWidth={2.2} /></button>
-                        </div>
-                      )}
-                      <div style={{ display:'flex', gap:4, marginTop:3 }}>
-                        <ImageUploadBtn label="Image" onUpload={url => updateCard(card.id, { backImageUrl: url })} />
-                        <AudioUploadBtn label="Audio" onUpload={url => updateCard(card.id, { backAudioUrl: url })} />
-                      </div>
-                      {/* Color picker */}
-                      <div style={{ display:'flex', gap:5, marginTop:6, alignItems:'center' }}>
-                        {CARD_COLORS.map(c => (
-                          <span key={c} className={`fc-color-dot${card.color === c ? ' active' : ''}`}
-                            style={{ background: c === 'transparent' ? 'var(--surfaceAlt)' : c, width:12, height:12 }}
-                            onClick={() => updateCard(card.id, { color: c })} />
-                        ))}
                       </div>
                     </div>
-                    <button className="fc-list-del" title="Delete card"
-                      onClick={() => { deleteCard(card.id) }}><X size={13} strokeWidth={2} /></button>
                   </div>
                 ))}
               </div>
@@ -957,109 +1209,6 @@ export default function FlashcardView() {
           </div>
         )
       })()}
-
-      {/* Edit Mode — card viewport */}
-      {mode === 'edit' && (
-        <div className="fc-edit" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: cards.length ? 'center' : 'flex-start', gap: 16, paddingTop: 24 }}>
-          {cards.length > 0 && (() => {
-            const editIdx = Math.min(currentIdx, cards.length - 1)
-            const card = cards[editIdx]
-            if (!card) return null
-            return (
-              <>
-                {/* Card navigation */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <button className="fc-mode-btn" style={{ display: 'inline-flex', alignItems: 'center' }} onClick={() => setCurrentIdx(Math.max(0, editIdx - 1))} disabled={editIdx === 0}><ChevronLeft size={13} strokeWidth={2} /></button>
-                  <span style={{ fontSize: 12, color: 'var(--textDim)' }}>Card {editIdx + 1} of {cards.length}</span>
-                  <button className="fc-mode-btn" style={{ display: 'inline-flex', alignItems: 'center' }} onClick={() => setCurrentIdx(Math.min(cards.length - 1, editIdx + 1))} disabled={editIdx >= cards.length - 1}><ChevronRight size={13} strokeWidth={2} /></button>
-                </div>
-                {/* Editable card viewport */}
-                <div style={{ width: '100%', maxWidth: 780, display: 'flex', flexDirection: 'column', gap: 16 }}>
-                  {/* Front face — notecard proportions */}
-                  <div className="fc-card-face fc-card-front" style={{
-                    position: 'relative', minHeight: 200, aspectRatio: '5/3', flexDirection: 'column', gap: 8,
-                    borderTop: '3px solid var(--accent)',
-                  }}>
-                    <div className="fc-card-label">
-                      {card.color && card.color !== 'transparent' && <span className="fc-card-color-dot" style={{ background: card.color }} title="Card color" />}
-                      Front
-                    </div>
-                    <textarea className="fc-card-input" placeholder="Front (question)..."
-                      value={card.front} onChange={e => updateCard(card.id, { front: e.target.value })}
-                      style={{ background: 'transparent', border: 'none', textAlign: 'center', fontSize: 18, fontWeight: 500, resize: 'none', minHeight: 80, fontFamily: "'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif" }} />
-                    {card.imageUrl && (
-                      <div style={{ position: 'relative', display: 'inline-block' }}>
-                        <img src={card.imageUrl} alt="" style={{ maxWidth: '80%', maxHeight: 120, borderRadius: 8, objectFit: 'contain' }} />
-                        <button onClick={() => updateCard(card.id, { imageUrl: '' })}
-                          style={{ position: 'absolute', top: 2, right: 2, width: 20, height: 20, borderRadius: 10, background: 'rgba(0,0,0,0.5)', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={11} strokeWidth={2.5} /></button>
-                      </div>
-                    )}
-                    {card.audioUrl && (
-                      <div className="fc-audio-row">
-                        <AudioPlayBtn src={card.audioUrl} />
-                        <span className="fc-audio-label">Audio attached</span>
-                        <button className="fc-audio-remove" onClick={() => updateCard(card.id, { audioUrl: '' })}><X size={11} strokeWidth={2.2} /></button>
-                      </div>
-                    )}
-                    <div style={{ position: 'absolute', bottom: 8, right: 8, display: 'flex', gap: 4 }}>
-                      <AudioUploadBtn label="Audio" onUpload={url => updateCard(card.id, { audioUrl: url })} />
-                      <ImageUploadBtn label="Image" onUpload={url => updateCard(card.id, { imageUrl: url })} />
-                    </div>
-                  </div>
-                  {/* Back face — notecard proportions */}
-                  <div className="fc-card-face fc-card-back" style={{
-                    position: 'relative', minHeight: 200, aspectRatio: '5/3', flexDirection: 'column', gap: 8, transform: 'none',
-                    borderTop: '3px solid var(--textDim)',
-                  }}>
-                    <div className="fc-card-label">
-                      {card.color && card.color !== 'transparent' && <span className="fc-card-color-dot" style={{ background: card.color }} title="Card color" />}
-                      Back
-                    </div>
-                    <textarea className="fc-card-input" placeholder="Back (answer)..."
-                      value={card.back} onChange={e => updateCard(card.id, { back: e.target.value })}
-                      style={{ background: 'transparent', border: 'none', textAlign: 'center', fontSize: 18, fontWeight: 500, resize: 'none', minHeight: 80, fontFamily: "'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif" }} />
-                    {card.backImageUrl && (
-                      <div style={{ position: 'relative', display: 'inline-block' }}>
-                        <img src={card.backImageUrl} alt="" style={{ maxWidth: '80%', maxHeight: 120, borderRadius: 8, objectFit: 'contain' }} />
-                        <button onClick={() => updateCard(card.id, { backImageUrl: '' })}
-                          style={{ position: 'absolute', top: 2, right: 2, width: 20, height: 20, borderRadius: 10, background: 'rgba(0,0,0,0.5)', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={11} strokeWidth={2.5} /></button>
-                      </div>
-                    )}
-                    {card.backAudioUrl && (
-                      <div className="fc-audio-row">
-                        <AudioPlayBtn src={card.backAudioUrl} />
-                        <span className="fc-audio-label">Audio attached</span>
-                        <button className="fc-audio-remove" onClick={() => updateCard(card.id, { backAudioUrl: '' })}><X size={11} strokeWidth={2.2} /></button>
-                      </div>
-                    )}
-                    <div style={{ position: 'absolute', bottom: 8, right: 8, display: 'flex', gap: 4 }}>
-                      <AudioUploadBtn label="Audio" onUpload={url => updateCard(card.id, { backAudioUrl: url })} />
-                      <ImageUploadBtn label="Image" onUpload={url => updateCard(card.id, { backImageUrl: url })} />
-                    </div>
-                  </div>
-                </div>
-                {/* Color + delete row */}
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center', maxWidth: 500, width: '100%' }}>
-                  {CARD_COLORS.map(c => (
-                    <span key={c} className={`fc-color-dot${card.color === c ? ' active' : ''}`}
-                      style={{ background: c === 'transparent' ? 'var(--surfaceAlt)' : c }}
-                      onClick={() => updateCard(card.id, { color: c })} />
-                  ))}
-                  <span style={{ flex: 1 }} />
-                  <button className="fc-mode-btn" style={{ color: '#f85149', borderColor: '#f85149' }}
-                    onClick={() => { deleteCard(card.id); setCurrentIdx(Math.max(0, editIdx - 1)) }}>Delete</button>
-                </div>
-              </>
-            )
-          })()}
-          {!isMobile && (
-            <button className="fc-add-btn" style={{ maxWidth: 500 }} onClick={addCard}>+ Add Card</button>
-          )}
-          {cards.length === 0 && (
-            <button className="fc-add-btn" style={{ maxWidth: 500 }} onClick={handleImport}>↑ Import CSV / Anki deck</button>
-          )}
-        </div>
-      )}
 
       {/* ── Footer — stats, flip direction, mode switch ── */}
       {!isMobile && (
@@ -1073,20 +1222,33 @@ export default function FlashcardView() {
           </div>
           <div style={{ flex: 1 }} />
           {mode === 'study' && (
-            <button
-              className="fc-mode-btn"
-              title={studySide === 'front' ? 'Studying Front→Back (click to flip to Back→Front)' : 'Studying Back→Front (click to flip to Front→Back)'}
-              onClick={() => { setStudySide(s => s === 'front' ? 'back' : 'front'); setFlipped(false) }}
-              style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-            >
-              {studySide === 'front'
-                ? <SquareArrowRight size={13} strokeWidth={1.5} />
-                : <SquareArrowLeft size={13} strokeWidth={1.5} />}
-              {studySide === 'front' ? 'Front first' : 'Back first'}
-            </button>
+            <>
+              <div className="fc-study-mode-toggle">
+                <button className={`fc-study-mode-btn${studyMode === 'flip' ? ' active' : ''}`} title="Flip cards" onClick={() => setStudyMode('flip')}>
+                  <Layers size={12} strokeWidth={2} /> Cards
+                </button>
+                <button className={`fc-study-mode-btn${studyMode === 'choice' ? ' active' : ''}`} title="Multiple choice" onClick={() => setStudyMode('choice')}>
+                  <ListChecks size={12} strokeWidth={2} /> Choice
+                </button>
+                <button className={`fc-study-mode-btn${studyMode === 'type' ? ' active' : ''}`} title="Type the answer" onClick={() => setStudyMode('type')}>
+                  <Keyboard size={12} strokeWidth={2} /> Type
+                </button>
+              </div>
+              <button
+                className="fc-mode-btn"
+                title={studySide === 'front' ? 'Studying Front→Back (click to flip to Back→Front)' : 'Studying Back→Front (click to flip to Front→Back)'}
+                onClick={() => { setStudySide(s => s === 'front' ? 'back' : 'front'); setFlipped(false); resetAnswerState() }}
+                style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+              >
+                {studySide === 'front'
+                  ? <SquareArrowRight size={13} strokeWidth={1.5} />
+                  : <SquareArrowLeft size={13} strokeWidth={1.5} />}
+                {studySide === 'front' ? 'Front first' : 'Back first'}
+              </button>
+            </>
           )}
-          <button className={`fc-mode-btn${mode === 'study' ? ' active' : ''}`} onClick={() => { setMode('study'); setFlipped(false); setCurrentIdx(0) }}>Study</button>
-          <button className={`fc-mode-btn${mode === 'list' || mode === 'edit' ? ' active' : ''}`} onClick={() => setMode('list')}>Edit</button>
+          <button className={`fc-mode-btn${mode === 'study' ? ' active' : ''}`} onClick={() => { setMode('study'); setFlipped(false); setCurrentIdx(0); resetAnswerState() }}>Study</button>
+          <button className={`fc-mode-btn${mode === 'list' ? ' active' : ''}`} onClick={() => setMode('list')}>Edit</button>
         </div>
       )}
     </div>
