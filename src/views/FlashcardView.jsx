@@ -110,7 +110,7 @@ const FLASHCARD_CSS = `
   .fc-card-label {
     position: absolute; top: 10px; left: 14px;
     font-size: 10px; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.08em; color: var(--textDim); opacity: 0.6;
+    letter-spacing: 0.08em; color: var(--textDim);
     display: flex; align-items: center; gap: 5px;
   }
   .fc-card-color-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; opacity: 1; }
@@ -141,7 +141,7 @@ const FLASHCARD_CSS = `
   .fc-rate-btn.easy { border-color: #2196f3; color: #2196f3; }
   .fc-rate-btn.easy:hover { background: rgba(33,150,243,0.1); }
   .fc-hint-text {
-    font-size: 12px; color: var(--textDim); opacity: 0.7;
+    font-size: 12px; color: var(--textDim);
   }
   /* Reserved height for the flip card's hint-text/rating-bar row, so
      flipping doesn't change .fc-study's total content height and shift

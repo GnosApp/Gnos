@@ -1,5 +1,47 @@
 # UI Changes — July 2026 pass
 
+## A132. Dark-mode contrast pass on FlashcardView.jsx — compounded-opacity fix
+
+User asked to check dark mode for reading/visibility issues on buttons and
+such. Computed real WCAG contrast ratios against the app's actual *runtime*
+theme tokens — `getComputedStyle` on `document.documentElement`, not the
+static `global.css` fallback values, since `src/lib/themes.js`'s JS theme
+system overrides several of them on load (`--textDim` is `#8b949e` live for
+the dark theme, not `global.css`'s `#6e7681` fallback — using the wrong one
+would have under- or over-stated every ratio below).
+
+**Fixed**: two spots stacked an extra CSS `opacity` on top of `--textDim`,
+each landing well below the app's own established baseline for meta/label
+text elsewhere (which use `--textDim` alone, no extra dimming):
+- `.fc-card-label` (the "FRONT"/"BACK" tag on flip cards) — `opacity: 0.6` →
+  removed. Was 2.19:1 against the static fallback token (worse still against
+  some surface pairings); now 5.62:1 against the real live token.
+- `.fc-hint-text` ("Click card or press Space to flip" and the choice/type
+  mode hint lines — actual instructional copy, not decorative) —
+  `opacity: 0.7` → removed. Was 2.63:1; now 6.15:1.
+
+Left `.fc-list-due-date`'s `opacity: 0.5` (the "~Xd" interval note) and the
+rating buttons' `(1)`/`(2)`/etc. keyboard-hint opacity alone — both are
+genuinely tertiary/supplementary to an already-fully-visible primary element
+next to them, not something a user needs to read to use the feature.
+
+**Flagged, not fixed — needs a call, not mine to make silently**: white text
+on the `--accent` blue background (`.fc-mode-btn.active`, e.g. the active
+"Edit" pill) measures **3.34:1**, below AA's 4.5:1 for normal-size text (it
+does clear the 3:1 UI-component-boundary threshold). This is a base
+design-token pairing (`--accent` + white), used for active-pill buttons
+across probably dozens of components app-wide — not something scoped to a
+file this pass touched, and fixing it (darken accent, or switch to a
+non-white active-state text color) would visibially shift many other views.
+Surfacing for a decision rather than changing unilaterally.
+
+**Verified live**: real dark-theme runtime tokens read via `getComputedStyle`
+before and after: `.fc-card-label` and `.fc-hint-text` computed `opacity: 1`
+post-fix, screenshot confirms both read clearly now. `npx eslint`/
+`npx vite build` clean against baseline (one earlier `vite build` run failed
+transient — a concurrent session was also writing to `dist/` at the same
+moment; re-ran clean).
+
 ## A131. SketchbookView.jsx — first real audit; found + fixed a real dead-button bug
 
 Per PLAN_POPUP_REVAMP.md's open item. Grepped for `position:'fixed'` overlays
