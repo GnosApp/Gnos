@@ -1,10 +1,14 @@
-/* Minimal, self-contained token set for the web guest client — deliberately
- * NOT src/styles/global.css (3500+ lines, coupled to the desktop app shell:
- * titlebar chrome, every view's own styling, light/dark theme machinery none
- * of which this single-purpose page needs). Dark-only, values match the
- * desktop app's own dark theme defaults (src/styles/global.css :root) so a
- * guest's note doesn't look like a visually unrelated product, but nothing
- * here is wired to the app's live theme switcher — this page never sees it.
+/* Self-contained token set for the web guest client — deliberately NOT
+ * src/styles/global.css (3500+ lines, coupled to the desktop app shell:
+ * titlebar chrome, every view's own styling, the full theme-picker
+ * machinery none of which this single-purpose page needs). Values below
+ * match the desktop app's own `dark`/`light` entries in src/lib/themes.js
+ * exactly, so a guest's note doesn't look like a visually unrelated
+ * product — but this page runs its OWN light/dark toggle
+ * (GuestApp.jsx/collab.html's pre-paint script), not the app's live theme
+ * switcher, which this page never sees. `[data-theme]` on <html> is set by
+ * that toggle; `:root` (no attribute) is the default, dark, matching the
+ * old dark-only behavior for anyone who's never touched the toggle.
  */
 :root {
   --bg: #0d1117;
@@ -24,12 +28,30 @@
   --gnos-collab-cache-bust: 1;
 }
 
+:root[data-theme="light"] {
+  --bg: #f6f8fa;
+  --surface: #ffffff;
+  --surfaceAlt: #f0f2f4;
+  --border: #d0d7de;
+  --borderSubtle: #e8ebed;
+  --text: #1f2328;
+  --textDim: #636c76;
+  --accent: #0969da;
+}
+
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
+/* iOS Safari's address bar eats into `100vh` (it's the LAYOUT viewport,
+ * not what's actually visible), which used to squash/clip this page's
+ * centered screens on mobile. `100dvh` tracks the real visible height;
+ * declared second so browsers that understand it use it, and everything
+ * else quietly keeps the `100vh` fallback above it. */
+.gm-vh { height: 100vh; height: 100dvh; }
 body {
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  transition: background .15s, color .15s;
 }
 
 /* Preview mode (renderMarkdown.js) — same centered-column rhythm as
@@ -47,5 +69,1842 @@ body {
 .gm-prose ul, .gm-prose ol { margin: 0.9em 0; padding-left: 1.5em; }
 .gm-prose li { margin: 0.3em 0; }
 .gm-prose hr { border: none; border-top: 1px solid var(--border); margin: 2em 0; }
-.gm-img { max-width: 100%; display: block; margin: 10px 0; border-radius: 6px; }
-.gm-imgph { display: inline-block; padding: 6px 10px; border: 1px dashed var(--border); border-radius: 6px; color: var(--textDim); font-size: 0.85em; }
+/* `.gm-img`/`.gm-imgph` — removed 2026-08-19 (§18.7 "Phase E"): were
+ * renderMarkdown.js's own image classes, deleted along with that file once
+ * Preview mode switched to the real renderer, which emits `.nb-img` (styled
+ * further down, in the ported widget-zoo CSS) instead. */
+
+/* Mobile pass — Preview mode's padding was fixed at the desktop notebook's
+ * own 48px gutter (CollabEditor.jsx's `notebookTheme()` already switched to
+ * a `clamp()` for the CM6 editor itself; `.gm-prose` is plain CSS, not a
+ * CM6 theme object, so it gets a real media query instead). Toolbar icon
+ * buttons grow slightly for touch — 30px is under the ~44px target most
+ * mobile guidelines call for; can't go all the way to 44 without crowding
+ * four buttons on a narrow screen, so this splits the difference. */
+@media (max-width: 520px) {
+  .gm-prose { padding: 22px 18px 30vh; }
+  .gm-prose h1 { font-size: 1.5em; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Widget-zoo CSS — ported verbatim from NotebookView.jsx's own `CSS` template
+   literal (PLAN_CONCURRENCY.md §18.6 "Phase D", 2026-08-19). Scoped under
+   `.nb-root` (GuestApp.jsx's connected-session container carries that class
+   now) so every `.cm-*` selector CollabEditor.jsx's newly-ported widget zoo
+   emits actually has matching styles, not just correct DOM structure.
+
+   Extracted mechanically (a line-range copy, not retyped), confirmed
+   interpolation-free before the move — this is pure static CSS, no JS
+   template substitution, safe to lift verbatim. `NotebookView.jsx`'s own
+   per-theme color derivation (`THEME_CSS`, built from `THEME_SYNTAX` — six
+   named color themes, a bigger feature than this page's own plain light/dark
+   toggle) was deliberately NOT ported: the `.nb-root` block below already
+   defines working fallback values for every `--nb-*-color` custom property
+   (`var(--text)`/`var(--accent)`/`var(--textDim)`, resolved against THIS
+   page's own theme vars), so the widgets render fully, correctly, and
+   legibly without it — just with this page's one accent color for
+   bold/italic/headings/etc. instead of six selectable palettes. A real,
+   smaller follow-up if per-theme parity is ever wanted; not a correctness
+   gap today.
+   ══════════════════════════════════════════════════════════════════════════ */
+    /* ── KaTeX theming ─────────────────────────────────── */
+    .katex { color: var(--text) !important; font-size: 1.05em; }
+    .katex-display { margin: 0.4em 0 !important; }
+    .katex-display > .katex { color: var(--text) !important; }
+
+    /* ── MathQuill / KaTeX ─────────────────────────────── */
+    .mq-math-mode { color: var(--text) !important; }
+    .mq-root-block, .mq-math-mode * { font-family: 'KaTeX_Main', 'Times New Roman', serif !important; }
+    @keyframes vm-drop { from{opacity:0;transform:translateY(-6px) scale(.96)} to{opacity:1;transform:none} }
+
+    /* ── Light-mode selection fix ──────────────────────── */
+    .nb-root ::selection { background: var(--nb-sel, color-mix(in srgb, var(--accent) 28%, transparent)); }
+    [data-theme="light"] .nb-root, .light .nb-root { --nb-sel: rgba(9,105,218,0.22); }
+
+    /* ══════════════════════════════════════════════════════
+       SHARED PROSE VARIABLES
+       Both live and preview inherit these so typography
+       is controlled from one place.
+    ══════════════════════════════════════════════════════ */
+    .nb-root {
+      --nb-fs:   15px;
+      --nb-lh:   1.8;
+      --nb-ff:   'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif;
+      --nb-max:  780px;
+      --nb-px:   48px;
+      --nb-py:   28px;
+      --nb-color: var(--readerText, var(--text));
+      --nb-h1: 1.7em; --nb-h2: 1.4em; --nb-h3: 1.15em;
+      --nb-h4: 1.05em; --nb-h5: 0.95em; --nb-h6: 0.88em;
+      --nb-para-gap: 0.72em;
+      /* ── Syntax color palette — defaults, overridden per-theme below ── */
+      --nb-bold-color:     var(--text);
+      --nb-italic-color:   var(--accent);
+      --nb-strike-color:   var(--textDim);
+      --nb-h1-color:       var(--text);
+      --nb-h2-color:       var(--text);
+      --nb-h3-color:       var(--text);
+      --nb-h4-color:       var(--text);
+      --nb-h5-color:       var(--text);
+      --nb-h6-color:       var(--text);
+      --nb-quote-color:    var(--textDim);
+      --nb-quote-bg:       transparent;
+      --nb-quote-border:   var(--accent);
+      --nb-link-color:     var(--accent);
+      --nb-wikilink-color: var(--accent);
+      --nb-hl-bg:          rgba(210,153,34,.28);
+      --nb-code-color:     var(--accent);
+      --nb-code-bg:        color-mix(in srgb, var(--accent) 12%, transparent);
+    }
+
+    /* ── CM host ───────────────────────────────────────── */
+    .nb-cm { flex:1; overflow:hidden; position:relative; display:flex; flex-direction:column; }
+    .nb-cm .cm-editor { height:100%; flex:1; }
+    .nb-cm .cm-scroller { padding: var(--nb-py) 0 60px; box-sizing:border-box; overflow-x: hidden; overflow-y: auto; }
+    .nb-cm .cm-content {
+      max-width: var(--nb-max); margin: 0 auto;
+      padding: 0 var(--nb-px);
+      box-sizing: border-box; width: 100%;
+      font-family: var(--nb-ff);
+      font-size: var(--nb-fs);
+      line-height: var(--nb-lh);
+      color: var(--nb-color);
+    }
+    .nb-cm .cm-line { padding: 0; min-height: calc(var(--nb-fs) * var(--nb-lh)); }
+    /* Blank lines between paragraphs get the right rhythm */
+    .nb-cm .cm-line:empty { min-height: 0.5em; }
+    .nb-cm .cm-placeholder { color:var(--textDim); opacity:.45; }
+    /* Collapse widget buffer gaps without hiding from layout — display:none breaks block widget height */
+    .cm-widgetBuffer { height: 0 !important; overflow: hidden; pointer-events: none; }
+    /* Hide cursor on lines that contain only block widgets */
+    .nb-cm .cm-line:has(.cm-timer-widget),
+    .nb-cm .cm-line:has(.cm-pomo-widget),
+    .nb-cm .cm-line:has(.cm-todo-block-w),
+    .nb-cm .cm-line:has(.cm-task-board-w),
+    .nb-cm .cm-line:has(.cm-calendar-widget),
+    .nb-cm .cm-line:has(.cm-table-wrap),
+    .nb-cm .cm-line:has(.cm-img-wrap) {
+      caret-color: transparent;
+    }
+
+    /* ── Preview mode — hide cursor, disable interaction ── */
+    .nb-preview .cm-content { caret-color: transparent; user-select: none; -webkit-user-select: none; pointer-events: none; cursor: default; }
+    .nb-preview .cm-cursor, .nb-preview .cm-cursor-primary { display: none !important; }
+    .nb-preview .cm-selectionBackground { display: none !important; }
+
+    /* ── Source mode — same visual classes as live, no hiding ── */
+    .nb-source .cm-lv-h1 { font-size: var(--nb-h1); font-weight: 600; line-height: 1.25; font-family: 'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif; color: var(--nb-h1-color); padding-top: 0.4em; padding-bottom: 0.1em; letter-spacing: -0.3px; }
+    .nb-source .cm-lv-h2 { font-size: var(--nb-h2); font-weight: 600; line-height: 1.3; font-family: 'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif; color: var(--nb-h2-color); padding-top: 0.35em; padding-bottom: 0.1em; letter-spacing: -0.2px; }
+    .nb-source .cm-lv-h3 { font-size: var(--nb-h3); font-weight: 600; line-height: 1.4; color: var(--nb-h3-color); font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif; padding-top: 0.3em; }
+    .nb-source .cm-lv-h4 { font-size: var(--nb-h4); font-weight: 600; color: var(--nb-h4-color); font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif; }
+    .nb-source .cm-lv-h5 { font-size: var(--nb-h5); font-weight: 600; color: var(--nb-h5-color); font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif; }
+    .nb-source .cm-lv-h6 { font-size: var(--nb-h6); font-weight: 600; opacity:.65; color: var(--nb-h6-color); font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif; }
+    .nb-source .cm-lv-b   { font-weight:700; color: var(--nb-bold-color); }
+    .nb-source .cm-lv-i   { font-style:italic; color: var(--nb-italic-color); }
+    .nb-source .cm-lv-s   { text-decoration:line-through; opacity:.75; color: var(--nb-strike-color); }
+    .nb-source .cm-lv-c   { font-family: SF Mono,Menlo,Consolas,monospace; font-size:.87em; background: var(--nb-code-bg); border-radius:4px; padding:1px 4px; color: var(--nb-code-color); }
+    .nb-source .cm-lv-lnk { color: var(--nb-link-color); text-decoration:underline; text-underline-offset:2px; }
+    .nb-source .cm-lv-hl  { background: var(--nb-hl-bg); border-radius:2px; padding:0 2px; }
+    .nb-source .cm-lv-bq  { border-left: 3px solid var(--nb-quote-border); padding-left: 14px; color: var(--nb-quote-color); background: var(--nb-quote-bg); font-style: italic; }
+    .nb-source .cm-lv-cb  { background: var(--surfaceAlt); font-family: SF Mono,Menlo,Consolas,monospace; font-size:.87em; padding: 0 8px; border-radius: 3px; color: var(--text); }
+
+    /* ── Hidden syntax markers (Obsidian style — font-size:0 not replace) ── */
+    .nb-live .cm-lv-hidden {
+      font-size: 0 !important;
+      line-height: 0 !important;
+      display: inline-block;
+      width: 0;
+      overflow: hidden;
+    }
+
+    /* ── Inline styled spans ({color:X}, {font:X}, {spacing:X}) ── */
+    .cm-inline-styled { /* styles applied via inline style attribute */ }
+
+    /* ══════════════════════════════════════════════════════
+       LIVE VIEW — line-level class decorations
+       These must match the .nb-prev selectors exactly.
+    ══════════════════════════════════════════════════════ */
+
+    /* Heading fold arrow — parked in the left gutter, out of the text flow, so
+       every heading's text lines up with the body text and the arrows form one
+       consistent column regardless of heading level (was inline, shifting each
+       heading right by the arrow's width). */
+    .nb-live .cm-line.cm-lv-h1,
+    .nb-live .cm-line.cm-lv-h2,
+    .nb-live .cm-line.cm-lv-h3,
+    .nb-live .cm-line.cm-lv-h4,
+    .nb-live .cm-line.cm-lv-h5,
+    .nb-live .cm-line.cm-lv-h6 { position: relative; }
+    .cm-fold-arrow {
+      position: absolute; left: -22px; top: 0; bottom: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 16px; height: 100%;
+      color: var(--textDim); cursor: pointer; border-radius: 3px;
+      transition: transform .12s ease, color .12s, background .12s;
+    }
+    .cm-fold-arrow svg { transition: transform .12s ease; }
+    .cm-fold-arrow.cm-fold-arrow-open svg { transform: rotate(90deg); }
+    .cm-fold-arrow:hover { color: var(--text); background: var(--surfaceAlt); }
+    /* Narrow the gutter reach on small screens so the arrow doesn't clip out */
+    @media (max-width: 640px) { .cm-fold-arrow { left: -18px; } }
+
+    /* Headings — weight, size, rhythm identical to preview */
+    .nb-live .cm-lv-h1 {
+      font-size: var(--nb-h1); font-weight: 600; line-height: 1.25;
+      font-family: 'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif; color: var(--nb-h1-color);
+      margin-top: 0; padding-top: 0.4em; padding-bottom: 0.1em;
+      letter-spacing: -0.3px;
+    }
+    .nb-live .cm-lv-h2 {
+      font-size: var(--nb-h2); font-weight: 600; line-height: 1.3;
+      font-family: 'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif; color: var(--nb-h2-color);
+      padding-top: 0.35em; padding-bottom: 0.1em;
+      letter-spacing: -0.2px;
+    }
+    .nb-live .cm-lv-h3 {
+      font-size: var(--nb-h3); font-weight: 600; line-height: 1.4; color: var(--nb-h3-color);
+      font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif;
+      padding-top: 0.3em;
+    }
+    .nb-live .cm-lv-h4 { font-size: var(--nb-h4); font-weight: 600; color: var(--nb-h4-color); font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif; }
+    .nb-live .cm-lv-h5 { font-size: var(--nb-h5); font-weight: 600; color: var(--nb-h5-color); font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif; }
+    .nb-live .cm-lv-h6 { font-size: var(--nb-h6); font-weight: 600; opacity:.65; color: var(--nb-h6-color); font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif; }
+
+    /* Inline formats — exact match to preview */
+    .nb-live .cm-lv-b  { font-weight:700; color: var(--nb-bold-color); }
+    .nb-live .cm-lv-i  { font-style:italic; color: var(--nb-italic-color); }
+    .nb-live .cm-lv-bi { font-weight:700; font-style:italic; color: var(--nb-bi-color); }
+    .nb-live .cm-lv-s  { text-decoration:line-through; opacity:.75; color: var(--nb-strike-color); }
+    .nb-live .cm-lv-c  {
+      font-family: SF Mono,Menlo,Consolas,monospace; font-size:.87em;
+      background: var(--nb-code-bg); border-radius:4px; padding:1px 4px; color: var(--nb-code-color);
+    }
+    .nb-live .cm-lv-lnk { color: var(--nb-link-color); text-decoration:underline; text-underline-offset:2px; }
+    .nb-live .cm-lv-hl  { background: var(--nb-hl-bg); border-radius:2px; padding:0 2px; }
+
+    /* Due-date badge */
+    .cm-due-badge {
+      display: inline-flex; align-items: center;
+      font-size: 0.7em; font-weight: 700; letter-spacing: .04em;
+      padding: 1px 7px 2px; border-radius: 6px; line-height: 1.7;
+      background: rgba(80,100,255,0.18); color: var(--accent);
+      border: 1.5px solid rgba(80,100,255,0.40); vertical-align: middle;
+      cursor: default; user-select: none; font-family: inherit;
+    }
+    .cm-due-badge.cm-due-today {
+      background: rgba(190,100,0,0.18); color: #b87000;
+      border-color: rgba(190,100,0,0.42);
+    }
+    .cm-due-badge.cm-due-overdue {
+      background: rgba(200,30,30,0.18); color: #c02020;
+      border-color: rgba(200,30,30,0.42);
+    }
+    .cm-tag-badge {
+      display: inline-flex; align-items: center;
+      font-size: 0.7em; font-weight: 600; letter-spacing: .02em;
+      padding: 1px 6px 2px; border-radius: 5px; line-height: 1.7;
+      background: var(--surfaceAlt); color: var(--textDim);
+      border: 1px solid var(--border); vertical-align: middle;
+      cursor: default; user-select: none; font-family: inherit;
+    }
+
+    /* status:: badge — clickable, cycles Todo/Doing/Blocked/Review/Done */
+    .cm-status-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 0.7em; font-weight: 700; letter-spacing: .02em;
+      padding: 1px 7px 2px; border-radius: 6px; line-height: 1.7;
+      border: 1.5px solid; vertical-align: middle;
+      cursor: pointer; user-select: none; font-family: inherit;
+      transition: opacity .1s;
+    }
+    .cm-status-badge:hover { opacity: .78; }
+    .cm-status-badge svg { flex-shrink: 0; }
+    .cm-status-label { white-space: nowrap; }
+    .nb-status-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: .8em; font-weight: 700; letter-spacing: .02em;
+      padding: 2px 8px 3px; border-radius: 6px; border: 1.5px solid;
+      margin: .2em 0;
+    }
+    .nb-status-badge svg { flex-shrink: 0; }
+
+    .cm-time-badge {
+      display: inline-flex; align-items: center;
+      font-size: 0.7em; font-weight: 700; letter-spacing: .02em;
+      padding: 1px 6px 2px; border-radius: 5px; line-height: 1.7;
+      background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent);
+      border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); vertical-align: middle;
+      cursor: default; user-select: none; font-family: inherit;
+    }
+
+    /* Blockquote — left border + italic + dim, matching preview */
+    .nb-live .cm-lv-bq {
+      border-left: 3px solid var(--nb-quote-border);
+      padding-left: 14px;
+      color: var(--nb-quote-color);
+      background: var(--nb-quote-bg);
+      margin-left: 0;
+      font-style: italic;
+    }
+
+    /* Code block lines — monospace, slightly dimmed bg */
+    .nb-live .cm-lv-cb {
+      background: var(--surfaceAlt);
+      font-family: SF Mono,Menlo,Consolas,monospace;
+      font-size: .87em;
+      padding: 0 8px;
+      border-radius: 3px;
+      color: var(--text);
+    }
+
+    /* ── Visible syntax markers when cursor is on them ── */
+    .nb-live .cm-lv-p  { opacity: 0.32; color: var(--textDim); font-size: .88em; }
+
+    /* Heading # shown dim when cursor on that line */
+    .nb-live .cm-lv-h1 .cm-lv-p,
+    .nb-live .cm-lv-h2 .cm-lv-p,
+    .nb-live .cm-lv-h3 .cm-lv-p,
+    .nb-live .cm-lv-h4 .cm-lv-p,
+    .nb-live .cm-lv-h5 .cm-lv-p,
+    .nb-live .cm-lv-h6 .cm-lv-p {
+      color: var(--accent); opacity: 0.45; font-size: 0.68em;
+      vertical-align: middle; font-weight: 400;
+    }
+    /* Bold markers shown */
+    .nb-live .cm-lv-b  .cm-lv-p,
+    .nb-live .cm-lv-bi .cm-lv-p { color: var(--nb-bold-color); font-weight:700; opacity: 0.38; font-size: 1em; }
+    /* Italic markers shown */
+    .nb-live .cm-lv-i  .cm-lv-p { color: var(--nb-italic-color); font-style:italic; opacity: 0.42; font-size: 1em; }
+    /* Code markers shown */
+    .nb-live .cm-lv-c  .cm-lv-p { color: var(--accent); opacity: 0.45; font-size: 1em; }
+    /* Strikethrough shown */
+    .nb-live .cm-lv-s  .cm-lv-p { color: var(--textDim); opacity: 0.42; font-size: 1em; }
+    /* Highlight shown */
+    .nb-live .cm-lv-hl .cm-lv-p { color: #d29922; opacity: 0.48; font-size: 1em; }
+    /* Link markers shown */
+    .nb-live .cm-lv-lnk .cm-lv-p { color: var(--accent); opacity: 0.42; font-size: 1em; }
+
+    /* ── Widgets ─────────────────────────────────────── */
+    /* HR widget */
+    .cm-hr  { display:block; height:1px; background:var(--border); margin:8px 0; width:100%; pointer-events:none; }
+
+    /* Image widget */
+    .cm-img-wrap { display:block; margin:6px 0; line-height:0; background:none; box-shadow:none; }
+    .cm-img { max-width:100%; max-height:340px; border-radius:6px; object-fit:contain; display:block; background:none; }
+    /* An SVG authored with only a viewBox (no width/height attributes) has no
+       intrinsic size. Inside a width:fit-content wrapper that resolves
+       circularly to 0x0 — the image loads fine but renders invisibly. Give such
+       images a definite width to size against. */
+    /* Only stretch when JS hasn't given the wrapper an explicit width — an
+       inline width means the user sized the image, and the wrapper must hug it
+       so the resize handle / align bar stay on the image's corners. */
+    .cm-img-wrap:has(.cm-img[src*=".svg"]):not([style*="width"]) { width:100%; }
+    .cm-img-wrap.cm-img-nosize:not([style*="width"]) { width:100%; }
+    .cm-img-wrap.cm-img-nosize .cm-img { width:100%; height:auto; max-height:70vh; }
+    /* Alignment controls — revealed on hover, like the resize handle */
+    .cm-img-align-bar {
+      position:absolute; top:6px; left:6px; display:flex; gap:2px;
+      opacity:0; transition:opacity .12s; pointer-events:none;
+    }
+    .cm-img-wrap:hover .cm-img-align-bar { opacity:1; pointer-events:auto; }
+    .cm-img-align-btn {
+      width:22px; height:22px; line-height:1; padding:0; cursor:pointer;
+      border:1px solid var(--border); border-radius:5px;
+      background:color-mix(in srgb, var(--surface) 88%, transparent);
+      color:var(--textDim); font-size:12px; font-family:inherit;
+      -webkit-backdrop-filter:blur(6px); backdrop-filter:blur(6px);
+    }
+    .cm-img-align-btn:hover { color:var(--text); background:var(--surfaceAlt); }
+    .cm-img-align-btn.active { color:var(--bg); background:var(--accent); border-color:var(--accent); }
+    /* A floated image must not overlap the controls' hit area */
+    .cm-img-wrap { position:relative; }
+
+    .cm-img-err { display:inline-block; padding:4px 8px; background:var(--surfaceAlt); border:1px dashed var(--border); border-radius:4px; font-size:12px; color:var(--textDim); }
+    .cm-img-asset-ph { display:block; padding:10px 14px; margin:4px 0; background:var(--surfaceAlt); border:1px dashed var(--border); border-radius:6px; font-size:12px; color:var(--textDim); }
+
+    /* Checkbox widget */
+    .cm-cb  { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border:1.5px solid var(--border); border-radius:3px; font-size:9px; vertical-align:middle; margin-right:5px; cursor:pointer; flex-shrink:0; color:transparent; transition:background .1s; }
+    .cm-cb-on { background:var(--accent); border-color:var(--accent); color:var(--bg); }
+
+    /* Wikilink widget */
+    .cm-wl { color:var(--nb-wikilink-color,var(--accent)); border-bottom:1px solid var(--nb-wikilink-color,var(--accent)); cursor:pointer; border-radius:2px; padding:0 1px; }
+    .cm-wl:hover { opacity:.8; }
+    .cm-wl-new { color:var(--textDim); border-bottom-color:var(--textDim); opacity:.75; }
+    .cm-wl-unavailable { color:var(--textDim); border-bottom:1px dashed var(--textDim); opacity:.6; cursor:default; }
+
+    /* Link widget — rendered as a proper anchor when cursor is off it */
+    .cm-link-widget {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      cursor: pointer;
+      border-radius: 2px;
+      padding: 0 1px;
+    }
+    .cm-link-widget:hover { opacity: .75; }
+
+    /* Math widgets */
+    .cm-math-mq { cursor: pointer; padding: 0 2px; }
+    .cm-math-inline {
+      display:inline-block; vertical-align:middle;
+      color:var(--text); cursor:pointer;
+      padding: 0 2px;
+    }
+    .cm-math-inline:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); border-radius:3px; }
+    .cm-math-block {
+      display:block; text-align:center; margin:0.5em 0;
+      overflow-x:auto; color:var(--text); padding:4px 0;
+      cursor:pointer;
+    }
+    .cm-math-block:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); border-radius:4px; }
+
+    /* ── Table widget in live view ── */
+    .cm-table-outer { padding: 5px 0 7px; }
+    .cm-table-wrap {
+      overflow-x: auto; border-radius: 6px;
+      border: 1px solid var(--border);
+    }
+    .cm-table-wrap table.nb-table {
+      border-collapse: collapse; width: auto; min-width: 100%; font-size: .92em;
+    }
+    .cm-table-wrap table.nb-table th,
+    .cm-table-wrap table.nb-table td {
+      border-right: 1px solid var(--borderSubtle);
+      border-bottom: 1px solid var(--borderSubtle);
+      padding: 5px 10px; text-align: left;
+      white-space: pre-wrap; word-break: break-word; min-width: 80px;
+    }
+    .cm-table-wrap table.nb-table th:last-child,
+    .cm-table-wrap table.nb-table td:last-child { border-right: none; }
+    .cm-table-wrap table.nb-table tr:last-child td { border-bottom: none; }
+    .cm-table-wrap table.nb-table th {
+      background: var(--surfaceAlt); font-weight: 600; font-size: .85em;
+      text-transform: uppercase; letter-spacing: .04em; color: var(--textDim);
+      border-bottom: 1px solid var(--border);
+    }
+    .cm-table-wrap table.nb-table tbody tr:hover td {
+      background: color-mix(in srgb, var(--surfaceAlt) 60%, transparent);
+    }
+    .cm-table-wrap td, .cm-table-wrap th { cursor: text; }
+    .cm-table-wrap td:focus, .cm-table-wrap th:focus {
+      outline: 2px solid var(--accent); outline-offset: -2px;
+      background: color-mix(in srgb, var(--accent) 8%, transparent) !important;
+      white-space: pre-wrap;
+    }
+
+    /* ── /todo block widget ── */
+    .cm-todo-block-w {
+      margin: 0.6em 0; border-radius: 10px; overflow: hidden;
+      border: 1px solid var(--border); background: var(--surface);
+    }
+    .cm-todo-hdr-w {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px 6px;
+    }
+    .cm-todo-title {
+      font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer;
+      padding: 1px 3px; border-radius: 3px; transition: background .1s;
+      font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif;
+    }
+    .cm-todo-title:hover { background: rgba(128,128,128,.08); }
+    .cm-todo-title-inp {
+      background: none; border: none; outline: none; font-size: 13px;
+      font-weight: 600; color: var(--text); font-family: inherit; width: 100%;
+    }
+    .cm-todo-hdr-right { display: flex; align-items: center; gap: 6px; }
+    .cm-todo-count {
+      font-size: 10px; font-weight: 600; color: var(--textDim);
+      opacity: .7;
+    }
+    .cm-todo-progress {
+      height: 2px; background: var(--borderSubtle); overflow: hidden;
+    }
+    .cm-todo-progress-fill {
+      height: 100%; background: var(--accent); border-radius: 0 1px 1px 0;
+      transition: width .3s ease;
+    }
+    .cm-todo-progress-done { background: #3fb950; }
+    .cm-todo-row {
+      display: flex; align-items: center; gap: 8px; padding: 5px 12px;
+      transition: background .08s; position: relative;
+    }
+    .cm-todo-row:hover { background: rgba(128,128,128,.04); }
+    .cm-todo-cb {
+      width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0;
+      border: 1.5px solid var(--border); cursor: pointer; display: flex;
+      align-items: center; justify-content: center;
+      transition: background .15s, border-color .15s;
+    }
+    .cm-todo-cb:hover { border-color: var(--accent); }
+    .cm-todo-cb-on {
+      background: var(--accent); border-color: var(--accent);
+    }
+    .cm-todo-text-wrap { flex: 1; min-width: 0; }
+    .cm-todo-row-text {
+      font-size: 13px; color: var(--text); line-height: 1.5; cursor: default;
+    }
+    .cm-todo-row-done .cm-todo-row-text { text-decoration: line-through; opacity: .35; color: var(--textDim); }
+    .cm-todo-edit-inp {
+      background: none; border: none; outline: none; font-size: 13px;
+      color: var(--text); font-family: inherit; width: 100%;
+    }
+    .cm-todo-meta { display: flex; gap: 4px; align-items: center; margin-top: 2px; }
+    .cm-todo-date, .cm-todo-time {
+      font-size: 9.5px; color: var(--textDim); opacity: .7;
+    }
+    .cm-todo-actions {
+      display: flex; gap: 2px; flex-shrink: 0; align-items: center;
+      opacity: 0; transition: opacity .12s;
+    }
+    .cm-todo-row:hover .cm-todo-actions { opacity: 1; }
+    .cm-todo-row:has(.cm-todo-date-btn-set) .cm-todo-actions { opacity: 1; }
+    .cm-todo-date-btn {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      padding: 0 2px; border-radius: 3px; line-height: 1; display: flex; align-items: center;
+      transition: color .1s; opacity: .5;
+    }
+    .cm-todo-date-btn:hover { color: var(--accent); opacity: 1; }
+    .cm-todo-date-btn.cm-todo-date-btn-set { color: var(--accent); opacity: 0.8; }
+    .cm-todo-del-btn {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      font-size: 15px; line-height: 1; padding: 0 2px; border-radius: 3px;
+      transition: color .1s;
+    }
+    .cm-todo-del-btn:hover { color: #f85149; }
+    .cm-todo-add-row {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 12px 7px;
+    }
+    .cm-todo-add-btn {
+      width: 22px; height: 22px; border-radius: 5px; flex-shrink: 0;
+      background: none; border: 1.5px solid var(--border); color: var(--textDim); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: border-color .12s, color .12s;
+    }
+    .cm-todo-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .cm-todo-add-input {
+      flex: 1; background: none; border: none; outline: none;
+      font-size: 12px; color: var(--text); padding: 2px 0;
+      font-family: inherit;
+    }
+    .cm-todo-add-input::placeholder { color: var(--textDim); opacity: .4; }
+    .cm-todo-empty {
+      padding: 10px 12px; text-align: center; font-size: 11px;
+      color: var(--textDim); opacity: .5;
+    }
+
+    /* ── /kanban board widget ── Redesigned to match the standalone Tasks
+       board's language (see LibraryView.jsx KanbanCardModal A113-A118):
+       hollow color ring instead of a solid-fill header bar, real (non-
+       shouty) column titles instead of tiny uppercase caps, unicode × swapped
+       for a proper stroke-icon, and font sizes/radii collapsed onto a
+       small consistent set (11 meta, 13 body, 8px radius family) instead
+       of the previous one-off values (9/10/11/12/13/14px, 4-10px radii). */
+    .cm-task-board-w {
+      margin: 0.6em 0;
+    }
+    .cm-task-titlebar {
+      display: flex; align-items: center; padding: 10px 14px 6px;
+    }
+    .cm-task-title-w {
+      font-size: 14px; font-weight: 700; color: var(--text);
+      font-family: 'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif; letter-spacing: -0.1px;
+    }
+    .cm-task-cols-w {
+      display: flex; gap: 8px; padding: 0 8px 12px;
+      align-items: flex-start; overflow: hidden;
+    }
+    .cm-task-col-w {
+      flex: 1; min-width: 0; display: flex; flex-direction: column;
+      border-radius: 8px; transition: background .15s;
+      overflow: hidden; border: 1px solid var(--borderSubtle);
+      background: var(--surfaceAlt);
+    }
+    .cm-task-col-drop { outline: 2px dashed var(--accent); outline-offset: -2px; }
+    .cm-task-col-hdr-w {
+      display: flex; align-items: center; gap: 7px; justify-content: space-between;
+      padding: 8px 10px; position: relative;
+      font-size: 13px; font-weight: 600; color: var(--text);
+      font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
+      border-bottom: 1px solid var(--borderSubtle);
+    }
+    .cm-task-col-hdr-left { display: flex; align-items: center; gap: 7px; min-width: 0; }
+    .cm-task-col-ring {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+      border: 1.5px solid var(--ring-color, var(--textDim)); box-sizing: border-box;
+    }
+    .cm-task-col-title { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cm-task-col-title:hover { opacity: .7; }
+    .cm-task-col-title-inp {
+      background: none; border: none; outline: none; font-size: 13px;
+      font-weight: 600; color: var(--text); font-family: inherit; width: 100%;
+    }
+    .cm-task-col-hdr-right {
+      display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+    }
+    .cm-task-col-w-badge {
+      font-size: 11px; background: color-mix(in srgb, var(--text) 10%, transparent);
+      color: var(--textDim); border-radius: 8px; padding: 1px 6px; font-weight: 600;
+    }
+    .cm-task-col-del {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      display: flex; align-items: center; padding: 2px; border-radius: 4px; opacity: 0;
+      transition: opacity .1s, color .1s;
+    }
+    .cm-task-col-hdr-w:hover .cm-task-col-del { opacity: .6; }
+    .cm-task-col-del:hover { color: #f85149 !important; opacity: 1 !important; }
+    .cm-task-cards-area { padding: 6px 6px 2px; }
+    .cm-task-card-w {
+      background: var(--surface); border-radius: 8px; margin-bottom: 6px;
+      border: 1px solid var(--border);
+      font-size: 13px; color: var(--text); transition: box-shadow .12s, opacity .15s;
+      cursor: grab; user-select: none;
+      font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
+      box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    }
+    .cm-task-card-w:hover { box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+    .cm-task-card-dragging { opacity: .35; cursor: grabbing; }
+    .cm-task-card-body {
+      display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+    }
+    .cm-task-card-text { flex: 1; min-width: 0; line-height: 1.4; font-size: 13px; cursor: pointer; }
+    .cm-task-card-del-btn {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      display: flex; align-items: center; padding: 2px; border-radius: 4px; opacity: 0;
+      transition: opacity .1s, color .1s; flex-shrink: 0;
+    }
+    .cm-task-card-w:hover .cm-task-card-del-btn { opacity: 0.5; }
+    .cm-task-card-del-btn:hover { opacity: 1 !important; color: #f85149; }
+    .cm-task-card-date-row {
+      display: flex; align-items: center; gap: 4px;
+      padding: 0 10px 8px;
+    }
+    .cm-task-card-date-badge {
+      font-size: 11px; color: var(--accent); cursor: pointer;
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+      border-radius: 4px; padding: 1px 6px; font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
+    }
+    .cm-task-card-date-badge:hover { opacity: .8; }
+    .cm-task-card-date-clear {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      display: flex; align-items: center; padding: 2px; opacity: 0;
+      transition: opacity .1s;
+    }
+    .cm-task-card-w:hover .cm-task-card-date-clear { opacity: 0.5; }
+    .cm-task-card-date-clear:hover { opacity: 1 !important; color: #f85149; }
+    .cm-task-card-add-date {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      font-size: 11px; padding: 0; opacity: 0; transition: opacity .1s;
+      font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
+    }
+    .cm-task-card-w:hover .cm-task-card-add-date { opacity: 0.45; }
+    .cm-task-card-add-date:hover { opacity: 1 !important; color: var(--accent); }
+    .cm-task-date-picker {
+      position: fixed; z-index: 99999;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px; min-width: 210px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.2);
+    }
+    .cm-task-date-hdr { min-height: unset !important; padding: 4px 0 !important; }
+    .cm-task-date-blank { background: var(--surface); height: 28px; }
+    .cm-task-date-cell {
+      text-align: center; height: 28px; line-height: 28px; font-size: 11px;
+      color: var(--text); cursor: pointer; border-radius: 0;
+      transition: background .1s; background: var(--surface);
+      font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif;
+    }
+    .cm-task-date-cell:hover { background: var(--surfaceAlt); }
+    .cm-task-date-today { color: var(--accent); font-weight: 700; }
+    .cm-task-date-selected { background: color-mix(in srgb, var(--accent) 15%, transparent) !important; color: var(--accent); font-weight: 600; }
+    .cm-task-add-row { padding: 4px 6px 8px; }
+    .cm-task-add-input {
+      width: 100%; background: transparent; border: 1px dashed var(--borderSubtle);
+      border-radius: 8px; outline: none; font-size: 13px; color: var(--text);
+      padding: 6px 8px; font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif; box-sizing: border-box;
+      transition: border-color .15s, background .15s;
+    }
+    .cm-task-add-input:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); border-style: solid; background: var(--bg); }
+    .cm-task-add-input::placeholder { color: var(--textDim); opacity: .4; }
+    .cm-task-add-col {
+      min-width: 36px; max-width: 36px; display: flex; align-items: flex-start;
+      justify-content: center; padding-top: 8px; flex-shrink: 0;
+      position: relative;
+    }
+    .cm-task-add-col-btn {
+      background: transparent; border: 1px dashed var(--borderSubtle); border-radius: 8px;
+      color: var(--textDim); font-size: 16px; cursor: pointer; padding: 6px 0;
+      transition: color .1s, background .1s, border-color .1s; width: 100%;
+    }
+    .cm-task-add-col-btn:hover { color: var(--text); background: var(--surfaceAlt); border-color: var(--border); }
+    .cm-task-add-col-input {
+      width: 140px; background: var(--surface); border: 1px solid var(--focusBorder);
+      border-radius: 8px; outline: none; font-size: 13px; color: var(--text);
+      padding: 8px 10px; font-family: inherit; box-sizing: border-box;
+      position: absolute; right: 0; top: 8px; z-index: 10;
+    }
+
+    /* ── /kanban card edit modal — mirrors KanbanCardModal's language:
+       17/13/11 type scale, 4px-grid spacing, 8px radius family, white =
+       labels/selected-pill/footer-buttons, dim = subtitle/placeholder/
+       unselected-pill (LibraryView.jsx A113-A118). ── */
+    .cm-task-modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 100000;
+      display: flex; align-items: center; justify-content: center;
+      backdrop-filter: blur(6px);
+    }
+    .cm-task-modal-box {
+      background: var(--surface); border-radius: 16px; width: 440px;
+      max-width: calc(100vw - 32px); max-height: calc(100vh - 48px);
+      display: flex; flex-direction: column;
+      box-shadow: 0 40px 100px rgba(0,0,0,.5); border: 1px solid var(--border);
+      font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
+    }
+    .cm-task-modal-hdr {
+      padding: 20px 20px 16px; display: flex; align-items: flex-start;
+      justify-content: space-between; gap: 16px; flex-shrink: 0;
+    }
+    .cm-task-modal-title { font-size: 17px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; line-height: 22px; margin-bottom: 4px; }
+    .cm-task-modal-subtitle { font-size: 13px; font-weight: 400; line-height: 18px; color: var(--textDim); }
+    .cm-task-modal-close {
+      width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--border);
+      background: none; color: var(--textDim); cursor: pointer;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      transition: background .1s;
+    }
+    .cm-task-modal-close:hover { background: var(--surfaceAlt); }
+    .cm-task-modal-divider { height: 1px; background: var(--borderSubtle); flex-shrink: 0; }
+    .cm-task-modal-body { padding: 20px 20px; display: flex; flex-direction: column; gap: 20px; overflow: auto; }
+    .cm-task-modal-label {
+      font-size: 11px; font-weight: 600; color: var(--text); text-transform: uppercase;
+      letter-spacing: .05em; display: block; margin-bottom: 8px;
+    }
+    .cm-task-modal-field {
+      width: 100%; background: var(--surfaceAlt); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 13px; line-height: 20px;
+      padding: 8px 12px; font-family: inherit; outline: none; box-sizing: border-box;
+      transition: border-color .12s;
+    }
+    .cm-task-modal-field:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
+    .cm-task-modal-field::placeholder { color: var(--textDim); }
+    .cm-task-modal-textarea { resize: none; line-height: 20px; }
+    .cm-task-modal-priority { display: flex; gap: 4px; background: var(--surfaceAlt); border: 1px solid var(--border); border-radius: 8px; padding: 4px; }
+    .cm-task-modal-pri-btn {
+      flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px;
+      padding: 6px 8px; border-radius: 6px; border: none; background: none;
+      color: var(--textDim); font-size: 11px; font-weight: 600; cursor: pointer;
+      font-family: inherit; transition: background .12s, color .12s;
+    }
+    .cm-task-modal-pri-btn.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+    .cm-task-modal-comment-row { display: flex; gap: 8px; align-items: flex-start; }
+    .cm-task-modal-comment-avatar {
+      width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: var(--bg);
+      font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; margin-top: 1px;
+    }
+    .cm-task-modal-comment-bubble { flex: 1; background: var(--surfaceAlt); border: 1px solid var(--borderSubtle); border-radius: 8px; padding: 8px 12px; position: relative; }
+    .cm-task-modal-comment-text { font-size: 13px; color: var(--text); line-height: 18px; padding-right: 16px; }
+    .cm-task-modal-comment-meta { font-size: 11px; color: var(--textDim); margin-top: 4px; }
+    .cm-task-modal-comment-del { position: absolute; top: 8px; right: 8px; background: none; border: none; color: var(--textDim); cursor: pointer; padding: 2px; line-height: 1; display: flex; }
+    .cm-task-modal-comment-del:hover { color: #f85149; }
+    .cm-task-modal-footer { padding: 16px 20px; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .cm-task-modal-delete {
+      display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 8px;
+      border: 1px solid rgba(248,81,73,.3); background: rgba(248,81,73,.06); color: #f85149;
+      cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit;
+      transition: background .12s; flex-shrink: 0;
+    }
+    .cm-task-modal-delete:hover { background: rgba(248,81,73,.14); }
+    .cm-task-modal-actions { flex: 1; display: flex; gap: 8px; }
+    .cm-task-modal-cancel {
+      flex: 1; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--border);
+      background: none; color: var(--text); cursor: pointer; font-size: 13px; font-weight: 600;
+      font-family: inherit; transition: background .1s;
+    }
+    .cm-task-modal-cancel:hover { background: var(--surfaceAlt); }
+    .cm-task-modal-save {
+      flex: 1; padding: 10px 16px; border-radius: 8px; border: none; background: var(--accent);
+      color: #fff; cursor: pointer; font-size: 13px; font-weight: 700; font-family: inherit;
+    }
+    .cm-task-modal-save:disabled { background: var(--surfaceAlt); color: var(--textDim); cursor: default; opacity: .6; }
+    .cm-task-modal-send {
+      padding: 8px 16px; border-radius: 8px; border: none; background: var(--accent); color: var(--bg);
+      cursor: pointer; font-size: 13px; font-weight: 700; font-family: inherit; flex-shrink: 0;
+    }
+    .cm-task-modal-send:disabled { opacity: .45; }
+
+    /* ── Date/time picker popup ── */
+    .gnos-dtp {
+      position: fixed; z-index: 99999;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.22), 0 2px 8px rgba(0,0,0,.12);
+      font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif; font-size: 13px;
+      color: var(--text); min-width: 240px; user-select: none;
+    }
+    .gnos-dtp-nav {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .gnos-dtp-nav-btn {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      font-size: 18px; padding: 2px 8px; border-radius: 6px;
+      transition: background .1s, color .1s; line-height: 1;
+    }
+    .gnos-dtp-nav-btn:hover { background: var(--surfaceAlt); color: var(--text); }
+    .gnos-dtp-month-label { font-size: 13px; font-weight: 600; color: var(--text); }
+    .gnos-dtp-grid {
+      display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;
+      margin-bottom: 10px;
+    }
+    .gnos-dtp-wday {
+      text-align: center; font-size: 10px; font-weight: 600;
+      color: var(--textDim); padding: 2px 0; letter-spacing: .04em;
+    }
+    .gnos-dtp-day {
+      text-align: center; padding: 5px 2px; border-radius: 6px;
+      cursor: pointer; font-size: 12px; color: var(--text);
+      transition: background .1s, color .1s;
+    }
+    .gnos-dtp-day:not(.gnos-dtp-empty):hover { background: var(--surfaceAlt); }
+    .gnos-dtp-empty { cursor: default; }
+    .gnos-dtp-today { color: var(--accent); font-weight: 700; }
+    .gnos-dtp-selected {
+      background: var(--accent) !important; color: var(--bg) !important;
+      font-weight: 600; border-radius: 6px;
+    }
+    .gnos-dtp-time-row {
+      display: flex; align-items: center; gap: 8px;
+      border-top: 1px solid var(--border); padding-top: 8px; margin-bottom: 8px;
+    }
+    .gnos-dtp-time-label { font-size: 12px; color: var(--textDim); min-width: 32px; }
+    .gnos-dtp-time-inp {
+      flex: 1; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 12px;
+      padding: 5px 8px; outline: none; font-family: inherit;
+    }
+    .gnos-dtp-time-inp:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
+    .gnos-dtp-actions {
+      display: flex; justify-content: space-between; gap: 6px;
+      border-top: 1px solid var(--border); padding-top: 8px;
+    }
+    .gnos-dtp-clear {
+      background: none; border: 1px solid var(--border); border-radius: 7px;
+      color: var(--textDim); font-size: 12px; cursor: pointer; padding: 5px 14px;
+      font-family: inherit; transition: background .1s, color .1s;
+    }
+    .gnos-dtp-clear:hover { background: var(--surfaceAlt); color: var(--text); }
+    .gnos-dtp-done {
+      background: var(--accent); border: none; border-radius: 7px;
+      color: #fff; font-size: 12px; font-weight: 600; cursor: pointer;
+      padding: 5px 18px; font-family: inherit; transition: opacity .1s;
+    }
+    .gnos-dtp-done:hover { opacity: .85; }
+
+    /* ── Timer widget — quiet pill, hairline progress, hover controls ── */
+    .cm-timer-widget {
+      margin: 0.5em 0; padding: 9px 12px; border-radius: 12px;
+      border: 1px solid var(--borderSubtle, var(--border));
+      background: var(--surfaceAlt, var(--surface));
+      display: flex; flex-direction: column; gap: 7px; max-width: 260px;
+    }
+    .cm-timer-label {
+      font-size: 11.5px; font-weight: 500; color: var(--textDim); flex: 1;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .cm-timer-row { display: flex; align-items: baseline; gap: 8px; }
+    .cm-timer-time {
+      font-size: 19px; font-weight: 600; color: var(--text); line-height: 1;
+      font-variant-numeric: tabular-nums; cursor: pointer; letter-spacing: .01em;
+    }
+    .cm-timer-time.cm-timer-done { color: var(--accent); animation: cm-timer-donepulse 1.2s ease-in-out infinite; }
+    @keyframes cm-timer-donepulse { 0%, 100% { opacity: 1 } 50% { opacity: .55 } }
+    .cm-timer-btn {
+      background: none; border: none; border-radius: 6px; padding: 0;
+      color: var(--textDim); cursor: pointer; width: 22px; height: 22px;
+      display: flex; align-items: center; justify-content: center; align-self: center;
+      font-size: 11px; opacity: 0; transition: opacity .15s, color .1s, background .1s;
+    }
+    .cm-timer-btn:first-of-type { margin-left: auto; }
+    .cm-timer-widget:hover .cm-timer-btn { opacity: .7; }
+    .cm-timer-btn:hover { opacity: 1; color: var(--text); background: var(--hover, var(--surface)); }
+    .cm-timer-start { width: auto; padding: 0 14px; font-size: 12px; font-weight: 600; }
+    .cm-timer-bar { height: 2px; border-radius: 1px; background: var(--border); overflow: hidden; }
+    .cm-timer-fill { height: 100%; border-radius: 1px; background: var(--accent); transition: width 1s linear; }
+    .cm-timer-setup { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .cm-timer-input {
+      background: none; border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-size: 13px; padding: 6px 10px; outline: none;
+      font-family: inherit; width: 90px;
+    }
+    .cm-timer-label-inp { width: 140px; }
+    .cm-timer-input:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
+    .cm-timer-edit-input {
+      background: none; border: none; outline: none;
+      font-size: 19px; font-weight: 600; color: var(--text);
+      font-variant-numeric: tabular-nums; width: 110px; font-family: inherit;
+    }
+
+    .cm-timer-time-editable { cursor: text; opacity: 0.45; font-size: 15px; }
+    .cm-timer-time-editable:hover { opacity: 0.8; }
+
+    /* ── /timer as a left-gutter vertical rail (quick-note style) ── */
+    .cm-timer-widget.cm-timer-rail {
+      width: 42px; max-width: none; height: 140px;
+      margin: 0.4em 0; padding: 8px 0 6px;
+      align-items: center; gap: 7px;
+    }
+    .cm-timer-rail .cm-timer-bar {
+      flex: 1; width: 3px; height: auto; border-radius: 2px;
+      background: var(--border); overflow: hidden;
+      display: flex; flex-direction: column; justify-content: flex-start;
+    }
+    .cm-timer-rail .cm-timer-fill {
+      width: 100%; height: 100%; background: var(--accent);
+      border-radius: 2px; transition: height 1s linear;
+    }
+    .cm-timer-rail .cm-timer-time {
+      writing-mode: vertical-rl; font-size: 12px; font-weight: 600;
+      letter-spacing: .05em; line-height: 1;
+    }
+    .cm-timer-railbtns { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+    .cm-timer-rail .cm-timer-btn { width: 20px; height: 18px; margin: 0; }
+
+    /* ── /math zone badge ── */
+    .cm-mathzone-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 2px 10px 2px 8px; border-radius: 999px;
+      border: 1px solid var(--borderSubtle, var(--border));
+      background: var(--surfaceAlt, var(--surface));
+      color: var(--textDim); font-size: 10.5px; font-weight: 600;
+      letter-spacing: .06em; text-transform: uppercase;
+      vertical-align: middle; user-select: none; cursor: default;
+    }
+    .cm-mathzone-icon { color: var(--accent); font-size: 12px; font-weight: 500; }
+    .nb-mathzone-indicator {
+      position: absolute; top: 10px; left: 12px; z-index: 5;
+      padding: 3px 7px; pointer-events: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,.18);
+    }
+    .nb-mathzone-indicator .cm-mathzone-icon { font-size: 13px; }
+    .cm-mathzone-end { opacity: .6; }
+    .cm-mathzone-end .cm-mathzone-icon { color: var(--textDim); }
+
+    /* ── Pomodoro widget ── */
+    .cm-pomo-widget {
+      margin: 0.6em 0; padding: 14px 16px; border-radius: 12px;
+      border: 1px solid var(--border); background: var(--surface);
+      display: flex; flex-direction: column; gap: 8px; max-width: 340px;
+    }
+    .cm-pomo-hdr {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .cm-pomo-title {
+      font-size: 13px; font-weight: 700; color: var(--text);
+      font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif;
+    }
+    .cm-pomo-sessions {
+      font-size: 10px; font-weight: 600; color: var(--textDim);
+      background: var(--surfaceAlt); border: 1px solid var(--borderSubtle);
+      border-radius: 4px; padding: 2px 6px;
+    }
+    .cm-pomo-phase-row { display: flex; gap: 4px; }
+    .cm-pomo-phase-btn {
+      flex: 1; padding: 4px 0; border-radius: 6px; border: 1px solid var(--borderSubtle);
+      background: none; color: var(--textDim); cursor: pointer;
+      font-size: 11px; font-weight: 600; font-family: inherit;
+      transition: all 0.12s;
+    }
+    .cm-pomo-phase-btn:hover { background: var(--surfaceAlt); color: var(--text); }
+    .cm-pomo-phase-btn.active {
+      background: var(--accent); color: var(--bg); border-color: var(--accent);
+    }
+    .cm-pomo-time {
+      font-size: 36px; font-weight: 700; color: var(--text);
+      font-variant-numeric: tabular-nums; text-align: center;
+      letter-spacing: 2px; padding: 4px 0;
+    }
+    .cm-pomo-bar {
+      height: 4px; border-radius: 2px; background: var(--borderSubtle); overflow: hidden;
+    }
+    .cm-pomo-fill {
+      height: 100%; border-radius: 2px; transition: width 1s linear;
+    }
+    .cm-pomo-fill-work { background: var(--accent); }
+    .cm-pomo-fill-break { background: #3fb950; }
+    .cm-pomo-controls { display: flex; gap: 6px; justify-content: center; }
+    .cm-pomo-btn {
+      background: none; border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text); cursor: pointer; width: 36px; height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px; transition: background .1s;
+    }
+    .cm-pomo-btn:hover { background: var(--surfaceAlt); }
+    .cm-pomo-play { width: 48px; }
+    .cm-pomo-prev {
+      display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+      border-radius: 10px; border: 1px solid var(--border); background: var(--surface);
+      margin: 0.6em 0; max-width: 320px;
+    }
+    .cm-pomo-prev-icon { font-size: 18px; }
+    .cm-pomo-prev-text { font-size: 13px; font-weight: 600; color: var(--text); }
+    .cm-pomo-prev-sub { font-size: 10px; color: var(--textDim); margin-left: auto; }
+
+    /* ── /pomo as a left-gutter vertical rail ── */
+    .cm-pomo-widget.cm-pomo-rail {
+      width: 52px; max-width: none; height: 190px;
+      margin: 0.5em 0; padding: 8px 4px 8px;
+      align-items: center; gap: 7px;
+    }
+    .cm-pomo-tag {
+      font-size: 9.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+      border: 1px solid var(--borderSubtle); border-radius: 5px;
+      padding: 2px 6px; background: none; cursor: pointer; font-family: inherit;
+      color: var(--textDim); transition: all .12s;
+    }
+    .cm-pomo-tag-work  { color: var(--accent); border-color: var(--accent); }
+    .cm-pomo-tag-break { color: #3fb950; border-color: #3fb950; }
+    .cm-pomo-rail .cm-pomo-bar {
+      flex: 1; width: 3px; height: auto; border-radius: 2px;
+      background: var(--borderSubtle); overflow: hidden;
+      display: flex; flex-direction: column; justify-content: flex-start;
+    }
+    .cm-pomo-rail .cm-pomo-fill { width: 100%; height: 100%; transition: height 1s linear; }
+    .cm-pomo-rail .cm-pomo-time {
+      writing-mode: vertical-rl; font-size: 14px; font-weight: 700;
+      letter-spacing: 1px; padding: 0; text-align: center;
+    }
+    .cm-pomo-rail .cm-pomo-sessions {
+      font-size: 10px; padding: 1px 6px; border-radius: 4px;
+    }
+    .cm-pomo-rail .cm-pomo-controls {
+      flex-direction: column; gap: 2px; opacity: 0; transition: opacity .15s;
+    }
+    .cm-pomo-rail:hover .cm-pomo-controls { opacity: 1; }
+    .cm-pomo-rail .cm-pomo-btn { width: 26px; height: 22px; font-size: 12px; }
+    .cm-pomo-rail .cm-pomo-play { width: 26px; }
+
+    /* ── Calendar widget ── */
+    .cm-calendar-widget {
+      margin: 0.6em 0; border-radius: 10px; border: 1px solid var(--border);
+      background: var(--surface); padding: 12px; width: 100%; box-sizing: border-box;
+    }
+
+    /* ── Calendar topbar & mode toggle ── */
+    .cm-cal-topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 6px;
+    }
+    .cm-cal-main-title {
+      font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer;
+      padding: 2px 4px; border-radius: 3px; transition: background .1s;
+      font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif;
+    }
+    .cm-cal-main-title:hover { background: rgba(128,128,128,.08); }
+    .cm-cal-title-input {
+      background: none; border: none; outline: none;
+      font-size: 13px; font-weight: 600; color: var(--text);
+      font-family: inherit; width: 100%;
+    }
+    .cm-cal-mode-bar {
+      display: flex; gap: 1px; background: var(--borderSubtle); border-radius: 5px; padding: 1px;
+    }
+    .cm-cal-mode-btn {
+      background: none; border: none; color: var(--textDim); cursor: pointer;
+      font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px;
+      transition: background .1s, color .1s;
+    }
+    .cm-cal-mode-btn:hover { color: var(--text); }
+    .cm-cal-mode-active { background: var(--surface); color: var(--text); }
+
+    /* ── Calendar nav ── */
+    .cm-cal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .cm-cal-nav {
+      background: none; border: none; border-radius: 4px;
+      color: var(--textDim); cursor: pointer; width: 24px; height: 24px;
+      display: flex; align-items: center; justify-content: center; font-size: 16px;
+      transition: background .1s, color .1s;
+    }
+    .cm-cal-nav:hover { background: var(--surfaceAlt); color: var(--text); }
+    .cm-cal-month {
+      font-size: 12px; font-weight: 600; color: var(--text);
+      font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif;
+    }
+
+    /* ── Calendar month grid ── */
+    .cm-cal-grid {
+      display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px;
+      background: var(--borderSubtle); border-radius: 6px; overflow: hidden;
+      border: 1px solid var(--borderSubtle);
+    }
+    .cm-cal-day-hdr {
+      font-size: 9px; font-weight: 700; color: var(--textDim); text-align: center;
+      padding: 5px 0; text-transform: uppercase; letter-spacing: .08em;
+      background: var(--surface);
+    }
+    .cm-cal-blank { min-height: 72px; background: var(--surface); }
+    .cm-cal-day {
+      text-align: left; padding: 4px 5px; font-size: 11px;
+      color: var(--text); cursor: pointer; transition: background .1s;
+      position: relative; min-height: 72px; background: var(--surface);
+    }
+    .cm-cal-day:hover { background: var(--surfaceAlt); }
+    .cm-cal-today { color: var(--accent); }
+    .cm-cal-today > span:first-child {
+      background: var(--accent); color: var(--bg); border-radius: 50%; width: 20px; height: 20px;
+      display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700;
+    }
+    .cm-cal-selected { background: color-mix(in srgb, var(--accent) 6%, transparent) !important; }
+    .cm-cal-has-event::after {
+      content: ''; position: absolute; top: 5px; right: 5px;
+      width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
+    }
+
+    /* ── Month view day event labels ── */
+    .cm-cal-day-evt {
+      font-size: 9px; color: var(--text); white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis; margin-top: 2px; line-height: 1.2;
+      background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 2px; padding: 1px 3px;
+      border-left: 2px solid var(--accent);
+    }
+
+    /* ── Calendar event panel (month view selected day) ── */
+    .cm-cal-event-panel {
+      margin-top: 8px; padding: 8px 10px; background: var(--surfaceAlt);
+      border-radius: 6px; max-height: 400px; overflow-y: auto;
+    }
+    .cm-cal-event-panel-hdr {
+      font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 4px;
+      font-family: 'Stack Sans Text', 'Satoshi', 'Switzer', sans-serif;
+    }
+
+    /* ── Calendar event rows (shared across views) ── */
+    .cm-cal-evt-row {
+      display: flex; align-items: center; gap: 5px; padding: 2px 4px;
+      border-radius: 3px; transition: background .1s;
+    }
+    .cm-cal-evt-row:hover { background: rgba(128,128,128,.06); }
+    .cm-cal-evt-row:hover .cm-todo-del { opacity: 1; }
+    .cm-cal-evt-dot {
+      width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex-shrink: 0;
+    }
+    .cm-cal-evt-text { font-size: 11px; color: var(--text); flex: 1; min-width: 0; }
+    .cm-cal-evt-add {
+      width: 100%; background: none; border: none; border-bottom: 1px solid var(--borderSubtle);
+      padding: 4px 2px; font-size: 11px; color: var(--text); font-family: inherit;
+      outline: none; margin-top: 3px; transition: border-color .15s;
+    }
+    .cm-cal-evt-add:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
+    .cm-cal-evt-add::placeholder { color: var(--textDim); opacity: .4; }
+
+    /* ── 24-hour time grid (shared by day/week/expanded month) ── */
+    .cm-cal-time-grid {
+      max-height: 360px; overflow-y: auto;
+    }
+    .cm-cal-time-row {
+      display: flex; min-height: 28px; border-bottom: 1px solid var(--borderSubtle);
+    }
+    .cm-cal-time-label {
+      width: 48px; flex-shrink: 0; font-size: 9px; color: var(--textDim);
+      text-align: right; padding: 2px 6px 0 0; font-weight: 500;
+      font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
+    }
+    .cm-cal-time-slot {
+      flex: 1; min-height: 28px; cursor: pointer; padding: 1px 4px;
+      transition: background .1s; position: relative;
+    }
+    .cm-cal-time-slot:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+    .cm-cal-time-evt {
+      font-size: 10px; color: var(--text); background: color-mix(in srgb, var(--accent) 10%, transparent);
+      border-left: 2px solid var(--accent); border-radius: 2px;
+      padding: 1px 6px; margin: 1px 0; display: flex; align-items: center; gap: 4px;
+    }
+    .cm-cal-time-evt .cm-todo-del { margin-left: auto; }
+    .cm-cal-time-add {
+      width: 100%; background: none; border: none; border-bottom: 1px solid var(--accent);
+      padding: 2px 2px; font-size: 10px; color: var(--text); font-family: inherit;
+      outline: none;
+    }
+    .cm-cal-time-add::placeholder { color: var(--textDim); opacity: .4; }
+
+    /* ── Week view (time-grid version) ── */
+    .cm-cal-week-hdr-row {
+      display: flex; border-bottom: 1px solid var(--border);
+    }
+    .cm-cal-week-time-gutter {
+      width: 48px; flex-shrink: 0;
+    }
+    .cm-cal-week-col-hdr {
+      flex: 1; text-align: center; font-size: 9px; font-weight: 600;
+      color: var(--textDim); text-transform: uppercase; letter-spacing: .05em;
+      padding: 4px 0; font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
+    }
+    .cm-cal-week-col-hdr.cm-cal-week-today { color: var(--accent); }
+    .cm-cal-week-body {
+      max-height: 360px; overflow-y: auto;
+    }
+    .cm-cal-week-time-row {
+      display: flex; min-height: 28px; border-bottom: 1px solid var(--borderSubtle);
+    }
+    .cm-cal-week-cell {
+      flex: 1; min-height: 28px; cursor: pointer; padding: 1px 2px;
+      border-left: 1px solid var(--borderSubtle);
+      transition: background .1s; position: relative;
+    }
+    .cm-cal-week-cell:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+
+    /* ── Day view ── */
+    .cm-cal-day-panel {
+      background: var(--surfaceAlt); border-radius: 6px; padding: 4px 0;
+    }
+
+    /* ── Wiki dropdown rendered by React (positioned fixed) ── */
+
+    /* ── Live list items ── */
+    .nb-live .cm-lv-li { position: relative; }
+    .cm-list-marker {
+      display: inline-block; color: var(--textDim); min-width: 0.7em; margin-right: 0;
+    }
+    .cm-list-marker-ord { font-weight: 600; color: var(--text); opacity: 0.6; }
+
+    /* ══════════════════════════════════════════════════════
+       PREVIEW — identical typography to live
+    ══════════════════════════════════════════════════════ */
+    .nb-prev {
+      flex: 1; overflow: auto;
+      padding: var(--nb-py) var(--nb-px);
+      font-size: var(--nb-fs);
+      line-height: var(--nb-lh);
+      font-family: var(--nb-ff);
+      color: var(--nb-color);
+      max-width: var(--nb-max); margin: 0 auto; width: 100%;
+      box-sizing: border-box;
+    }
+    /* Headings — match live exactly */
+    .nb-prev h1 { font-size:var(--nb-h1); font-weight:600; margin:1.15em 0 .45em; font-family:'Stack Sans Text','Switzer','Satoshi',sans-serif; color:var(--nb-h1-color); line-height:1.25; letter-spacing:-0.3px; }
+    .nb-prev h2 { font-size:var(--nb-h2); font-weight:600; margin:1.1em 0 .4em;  font-family:'Stack Sans Text','Switzer','Satoshi',sans-serif; color:var(--nb-h2-color); line-height:1.3; letter-spacing:-0.2px; }
+    .nb-prev h3 { font-size:var(--nb-h3); font-weight:600; margin:1em 0 .35em;   font-family:'Stack Sans Text','Satoshi','Switzer',sans-serif; color:var(--nb-h3-color); line-height:1.4; }
+    .nb-prev h4 { font-size:var(--nb-h4); font-weight:600; margin:.9em 0 .3em;   font-family:'Stack Sans Text','Satoshi','Switzer',sans-serif; color:var(--nb-h4-color); }
+    .nb-prev h5 { font-size:var(--nb-h5); font-weight:600; margin:.85em 0 .25em; font-family:'Stack Sans Text','Satoshi','Switzer',sans-serif; color:var(--nb-h5-color); }
+    .nb-prev h6 { font-size:var(--nb-h6); font-weight:600; margin:.8em 0 .25em;  font-family:'Stack Sans Text','Satoshi','Switzer',sans-serif; color:var(--nb-h6-color); opacity:.65; }
+    .nb-prev p  { margin: 0 0 var(--nb-para-gap); }
+    .nb-prev blockquote {
+      border-left: 3px solid var(--nb-quote-border); margin: .8em 0; padding: 8px 14px;
+      color: var(--nb-quote-color); border-radius: 0 4px 4px 0;
+      background: var(--nb-quote-bg); font-style: italic;
+    }
+    .nb-prev pre.nb-pre { background:var(--surfaceAlt); border:1px solid var(--border); border-radius:8px; padding:14px 16px; overflow-x:auto; margin:.8em 0; }
+    /* Mermaid diagrams + inline SVG — centred, never wider than the page.
+       An author SVG can carry width/height:100% (or none at all), which without
+       these constraints expands to cover the page and blanks the content behind
+       it. Clamp the box, force the SVG to lay out inside it, and contain paint
+       so it can never draw outside its own block. */
+    .nb-mermaid, .nb-svg {
+      margin:.9em 0; text-align:center; overflow:auto;
+      width:100%; max-width:100%; max-height:70vh; contain:paint;
+    }
+    /* Clamp with max-* only. Forcing width/height:auto collapses an SVG that
+       has no viewBox (no intrinsic size) to 0×0 — which is what made the block
+       look like it blanked the page. */
+    .nb-mermaid svg, .nb-svg svg {
+      max-width:100%; max-height:70vh;
+      display:inline-block; position:static !important;
+    }
+    /* Mermaid sizes every node box by measuring its label FIRST, then emits
+       fixed geometry. The notebook's own font-size/line-height cascade into the
+       SVG afterwards and the text no longer fits — labels render clipped. Pin
+       the typography mermaid assumed, and let labels overflow rather than crop. */
+    .nb-mermaid svg { font-size:16px; line-height:normal; }
+    .nb-mermaid svg text,
+    .nb-mermaid svg .nodeLabel,
+    .nb-mermaid svg foreignObject div,
+    .nb-mermaid svg foreignObject span {
+      font-family:'trebuchet ms', verdana, arial, sans-serif !important;
+      font-size:16px !important;
+      line-height:normal !important;
+      letter-spacing:normal !important;
+      text-indent:0 !important;
+    }
+    .nb-mermaid svg foreignObject { overflow:visible; }
+    .nb-diagram-live { margin:.4em 0; }
+    .nb-diagram-pending { color:var(--textDim); font-size:.88em; font-style:italic; padding:10px; }
+    .nb-diagram-error {
+      color:#f85149; font-size:.85em; font-family:SF Mono,Menlo,monospace; text-align:left;
+      background:rgba(248,81,73,0.08); border:1px solid rgba(248,81,73,0.3);
+      border-radius:6px; padding:8px 12px;
+    }
+    .nb-prev code { font-family:SF Mono,Menlo,Consolas,monospace; font-size:.87em; }
+    .nb-ic { background:var(--nb-code-bg); border-radius:4px; padding:1px 5px; font-family:SF Mono,Menlo,Consolas,monospace; font-size:.87em; color:var(--nb-code-color); }
+    .nb-prev table.nb-table { border-collapse:collapse; width:100%; margin:.8em 0; font-size:.93em; }
+    .nb-prev table.nb-table th,.nb-prev table.nb-table td { border:1px solid var(--border); padding:6px 10px; }
+    .nb-prev table.nb-table th { background:var(--surfaceAlt); font-weight:600; }
+    .nb-prev ul,.nb-prev ol { margin:0 0 .75em; padding-left:1.6em; list-style-position: outside; }
+    .nb-prev li { margin-bottom:.25em; }
+    .nb-prev ul ul,.nb-prev ol ol,.nb-prev ul ol,.nb-prev ol ul { margin:.2em 0; padding-left:1.4em; }
+    .nb-prev ul.nb-tl { list-style:none; padding-left:.4em; }
+    .nb-prev li.nb-task { display:flex; gap:8px; align-items:baseline; cursor:pointer; }
+    .nb-prev li.nb-task:hover { opacity:.85; }
+    .nb-prev .nb-cb { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border:1.5px solid var(--border); border-radius:3px; font-size:10px; flex-shrink:0; cursor:pointer; user-select:none; transition:background .1s,border-color .1s; }
+    .nb-prev li.checked .nb-cb { background:var(--accent); border-color:var(--accent); color:var(--bg); }
+    .nb-prev li.checked>span:last-child { text-decoration:line-through; opacity:.55; }
+    .nb-hl { background:var(--nb-hl-bg); border-radius:2px; padding:0 2px; }
+    /* Inline text formats — match live */
+    .nb-bold   { font-weight:700; color:var(--nb-bold-color); }
+    .nb-italic { font-style:italic; color:var(--nb-italic-color); }
+    .nb-strike { text-decoration:line-through; color:var(--nb-strike-color); opacity:.75; }
+    .nb-sup    { font-size:.75em; vertical-align:super; color:var(--nb-link-color); }
+    .nb-sub    { font-size:.75em; vertical-align:sub;   color:var(--nb-link-color); }
+    .wikilink     { border-bottom:1px solid var(--nb-wikilink-color); cursor:pointer; color:var(--nb-wikilink-color); }
+    .wikilink:hover { opacity:.8; }
+    .wikilink-new { color:var(--textDim); border-bottom-color:var(--textDim); }
+    .wikilink-unavailable { color:var(--textDim); border-bottom:1px dashed var(--textDim); opacity:.6; cursor:default; }
+    /* Images in preview */
+    .nb-img {
+      max-width:100%; max-height:500px; border-radius:6px;
+      margin:.75em 0; display:block; object-fit:contain;
+      box-shadow:0 2px 12px rgba(0,0,0,.2);
+    }
+    .nb-img[src=""],
+    .nb-img:not([src]) { display: none; }
+    .nb-prev a { color:var(--nb-link-color); text-decoration:underline; }
+    .nb-prev hr { border:none; border-top:1px solid var(--border); margin:1.2em 0; }
+    /* MathQuill static display in preview */
+    .nb-math { display:inline-block; }
+    .nb-math-block { display:block; text-align:center; margin:1em 0; overflow-x:auto; }
+    .nb-math-mq .mq-root-block { color: var(--text) !important; }
+    /* Preview-mode calendar block */
+    .cm-cal-prev-block { border: 1px solid var(--borderSubtle); border-radius: 8px; overflow: hidden; margin: .6em 0; }
+    .cm-cal-prev-title { font-size: 11px; font-weight: 600; padding: 6px 10px; background: var(--surface); color: var(--text); border-bottom: 1px solid var(--borderSubtle); font-family: 'Stack Sans Text','Switzer','Satoshi',sans-serif; }
+    .cm-cal-prev-day { display: flex; align-items: baseline; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--borderSubtle); flex-wrap: wrap; }
+    .cm-cal-prev-day:last-child { border-bottom: none; }
+    .cm-cal-prev-date { font-size: 10px; font-weight: 600; color: var(--textDim); min-width: 80px; font-family: 'Stack Sans Text','Switzer',system-ui,sans-serif; }
+    .cm-cal-prev-evt { font-size: 11px; color: var(--text); background: color-mix(in srgb, var(--accent) 8%, transparent); border-left: 2px solid var(--accent); border-radius: 2px; padding: 1px 6px; }
+    /* Preview-mode timer block */
+    .cm-timer-prev { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid var(--borderSubtle); border-radius: 8px; margin: .4em 0; background: var(--surfaceAlt); }
+    .cm-timer-prev-time { font-size: 18px; font-weight: 600; color: var(--text); font-family: 'Stack Sans Text','Satoshi','Switzer',sans-serif; font-variant-numeric: tabular-nums; }
+    .cm-timer-prev-label { font-size: 11px; color: var(--textDim); }
+    .nb-fn-ref sup { font-size:.75em; }
+    .nb-fn-ref a { color:var(--accent); text-decoration:none; }
+    .nb-fn-def { font-size:12px; color:var(--textDim); padding:4px 0; border-top:1px solid var(--borderSubtle); margin-top:8px; }
+    .nb-fn-back { color:var(--accent); text-decoration:none; margin-left:4px; }
+    .nb-fns { margin-top:2em; }
+    /* Definition lists */
+    .nb-dl { margin: 0 0 .75em; padding: 0; }
+    .nb-dt { font-weight: 600; color: var(--text); margin-top: .6em; font-family: 'Stack Sans Text','Satoshi','Switzer',sans-serif; letter-spacing: .01em; }
+    .nb-dd { margin-left: 1.6em; color: var(--textDim); margin-bottom: .25em; padding-left: .4em; border-left: 2px solid var(--borderSubtle); }
+    /* Live view definition list line classes */
+    .nb-live .cm-lv-dt { font-weight: 600; color: var(--text); font-family: 'Stack Sans Text','Satoshi','Switzer',sans-serif; margin-top: .5em; }
+    .nb-live .cm-lv-dd { padding-left: 1.6em; color: var(--textDim); border-left: 2px solid var(--borderSubtle); }
+    .nb-live .cm-lv-fn-def { font-size: .88em; color: var(--textDim); border-top: 1px solid var(--borderSubtle); padding-top: 2px; }
+    /* Footnote ref widget in live mode */
+    .cm-fn-ref-widget {
+      font-size: .72em; vertical-align: super; color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 3px;
+      padding: 0 3px; cursor: default; font-weight: 600;
+      font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
+    }
+    mark.nb-fhl { background:rgba(210,153,34,.4); border-radius:2px; padding:0 1px; }
+    /* ── Ghost hint ─────────────────────────────────────── */
+    .cm-ghost-hint {
+      color: var(--textDim);
+      opacity: 0.35;
+      font-style: italic;
+      pointer-events: none;
+      user-select: none;
+    }
+    /* ── Uniform number styling ──────────────────────────── */
+    .cm-nb-num {
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.015em;
+    }
+    /* ── Math variable names ─────────────────────────────── */
+    .cm-math-var {
+      color: #e8a87c;
+      font-weight: 500;
+    }
+    .cm-math-var-live {
+      color: #f0a060;
+    }
+    .cm-math-colon {
+      color: #e8a87c;
+      opacity: 0.45;
+    }
+    /* Blue complement to orange — drawn from the app's existing accent hue */
+    .cm-math-ref {
+      color: #79b8ff;
+      font-weight: 500;
+    }
+    /* Bold ghost text result */
+    .cm-math-ghost {
+      font-weight: 700;
+    }
+    /* Gradient shimmer sweep when a live result auto-updates */
+    @keyframes mathResultShimmer {
+      0%   { background-position: -200% center; }
+      100% { background-position: 200% center; }
+    }
+    .cm-math-live-updated {
+      background: linear-gradient(
+        90deg,
+        #f0a060 0%,
+        #ffd4a0 30%,
+        #fff3e0 50%,
+        #ffd4a0 70%,
+        #f0a060 100%
+      );
+      background-size: 400% auto;
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: mathResultShimmer 1.4s ease-in-out;
+      animation-iteration-count: 1;
+      animation-fill-mode: none;
+    }
+    mark.nb-fhl-a { background:color-mix(in srgb, var(--accent) 50%, transparent); outline:2px solid var(--accent); }
+
+    /* ── Cover banner ─────────────────────────────────── */
+    .nb-cover-banner {
+      position: relative;
+      width: 100%;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+    .nb-cover-img {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      display: block;
+      user-select: none;
+    }
+    .nb-cover-img-draggable { cursor: grab; }
+    .nb-cover-img-draggable:active { cursor: grabbing; }
+    .nb-cover-actions {
+      position: absolute;
+      bottom: 10px; right: 14px;
+      display: flex; gap: 6px;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .nb-cover-banner:hover .nb-cover-actions { opacity: 1; }
+    .nb-cover-action-btn {
+      background: rgba(15,15,15,0.6);
+      border: none;
+      color: #fff;
+      font-size: 11.5px;
+      border-radius: 5px;
+      padding: 4px 10px;
+      cursor: pointer;
+      font-family: inherit;
+      backdrop-filter: blur(4px);
+      transition: background 0.12s;
+    }
+    .nb-cover-action-btn:hover { background: rgba(15,15,15,0.82); }
+
+    /* ── Cover image picker modal ─────────────────────── */
+    .nb-cover-picker-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.65);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .nb-cover-picker-panel {
+      background: var(--surface);
+      border-radius: 12px;
+      padding: 20px;
+      width: 600px;
+      max-width: 92vw;
+      max-height: 88vh;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.55);
+    }
+    .nb-cover-picker-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nb-cover-picker-header > span:first-child { font-weight: 600; font-size: 14px; color: var(--text); }
+    .nb-cover-picker-hint { font-size: 12px; color: var(--textDim); }
+    .nb-cover-picker-stage {
+      position: relative;
+      overflow: hidden;
+      border-radius: 8px;
+      cursor: grab;
+      user-select: none;
+      width: 100%;
+      min-height: 120px;
+      background: #000;
+      flex-shrink: 0;
+    }
+    .nb-cover-picker-stage:active { cursor: grabbing; }
+    .nb-cover-picker-img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      pointer-events: none;
+    }
+    .nb-cpick-dim {
+      position: absolute;
+      left: 0; right: 0;
+      background: rgba(0,0,0,0.55);
+      pointer-events: none;
+    }
+    .nb-cpick-vp {
+      position: absolute;
+      box-shadow: 0 0 0 2px rgba(255,255,255,0.8) inset;
+    }
+    /* north/south resize handles (horizontal pill) */
+    .nb-cpick-resize-n,
+    .nb-cpick-resize-s {
+      position: absolute;
+      left: 0; right: 0;
+      height: 12px;
+      cursor: ns-resize;
+      display: flex;
+      justify-content: center;
+    }
+    .nb-cpick-resize-n { top: 0; align-items: flex-start; padding-top: 3px; }
+    .nb-cpick-resize-s { bottom: 0; align-items: flex-end; padding-bottom: 3px; }
+    .nb-cpick-resize-n::after,
+    .nb-cpick-resize-s::after {
+      content: '';
+      width: 36px; height: 3px;
+      border-radius: 2px;
+      background: rgba(255,255,255,0.75);
+      display: block;
+    }
+    /* west/east resize handles (vertical pill) */
+    .nb-cpick-resize-w,
+    .nb-cpick-resize-e {
+      position: absolute;
+      top: 0; bottom: 0;
+      width: 12px;
+      cursor: ew-resize;
+      display: flex;
+      align-items: center;
+    }
+    .nb-cpick-resize-w { left: 0; justify-content: flex-start; padding-left: 3px; }
+    .nb-cpick-resize-e { right: 0; justify-content: flex-end; padding-right: 3px; }
+    .nb-cpick-resize-w::after,
+    .nb-cpick-resize-e::after {
+      content: '';
+      width: 3px; height: 36px;
+      border-radius: 2px;
+      background: rgba(255,255,255,0.75);
+      display: block;
+    }
+    .nb-cpick-zoom {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .nb-cpick-zoom-btn {
+      width: 26px; height: 26px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: none;
+      color: var(--text);
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      transition: background 0.1s;
+    }
+    .nb-cpick-zoom-btn:hover { background: var(--surfaceAlt); }
+    .nb-cpick-zoom-slider {
+      flex: 1;
+    }
+    .nb-cover-picker-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .nb-cover-picker-cancel {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--textDim);
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+    }
+    .nb-cover-picker-cancel:hover { background: var(--surfaceAlt); color: var(--text); }
+    .nb-cover-picker-apply {
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      border-radius: 6px;
+      padding: 6px 18px;
+      font-size: 13px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: opacity 0.12s;
+    }
+    .nb-cover-picker-apply:hover { opacity: 0.88; }
+
+    /* ── /linkw URL input modal ────────────────────────── */
+    .nb-linkw-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.55);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .nb-linkw-modal {
+      background: var(--surface);
+      border-radius: 10px;
+      padding: 18px 20px 14px;
+      width: 420px;
+      max-width: 92vw;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+    .nb-linkw-modal-title { font-weight: 600; font-size: 14px; color: var(--text); }
+    .nb-linkw-modal-input {
+      width: 100%;
+      box-sizing: border-box;
+      background: var(--surfaceAlt, #252525);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 13px;
+      color: var(--text);
+      font-family: inherit;
+      outline: none;
+    }
+    .nb-linkw-modal-input:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
+    .nb-linkw-modal-hint { font-size: 11px; color: var(--textDim); }
+
+    /* ── /linkf file badge ─────────────────────────────── */
+    .cm-linkf-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 9px 2px 6px;
+      border-radius: 5px;
+      background: var(--surfaceAlt, #252525);
+      border: 1px solid var(--border);
+      font-size: 13px;
+      cursor: pointer;
+      vertical-align: middle;
+      max-width: 340px;
+      transition: background 0.12s, border-color 0.12s;
+      white-space: nowrap;
+      overflow: hidden;
+      line-height: 1.6;
+    }
+    .cm-linkf-badge:hover { background: var(--accentDim, rgba(100,149,237,0.14)); border-color: var(--accent); }
+    .cm-linkf-icon { display: inline-flex; align-items: center; flex-shrink: 0; color: var(--textDim); }
+    .cm-linkf-name { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ── /linkw web viewer (embedded native webview) ───── */
+    .cm-linkw-wrap {
+      display: block;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 4px 0;
+      background: var(--surfaceAlt, #252525);
+      width: 100%;
+    }
+    .cm-linkw-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 10px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surfaceAlt, #252525);
+      height: 32px;
+      box-sizing: border-box;
+    }
+    .cm-linkw-glob { display: inline-flex; align-items: center; flex-shrink: 0; color: var(--textDim); }
+    .cm-linkw-info {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: baseline;
+      gap: 0;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+    .cm-linkw-title {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex-shrink: 1;
+      min-width: 0;
+    }
+    .cm-linkw-url {
+      font-size: 11px;
+      color: var(--textDim);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .cm-linkw-open-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      border-radius: 5px;
+      padding: 4px 9px;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: opacity 0.12s;
+      white-space: nowrap;
+    }
+    .cm-linkw-open-btn:hover { opacity: 0.82; }
+    .cm-linkw-view-area {
+      width: 100%;
+      height: 460px;
+      background: var(--surfaceAlt, #252525);
+      display: block;
+      position: relative;
+    }
+    .cm-linkw-load-overlay {
+      position: absolute;
+      inset: 0;
+      cursor: pointer;
+      overflow: hidden;
+      background: var(--surfaceAlt, #252525);
+    }
+    .cm-linkw-thumb {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: top center;
+      display: block;
+    }
+    .cm-linkw-favicon-badge {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      background: rgba(0,0,0,0.55);
+      border-radius: 6px;
+      padding: 4px;
+      display: flex;
+      align-items: center;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    .cm-linkw-favicon-badge img { width: 20px; height: 20px; display: block; }
+
+    /* ── /linkv video player ────────────────────────────── */
+    .cm-linkv-wrap {
+      display: block;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 4px 0;
+      background: #000;
+    }
+    .cm-linkv-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surfaceAlt, #252525);
+      height: 26px;
+      box-sizing: border-box;
+    }
+    .cm-linkv-icon { display: inline-flex; align-items: center; flex-shrink: 0; color: var(--textDim); }
+    .cm-linkv-title {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      min-width: 0;
+    }
+    .cm-linkv-video {
+      display: block;
+      width: 100%;
+      max-height: 340px;
+      background: #000;
+    }
+    .cm-linkv-unavailable {
+      padding: 12px 14px;
+      background: var(--surfaceAlt);
+      border: 1px dashed var(--border);
+      border-top: none;
+      border-radius: 0 0 8px 8px;
+      font-size: 12px;
+      color: var(--textDim);
+    }
+
+    /* ── Title meta row (Add cover hint) ──────────────── */
+    .nb-title-area { }
+    .nb-title-meta-row {
+      height: 22px;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .nb-title-area:hover .nb-title-meta-row { opacity: 1; }
+    .nb-title-meta-btn {
+      display: inline-flex;
+      align-items: center;
+      background: none;
+      border: none;
+      color: var(--textDim);
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      border-radius: 4px;
+      padding: 2px 6px;
+      opacity: 0.7;
+      transition: opacity 0.12s, background 0.12s;
+    }
+    .nb-title-meta-btn:hover { opacity: 1; background: var(--surfaceAlt); }
+
+    /* ── Progress bar / misc ───────────────────────────── */
+    .nb2-fb { background:none; border:none; color:var(--textDim); cursor:pointer; border-radius:5px; padding:3px 7px; font-size:11px; font-family:inherit; transition:background .1s,color .1s; }
+    .nb2-fb:hover { background:var(--surfaceAlt); color:var(--text); }
+    .nb2-fc { font-size:16px; opacity:.6; background:none; border:none; cursor:pointer; color:var(--textDim); padding:0 4px; line-height:1; }
+    .nb2-fc:hover { opacity:1; }
+
+    /* ── Save indicator animation ──────────────────────── */
+    .nb-findbar {
+      position:absolute; top:10px; right:16px; z-index:400;
+      display:flex; align-items:center; gap:7px;
+      width:300px; height:32px; padding:0 10px;
+      background:var(--surface); border:1px solid var(--borderSubtle);
+      border-radius:9px; color:var(--textDim);
+      box-shadow:0 0 0 1px rgba(0,0,0,0.04), 0 10px 24px rgba(0,0,0,0.25);
+      animation: nb-findbar-in .13s cubic-bezier(0.2,0.8,0.3,1);
+    }
+    @keyframes nb-findbar-in { from { opacity:0; transform:translateY(-4px) } to { opacity:1; transform:none } }
+    .nb-findbar input {
+      flex:1; min-width:0; background:none; border:none; outline:none;
+      color:var(--text); font-size:12.5px; font-family:inherit;
+    }
