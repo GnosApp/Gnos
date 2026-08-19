@@ -15,6 +15,16 @@ body {
   --textDisabled: #3d444d;
   --accent: #388bfd;
   --accentSecondary: #a371f7;
+  /* Text-entry focus state — no highlight at all now. Each field's own
+     background darkening on focus (where present, e.g. surfaceAlt→bg) is
+     the only cue; --focusBorder equals the plain unfocused --border so
+     there's no visible border change either. Shared by every text
+     input/textarea/select focus rule app-wide; tune here rather than
+     per-component. History: tried accent-blue (A121) → muted neutral
+     (A123) → this, none at all (A125), each step in response to it
+     still reading as an unwanted highlight. */
+  --focusBorder: var(--border);
+  --focusRing: none;
   --readerBg: #111820;
   --readerCard: #161b22;
   --readerText: #cdd9e5;
@@ -470,7 +480,7 @@ button { font-family: inherit; }
 .profile-name-row { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid var(--borderSubtle); }
 .profile-name-label { font-size: 13px; font-weight: 600; color: var(--textMuted); white-space: nowrap; font-family: var(--font-ui); }
 .profile-name-input { flex: 1; background: var(--surfaceAlt); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 14px; color: var(--text); font-family: var(--font-ui); outline: none; transition: border-color 0.15s; }
-.profile-name-input:focus { border-color: var(--accent); }
+.profile-name-input:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
 .profile-name-input::placeholder { color: var(--textDim); }
 .profile-stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px; }
 .profile-stat-card { background: var(--surfaceAlt); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; text-align: center; }
@@ -943,7 +953,7 @@ button { font-family: inherit; }
   font-size: 13px; font-family: inherit; resize: vertical;
   outline: none; min-height: 80px;
 }
-.note-textarea:focus { border-color: var(--accent); }
+.note-textarea:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
 .note-panel-body { padding: 12px 14px; }
 .note-panel-actions { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; }
 .note-cancel-btn { background: none; border: 1px solid var(--border); color: var(--textMuted); border-radius: 7px; padding: 6px 14px; font-size: 12px; cursor: pointer; font-family: inherit; }
@@ -1089,7 +1099,7 @@ mark.reader-note-highlight {
 .ctx-item:disabled { opacity: 0.45; cursor: default; }
 .ctx-item.danger { color: #f85149; }
 .ctx-item.ctx-item-active:not(:disabled) { background: var(--hover); }
-.ctx-item:focus-visible { outline: 1.5px solid var(--accent); outline-offset: -1.5px; }
+.ctx-item:focus-visible { outline: none; }
 /* Icon color tracks the row's text color — a normal row's icon matches its
    label, a danger row's icon goes red with it. */
 .ctx-item-icon { color: currentColor; flex-shrink: 0; }
@@ -1185,7 +1195,7 @@ mark.reader-note-highlight {
   color: var(--text); font-family: var(--font-ui); transition: background 0.1s;
 }
 .add-choice-btn:hover { background: var(--hover); }
-.add-choice-btn:focus-visible { outline: 1.5px solid var(--accent); outline-offset: -1.5px; }
+.add-choice-btn:focus-visible { outline: none; }
 .add-choice-btn svg { color: var(--accent); flex-shrink: 0; }
 .add-choice-label { font-size: 12.5px; font-weight: 500; }
 .add-choice-sub { font-size: 10.5px; font-weight: 400; color: var(--textDim); margin-top: 1px; }
@@ -1319,7 +1329,7 @@ mark.reader-note-highlight {
   width: 100%; flex: 1; position: relative;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-.nb-search-bar:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent); }
+.nb-search-bar:focus-within { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
 .nb-search-bar .search-icon { color: var(--textDim); flex-shrink: 0; }
 #nb-search-input {
   background: none; border: none; outline: none;
@@ -1578,7 +1588,7 @@ mark.nb-find-mark-active {
 .cm-habits-add-btn { background: var(--surfaceAlt); border: 1px solid var(--border); border-radius: 6px; color: var(--textDim); cursor: pointer; padding: 3px 11px; font-size: 15px; line-height: 1.5; flex-shrink: 0; transition: color 0.1s, border-color 0.1s, background 0.1s; }
 .cm-habits-add-btn:hover { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surfaceAlt)); }
 .cm-habits-add-inp { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 5px 9px; font-size: 12px; outline: none; font-family: var(--font-ui); min-width: 0; }
-.cm-habits-add-inp:focus { border-color: var(--accent); }
+.cm-habits-add-inp:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
 .cm-habits-delete-btn { background: none; border: none; cursor: pointer; color: var(--textDim); padding: 3px; border-radius: 5px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: color 0.15s, background 0.15s; }
 .cm-habits-delete-btn:hover { color: #f85149; background: color-mix(in srgb, #f85149 10%, transparent); }
 .cm-habits-view-toggle { background: none; border: none; cursor: pointer; color: var(--textDim); padding: 3px; border-radius: 5px; position: relative; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; transition: color 0.15s, background 0.15s; flex-shrink: 0; margin-left: auto; }
@@ -2151,7 +2161,7 @@ body.zen-active .nb-content-wrap {
   border-radius: 6px; color: var(--text); font-size: 13px;
   font-family: var(--font-ui); padding: 5px 10px; outline: none;
 }
-.notebook-find-bar input:focus { border-color: var(--accent); }
+.notebook-find-bar input:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
 .notebook-find-status { font-size: 11px; color: var(--textDim); min-width: 50px; text-align: center; }
 .notebook-find-bar button {
   width: 28px; height: 28px; border-radius: 6px;
@@ -2739,7 +2749,7 @@ body.zen-active .nb-content-wrap {
   border-radius: 5px; color: var(--text); font-size: 12px;
   padding: 4px 6px; outline: none;
 }
-.cm-qd-date-inp:focus { border-color: var(--accent); }
+.cm-qd-date-inp:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
 .cm-qd-confirm {
   background: var(--accent); color: #fff; border: none;
   border-radius: 5px; font-size: 12px; padding: 4px 8px;
@@ -3424,10 +3434,19 @@ body {
   background-clip: content-box;
 }
 
-/* 3. Focus visibility — consistent accent ring for keyboard navigation */
+/* 3. Focus visibility — neutral ring for keyboard navigation. This is the
+   actual, single source of the "blue border anywhere I'm editing" — it's
+   a browser-native outline, separate from any component's own border/
+   box-shadow, and for text inputs specifically most browsers show it on
+   mouse click too (not just Tab), which is why no per-component fix ever
+   fully removed it (border/box-shadow tuning doesn't touch outline).
+   Dropped entirely per explicit request — no focus highlight at all.
+   NOTE: this removes the one universal keyboard-focus indicator the app
+   had; a keyboard-only user tabbing through buttons/links/menu items now
+   gets no visual cue where focus is. Acceptable trade-off called out,
+   not silently taken. */
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
-  outline-offset: 1px;
+  outline: none;
 }
 
 /* 4. Header — single hairline instead of the doubled border+shadow line */
@@ -3545,7 +3564,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   color: var(--text); font-family: var(--font-ui, inherit); outline: none;
   cursor: pointer;
 }
-.gnos-select:focus { border-color: var(--accent); }
+.gnos-select:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
 .gnos-select:disabled { opacity: .4; cursor: default; }
 .settings-panel .section-label {
   font-size: 10px; font-weight: 700; letter-spacing: .08em;
@@ -3560,7 +3579,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   border-radius: 12px !important;
   box-shadow: none !important;
 }
-.cm-task-col-w { border-radius: 9px !important; border-color: var(--borderSubtle) !important; background: var(--surfaceAlt); }
+.cm-task-col-w { border-radius: 8px !important; border-color: var(--borderSubtle) !important; background: var(--surfaceAlt); }
 .cm-task-card-w {
   border-radius: 8px !important;
   border-color: var(--borderSubtle) !important;

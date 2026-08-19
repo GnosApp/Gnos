@@ -10,6 +10,98 @@ below, grouped into passes. Order picked so early passes establish a shared
 visual language (menu style, form style) that later passes can just reuse
 instead of re-deciding from scratch each time.
 
+## Process — read this first if you're picking this up fresh
+
+**Workflow, every single change, no exceptions:**
+1. Pick ONE item from the audit list below. Don't batch multiple items into
+   one change — this project's whole value has been going slow and
+   confirming with the user at each step, not big-bang rewrites.
+2. Look for the bug classes below before inventing new work — they've
+   repeated across nearly every pass so far and are cheap to check for:
+   - Unicode glyph standing in for an icon (`×`, `⋯`, `···`, `‹`/`›`) —
+     replace with a real `lucide-react` icon (or, in a vanilla-DOM
+     CodeMirror widget where React components aren't available, a
+     hand-written inline `<svg>` matching lucide's path data — grep
+     `node_modules/lucide-react/dist/esm/icons/<name>.mjs` for the exact
+     `d=` path rather than approximating it).
+   - `'var(--accent)14'`-style string concatenation for alpha — invalid
+     CSS, silently produces no color at all. Fix: `color-mix(in srgb,
+     var(--accent) 14%, transparent)`.
+   - Hardcoded `rgba(56,139,253,X)` or solid `#388bfd` — the dark theme's
+     literal accent RGB baked in instead of `var(--accent)`; wrong on any
+     other theme. (Solid, non-alpha instances like `--addBookIcon` are a
+     separate, deliberately-deferred case — see audit list.)
+   - A colored left/top border ("side-tab") on a card/row as a status or
+     category indicator — craft-floor's most-flagged AI-slop tell. Replace
+     with a small dot/ring, not a border stripe (see `KanbanCardModal`'s
+     column-color ring, or `FlashcardView.jsx`'s `.fc-list-color-dot`).
+   - Wrong red for destructive actions — app standard is `#f85149`, not
+     `#ef4444`/`#ef5350`.
+3. Verify — **live, not just code review** — before calling anything done:
+   - Onboarding bypass unlocks real browser-preview testing:
+     `localStorage.setItem('gnos_onboarding_done','1')` then reload. Skips
+     straight to the app with its sample library. `window.__appStore` is
+     exposed globally for direct state/nav
+     (`window.__appStore.getState().navigate({view:'kanban'})`) — faster
+     than clicking through nav for a specific view.
+   - `npx eslint <file>` — compare the error *count* against what it was
+     before your change, don't chase pre-existing unrelated errors in the
+     same file (this repo has a real baseline in several files; check
+     `UI_CHANGES.md`'s recent entries for the current baseline per file
+     you're touching).
+   - `npx vite build` — must stay green. Can take >120s; let it background
+     and check back rather than blocking.
+   - `node ~/.claude/skills/impeccable/scripts/detect.mjs --json <file>` —
+     the mechanical antipattern scanner. A finding isn't automatically a
+     defect (read its context before "fixing" it) but don't ignore it
+     silently either.
+4. Log the change in **both** places, every time:
+   - `UI_CHANGES.md` — new lettered entry (currently at A125; next is
+     A126), same format as the existing entries: what was wrong, what
+     changed, what was deliberately left alone and why, how it was
+     verified.
+   - This file — check the box, add a line under the relevant pass (or add
+     a new pass if it's not covered by an existing one).
+5. Confirm with the user before moving to the next item. Don't chain
+   multiple audit items into one uninterrupted run — several rounds in
+   this project only found their real fix after the user saw a live result
+   and reacted (e.g. the kanban modal took 6 rounds — A113 through A118 —
+   each driven by fresh user feedback on the *previous* round's output,
+   not predicted up front).
+
+**Established design language so far** (don't reinvent per-component):
+- Radius family: 8px for cards/fields/buttons/columns in anything touched
+  by this project. Collapse one-off 4-10px values you find to this.
+- Type scale inside modals: settled at roughly 11px (labels/meta/badges),
+  13px (body/fields/buttons), 17px (modal heading) — see
+  `KanbanCardModal`'s comment block in `LibraryView.jsx` for the reasoning
+  (was 7 near-duplicate sizes bunched together with no rhythm).
+- Spacing: 4px-based grid (4/8/12/16/20/24), not arbitrary values.
+- Color hierarchy inside modals: `var(--text)` (white) reserved for
+  section labels, the selected/active state of a segmented control, and
+  primary+secondary footer action buttons. `var(--textDim)` for
+  everything else (subtitles, placeholders, unselected states, meta/
+  timestamps). Don't let the white/dim split be arbitrary — pick which
+  bucket a new element belongs to on purpose.
+- Footer convention: destructive action separate on the left (own red
+  outline style), Cancel + primary action split 50/50 on the right.
+- **Focus state — deliberately none, as of A125.** No border color change,
+  no box-shadow ring, no outline, anywhere in the app — the user
+  explicitly asked for this after several rounds of "still too blue" (see
+  A121/A123/A124/A125 in `UI_CHANGES.md`). `--focusBorder`/`--focusRing`
+  tokens in `global.css` `:root` exist and are wired everywhere but both
+  currently resolve to a no-op. **Do not "fix" this by reintroducing a
+  focus ring/outline/border-color change** — that undoes an explicit,
+  repeated user decision, not a bug. If accessibility concerns come up,
+  raise it with the user rather than silently reverting.
+- No-fake-data principle, every pass: never invent UI for a field the data
+  model doesn't have (assignee avatars, attachment counts, character
+  counters, linked-record previews). Reformat/derive from real fields, or
+  — if the feature genuinely needs it — extend the data model for real
+  (see A120: extended the notebook `/kanban` widget's task shape with
+  `priority`/`description`/`comments` rather than faking a modal around
+  fields that didn't exist) and say so explicitly in the changelog entry.
+
 ## Status
 
 - [x] **Pass 1 — Context menus** — DONE, logged as A101 in `UI_CHANGES.md`.
@@ -207,17 +299,115 @@ instead of re-deciding from scratch each time.
     fills deliberately left alone — different, needs-judgment bug, not
     swept.
 
+- [x] **Notebook-embedded `/kanban` widget — DONE, logged as A119.**
+      Separate implementation from Pass 4's `KanbanBoard` — a vanilla-DOM
+      `TaskBlockWidget` in `NotebookView.jsx` (plus a read-only preview
+      HTML renderer) that A110-A118 never touched. User spotted it live
+      and asked what happened. Redesigned to match: solid rainbow header
+      bar → hollow color ring, uppercase 10px titles → real-case 13px,
+      unicode `×` → the existing stroke-X SVG pattern (reused from the
+      Habits widget), 6 scattered font sizes → 2 (13/11) + one 14px board
+      title, border-radii 4-10px → unified 8px including the global.css
+      `!important` override. Verified live in a real notebook + computed
+      styles.
+  - [x] **Follow-up (A120)** — user asked for a real edit modal on these
+        cards, not just inline rename; chose to extend the widget's task
+        data model too (was `{text,date}` only). Added
+        `priority`/`description`/`comments`, extended the `{date:...}`
+        markdown tag convention with `{priority:...}`/`{desc:BASE64}`/
+        `{comments:BASE64-JSON}`, built `_openTaskCardModal` — a
+        vanilla-DOM rebuild of `KanbanCardModal` matching its exact
+        visual language (A113-A118) since this render path can't use
+        React components. Verified live: set priority+description,
+        saved, reopened, confirmed both round-tripped through markdown.
+
 - [ ] **Pass 6 — Standalone bigger modals**
   - [ ] `ProfileModal` — `src/views/LibraryView.jsx:1546`
   - [ ] `TabLayoutModal` — `src/App.jsx:173`
 
-**Not yet audited for their own popups:** `FlashcardView.jsx`,
-`SketchbookView.jsx`, `SettingsWindowView.jsx`, `OnboardingView.jsx`,
-`PdfView.jsx`, `AudioPlayerView.jsx`, `GraphView.jsx`,
-`PluginManagerView.jsx` — a repo-wide grep for Modal/Popup/Menu/Dropdown/
-Picker/Dialog turned up nothing named that way in these files as of this
-writing (2026-08-18). Re-check if any of these views grow their own popup
-before this list is treated as final.
+- [x] Notebook-embedded `/kanban` widget follow-ups — DONE, logged as
+      A121-A125 in `UI_CHANGES.md`. Not a new component, a cross-cutting
+      fix that started here and ended up touching every text-entry field
+      app-wide: the add-card input's focus border read as "bright blue,
+      distracting," which led through 4 rounds (muted-accent → neutral →
+      found the real global `:focus-visible` outline rule as root cause →
+      dropped to no highlight at all) to the "Focus state" rule in the
+      Process section above. Also fixed two always-on (non-focus) accent
+      borders found along the way: `.cm-task-add-col-input` and dead CSS
+      `.cm-task-card-edit` (orphaned once A120 replaced inline-rename with
+      a modal).
+
+- [x] `FlashcardView.jsx` side-tab border — DONE, logged as A122. Only a
+      partial fix, not a full pass on this file (see open item below):
+      the `impeccable` hook flagged 2 `side-tab` findings while the file
+      was open for the focus-ring sweep. One was dead CSS (`[data-color]`
+      attribute selector, never actually set by any JSX — removed
+      outright), the other was live (`card.color` list-row left border) —
+      replaced with `.fc-list-color-dot`, same fix as `KanbanCardModal`'s
+      A110 round. 3 `broken-image` findings on the same file are false
+      positives (each `<img>` is behind an `{card.imageUrl && (...)}`
+      guard) — left alone, don't re-flag without checking the guard first.
+
+## Open — audit list for the next session
+
+Roughly in priority order (highest-value / most user-visible first), but
+pick whichever you actually have a good lead on — this isn't a strict
+queue.
+
+- [ ] **`FlashcardView.jsx` — full pass, not just the side-tab spot-fix.**
+      Never got a real audit like the other views did. At minimum check:
+      the add-card flow, deck settings, CSV/Anki import dialog, and the
+      card-color picker itself (whatever sets `card.color` — is it also
+      using a stripe/swatch pattern worth aligning with the new dot?).
+- [ ] **Wiki-link (`@`-mention) and slash-command (`/`) autocomplete
+      menus** — `makeWikiDropdownPlugin`/`makeSlashSource` in
+      `NotebookView.jsx`. Flagged since Pass 5 (A108), still zero custom
+      styling — these are CodeMirror `autocomplete()` extensions rendering
+      in CM6's bare default theme (no `.cm-tooltip-autocomplete`/
+      `.cm-completionLabel` overrides anywhere). Needs an
+      `EditorView.theme()` block — different mechanism than every other
+      item on this list, budget extra time to learn the CM6 theming API
+      first.
+- [ ] **`SketchbookView.jsx` settings popup** — `sbSettingsOpen` state,
+      renders around line 1170 (`position:'fixed', top:44, right:12`).
+      Never audited; this whole file was previously assumed to have no
+      popups (a 2026-08-18 name-based grep found nothing — wrong, it just
+      isn't *named* `...Modal`/`...Popup`). Check this file for other
+      inline `position:'fixed'` overlays too (4 found in an Aug 2026
+      grep) before assuming this is the only one.
+- [ ] **`AudioPlayerView.jsx` fixed side panel** — around line 471
+      (`position:'fixed', right:8, width:270`), likely a queue/chapters/
+      lyrics panel. Never audited.
+- [ ] **`OnboardingView.jsx` fixed overlay** — around line 546
+      (`position:'fixed', inset:0, zIndex:10000`). Never audited; low
+      priority given it only ever appears once, first-run.
+- [ ] **`SettingsWindowView.jsx`, `PdfView.jsx`, `GraphView.jsx`,
+      `PluginManagerView.jsx`** — re-run the
+      Modal/Popup/Menu/Dropdown/Picker/Dialog name grep AND a
+      `position:.fixed` grep (name-only missed real popups elsewhere on
+      this list) before trusting the old "nothing found" note. As of this
+      writing (2026-08-19) the name grep still finds nothing in these
+      four and the fixed-position grep also comes back empty, but this
+      branch has had a lot of unrelated feature work land on it — don't
+      assume that's still true without re-checking.
+- [ ] **`col.icon` still not rendered** in `LibraryView.jsx`'s own
+      collection cards, collection detail header, or the bulk-select
+      "Add to Collection" picker — flagged back in A102 (2026-08-18),
+      still open. `CollectionFace` (the icon-precedence component,
+      `src/lib/collectionIcons.jsx`) is only wired into the sidebar tree.
+- [ ] **Solid (non-alpha) hardcoded `#388bfd`** instances, e.g.
+      `--addBookIcon` in `global.css`. Flagged during the A109 sweep as a
+      separate, needs-judgment bug (unlike the alpha `rgba(56,139,253,X)`
+      case, a solid fill might be an intentional fixed brand color rather
+      than a should've-been-`var(--accent)` bug) — deliberately not swept
+      mechanically. Actually look at each site before deciding.
+- [ ] **Drift risk: `_openTaskCardModal` (`NotebookView.jsx`, vanilla DOM)
+      vs `KanbanCardModal` (`LibraryView.jsx`, React)** — A120 built the
+      notebook one to visually match the standalone one exactly, "kept in
+      sync by eye," not by shared code (can't share a React component with
+      a CodeMirror widget). If `KanbanCardModal` changes again, check
+      whether `_openTaskCardModal` needs the same change and note it
+      either way.
 
 ## Log
 

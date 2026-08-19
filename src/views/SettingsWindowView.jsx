@@ -592,7 +592,7 @@ const SW_CSS = `
     color: var(--text); font-size: 12.5px; padding: 6px 10px; font-family: inherit;
     outline: none; width: 180px;
   }
-  .sw-input:focus { border-color: var(--accent); }
+  .sw-input:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
   .sw-kbd {
     font-size: 11.5px; font-weight: 600; color: var(--textDim);
     background: var(--surfaceAlt); border: 1px solid var(--border); border-bottom-width: 2px;

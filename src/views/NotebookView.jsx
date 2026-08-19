@@ -606,7 +606,8 @@ function blockToHtml(raw, notebooks, library, footnotesBuf, sketchbooks = [], fl
   if (/^\/(?:task|kanban)(?::.*)?$/.test(first)) {
     const block = parseTaskBlock(raw, 0)
     if (block) {
-      const colsHtml = block.columns.map(col => {
+      const _colColors = ['#f59e0b','#3b82f6','#10b981','#8b5cf6','#ef4444','#06b6d4']
+      const colsHtml = block.columns.map((col, ci) => {
         const tasksHtml = col.tasks.map(t => {
           return `<div class="cm-task-card-w">
             <div class="cm-task-card-body">
@@ -615,7 +616,10 @@ function blockToHtml(raw, notebooks, library, footnotesBuf, sketchbooks = [], fl
           </div>`}).join('')
         return `<div class="cm-task-col-w">
           <div class="cm-task-col-hdr-w">
-            <span class="cm-task-col-title">${esc(col.title)}</span>
+            <div class="cm-task-col-hdr-left">
+              <span class="cm-task-col-ring" style="--ring-color:${_colColors[ci % _colColors.length]}"></span>
+              <span class="cm-task-col-title">${esc(col.title)}</span>
+            </div>
             <span class="cm-task-col-w-badge">${col.tasks.length}</span>
           </div>
           <div class="cm-task-cards-area">${tasksHtml}</div>
@@ -2696,6 +2700,193 @@ function _makeTaskDatePicker(anchor, currentDate, onPick) {
   setTimeout(() => document.addEventListener('mousedown', outside), 0)
 }
 
+// ─── /kanban card edit modal ───────────────────────────────────────────────
+// Vanilla-DOM counterpart to LibraryView.jsx's KanbanCardModal — same
+// product surface, different render path (this is a CodeMirror widget, not
+// React), so it's rebuilt here rather than shared. Same visual language:
+// 17/13/11 type scale, 4px-grid spacing, 8px radius family, and the white
+// (label/selected-pill/footer-buttons) vs dim (subtitle/placeholder/
+// unselected-pill) color hierarchy settled on in that component's A113-A118
+// passes. Kept in sync by eye — if that component's language changes again,
+// this one should follow.
+const PRIORITY_LEVELS = [
+  { id: 'none',   label: 'No priority', color: null },
+  { id: 'low',    label: 'Low',         color: '#6b7280' },
+  { id: 'medium', label: 'Medium',      color: '#eab308' },
+  { id: 'high',   label: 'High',        color: '#f97316' },
+  { id: 'urgent', label: 'Urgent',      color: '#f85149' },
+]
+const _flagSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22V4a1 1 0 0 1 .4-.8A6 6 0 0 1 8 2c3 0 5 2 7.333 2q2 0 3.067-.8A1 1 0 0 1 20 4v10a1 1 0 0 1-.4.8A6 6 0 0 1 16 16c-3 0-5-2-8-2a6 6 0 0 0-4 1.528"/></svg>'
+const _xSvg = size => `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`
+const _trashSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>'
+
+function _openTaskCardModal(task, { colTitle, onSave, onDelete }) {
+  document.querySelectorAll('.cm-task-modal-overlay').forEach(el => el.remove())
+
+  let title = task.text
+  let dueDate = task.date || ''
+  let priority = task.priority || 'none'
+  let description = task.description || ''
+  let comments = (task.comments || []).slice()
+  let newCmt = ''
+  let firstFocusEl = null
+
+  const overlay = document.createElement('div')
+  overlay.className = 'cm-task-modal-overlay'
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', onEsc) }
+  const onEsc = e => { if (e.key === 'Escape') close() }
+  overlay.onclick = e => { if (e.target === overlay) close() }
+  document.addEventListener('keydown', onEsc)
+
+  const box = document.createElement('div')
+  box.className = 'cm-task-modal-box'
+  box.onclick = e => e.stopPropagation()
+  overlay.appendChild(box)
+
+  const divider = () => { const d = document.createElement('div'); d.className = 'cm-task-modal-divider'; return d }
+
+  const render = () => {
+    box.innerHTML = ''
+    const canSave = title.trim().length > 0
+
+    // Header
+    const hdr = document.createElement('div'); hdr.className = 'cm-task-modal-hdr'
+    const hdrText = document.createElement('div')
+    const hTitle = document.createElement('div'); hTitle.className = 'cm-task-modal-title'; hTitle.textContent = 'Edit Task'
+    const hSub = document.createElement('div'); hSub.className = 'cm-task-modal-subtitle'
+    hSub.textContent = colTitle ? `In ${colTitle}` : 'Update the details for this task.'
+    hdrText.appendChild(hTitle); hdrText.appendChild(hSub)
+    const closeBtn = document.createElement('button'); closeBtn.className = 'cm-task-modal-close'; closeBtn.title = 'Close'
+    closeBtn.innerHTML = _xSvg(13)
+    closeBtn.onclick = close
+    hdr.appendChild(hdrText); hdr.appendChild(closeBtn)
+    box.appendChild(hdr)
+    box.appendChild(divider())
+
+    // Body
+    const body = document.createElement('div'); body.className = 'cm-task-modal-body'
+
+    const titleGroup = document.createElement('div')
+    const titleLabel = document.createElement('label'); titleLabel.className = 'cm-task-modal-label'; titleLabel.textContent = 'Title'
+    const titleInput = document.createElement('input'); titleInput.className = 'cm-task-modal-field'; titleInput.type = 'text'
+    titleInput.value = title; titleInput.placeholder = 'e.g. Fix modal mobile breakpoint'
+    titleInput.oninput = e => { title = e.target.value; saveBtn.disabled = !title.trim() }
+    titleInput.onkeydown = e => { e.stopPropagation(); if (e.key === 'Escape') close() }
+    titleGroup.appendChild(titleLabel); titleGroup.appendChild(titleInput)
+    body.appendChild(titleGroup)
+    firstFocusEl = titleInput
+
+    const priGroup = document.createElement('div')
+    const priLabel = document.createElement('label'); priLabel.className = 'cm-task-modal-label'; priLabel.textContent = 'Priority'
+    const priRow = document.createElement('div'); priRow.className = 'cm-task-modal-priority'
+    PRIORITY_LEVELS.forEach(p => {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'cm-task-modal-pri-btn' + (priority === p.id ? ' active' : '')
+      btn.title = p.label
+      btn.innerHTML = (p.color ? `<span style="color:${p.color};display:flex">${_flagSvg}</span>` : '') + (p.id === 'none' ? 'None' : p.label)
+      btn.onclick = () => { priority = p.id; render() }
+      priRow.appendChild(btn)
+    })
+    priGroup.appendChild(priLabel); priGroup.appendChild(priRow)
+    body.appendChild(priGroup)
+
+    const dateGroup = document.createElement('div')
+    const dateLabel = document.createElement('label'); dateLabel.className = 'cm-task-modal-label'; dateLabel.textContent = 'Due Date'
+    const dateInput = document.createElement('input'); dateInput.className = 'cm-task-modal-field'; dateInput.type = 'date'
+    dateInput.value = dueDate
+    dateInput.onchange = e => { dueDate = e.target.value }
+    dateInput.onkeydown = e => { e.stopPropagation(); if (e.key === 'Escape') close() }
+    dateGroup.appendChild(dateLabel); dateGroup.appendChild(dateInput)
+    body.appendChild(dateGroup)
+
+    const descGroup = document.createElement('div')
+    const descLabel = document.createElement('label'); descLabel.className = 'cm-task-modal-label'; descLabel.textContent = 'Description'
+    const descInput = document.createElement('textarea'); descInput.className = 'cm-task-modal-field cm-task-modal-textarea'; descInput.rows = 3
+    descInput.placeholder = 'Add more detail…'
+    descInput.value = description
+    descInput.oninput = e => { description = e.target.value }
+    descInput.onkeydown = e => { e.stopPropagation(); if (e.key === 'Escape') close() }
+    descGroup.appendChild(descLabel); descGroup.appendChild(descInput)
+    body.appendChild(descGroup)
+
+    // Comments — task is always a real, already-created entity by the time
+    // this modal can open (created via the column's inline add-input), so
+    // unlike the standalone board's create/edit modal there's no isNew case
+    // where this section would need to be hidden.
+    body.appendChild(divider())
+    const cmtGroup = document.createElement('div')
+    const cmtLabel = document.createElement('label'); cmtLabel.className = 'cm-task-modal-label'
+    cmtLabel.textContent = 'Comments' + (comments.length ? ` (${comments.length})` : '')
+    cmtGroup.appendChild(cmtLabel)
+    if (comments.length) {
+      const list = document.createElement('div')
+      list.style.cssText = 'margin-bottom:8px;display:flex;flex-direction:column;gap:8px'
+      comments.forEach(c => {
+        const row = document.createElement('div'); row.className = 'cm-task-modal-comment-row'
+        const av = document.createElement('div'); av.className = 'cm-task-modal-comment-avatar'
+        av.textContent = (c.text[0] || '?').toUpperCase()
+        const bubble = document.createElement('div'); bubble.className = 'cm-task-modal-comment-bubble'
+        const ctext = document.createElement('div'); ctext.className = 'cm-task-modal-comment-text'; ctext.textContent = c.text
+        const meta = document.createElement('div'); meta.className = 'cm-task-modal-comment-meta'
+        meta.textContent = new Date(c.createdAt).toLocaleDateString()
+        const cdel = document.createElement('button'); cdel.className = 'cm-task-modal-comment-del'; cdel.title = 'Remove comment'
+        cdel.innerHTML = _xSvg(11)
+        cdel.onclick = () => { comments = comments.filter(x => x.id !== c.id); render() }
+        bubble.appendChild(ctext); bubble.appendChild(meta); bubble.appendChild(cdel)
+        row.appendChild(av); row.appendChild(bubble)
+        list.appendChild(row)
+      })
+      cmtGroup.appendChild(list)
+    }
+    const cmtInputRow = document.createElement('div'); cmtInputRow.style.cssText = 'display:flex;gap:8px'
+    const cmtInput = document.createElement('input'); cmtInput.className = 'cm-task-modal-field'; cmtInput.style.flex = '1'
+    cmtInput.placeholder = 'Write a comment…'; cmtInput.value = newCmt
+    cmtInput.oninput = e => { newCmt = e.target.value }
+    const addCmt = () => {
+      if (!newCmt.trim()) return
+      comments = [...comments, { id: makeId('cmt'), text: newCmt.trim(), createdAt: new Date().toISOString() }]
+      newCmt = ''
+      render()
+    }
+    cmtInput.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addCmt() } if (e.key === 'Escape') close() }
+    const sendBtn = document.createElement('button'); sendBtn.className = 'cm-task-modal-send'; sendBtn.textContent = 'Send'
+    sendBtn.disabled = !newCmt.trim()
+    sendBtn.onclick = addCmt
+    cmtInputRow.appendChild(cmtInput); cmtInputRow.appendChild(sendBtn)
+    cmtGroup.appendChild(cmtInputRow)
+    body.appendChild(cmtGroup)
+
+    box.appendChild(body)
+    box.appendChild(divider())
+
+    // Footer — Delete separate on the left, Cancel + Save split 50/50.
+    const footer = document.createElement('div'); footer.className = 'cm-task-modal-footer'
+    const delBtn = document.createElement('button'); delBtn.className = 'cm-task-modal-delete'; delBtn.title = 'Delete task'
+    delBtn.innerHTML = _trashSvg + 'Delete'
+    delBtn.onclick = () => { close(); onDelete() }
+    footer.appendChild(delBtn)
+    const actions = document.createElement('div'); actions.className = 'cm-task-modal-actions'
+    const cancelBtn = document.createElement('button'); cancelBtn.className = 'cm-task-modal-cancel'; cancelBtn.textContent = 'Cancel'
+    cancelBtn.onclick = close
+    const saveBtn = document.createElement('button'); saveBtn.className = 'cm-task-modal-save'; saveBtn.textContent = 'Save Changes'
+    saveBtn.disabled = !canSave
+    saveBtn.onclick = () => {
+      if (!title.trim()) return
+      close()
+      onSave({ text: title.trim(), date: dueDate || null, priority, description, comments })
+    }
+    actions.appendChild(cancelBtn); actions.appendChild(saveBtn)
+    footer.appendChild(actions)
+    box.appendChild(footer)
+  }
+
+  render()
+  document.body.appendChild(overlay)
+  firstFocusEl?.focus()
+  firstFocusEl?.select()
+}
+
 // ─── /task single-block widget (interactive kanban) ───────────────────────────
 // Module-level pointer drag state for kanban boards
 let _kbDrag = null
@@ -2720,9 +2911,7 @@ class TaskBlockWidget {
     const lines = [`/kanban${title ? ':' + title : ''}`]
     for (const col of cols) {
       lines.push(`== ${col.title} ==`)
-      for (const t of col.tasks) {
-        lines.push(`- [ ] ${t.text}${t.date ? ' {date:' + t.date + '}' : ''}`)
-      }
+      for (const t of col.tasks) lines.push(`- [ ] ${_serializeTaskLine(t)}`)
     }
     return lines.join('\n')
   }
@@ -2732,7 +2921,10 @@ class TaskBlockWidget {
     try {
     const cols = this.columns.map(c => ({
       title: c.title,
-      tasks: c.tasks.map(t => ({ text: t.text, date: t.date || null })),
+      tasks: c.tasks.map(t => ({
+        text: t.text, date: t.date || null,
+        priority: t.priority || 'none', description: t.description || '', comments: t.comments || [],
+      })),
     }))
     const bt = this.boardTitle
     const save = () => {
@@ -2766,11 +2958,17 @@ class TaskBlockWidget {
         const colDiv = document.createElement('div')
         colDiv.className = 'cm-task-col-w'
 
-        // Column header
-        const _colColors = ['#f59e0b99','#3b82f699','#10b98199','#8b5cf699','#ef444499','#06b6d499']
+        // Column header \u2014 a hollow ring dot instead of the old solid-fill
+        // header bar (matches the standalone Tasks board's redesign), real
+        // (non-uppercase) title text, unicode \u00d7 swapped for a stroke icon.
+        const _colColors = ['#f59e0b','#3b82f6','#10b981','#8b5cf6','#ef4444','#06b6d4']
         const colHdr = document.createElement('div')
         colHdr.className = 'cm-task-col-hdr-w'
-        colHdr.style.background = _colColors[ci % _colColors.length]
+        const hdrLeft = document.createElement('div')
+        hdrLeft.className = 'cm-task-col-hdr-left'
+        const ring = document.createElement('span')
+        ring.className = 'cm-task-col-ring'
+        ring.style.setProperty('--ring-color', _colColors[ci % _colColors.length])
         const colTitleEl = document.createElement('span')
         colTitleEl.className = 'cm-task-col-title'
         colTitleEl.textContent = col.title
@@ -2784,6 +2982,8 @@ class TaskBlockWidget {
           inp.onkeydown = ev => { ev.stopPropagation(); if (ev.key === 'Enter') { ev.preventDefault(); commit() } if (ev.key === 'Escape') render() }
           inp.onblur = commit
         }
+        hdrLeft.appendChild(ring)
+        hdrLeft.appendChild(colTitleEl)
 
         const hdrRight = document.createElement('div')
         hdrRight.className = 'cm-task-col-hdr-right'
@@ -2793,13 +2993,13 @@ class TaskBlockWidget {
 
         const delCol = document.createElement('button')
         delCol.className = 'cm-task-col-del'
-        delCol.textContent = '\u00d7'
+        delCol.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>'
         delCol.title = 'Delete column'
         delCol.onclick = e => { e.stopPropagation(); cols.splice(ci, 1); save(); render() }
 
         hdrRight.appendChild(badge)
         hdrRight.appendChild(delCol)
-        colHdr.appendChild(colTitleEl)
+        colHdr.appendChild(hdrLeft)
         colHdr.appendChild(hdrRight)
         colDiv.appendChild(colHdr)
 
@@ -2862,25 +3062,26 @@ class TaskBlockWidget {
           const cardBody = document.createElement('div')
           cardBody.className = 'cm-task-card-body'
 
+          // Click opens the full edit modal (title/priority/due date/
+          // description/comments) — matches the standalone Tasks board's
+          // KanbanCardModal. Was a bare inline-rename-on-click before this
+          // widget had any of those other fields to edit.
           const txt = document.createElement('span')
           txt.className = 'cm-task-card-text'
           txt.textContent = task.text
           txt.onclick = e => {
             e.stopPropagation()
-            const inp = document.createElement('input')
-            inp.className = 'cm-task-card-edit'
-            inp.value = task.text; inp.type = 'text'
-            txt.textContent = ''; txt.appendChild(inp)
-            inp.focus(); inp.select()
-            const commit = () => { const v = inp.value.trim(); if (v) { task.text = v; save() } render() }
-            inp.onkeydown = ev => { ev.stopPropagation(); if (ev.key === 'Enter') { ev.preventDefault(); commit() } if (ev.key === 'Escape') render() }
-            inp.onblur = commit
+            _openTaskCardModal(task, {
+              colTitle: col.title,
+              onSave: updated => { Object.assign(task, updated); save(); render() },
+              onDelete: () => { cols[ci].tasks.splice(ti, 1); save(); render() },
+            })
           }
 
           const del = document.createElement('button')
           del.className = 'cm-task-card-del-btn'
           del.title = 'Delete'
-          del.textContent = '\u00d7'
+          del.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>'
           del.onclick = e => { e.stopPropagation(); cols[ci].tasks.splice(ti, 1); save(); render() }
 
           cardBody.appendChild(txt)
@@ -2897,7 +3098,7 @@ class TaskBlockWidget {
             badge.onclick = e => { e.stopPropagation(); _makeTaskDatePicker(badge, task.date, ds => { task.date = ds; save(); render() }) }
             const clearBtn = document.createElement('button')
             clearBtn.className = 'cm-task-card-date-clear'
-            clearBtn.textContent = '\u00d7'
+            clearBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>'
             clearBtn.title = 'Remove date'
             clearBtn.onclick = e => { e.stopPropagation(); task.date = null; save(); render() }
             dateRow.appendChild(badge)
@@ -2926,7 +3127,7 @@ class TaskBlockWidget {
             const val = addInput.value.trim()
             if (!val) return
             addInput.value = ''
-            cols[ci].tasks.push({ text: val, done: false, label: null, date: null })
+            cols[ci].tasks.push({ text: val, done: false, label: null, date: null, priority: 'none', description: '', comments: [] })
             save(); render()
             const col = wrap.querySelectorAll('.cm-task-add-input')[ci]
             if (col) col.focus()
@@ -2986,6 +3187,62 @@ class TaskBlockWidget {
 // ─── Helpers for parsing inline block commands ────────────────────────────────
 /** Parse /todo block: returns { listName, items:[{text,checked,dateStr,timeStr,lineIdx}], startLine, endLine } or null */
 
+// Unicode-safe base64, used to pack a /kanban task's free-text description
+// and comment thread into a single markdown line's {tag:...} suffix without
+// fighting braces/newlines/colons in the actual content.
+function _b64enc(str) {
+  try {
+    const bytes = new TextEncoder().encode(str)
+    let bin = ''
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+    return btoa(bin)
+  } catch { return '' }
+}
+function _b64dec(str) {
+  try {
+    const bin = atob(str)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    return new TextDecoder().decode(bytes)
+  } catch { return '' }
+}
+
+/** Parse one `- [ ] text {tag:...}...` task line's content (after the
+ * checkbox marker is stripped) into { text, label, date, priority,
+ * description, comments }. Shared by parseTaskBlock's two branches. */
+function _parseTaskLine(raw) {
+  const lblM = raw.match(/\{label:(\d+)\}/)
+  const label = lblM ? parseInt(lblM[1]) : null
+  const dateM = raw.match(/\{date:(\d{4}-\d{2}-\d{2})\}/)
+  const date = dateM ? dateM[1] : null
+  const priM = raw.match(/\{priority:(\w+)\}/)
+  const priority = priM ? priM[1] : 'none'
+  const descM = raw.match(/\{desc:([A-Za-z0-9+/=]*)\}/)
+  const description = descM ? _b64dec(descM[1]) : ''
+  const cmtM = raw.match(/\{comments:([A-Za-z0-9+/=]*)\}/)
+  let comments = []
+  if (cmtM) { try { comments = JSON.parse(_b64dec(cmtM[1])) || [] } catch { comments = [] } }
+  const text = raw
+    .replace(/\{label:\d+\}/, '')
+    .replace(/\{date:\d{4}-\d{2}-\d{2}\}/, '')
+    .replace(/\{priority:\w+\}/, '')
+    .replace(/\{desc:[A-Za-z0-9+/=]*\}/, '')
+    .replace(/\{comments:[A-Za-z0-9+/=]*\}/, '')
+    .trim()
+  return { text, label, date, priority, description, comments }
+}
+
+/** Inverse of _parseTaskLine — serializes a task object back to the part of
+ * the line after `- [ ] `. */
+function _serializeTaskLine(t) {
+  let line = t.text
+  if (t.date) line += ` {date:${t.date}}`
+  if (t.priority && t.priority !== 'none') line += ` {priority:${t.priority}}`
+  if (t.description) line += ` {desc:${_b64enc(t.description)}}`
+  if (t.comments && t.comments.length) line += ` {comments:${_b64enc(JSON.stringify(t.comments))}}`
+  return line
+}
+
 /** Parse /task block: returns { boardTitle, columns, startLine, endLine } */
 function parseTaskBlock(docStr, startLineIdx) {
   const lines = docStr.split('\n')
@@ -3009,23 +3266,13 @@ function parseTaskBlock(docStr, startLineIdx) {
     } else if (currentCol && /^\s*[-*+]\s\[[ xX]\]/.test(l)) {
       const done = /\[[xX]\]/.test(l)
       const raw = l.replace(/^\s*[-*+]\s\[[ xX]\]\s*/, '').trim()
-      const lblM = raw.match(/\{label:(\d+)\}/)
-      const label = lblM ? parseInt(lblM[1]) : null
-      const dateM = raw.match(/\{date:(\d{4}-\d{2}-\d{2})\}/)
-      const date = dateM ? dateM[1] : null
-      const text = raw.replace(/\{label:\d+\}/, '').replace(/\{date:\d{4}-\d{2}-\d{2}\}/, '').trim()
-      currentCol.tasks.push({ text, done, lineIdx: endLine, label, date })
+      currentCol.tasks.push({ ..._parseTaskLine(raw), done, lineIdx: endLine })
     } else if (!currentCol && /^\s*[-*+]\s\[[ xX]\]/.test(l)) {
       currentCol = { title: 'Tasks', tasks: [], lineIdx: endLine, color: null }
       columns.push(currentCol)
       const done = /\[[xX]\]/.test(l)
       const raw = l.replace(/^\s*[-*+]\s\[[ xX]\]\s*/, '').trim()
-      const lblM = raw.match(/\{label:(\d+)\}/)
-      const label = lblM ? parseInt(lblM[1]) : null
-      const dateM = raw.match(/\{date:(\d{4}-\d{2}-\d{2})\}/)
-      const date = dateM ? dateM[1] : null
-      const text = raw.replace(/\{label:\d+\}/, '').replace(/\{date:\d{4}-\d{2}-\d{2}\}/, '').trim()
-      currentCol.tasks.push({ text, done, lineIdx: endLine, label, date })
+      currentCol.tasks.push({ ..._parseTaskLine(raw), done, lineIdx: endLine })
     } else {
       break // non-task content ends the block
     }
@@ -3043,9 +3290,7 @@ function serializeTaskBlock(boardTitle, columns) {
   const lines = [`/kanban${boardTitle ? ':' + boardTitle : ''}`]
   for (const col of columns) {
     lines.push(`== ${col.title} ==`)
-    for (const t of col.tasks) {
-      lines.push(`- ${t.done ? '[x]' : '[ ]'} ${t.text}${t.date ? ' {date:' + t.date + '}' : ''}`)
-    }
+    for (const t of col.tasks) lines.push(`- ${t.done ? '[x]' : '[ ]'} ${_serializeTaskLine(t)}`)
   }
   return lines.join('\n')
 }
@@ -8220,7 +8465,13 @@ export default function NotebookView() {
       color: var(--textDim); opacity: .5;
     }
 
-    /* ── /task board widget (kanban) ── */
+    /* ── /kanban board widget ── Redesigned to match the standalone Tasks
+       board's language (see LibraryView.jsx KanbanCardModal A113-A118):
+       hollow color ring instead of a solid-fill header bar, real (non-
+       shouty) column titles instead of tiny uppercase caps, unicode × swapped
+       for a proper stroke-icon, and font sizes/radii collapsed onto a
+       small consistent set (11 meta, 13 body, 8px radius family) instead
+       of the previous one-off values (9/10/11/12/13/14px, 4-10px radii). */
     .cm-task-board-w {
       margin: 0.6em 0;
     }
@@ -8228,53 +8479,57 @@ export default function NotebookView() {
       display: flex; align-items: center; padding: 10px 14px 6px;
     }
     .cm-task-title-w {
-      font-size: 13px; font-weight: 600; color: var(--text);
+      font-size: 14px; font-weight: 700; color: var(--text);
       font-family: 'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif; letter-spacing: -0.1px;
     }
     .cm-task-cols-w {
-      display: flex; gap: 6px; padding: 0 8px 10px;
+      display: flex; gap: 8px; padding: 0 8px 12px;
       align-items: flex-start; overflow: hidden;
     }
     .cm-task-col-w {
       flex: 1; min-width: 0; display: flex; flex-direction: column;
-      border-radius: 6px; transition: background .15s;
+      border-radius: 8px; transition: background .15s;
       overflow: hidden; border: 1px solid var(--borderSubtle);
+      background: var(--surfaceAlt);
     }
     .cm-task-col-drop { outline: 2px dashed var(--accent); outline-offset: -2px; }
     .cm-task-col-hdr-w {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 6px 8px 5px; position: relative;
-      font-size: 10px; font-weight: 600; text-transform: uppercase;
-      letter-spacing: .05em; color: var(--text);
+      display: flex; align-items: center; gap: 7px; justify-content: space-between;
+      padding: 8px 10px; position: relative;
+      font-size: 13px; font-weight: 600; color: var(--text);
       font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
       border-bottom: 1px solid var(--borderSubtle);
     }
-    .cm-task-col-title { cursor: pointer; }
+    .cm-task-col-hdr-left { display: flex; align-items: center; gap: 7px; min-width: 0; }
+    .cm-task-col-ring {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+      border: 1.5px solid var(--ring-color, var(--textDim)); box-sizing: border-box;
+    }
+    .cm-task-col-title { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .cm-task-col-title:hover { opacity: .7; }
     .cm-task-col-title-inp {
-      background: none; border: none; outline: none; font-size: 10px;
-      font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
-      color: var(--text); font-family: inherit; width: 100%;
+      background: none; border: none; outline: none; font-size: 13px;
+      font-weight: 600; color: var(--text); font-family: inherit; width: 100%;
     }
     .cm-task-col-hdr-right {
-      display: flex; align-items: center; gap: 4px;
+      display: flex; align-items: center; gap: 4px; flex-shrink: 0;
     }
     .cm-task-col-w-badge {
-      font-size: 9px; background: rgba(128,128,128,.12); color: var(--textDim);
-      border-radius: 8px; padding: 1px 6px; font-weight: 500;
+      font-size: 11px; background: color-mix(in srgb, var(--text) 10%, transparent);
+      color: var(--textDim); border-radius: 8px; padding: 1px 6px; font-weight: 600;
     }
     .cm-task-col-del {
       background: none; border: none; color: var(--textDim); cursor: pointer;
-      font-size: 14px; line-height: 1; padding: 0 2px; opacity: 0;
-      transition: opacity .1s;
+      display: flex; align-items: center; padding: 2px; border-radius: 4px; opacity: 0;
+      transition: opacity .1s, color .1s;
     }
     .cm-task-col-hdr-w:hover .cm-task-col-del { opacity: .6; }
     .cm-task-col-del:hover { color: #f85149 !important; opacity: 1 !important; }
-    .cm-task-cards-area { padding: 4px 5px 2px; }
+    .cm-task-cards-area { padding: 6px 6px 2px; }
     .cm-task-card-w {
-      background: var(--surface); border-radius: 7px; margin-bottom: 5px;
+      background: var(--surface); border-radius: 8px; margin-bottom: 6px;
       border: 1px solid var(--border);
-      font-size: 12px; color: var(--text); transition: box-shadow .12s, opacity .15s;
+      font-size: 13px; color: var(--text); transition: box-shadow .12s, opacity .15s;
       cursor: grab; user-select: none;
       font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
       box-shadow: 0 1px 3px rgba(0,0,0,.06);
@@ -8282,41 +8537,36 @@ export default function NotebookView() {
     .cm-task-card-w:hover { box-shadow: 0 2px 8px rgba(0,0,0,.12); }
     .cm-task-card-dragging { opacity: .35; cursor: grabbing; }
     .cm-task-card-body {
-      display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+      display: flex; align-items: center; gap: 8px; padding: 8px 10px;
     }
-    .cm-task-card-text { flex: 1; min-width: 0; line-height: 1.45; font-size: 12px; }
-    .cm-task-card-edit {
-      background: var(--bg); border: 1px solid var(--accent); outline: none;
-      border-radius: 4px; padding: 1px 4px; font-size: 12px;
-      color: var(--text); font-family: inherit; width: 100%;
-    }
+    .cm-task-card-text { flex: 1; min-width: 0; line-height: 1.4; font-size: 13px; cursor: pointer; }
     .cm-task-card-del-btn {
       background: none; border: none; color: var(--textDim); cursor: pointer;
-      font-size: 14px; padding: 0 2px; border-radius: 4px; opacity: 0;
-      transition: opacity .1s; line-height: 1; flex-shrink: 0;
+      display: flex; align-items: center; padding: 2px; border-radius: 4px; opacity: 0;
+      transition: opacity .1s, color .1s; flex-shrink: 0;
     }
     .cm-task-card-w:hover .cm-task-card-del-btn { opacity: 0.5; }
     .cm-task-card-del-btn:hover { opacity: 1 !important; color: #f85149; }
     .cm-task-card-date-row {
       display: flex; align-items: center; gap: 4px;
-      padding: 0 10px 6px;
+      padding: 0 10px 8px;
     }
     .cm-task-card-date-badge {
-      font-size: 10px; color: var(--accent); cursor: pointer;
-      background: rgba(var(--accentRgb, 99,102,241),.1);
+      font-size: 11px; color: var(--accent); cursor: pointer;
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
       border-radius: 4px; padding: 1px 6px; font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
     }
     .cm-task-card-date-badge:hover { opacity: .8; }
     .cm-task-card-date-clear {
       background: none; border: none; color: var(--textDim); cursor: pointer;
-      font-size: 12px; padding: 0 2px; opacity: 0; line-height: 1;
+      display: flex; align-items: center; padding: 2px; opacity: 0;
       transition: opacity .1s;
     }
     .cm-task-card-w:hover .cm-task-card-date-clear { opacity: 0.5; }
     .cm-task-card-date-clear:hover { opacity: 1 !important; color: #f85149; }
     .cm-task-card-add-date {
       background: none; border: none; color: var(--textDim); cursor: pointer;
-      font-size: 10px; padding: 0; opacity: 0; transition: opacity .1s;
+      font-size: 11px; padding: 0; opacity: 0; transition: opacity .1s;
       font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
     }
     .cm-task-card-w:hover .cm-task-card-add-date { opacity: 0.45; }
@@ -8338,32 +8588,121 @@ export default function NotebookView() {
     .cm-task-date-cell:hover { background: var(--surfaceAlt); }
     .cm-task-date-today { color: var(--accent); font-weight: 700; }
     .cm-task-date-selected { background: color-mix(in srgb, var(--accent) 15%, transparent) !important; color: var(--accent); font-weight: 600; }
-    .cm-task-add-row { padding: 3px 5px 6px; }
+    .cm-task-add-row { padding: 4px 6px 8px; }
     .cm-task-add-input {
       width: 100%; background: transparent; border: 1px dashed var(--borderSubtle);
-      border-radius: 5px; outline: none; font-size: 11px; color: var(--text);
-      padding: 5px 8px; font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif; box-sizing: border-box;
+      border-radius: 8px; outline: none; font-size: 13px; color: var(--text);
+      padding: 6px 8px; font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif; box-sizing: border-box;
       transition: border-color .15s, background .15s;
     }
-    .cm-task-add-input:focus { border-color: var(--accent); border-style: solid; background: var(--bg); }
+    .cm-task-add-input:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); border-style: solid; background: var(--bg); }
     .cm-task-add-input::placeholder { color: var(--textDim); opacity: .4; }
     .cm-task-add-col {
       min-width: 36px; max-width: 36px; display: flex; align-items: flex-start;
-      justify-content: center; padding-top: 6px; flex-shrink: 0;
+      justify-content: center; padding-top: 8px; flex-shrink: 0;
       position: relative;
     }
     .cm-task-add-col-btn {
-      background: transparent; border: 1px dashed var(--borderSubtle); border-radius: 6px;
+      background: transparent; border: 1px dashed var(--borderSubtle); border-radius: 8px;
       color: var(--textDim); font-size: 16px; cursor: pointer; padding: 6px 0;
       transition: color .1s, background .1s, border-color .1s; width: 100%;
     }
     .cm-task-add-col-btn:hover { color: var(--text); background: var(--surfaceAlt); border-color: var(--border); }
     .cm-task-add-col-input {
-      width: 140px; background: var(--surface); border: 1px solid var(--accent);
-      border-radius: 8px; outline: none; font-size: 12px; color: var(--text);
+      width: 140px; background: var(--surface); border: 1px solid var(--focusBorder);
+      border-radius: 8px; outline: none; font-size: 13px; color: var(--text);
       padding: 8px 10px; font-family: inherit; box-sizing: border-box;
       position: absolute; right: 0; top: 8px; z-index: 10;
     }
+
+    /* ── /kanban card edit modal — mirrors KanbanCardModal's language:
+       17/13/11 type scale, 4px-grid spacing, 8px radius family, white =
+       labels/selected-pill/footer-buttons, dim = subtitle/placeholder/
+       unselected-pill (LibraryView.jsx A113-A118). ── */
+    .cm-task-modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 100000;
+      display: flex; align-items: center; justify-content: center;
+      backdrop-filter: blur(6px);
+    }
+    .cm-task-modal-box {
+      background: var(--surface); border-radius: 16px; width: 440px;
+      max-width: calc(100vw - 32px); max-height: calc(100vh - 48px);
+      display: flex; flex-direction: column;
+      box-shadow: 0 40px 100px rgba(0,0,0,.5); border: 1px solid var(--border);
+      font-family: 'Stack Sans Text', 'Switzer', system-ui, sans-serif;
+    }
+    .cm-task-modal-hdr {
+      padding: 20px 20px 16px; display: flex; align-items: flex-start;
+      justify-content: space-between; gap: 16px; flex-shrink: 0;
+    }
+    .cm-task-modal-title { font-size: 17px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; line-height: 22px; margin-bottom: 4px; }
+    .cm-task-modal-subtitle { font-size: 13px; font-weight: 400; line-height: 18px; color: var(--textDim); }
+    .cm-task-modal-close {
+      width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--border);
+      background: none; color: var(--textDim); cursor: pointer;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      transition: background .1s;
+    }
+    .cm-task-modal-close:hover { background: var(--surfaceAlt); }
+    .cm-task-modal-divider { height: 1px; background: var(--borderSubtle); flex-shrink: 0; }
+    .cm-task-modal-body { padding: 20px 20px; display: flex; flex-direction: column; gap: 20px; overflow: auto; }
+    .cm-task-modal-label {
+      font-size: 11px; font-weight: 600; color: var(--text); text-transform: uppercase;
+      letter-spacing: .05em; display: block; margin-bottom: 8px;
+    }
+    .cm-task-modal-field {
+      width: 100%; background: var(--surfaceAlt); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 13px; line-height: 20px;
+      padding: 8px 12px; font-family: inherit; outline: none; box-sizing: border-box;
+      transition: border-color .12s;
+    }
+    .cm-task-modal-field:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
+    .cm-task-modal-field::placeholder { color: var(--textDim); }
+    .cm-task-modal-textarea { resize: none; line-height: 20px; }
+    .cm-task-modal-priority { display: flex; gap: 4px; background: var(--surfaceAlt); border: 1px solid var(--border); border-radius: 8px; padding: 4px; }
+    .cm-task-modal-pri-btn {
+      flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px;
+      padding: 6px 8px; border-radius: 6px; border: none; background: none;
+      color: var(--textDim); font-size: 11px; font-weight: 600; cursor: pointer;
+      font-family: inherit; transition: background .12s, color .12s;
+    }
+    .cm-task-modal-pri-btn.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+    .cm-task-modal-comment-row { display: flex; gap: 8px; align-items: flex-start; }
+    .cm-task-modal-comment-avatar {
+      width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff;
+      font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; margin-top: 1px;
+    }
+    .cm-task-modal-comment-bubble { flex: 1; background: var(--surfaceAlt); border: 1px solid var(--borderSubtle); border-radius: 8px; padding: 8px 12px; position: relative; }
+    .cm-task-modal-comment-text { font-size: 13px; color: var(--text); line-height: 18px; padding-right: 16px; }
+    .cm-task-modal-comment-meta { font-size: 11px; color: var(--textDim); margin-top: 4px; }
+    .cm-task-modal-comment-del { position: absolute; top: 8px; right: 8px; background: none; border: none; color: var(--textDim); cursor: pointer; padding: 2px; line-height: 1; display: flex; }
+    .cm-task-modal-comment-del:hover { color: #f85149; }
+    .cm-task-modal-footer { padding: 16px 20px; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .cm-task-modal-delete {
+      display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 8px;
+      border: 1px solid rgba(248,81,73,.3); background: rgba(248,81,73,.06); color: #f85149;
+      cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit;
+      transition: background .12s; flex-shrink: 0;
+    }
+    .cm-task-modal-delete:hover { background: rgba(248,81,73,.14); }
+    .cm-task-modal-actions { flex: 1; display: flex; gap: 8px; }
+    .cm-task-modal-cancel {
+      flex: 1; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--border);
+      background: none; color: var(--text); cursor: pointer; font-size: 13px; font-weight: 600;
+      font-family: inherit; transition: background .1s;
+    }
+    .cm-task-modal-cancel:hover { background: var(--surfaceAlt); }
+    .cm-task-modal-save {
+      flex: 1; padding: 10px 16px; border-radius: 8px; border: none; background: var(--accent);
+      color: #fff; cursor: pointer; font-size: 13px; font-weight: 700; font-family: inherit;
+    }
+    .cm-task-modal-save:disabled { background: var(--surfaceAlt); color: var(--textDim); cursor: default; opacity: .6; }
+    .cm-task-modal-send {
+      padding: 8px 16px; border-radius: 8px; border: none; background: var(--accent); color: #fff;
+      cursor: pointer; font-size: 13px; font-weight: 700; font-family: inherit; flex-shrink: 0;
+    }
+    .cm-task-modal-send:disabled { opacity: .45; }
 
     /* ── Date/time picker popup ── */
     .gnos-dtp {
@@ -8415,7 +8754,7 @@ export default function NotebookView() {
       border-radius: 6px; color: var(--text); font-size: 12px;
       padding: 5px 8px; outline: none; font-family: inherit;
     }
-    .gnos-dtp-time-inp:focus { border-color: var(--accent); }
+    .gnos-dtp-time-inp:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
     .gnos-dtp-actions {
       display: flex; justify-content: space-between; gap: 6px;
       border-top: 1px solid var(--border); padding-top: 8px;
@@ -8470,7 +8809,7 @@ export default function NotebookView() {
       font-family: inherit; width: 90px;
     }
     .cm-timer-label-inp { width: 140px; }
-    .cm-timer-input:focus { border-color: var(--accent); }
+    .cm-timer-input:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
     .cm-timer-edit-input {
       background: none; border: none; outline: none;
       font-size: 19px; font-weight: 600; color: var(--text);
@@ -8729,7 +9068,7 @@ export default function NotebookView() {
       padding: 4px 2px; font-size: 11px; color: var(--text); font-family: inherit;
       outline: none; margin-top: 3px; transition: border-color .15s;
     }
-    .cm-cal-evt-add:focus { border-color: var(--accent); }
+    .cm-cal-evt-add:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
     .cm-cal-evt-add::placeholder { color: var(--textDim); opacity: .4; }
 
     /* ── 24-hour time grid (shared by day/week/expanded month) ── */
@@ -9222,7 +9561,7 @@ export default function NotebookView() {
       font-family: inherit;
       outline: none;
     }
-    .nb-linkw-modal-input:focus { border-color: var(--accent); }
+    .nb-linkw-modal-input:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
     .nb-linkw-modal-hint { font-size: 11px; color: var(--textDim); }
 
     /* ── /linkf file badge ─────────────────────────────── */

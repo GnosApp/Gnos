@@ -1043,9 +1043,13 @@ function KanbanCardModal({ card, onSave, onDelete, onClose }) {
   // var(--textDim). Previously the labels were dim and the split between
   // white/dim elsewhere had no rule, which read as arbitrary.
   const label   = {fontSize:11,fontWeight:600,color:'var(--text)',textTransform:'uppercase',letterSpacing:'0.05em',display:'block',marginBottom:8}
-  const field   = {width:'100%',background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:8,color:'var(--text)',fontSize:13,lineHeight:'20px',padding:'8px 12px',fontFamily:'inherit',outline:'none',boxSizing:'border-box',transition:'border-color 0.12s'}
-  const onFocusRing = e=>e.currentTarget.style.borderColor='var(--accent)'
-  const onBlurRing  = e=>e.currentTarget.style.borderColor='var(--border)'
+  const field   = {width:'100%',background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:8,color:'var(--text)',fontSize:13,lineHeight:'20px',padding:'8px 12px',fontFamily:'inherit',outline:'none',boxSizing:'border-box',transition:'border-color 0.12s, box-shadow 0.12s'}
+  // Muted border + soft ring on focus, not a full-saturation accent line —
+  // that read as a harsh neon rectangle on these dark surfaces. Matches the
+  // shared --focusBorder/--focusRing tokens every other text input in the
+  // app now uses (global.css).
+  const onFocusRing = e=>{e.currentTarget.style.borderColor='var(--focusBorder)';e.currentTarget.style.boxShadow='var(--focusRing)'}
+  const onBlurRing  = e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.boxShadow='none'}
   const divider = <div style={{height:1,background:'var(--borderSubtle)',flexShrink:0}}/>
 
   return (

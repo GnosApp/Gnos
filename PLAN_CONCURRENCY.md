@@ -1307,6 +1307,17 @@ Ship Tier 1 first (it's the demo-able one), Tier 2 as a follow-on for power user
    "resume" link), or is every session strictly new? (Strictly-new is simpler and safer.)
 2. ~~Guest download: markdown only, or markdown + assets as a zip when images are present?~~
    Resolved 2026-08-19 — both, see §6.8: markdown-only when no images, `.zip` when there are.
+3. ~~Audit the uncommitted popup-revamp diff (A119-A125: task-card edit modal + extended
+   `TaskBlockWidget` fields) for the A70/§2.5.1 offset-safety shape.~~ Resolved 2026-08-19 —
+   audited clean, no fix needed. `save()` still writes via `_replaceInDoc(cmView, this.rawMd,
+   newMd, this.blockFrom)` — `blockFrom` is a locality hint only, write is content-verified.
+   `_openTaskCardModal`'s `onSave` (`Object.assign(task, updated); save(); render()`) is fully
+   synchronous, no async gap between read and dispatch. Every other touched file
+   (`App.jsx`/`global.css`/`FlashcardView.jsx`/`LibraryView.jsx`/`SettingsWindowView.jsx`) is
+   pure CSS/focus-token styling, no CM6 doc positions involved at all. Real gap this surfaced,
+   not a risk but relevant to §18.3 Phase A: the task modal's new priority/description/comments
+   fields exist in `NotebookView.jsx`'s widget but aren't yet in the shared module for the
+   guest client to extract — more surface for Phase A to pull over later, not urgent now.
 
 ---
 

@@ -1,5 +1,211 @@
 # UI Changes — July 2026 pass
 
+## A125. Focus highlight removed entirely, no color at all
+
+User: don't want the focus highlight at all. `--focusBorder` now equals
+plain `var(--border)` (a true no-op — focused and unfocused border are
+identical) and the global `:focus-visible` outline rule (plus its
+`.ctx-item`/`.add-choice-btn` overrides, both touched in A124) all set
+`outline: none`. The only remaining focus cue anywhere is each field's
+own pre-existing background darkening where one exists (e.g.
+`.cm-task-add-input`'s `surfaceAlt`→`bg` swap) — nothing added, nothing
+colored, matching "the darkening is fine... visual cues are good enough"
+from earlier in this thread, taken to its conclusion.
+
+**Trade-off flagged, not hidden**: this removes the app's one universal
+keyboard-focus indicator — a keyboard-only user tabbing through buttons/
+links/menu items now gets no visual cue where focus landed. Called out
+in the CSS comment at the rule itself for whoever touches this next.
+
+**Verified live**: focused the add-card input, computed styles confirm
+`outline: none` and `border` identical to the resting color — only the
+background changed. Build backgrounded, will confirm; A124 (same file,
+smaller diff) built clean immediately before this.
+
+## A124. Actual root cause of the remaining blue: a global focus-visible outline
+
+User: still seeing blue in `/kanban` after A123. Traced it properly this
+time via computed styles instead of guessing — `outline: 2px solid
+color-mix(in srgb, var(--accent) 60%, transparent)` from a single
+app-wide rule in `global.css` (`button:focus-visible, input:focus-visible,
+textarea:focus-visible, select:focus-visible, a:focus-visible`), entirely
+separate from any component's own border/box-shadow. This is why no
+amount of per-field `--focusBorder`/`--focusRing` tuning ever fully
+removed it — outline isn't border, and for text inputs specifically most
+browsers treat *any* focus (including a plain mouse click, not just Tab)
+as focus-visible, so it showed up on every click into a field, everywhere
+in the app. Changed its color to `var(--focusBorder)` (neutral, no
+accent) — kept the outline itself since it's a real keyboard-a11y
+affordance, just recolored it. Same fix applied to the two other
+`:focus-visible` rules that had their own accent-colored outline
+(`.ctx-item`, `.add-choice-btn`) for full consistency.
+
+**Also while in the file**: found two always-on (not `:focus`-gated)
+accent borders inside the `/kanban` widget's CSS that A121-A123 couldn't
+have caught since they aren't focus rules — `.cm-task-add-col-input`
+(recolored to `--focusBorder`) and `.cm-task-card-edit` (dead CSS, no
+JSX applies this class anymore since A120 replaced inline-rename with
+the modal — removed outright).
+
+**Verified live**: focused the exact add-card input again, computed
+styles confirm outline color now matches the neutral border color
+exactly, no accent hue anywhere in the box. Build backgrounded (CSS +
+one dead-rule removal, low risk); eslint baseline unchanged on
+`NotebookView.jsx`.
+
+## A123. Focus ring: dropped the blue entirely, neutral only
+
+User: even the muted blue from A121 "looks tacky" — a field's own
+background darkening (already present on several inputs, e.g.
+`.cm-task-add-input` swapping `--surfaceAlt`→`--bg`) is signal enough on
+its own; asked for a plain color shift instead of any accent color.
+
+Since every site from A121 reads `var(--focusBorder)`/`var(--focusRing)`,
+this was a 2-line change at the token definitions in `global.css`
+`:root`, no per-site edits needed: `--focusBorder` is now
+`color-mix(in srgb, var(--text) 35%, var(--border))` (neutral gray, no
+blue channel) and `--focusRing` is `none` (ring dropped entirely).
+
+**Verified live**: focused the same add-card input, confirmed via
+computed styles — border-color has no accent hue, `box-shadow: none`.
+Build green (CSS-only change, nothing to eslint).
+
+## A122. FlashcardView side-tab border → color dot (impeccable finding)
+
+The design hook flagged 2 `side-tab` findings in `FlashcardView.jsx`
+(craft-floor's banned "thick colored border on one side of a card" tell)
+while I was in the file for A121's focus-ring sweep. Checked both:
+- L201's `.fc-card-row[data-color] { border-left: 3px solid; }` — dead
+  CSS, no JSX in the file ever sets a `data-color` attribute. Removed
+  outright rather than "fixing" a rule that never rendered.
+- L920's `card.color` list-row `borderLeft: 3px solid ${card.color}` —
+  live and real, same pattern already banned and replaced with a small
+  swatch dot on the standalone Kanban board (A110). Replaced identically:
+  a small filled `.fc-list-color-dot` (8px circle) in the row's status
+  column instead of a border stripe.
+
+3 unrelated `broken-image` findings on this file (L354/447/455) are
+false positives — each `<img>` is behind an `{card.imageUrl && (...)}`
+guard, never rendered with an empty src; left unchanged.
+
+**Verify**: eslint baseline unchanged (2 pre-existing, unrelated), build
+green. Not live-clicked through (store wiring to open a flashcard deck
+tab via script proved fiddlier than the fix itself warranted) — verified
+by code review instead, low-risk mechanical swap.
+
+## A121. App-wide text-entry focus ring toned down
+
+User screenshotted the notebook `/kanban` add-card input focused: a full-
+saturation 1px `var(--accent)` (`#388bfd`) border reads as a bright neon
+rectangle against these dark surfaces, and asked for the same cleanup
+"across text entry forms." Grepped every genuine text-input/textarea/
+select `:focus`/`:focus-within` rule and inline JS focus handler in the
+codebase (excluding button hovers, active/selected states, and
+toggle-fill backgrounds — a different, intentionally-bold concern, not
+what was flagged) — 18 sites across `App.jsx`, `global.css`,
+`LibraryView.jsx`, `NotebookView.jsx`, `FlashcardView.jsx`,
+`SettingsWindowView.jsx`.
+
+**New shared tokens** (`global.css` `:root`): `--focusBorder:
+color-mix(in srgb, var(--accent) 55%, var(--border))` (a muted blend, not
+the raw accent) and `--focusRing: 0 0 0 3px color-mix(in srgb, var(--accent)
+14%, transparent)` (a soft outer glow carrying the rest of the "focused"
+signal, adapted from `.nb-search-bar`'s already-existing ring pattern,
+now standardized everywhere instead of being that one component's own
+one-off). All 18 sites swept to `border-color: var(--focusBorder);
+box-shadow: var(--focusRing)`; `LibraryView.jsx`'s `KanbanCardModal` uses
+inline JS handlers (not CSS `:focus`) so its `onFocusRing`/`onBlurRing`
+were updated to match, with `box-shadow` added to the field's transition.
+
+**Deliberately left alone**: `OnboardingView.jsx`'s name-input focus
+state — a growing underline bar, not a boxed border, a different and
+already-subtle visual language, and it only ever appears once on
+first-run.
+
+**Verified live**: focused the exact input from the screenshot, confirmed
+via computed styles the border is now a muted blend (not raw `#388bfd`)
+with a 14%-opacity ring, not a solid line. eslint baseline unchanged
+across all touched files; build green.
+
+## A120. Notebook-embedded `/kanban` cards get a real edit modal
+
+User: "I don't see any sort of edit modal, what can I do?" — the A119
+redesign fixed this widget's visuals but the interaction was still
+click-text-to-inline-rename; there was no modal at all, because the
+underlying task data model only ever had `{text, date}`. Asked whether to
+extend the data model or leave it — user chose to extend it and match the
+standalone board's modal fully.
+
+**Data model extended**: notebook `/kanban` tasks now carry
+`priority`/`description`/`comments`, same shape as the standalone board's
+cards. Markdown encoding (`parseTaskBlock`/`serializeTaskBlock` in
+`NotebookView.jsx`, plus `TaskBlockWidget._serialize`) extended with
+`{priority:id}`, `{desc:BASE64}`, `{comments:BASE64-JSON}` tags appended
+to the existing `- [ ] text {date:...}` line — base64 so free-text
+description/comments can't break the single-line format on braces,
+colons, or newlines. Old boards without these tags parse the same as
+before (fields just default to none/empty). Factored the per-task
+parse/serialize logic that used to be duplicated across
+`parseTaskBlock`'s two branches into shared `_parseTaskLine`/
+`_serializeTaskLine` helpers rather than tripling the tag list by hand.
+
+**New modal**: `_openTaskCardModal`, a vanilla-DOM rebuild of
+`KanbanCardModal` for this non-React render path — same 440px width,
+17/13/11 type scale, 4px-grid spacing, 8px radius family, and white/dim
+color hierarchy as the standalone board (A113-A118), plus a segmented
+priority pill row (reusing lucide's flag path as a hand-written SVG,
+since `lucide-react` components aren't usable outside React), due date,
+description, comments thread, and Delete (left) / Cancel+Save (50/50,
+right) footer. Clicking a card's text now opens this modal instead of
+inline-renaming; the inline add-input at the bottom of each column is
+unchanged (still the quick-create path, matching the standalone board's
+own design where a lightweight add precedes the richer edit modal).
+
+**Verified live**: typed `/kanban` fresh, added a card, opened the modal,
+set High priority + a description, saved, reopened the same card and
+confirmed both persisted (proves the markdown round-trip, not just
+in-memory state). eslint baseline unchanged; build green.
+
+## A119. Notebook-embedded `/kanban` widget redesigned to match
+
+User pointed at a live `/kanban` block inside a notebook doc and asked
+"what happened" — turned out A110-A118 only ever touched the standalone
+Tasks-view `KanbanBoard`/`KanbanCardModal` in `LibraryView.jsx`. The
+in-notebook `/kanban` block is a completely separate implementation
+(`TaskBlockWidget`, a vanilla-DOM CodeMirror widget in `NotebookView.jsx`,
+plus a parallel read-only HTML renderer for preview mode) that never got
+touched. It still had: a solid-fill rainbow header bar per column
+(`_colColors` array painted straight into `colHdr.style.background`),
+uppercase 10px column titles, unicode `×` for every delete/clear button,
+and 6 different one-off font sizes (9/10/11/12/13/14px) plus a scatter of
+border-radii (4/5/6/7/9/10px) — the same clutter pattern fixed in the
+standalone board's modal (A115), just never applied here.
+
+**Fixed, matching the standalone board's language**:
+- Solid header bar → a small hollow color ring next to the (now
+  non-uppercase) column title — same "ring not fill" direction as the
+  standalone board's own column-color redesign (A110 Round 2).
+- Type scale collapsed to 2 sizes for this widget (13 body/title/cards,
+  11 meta/badges) + one 14px board-title accent, matching A115's
+  reasoning.
+- Border-radius unified to 8px across columns/cards/inputs (was 4-10px
+  scattered); the `!important` global.css override for `.cm-task-col-w`
+  snapped from 9px to the same 8px.
+- Unicode `×` (column delete, card delete, date-clear) replaced with the
+  same inline stroke-X SVG already used elsewhere in this file for the
+  Habits widget's delete button — not a new pattern, reused the existing
+  one.
+- Read-only preview-mode HTML renderer (used when live-preview is on)
+  updated in parallel so it renders the same ring + title, not just the
+  interactive editor widget.
+
+**Verified live**: typed `/kanban` fresh in a notebook, added a card,
+confirmed the ring color, 8px radii, real-case title, and the delete/
+add-date icons render as proper SVGs (checked via computed styles, not
+just visually). eslint baseline unchanged (pre-existing errors are all
+in an unrelated part of the file, none in the touched regions); build
+green.
+
 ## A118. KanbanCardModal: narrowed overall width, 500→440px
 
 User: modal wasn't using its space efficiently. Checked the tightest row

@@ -180,7 +180,7 @@ const FLASHCARD_CSS = `
     color: var(--text); font-size: 13px; font-family: inherit;
     outline: none; resize: none;
   }
-  .fc-card-input:focus { border-color: var(--accent); }
+  .fc-card-input:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
   .fc-card-input::placeholder { color: var(--textDim); opacity: 0.5; }
   .fc-del-btn {
     background: none; border: none; color: var(--textDim); cursor: pointer;
@@ -197,8 +197,6 @@ const FLASHCARD_CSS = `
   }
   .fc-add-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-  /* Card color stripe */
-  .fc-card-row[data-color] { border-left: 3px solid; }
   .fc-card-tools {
     display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap;
   }
@@ -265,6 +263,7 @@ const FLASHCARD_CSS = `
   .fc-list-due-date {
     font-size: 10px; color: var(--textDim); text-align: center; line-height: 1.3;
   }
+  .fc-list-color-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 1px; }
   .fc-list-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
   .fc-list-field {
     width: 100%; padding: 7px 10px; border-radius: 7px;
@@ -274,7 +273,7 @@ const FLASHCARD_CSS = `
     overflow: hidden; box-sizing: border-box;
     transition: background 0.1s, border-color 0.1s;
   }
-  .fc-list-field:focus { background: var(--bg); border-color: var(--accent); }
+  .fc-list-field:focus { background: var(--bg); border-color: var(--focusBorder); box-shadow: var(--focusRing); }
   .fc-list-field::placeholder { color: var(--textDim); opacity: 0.5; }
   .fc-list-field-label {
     font-size: 10px; font-weight: 700; text-transform: uppercase;
@@ -917,8 +916,9 @@ export default function FlashcardView() {
               <div key={label}>
                 <div className="fc-list-section">{label} ({items.length})</div>
                 {items.map(card => (
-                  <div key={card.id} className="fc-list-row" style={card.color && card.color !== 'transparent' ? { borderLeft: `3px solid ${card.color}` } : {}}>
+                  <div key={card.id} className="fc-list-row">
                     <div className="fc-list-status">
+                      {card.color && card.color !== 'transparent' && <span className="fc-list-color-dot" style={{ background: card.color }} title="Card color" />}
                       <span className={`fc-list-badge ${badgeClass}`}>{label === 'Due Now' ? 'Due' : label}</span>
                       {card.nextReview > 0 && <span className="fc-list-due-date">{formatDue(card.nextReview)}</span>}
                       {card.interval > 1 && <span className="fc-list-due-date" style={{ opacity: 0.5 }}>~{card.interval}d</span>}

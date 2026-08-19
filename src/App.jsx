@@ -566,7 +566,7 @@ const TAB_CSS = `
     -webkit-app-region: no-drag;
     transition: border-color .12s, background .12s;
   }
-  .gnos-titlebar-search:focus-within { border-color: var(--accent); color: var(--text); background: var(--surface); }
+  .gnos-titlebar-search:focus-within { border-color: var(--focusBorder); box-shadow: var(--focusRing); color: var(--text); background: var(--surface); }
   .gnos-titlebar-search svg { width: 14px; height: 14px; }
   .gnos-titlebar-search input {
     flex: 1; min-width: 0; background: none; border: none; outline: none;
