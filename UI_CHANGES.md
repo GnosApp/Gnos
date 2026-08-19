@@ -1,5 +1,39 @@
 # UI Changes — July 2026 pass
 
+## A134. SketchbookView.jsx — light + dark theme audit, no fixes needed
+
+User asked for a dedicated light-and-dark pass on the sketchbook specifically.
+Read the full Excalidraw↔Gnos CSS bridge (`buildExcalidrawStyles`, ~350
+lines) and the rest of the file's own styling: every color is already
+`var(--token)`-driven, no hardcoded hex outside `THEME_CONFIG` (the
+per-theme canvas-background/stroke-color presets, correctly one entry per
+theme, dark and light both covered) and one legitimate exception — PDF-page
+rasterization fills the temp canvas `#ffffff` before drawing, which is
+correct regardless of app theme (a scanned page is paper-colored content,
+not UI chrome).
+
+**Verified live, both themes, desktop and mobile** (mobile checked via the
+same temporary `useIsMobile` real-detection swap as A128/A131, reverted after
+— confirmed `git diff` empty on that file again): toolbar, canvas, the
+canvas-background settings panel (A131's fix), the Lock-active button state,
+and the mobile Rename panel all read cleanly in light — computed contrast for
+the light theme's own `--textDim` (`#636c76`) against `--bg`/`--surface`:
+5.01:1 / 5.33:1, both solid AA. The A133 button-text fix (`var(--bg)` on
+`--accent`) also holds up in light mode without any theme-specific logic
+needed — light's `--accent` (`#0969da`) is darker/more saturated than dark's,
+so light's near-white `--bg` still reads at 4.88:1 against it.
+
+**One real finding, flagged not fixed — not scoped to this file**: `--textMuted`
+computed **3.08:1** against light's `--surface` (vs. dark's 5.62:1) — below
+AA. Root cause: unlike `--textDim`, `--textMuted` isn't defined per-theme in
+`src/lib/themes.js` at all (checked `sepia`/`dark`/`light`/`moss`/`cherry`/
+`sunset` — none of the six list it), so it never adapts and just sits at
+`global.css`'s single static fallback across every theme. Not a Sketchbook
+issue specifically — grepped, this file never uses `--textMuted` — but worth
+recording since it'll bite the next light-theme audit of a file that does use
+it. Would need `themes.js` extended with a `textMuted` entry per theme, a
+call for the user, not something to guess at here.
+
 ## A133. App-wide: white-on-accent-blue contrast fixed at the source
 
 Follow-up to A132's flagged item — user confirmed to fix it. Turned out to be
