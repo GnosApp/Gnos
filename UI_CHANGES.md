@@ -1,5 +1,44 @@
 # UI Changes — July 2026 pass
 
+## A133. App-wide: white-on-accent-blue contrast fixed at the source
+
+Follow-up to A132's flagged item — user confirmed to fix it. Turned out to be
+much bigger than the one Flashcard button flagged: `background: var(--accent);
+color: #fff` (white text on the solid accent-blue fill, 3.34:1, below AA's
+4.5:1 for normal text) is a pattern used **34 times across 15 files** —
+`global.css`, `SideNav.jsx`, `App.jsx`, `ProfileWindowView.jsx`,
+`NotebookView.jsx`, `FlashcardView.jsx`, `SettingsWindowView.jsx`,
+`ProfileContent.jsx`, `Calendar.jsx`, `NoteCollabPanel.jsx`,
+`UpdateChecker.jsx`, `ReaderView.jsx`, `LibraryView.jsx`, `PdfView.jsx`,
+`SketchbookView.jsx` — every "Save"/"Add"/"Apply" primary button, active tab
+pill, filled checkbox, avatar-initial badge, etc. that fills with the brand
+blue.
+
+**Fix: `color: #fff` → `color: var(--bg)`** on every one of those pairings —
+not a new color, not a change to `--accent` itself (every icon/link/border
+use of the brand blue elsewhere is completely untouched), just swapping which
+existing token the *text* uses when it sits on a solid accent fill.
+`var(--bg)` (`#0d1117` live) gives **5.66:1** against `--accent`, comfortably
+AA and close to AAA — and it isn't an invented pattern: one component
+(`SettingsWindowView.jsx:642`) already used `var(--bg, #fff)` for exactly
+this, which is what confirmed the choice rather than picking a color cold.
+
+**Deliberately left untouched**: `src/collab/GuestApp.jsx` (3 instances) — a
+concurrent session had it open and actively modified throughout this pass
+(confirmed via `git status` before every commit in this stretch); touching it
+risked clobbering unrelated in-progress work. Flagging here so whoever lands
+that file next knows these 3 are still owed the same fix.
+
+**Verified**: `git diff --stat` on every touched file showed exactly
+1-line-changed-per-`#fff`-instance (52 insertions / 52 deletions across 15
+files, so no collateral edits slipped in from the sed passes). `npx vite
+build` clean. `npx eslint` across the touched files surfaced only pre-existing
+baseline errors unrelated to these lines (confirmed by reading each — mostly
+`no-unused-vars`/`react-hooks/exhaustive-deps` in code this pass never
+touched); did not attempt to reconcile a full per-file baseline count given
+how many files were involved and that at least one (`NotebookView.jsx`) had a
+concurrent session's own in-flight changes mixed into its current lint output.
+
 ## A132. Dark-mode contrast pass on FlashcardView.jsx — compounded-opacity fix
 
 User asked to check dark mode for reading/visibility issues on buttons and

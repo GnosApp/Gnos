@@ -61,7 +61,7 @@ const FLASHCARD_CSS = `
     transition: all 0.12s;
   }
   .fc-mode-btn.active {
-    background: var(--accent); color: #fff; border-color: var(--accent);
+    background: var(--accent); color: var(--bg); border-color: var(--accent);
   }
   .fc-mode-btn:hover:not(.active) {
     background: var(--surfaceAlt); color: var(--text);

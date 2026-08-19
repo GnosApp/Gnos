@@ -126,7 +126,7 @@ export default function UpdateChecker() {
           </button>
           <button onClick={startUpdate} style={{
             flex: 1, padding: '6px 0', border: 'none',
-            borderRadius: 6, background: 'var(--accent)', color: '#fff',
+            borderRadius: 6, background: 'var(--accent)', color: 'var(--bg)',
             cursor: 'pointer', fontSize: 12, fontWeight: 600,
           }}>
             Update & Restart

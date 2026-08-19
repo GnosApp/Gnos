@@ -1005,7 +1005,7 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
               { icon: <span style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 700 }}>"</span>, before: '> ', after: '', placeholder: 'quote' },
               { icon: <Link size={13} strokeWidth={1.6} />, before: '[', after: '](url)', placeholder: 'text' },
               { icon: <span style={{ fontFamily: 'Georgia, serif', fontStyle: 'italic', fontSize: 12 }}>∑</span>, before: '$', after: '$', placeholder: 'expr' },
-              { icon: <span style={{ fontSize: 12, background: 'var(--accent)', color: '#fff', borderRadius: 2, padding: '0 2px', lineHeight: 1.3 }}>H</span>, before: '==', after: '==', placeholder: 'highlight' },
+              { icon: <span style={{ fontSize: 12, background: 'var(--accent)', color: 'var(--bg)', borderRadius: 2, padding: '0 2px', lineHeight: 1.3 }}>H</span>, before: '==', after: '==', placeholder: 'highlight' },
               { icon: <span style={{ textDecoration: 'line-through', fontSize: 11 }}>S</span>, before: '~~', after: '~~', placeholder: 'text' },
             ].map((s, i) => (
               <button key={i}
@@ -2041,7 +2041,7 @@ const CUSTOMIZE_CSS = `
     cursor: pointer; font-family: inherit;
   }
   .ct-btn:hover { color: var(--text); border-color: var(--border); }
-  .ct-btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .ct-btn-primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
   .ct-btn-primary:hover { color: #fff; filter: brightness(1.08); }
   .ct2-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
   .ct2-chip {

@@ -8289,7 +8289,7 @@ export default function NotebookView() {
       -webkit-backdrop-filter:blur(6px); backdrop-filter:blur(6px);
     }
     .cm-img-align-btn:hover { color:var(--text); background:var(--surfaceAlt); }
-    .cm-img-align-btn.active { color:#fff; background:var(--accent); border-color:var(--accent); }
+    .cm-img-align-btn.active { color:var(--bg); background:var(--accent); border-color:var(--accent); }
     /* A floated image must not overlap the controls' hit area */
     .cm-img-wrap { position:relative; }
 
@@ -8297,7 +8297,7 @@ export default function NotebookView() {
 
     /* Checkbox widget */
     .cm-cb  { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border:1.5px solid var(--border); border-radius:3px; font-size:9px; vertical-align:middle; margin-right:5px; cursor:pointer; flex-shrink:0; color:transparent; transition:background .1s; }
-    .cm-cb-on { background:var(--accent); border-color:var(--accent); color:#fff; }
+    .cm-cb-on { background:var(--accent); border-color:var(--accent); color:var(--bg); }
 
     /* Wikilink widget */
     .cm-wl { color:var(--nb-wikilink-color,var(--accent)); border-bottom:1px solid var(--nb-wikilink-color,var(--accent)); cursor:pointer; border-radius:2px; padding:0 1px; }
@@ -8669,7 +8669,7 @@ export default function NotebookView() {
     .cm-task-modal-pri-btn.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
     .cm-task-modal-comment-row { display: flex; gap: 8px; align-items: flex-start; }
     .cm-task-modal-comment-avatar {
-      width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff;
+      width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: var(--bg);
       font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center;
       flex-shrink: 0; margin-top: 1px;
     }
@@ -8699,7 +8699,7 @@ export default function NotebookView() {
     }
     .cm-task-modal-save:disabled { background: var(--surfaceAlt); color: var(--textDim); cursor: default; opacity: .6; }
     .cm-task-modal-send {
-      padding: 8px 16px; border-radius: 8px; border: none; background: var(--accent); color: #fff;
+      padding: 8px 16px; border-radius: 8px; border: none; background: var(--accent); color: var(--bg);
       cursor: pointer; font-size: 13px; font-weight: 700; font-family: inherit; flex-shrink: 0;
     }
     .cm-task-modal-send:disabled { opacity: .45; }
@@ -8741,7 +8741,7 @@ export default function NotebookView() {
     .gnos-dtp-empty { cursor: default; }
     .gnos-dtp-today { color: var(--accent); font-weight: 700; }
     .gnos-dtp-selected {
-      background: var(--accent) !important; color: #fff !important;
+      background: var(--accent) !important; color: var(--bg) !important;
       font-weight: 600; border-radius: 6px;
     }
     .gnos-dtp-time-row {
@@ -8888,7 +8888,7 @@ export default function NotebookView() {
     }
     .cm-pomo-phase-btn:hover { background: var(--surfaceAlt); color: var(--text); }
     .cm-pomo-phase-btn.active {
-      background: var(--accent); color: #fff; border-color: var(--accent);
+      background: var(--accent); color: var(--bg); border-color: var(--accent);
     }
     .cm-pomo-time {
       font-size: 36px; font-weight: 700; color: var(--text);
@@ -9025,7 +9025,7 @@ export default function NotebookView() {
     .cm-cal-day:hover { background: var(--surfaceAlt); }
     .cm-cal-today { color: var(--accent); }
     .cm-cal-today > span:first-child {
-      background: var(--accent); color: #fff; border-radius: 50%; width: 20px; height: 20px;
+      background: var(--accent); color: var(--bg); border-radius: 50%; width: 20px; height: 20px;
       display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700;
     }
     .cm-cal-selected { background: color-mix(in srgb, var(--accent) 6%, transparent) !important; }
@@ -9219,7 +9219,7 @@ export default function NotebookView() {
     .nb-prev li.nb-task { display:flex; gap:8px; align-items:baseline; cursor:pointer; }
     .nb-prev li.nb-task:hover { opacity:.85; }
     .nb-prev .nb-cb { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border:1.5px solid var(--border); border-radius:3px; font-size:10px; flex-shrink:0; cursor:pointer; user-select:none; transition:background .1s,border-color .1s; }
-    .nb-prev li.checked .nb-cb { background:var(--accent); border-color:var(--accent); color:#fff; }
+    .nb-prev li.checked .nb-cb { background:var(--accent); border-color:var(--accent); color:var(--bg); }
     .nb-prev li.checked>span:last-child { text-decoration:line-through; opacity:.55; }
     .nb-hl { background:var(--nb-hl-bg); border-radius:2px; padding:0 2px; }
     /* Inline text formats — match live */
@@ -10067,7 +10067,7 @@ export default function NotebookView() {
                   setExtConflict(null)
                   doSave(contentRef.current, titleRef.current)
                 }}
-                style={{ border: 'none', background: 'var(--accent)', color: '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', borderRadius: 7, padding: '4px 10px' }}
+                style={{ border: 'none', background: 'var(--accent)', color: 'var(--bg)', cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', borderRadius: 7, padding: '4px 10px' }}
               >Keep mine</button>
             </div>
           )}

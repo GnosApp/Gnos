@@ -128,7 +128,7 @@ const PW_CSS = `
     border-radius: 5px; border: none; cursor: pointer; font-family: inherit;
     background: none; color: var(--textDim); transition: all 0.15s;
   }
-  .pw-tab.on { background: var(--accent); color: #fff; }
+  .pw-tab.on { background: var(--accent); color: var(--bg); }
   .pw-body {
     flex: 1; overflow-y: auto; padding: 18px 24px 40px;
   }

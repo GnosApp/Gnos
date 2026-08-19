@@ -556,7 +556,7 @@ const SW_CSS = `
     transition: background .1s;
   }
   .sw-side-item:hover { background: var(--hover); }
-  .sw-side-item.active { background: var(--accent); color: #fff; }
+  .sw-side-item.active { background: var(--accent); color: var(--bg); }
   .sw-side-icon { display: flex; opacity: .75; flex-shrink: 0; }
   .sw-side-item.active .sw-side-icon { opacity: 1; }
   .sw-main {

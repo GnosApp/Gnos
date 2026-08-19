@@ -1016,7 +1016,7 @@ export default function SketchbookView() {
     <div style={{ display:'flex', height:'100%', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--textDim)', flexDirection:'column', gap:16 }}>
       <p style={{ fontSize:14, margin:0 }}>No sketchbook selected.</p>
       <button onClick={() => setView('library')}
-        style={{ background:'var(--accent)', color:'#fff', border:'none', borderRadius:8, padding:'8px 18px', cursor:'pointer', fontSize:13, fontFamily:'inherit' }}>
+        style={{ background:'var(--accent)', color:'var(--bg)', border:'none', borderRadius:8, padding:'8px 18px', cursor:'pointer', fontSize:13, fontFamily:'inherit' }}>
         Back to Library
       </button>
     </div>
@@ -1275,7 +1275,7 @@ export default function SketchbookView() {
           <div style={{ position:'absolute', inset:0, zIndex:10, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', background:'var(--bg)', color:'var(--textDim)', fontSize:13, gap:12, padding:32, textAlign:'center' }}>
             <p style={{ margin:0, maxWidth:360 }}>Failed to load Excalidraw: {loadError}</p>
             <p style={{ margin:0, fontSize:11, opacity:0.6 }}>Make sure <code>@excalidraw/excalidraw</code> is installed and its CSS is available:<br/><code>npm install @excalidraw/excalidraw</code></p>
-            <button onClick={() => setView('library')} style={{ marginTop:8, background:'var(--accent)', color:'#fff', border:'none', borderRadius:8, padding:'7px 16px', cursor:'pointer', fontSize:12 }}>Back to Library</button>
+            <button onClick={() => setView('library')} style={{ marginTop:8, background:'var(--accent)', color:'var(--bg)', border:'none', borderRadius:8, padding:'7px 16px', cursor:'pointer', fontSize:12 }}>Back to Library</button>
           </div>
         )}
 

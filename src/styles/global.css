@@ -201,7 +201,7 @@ button { font-family: inherit; }
   display: flex; align-items: center; justify-content: center;
   transition: all 0.15s;
 }
-.btn-add-square:hover { background: var(--accent); color: #fff; border-color: var(--accent); transform: scale(1.05); }
+.btn-add-square:hover { background: var(--accent); color: var(--bg); border-color: var(--accent); transform: scale(1.05); }
 
 /* Right side icon buttons */
 .header-right-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; min-width: 80px; justify-content: flex-end; }
@@ -447,7 +447,7 @@ button { font-family: inherit; }
 
 /* === GENERAL BUTTONS === */
 .btn { display: flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 8px; font-size: 13px; cursor: pointer; transition: all 0.15s; font-weight: 600; }
-.btn.primary { background: var(--accent); color: #fff; border: none; }
+.btn.primary { background: var(--accent); color: var(--bg); border: none; }
 .btn.primary:hover { opacity: 0.88; }
 .btn.secondary { background: none; border: 1px solid var(--buttonBorder); color: var(--textMuted); }
 .btn.secondary:hover { border-color: var(--accent); color: var(--accent); }
@@ -957,7 +957,7 @@ button { font-family: inherit; }
 .note-panel-body { padding: 12px 14px; }
 .note-panel-actions { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; }
 .note-cancel-btn { background: none; border: 1px solid var(--border); color: var(--textMuted); border-radius: 7px; padding: 6px 14px; font-size: 12px; cursor: pointer; font-family: inherit; }
-.note-save-btn { background: var(--accent); color: #fff; border: none; border-radius: 7px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; }
+.note-save-btn { background: var(--accent); color: var(--bg); border: none; border-radius: 7px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; }
 
 /* === NOTES VIEWER === */
 .notes-viewer-panel {
@@ -1524,7 +1524,7 @@ mark.nb-find-mark-active {
   transition: background 0.1s;
 }
 .sap-btn:hover { background: var(--hover); }
-.sap-play-pause { font-size: 18px; padding: 10px 22px; background: var(--accent); color: #fff; border-color: transparent; border-radius: 10px; }
+.sap-play-pause { font-size: 18px; padding: 10px 22px; background: var(--accent); color: var(--bg); border-color: transparent; border-radius: 10px; }
 .sap-play-pause:hover { background: var(--accentHover, var(--accent)); filter: brightness(1.1); }
 .sap-seek { width: 100%; accent-color: var(--accent); cursor: pointer; }
 .sap-time { font-size: 11px; color: var(--textDim); font-family: var(--font-ui); }
@@ -1535,7 +1535,7 @@ mark.nb-find-mark-active {
   border: 1px solid var(--border); background: none;
   color: var(--textDim); cursor: pointer;
 }
-.sap-speed-btn.active { background: var(--accent); color: #fff; border-color: transparent; }
+.sap-speed-btn.active { background: var(--accent); color: var(--bg); border-color: transparent; }
 
 /* ── Markdown rendered elements in notebook blocks ───────────────────────── */
 .nb-block .nb-img {
@@ -1662,7 +1662,7 @@ mark.nb-find-mark-active {
   border-radius: 3px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
   font-size: 10px; color: var(--accent); background: var(--surfaceAlt);
 }
-.nb-block .nb-task-item.checked .nb-checkbox { background: var(--accent); border-color: var(--accent); color: #fff; }
+.nb-block .nb-task-item.checked .nb-checkbox { background: var(--accent); border-color: var(--accent); color: var(--bg); }
 .nb-block .nb-task-item.checked > :not(.nb-checkbox) { text-decoration: line-through; opacity: 0.5; }
 .nb-block .nb-footnote { font-size: 12px; color: var(--textDim); border-top: 1px solid var(--borderSubtle); padding-top: 4px; margin-top: 8px; }
 .nb-block .nb-fn-ref a { color: var(--accent); text-decoration: none; font-size: 11px; vertical-align: super; }
@@ -2751,7 +2751,7 @@ body.zen-active .nb-content-wrap {
 }
 .cm-qd-date-inp:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
 .cm-qd-confirm {
-  background: var(--accent); color: #fff; border: none;
+  background: var(--accent); color: var(--bg); border: none;
   border-radius: 5px; font-size: 12px; padding: 4px 8px;
   cursor: pointer; font-weight: 500;
 }
@@ -2762,7 +2762,7 @@ body.zen-active .nb-content-wrap {
   color: var(--text); font-size: 12px; padding: 5px 8px;
   cursor: pointer; transition: background 0.1s;
 }
-.cm-qd-deck-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+.cm-qd-deck-btn:hover { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .cm-qd-deck-active { border-color: #3fb950; color: #3fb950; }
 .cm-qd-none { font-size: 12px; color: var(--textDim); padding: 2px 2px; }
 .cm-qd-divider { height: 1px; background: var(--border); margin: 2px 0; }
@@ -2781,7 +2781,7 @@ body.zen-active .nb-content-wrap {
   padding: 4px 8px; cursor: pointer; font-family: 'Satoshi', system-ui, sans-serif;
   transition: background 0.1s, color 0.1s;
 }
-.cm-qd-reveal-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+.cm-qd-reveal-btn:hover { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 
 /* === CODEMIRROR AUTOCOMPLETE TOOLTIP === */
 .cm-tooltip.cm-tooltip-autocomplete {
@@ -3023,7 +3023,7 @@ body.reader-focus-mode .reader-card { height: 100% !important; min-height: 0 !im
   display: flex; align-items: center; justify-content: center;
   transition: background 0.1s, color 0.1s;
 }
-.mobile-nav-search-return:active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.mobile-nav-search-return:active { background: var(--accent); border-color: var(--accent); color: var(--bg); }
 
 /* ── TTS controls bar — floats above reader bottom nav when TTS is active ── */
 .mobile-tts-bar {
@@ -3182,7 +3182,7 @@ body.reader-focus-mode .reader-card { height: 100% !important; min-height: 0 !im
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 .mobile-nav-btn:active .mobile-nav-btn-arrow {
-  background: var(--accent); border-color: var(--accent); color: #fff;
+  background: var(--accent); border-color: var(--accent); color: var(--bg);
 }
 
 /* ── Mobile view title pill (notebook / sketchbook / flashcard) ─────────── */
@@ -3227,7 +3227,7 @@ body.reader-focus-mode .reader-card { height: 100% !important; min-height: 0 !im
   bottom: calc(max(12px, env(safe-area-inset-bottom, 0px) + 6px) + 45px + 8px);
   left: 50%; transform: translateX(-50%);
   height: 40px; padding: 0 24px;
-  background: var(--accent); color: #fff;
+  background: var(--accent); color: var(--bg);
   border: none; border-radius: 22px;
   font-weight: 700; font-size: 13px; font-family: inherit;
   box-shadow: 0 4px 16px rgba(0,0,0,0.25), 0 1px 0 rgba(255,255,255,0.10) inset;
@@ -3457,7 +3457,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .btn-add-square { border-radius: 8px; }
 .btn-add-square:hover {
   transform: none;
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent); color: var(--bg); border-color: var(--accent);
   box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .btn-icon-round { border-radius: 8px; border-color: transparent; }

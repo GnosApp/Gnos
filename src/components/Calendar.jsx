@@ -107,7 +107,7 @@ function MiniCalendar({ value, onChange }) {
               style={{textAlign:'center',fontSize:11,fontWeight:isSel||isToday?700:400,
                 padding:'5px 2px',borderRadius:6,cursor:inMonth?'pointer':'default',
                 background:isSel?'var(--accent)':isToday?'color-mix(in srgb,var(--accent) 15%,transparent)':'transparent',
-                color:isSel?'#fff':isToday?'var(--accent)':inMonth?'var(--text)':'var(--textDim)',
+                color:isSel?'var(--bg)':isToday?'var(--accent)':inMonth?'var(--text)':'var(--textDim)',
                 opacity:inMonth?1:0.35,transition:'background 0.1s'}}>
               {cell.getDate()}
             </div>
@@ -226,7 +226,7 @@ function EventModal({ event, onSave, onDelete, onClose }) {
             {form.location.trim() && (
               <button onClick={openMaps} title="Get directions"
                 style={{width:32,height:32,borderRadius:8,border:'1px solid var(--border)',background:'var(--surfaceAlt)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,color:'var(--textDim)',transition:'background 0.1s,color 0.1s'}}
-                onMouseEnter={e=>{e.currentTarget.style.background='var(--accent)';e.currentTarget.style.color='#fff'}}
+                onMouseEnter={e=>{e.currentTarget.style.background='var(--accent)';e.currentTarget.style.color='var(--bg)'}}
                 onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)'}}>
                 <Navigation size={14} strokeWidth={2} />
               </button>
@@ -261,7 +261,7 @@ function EventModal({ event, onSave, onDelete, onClose }) {
                     return (
                       <button key={d} onClick={()=>set('customDays',active?form.customDays.filter(x=>x!==d):[...form.customDays,d].sort())}
                         style={{flex:1,height:32,borderRadius:8,border:`1px solid ${active?'var(--accent)':'var(--border)'}`,
-                          background:active?'var(--accent)':'var(--surface)',color:active?'#fff':'var(--textDim)',
+                          background:active?'var(--accent)':'var(--surface)',color:active?'var(--bg)':'var(--textDim)',
                           fontSize:11,fontWeight:600,cursor:'pointer',fontFamily:'inherit'}}>
                         {lbl}
                       </button>
@@ -792,7 +792,7 @@ export function FullCalendar({ notebookEvents = {}, fullHeight = false }) {
           <button onClick={next} style={{width:28,height:28,borderRadius:7,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--text)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,lineHeight:1}}>›</button>
           <button onClick={()=>setViewDate(new Date())} style={{height:28,padding:'0 10px',borderRadius:7,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',fontSize:11,fontWeight:600,cursor:'pointer'}}>Today</button>
           <button onClick={()=>setShowMonthPicker(v=>!v)}
-            style={{height:28,padding:'0 10px',borderRadius:7,border:'1px solid var(--border)',background:showMonthPicker?'var(--accent)':'none',color:showMonthPicker?'#fff':'var(--text)',fontSize:13,fontWeight:700,cursor:'pointer',transition:'background 0.12s,color 0.12s',marginLeft:2,display:'flex',alignItems:'center',gap:4}}>
+            style={{height:28,padding:'0 10px',borderRadius:7,border:'1px solid var(--border)',background:showMonthPicker?'var(--accent)':'none',color:showMonthPicker?'var(--bg)':'var(--text)',fontSize:13,fontWeight:700,cursor:'pointer',transition:'background 0.12s,color 0.12s',marginLeft:2,display:'flex',alignItems:'center',gap:4}}>
             {headerLabel}
             <ChevronDown size={10} strokeWidth={1.5} style={{opacity:0.6,transition:'transform 0.15s',transform:showMonthPicker?'rotate(180deg)':'none'}} />
           </button>

@@ -528,7 +528,7 @@ function PiperStatusRow() {
           {installed === null ? 'Checking Piper…' : installed ? 'Piper is installed' : 'Piper not found'}
         </span>
         {!installed && installed !== null && (
-          <button onClick={openDownload} style={{ padding: '3px 10px', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 5, fontSize: 10, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          <button onClick={openDownload} style={{ padding: '3px 10px', background: 'var(--accent)', color: 'var(--bg)', border: 'none', borderRadius: 5, fontSize: 10, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
             Download Piper
           </button>
         )}
@@ -899,7 +899,7 @@ export function UniversalSettingsModal({ onClose }) {
                     Object.assign(document.createElement('a'), { href: url, download: 'gnos-library.json' }).click()
                     URL.revokeObjectURL(url)
                   }}><Download size={12} strokeWidth={1.8} />Export</button>
-                <button style={{ flex: 1, padding: '8px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 7, color: '#fff', fontSize: 12, cursor: 'pointer', fontWeight: 500, fontFamily: 'inherit' }}
+                <button style={{ flex: 1, padding: '8px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 7, color: 'var(--bg)', fontSize: 12, cursor: 'pointer', fontWeight: 500, fontFamily: 'inherit' }}
                   onClick={() => importInputRef.current?.click()}><Upload size={12} strokeWidth={1.8} />Import</button>
               </div>
               <input ref={fileInputRef} type="file" accept=".epub,.pdf" multiple style={{ display: 'none' }}
@@ -1282,7 +1282,7 @@ function SideEditModal({ item, isNb, isSb, isAudio, colors, onClose, onSave }) {
             if (isAudio || (!isNb && !isSb)) changes.author = author.trim()
             onSave(changes)
           }}
-            style={{ background:'var(--accent)',border:'none',color:'#fff',borderRadius:7,padding:'7px 16px',fontSize:13,cursor:'pointer',fontWeight:600 }}>Save</button>
+            style={{ background:'var(--accent)',border:'none',color:'var(--bg)',borderRadius:7,padding:'7px 16px',fontSize:13,cursor:'pointer',fontWeight:600 }}>Save</button>
         </div>
       </div>
     </div>,
@@ -1362,7 +1362,7 @@ function CollectionEditModal({ col, onClose, onSave }) {
         <div style={{ display:'flex',gap:8,justifyContent:'flex-end' }}>
           <button onClick={onClose} style={{ background:'none',border:'1px solid var(--border)',color:'var(--textDim)',borderRadius:7,padding:'7px 16px',fontSize:13,cursor:'pointer',fontFamily:'inherit' }}>Cancel</button>
           <button onClick={() => { if (name.trim()) onSave({ name: name.trim(), emoji, icon, color }); onClose() }}
-            style={{ background:'var(--accent)',border:'none',color:'#fff',borderRadius:7,padding:'7px 16px',fontSize:13,cursor:'pointer',fontWeight:600,fontFamily:'inherit' }}>Save</button>
+            style={{ background:'var(--accent)',border:'none',color:'var(--bg)',borderRadius:7,padding:'7px 16px',fontSize:13,cursor:'pointer',fontWeight:600,fontFamily:'inherit' }}>Save</button>
         </div>
       </div>
     </div>,
@@ -1903,7 +1903,7 @@ export default function SideNav({ isSplitPane = false }) {
           transition: all 0.15s; flex-shrink: 0;
         }
         .sidenav-footer-btn:hover {
-          background: var(--accent); color: #fff;
+          background: var(--accent); color: var(--bg);
           border-color: var(--accent); transform: scale(1.05);
         }
 

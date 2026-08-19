@@ -264,7 +264,7 @@ export default function PdfView() {
           <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:16, padding:40, textAlign:'center' }}>
             <Book size={48} strokeWidth={1.6} style={{ opacity: 0.3 }} />
             <p style={{ color:'var(--textDim)', fontSize:13, maxWidth:340, lineHeight:1.6 }}>{error}</p>
-            <button onClick={() => setView('library')} style={{ background:'var(--accent)', color:'#fff', border:'none', borderRadius:8, padding:'8px 18px', cursor:'pointer', fontSize:13 }}>
+            <button onClick={() => setView('library')} style={{ background:'var(--accent)', color:'var(--bg)', border:'none', borderRadius:8, padding:'8px 18px', cursor:'pointer', fontSize:13 }}>
               Back to Library
             </button>
           </div>

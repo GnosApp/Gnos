@@ -324,7 +324,7 @@ function ReviewPanel({ highlights, bookmarks, chapters, onJump, onLocate, onClos
                 await onSendToNotebook()
                 setSending(false)
               }}
-              style={{ flex: 1, fontSize: 11, padding: '6px 0', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--accent)', color: '#fff', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600, opacity: sending ? 0.6 : 1 }}>
+              style={{ flex: 1, fontSize: 11, padding: '6px 0', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--accent)', color: 'var(--bg)', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600, opacity: sending ? 0.6 : 1 }}>
               {sending ? 'Saving…' : 'Send to Notebook'}
             </button>
             <button

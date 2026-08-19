@@ -341,7 +341,7 @@ function EditItemModal({ heading, item, fields, colors = NB_COLORS, onSave, onCl
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 19 }}>
           <button onClick={onClose} style={{ background: 'none', border: '1px solid var(--border)', color: 'var(--textDim)', borderRadius: 8, padding: '7px 16px', fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
-          <button onClick={save} style={{ background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, padding: '7px 16px', fontSize: 13, cursor: 'pointer', fontWeight: 600, fontFamily: 'inherit' }}>Save</button>
+          <button onClick={save} style={{ background: 'var(--accent)', border: 'none', color: 'var(--bg)', borderRadius: 8, padding: '7px 16px', fontSize: 13, cursor: 'pointer', fontWeight: 600, fontFamily: 'inherit' }}>Save</button>
         </div>
       </div>
     </div>
@@ -1120,7 +1120,7 @@ function KanbanCardModal({ card, onSave, onDelete, onClose }) {
                 <div style={{marginBottom:8,display:'flex',flexDirection:'column',gap:8}}>
                   {comments.map(c=>(
                     <div key={c.id} style={{display:'flex',gap:8,alignItems:'flex-start'}}>
-                      <div style={{width:20,height:20,borderRadius:'50%',background:'var(--accent)',color:'#fff',fontSize:11,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,marginTop:1}}>{c.text[0]?.toUpperCase()||'?'}</div>
+                      <div style={{width:20,height:20,borderRadius:'50%',background:'var(--accent)',color:'var(--bg)',fontSize:11,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,marginTop:1}}>{c.text[0]?.toUpperCase()||'?'}</div>
                       <div style={{flex:1,background:'var(--surfaceAlt)',border:'1px solid var(--borderSubtle)',borderRadius:8,padding:'8px 12px',position:'relative'}}>
                         <div style={{fontSize:13,color:'var(--text)',lineHeight:'18px',paddingRight:16}}>{c.text}</div>
                         <div style={{fontSize:11,color:'var(--textDim)',marginTop:4}}>{new Date(c.createdAt).toLocaleDateString()}</div>
@@ -1135,7 +1135,7 @@ function KanbanCardModal({ card, onSave, onDelete, onClose }) {
                   onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();addCmt()}}}
                   onFocus={onFocusRing} onBlur={onBlurRing} style={{...field,flex:1}}/>
                 <button onClick={addCmt} disabled={!newCmt.trim()}
-                  style={{padding:'8px 16px',borderRadius:8,border:'none',background:'var(--accent)',color:'#fff',cursor:'pointer',fontSize:13,fontWeight:700,opacity:newCmt.trim()?1:0.45,fontFamily:'inherit',flexShrink:0}}>
+                  style={{padding:'8px 16px',borderRadius:8,border:'none',background:'var(--accent)',color:'var(--bg)',cursor:'pointer',fontSize:13,fontWeight:700,opacity:newCmt.trim()?1:0.45,fontFamily:'inherit',flexShrink:0}}>
                   Send
                 </button>
               </div>
@@ -1163,7 +1163,7 @@ function KanbanCardModal({ card, onSave, onDelete, onClose }) {
               Cancel
             </button>
             <button onClick={save} disabled={!canSave}
-              style={{flex:1,padding:'10px 16px',borderRadius:8,border:'none',background:canSave?'var(--accent)':'var(--surfaceAlt)',color:canSave?'#fff':'var(--textDim)',cursor:canSave?'pointer':'default',fontSize:13,fontWeight:700,fontFamily:'inherit',opacity:canSave?1:0.6}}>
+              style={{flex:1,padding:'10px 16px',borderRadius:8,border:'none',background:canSave?'var(--accent)':'var(--surfaceAlt)',color:canSave?'var(--bg)':'var(--textDim)',cursor:canSave?'pointer':'default',fontSize:13,fontWeight:700,fontFamily:'inherit',opacity:canSave?1:0.6}}>
               {isNew?'Create Task':'Save Changes'}
             </button>
           </div>
@@ -1328,7 +1328,7 @@ export function KanbanBoard() {
             onKeyDown={e=>{if(e.key==='Enter'&&newColName.trim()){persist({...board,columns:[...board.columns,{id:makeColId(),title:newColName.trim(),cards:[]}]});setNewColName('');setAddingCol(false)}else if(e.key==='Escape')setAddingCol(false)}}
             style={{flex:1,background:'var(--surfaceAlt)',border:'1px solid var(--border)',borderRadius:8,color:'var(--text)',fontSize:13,padding:'7px 11px',fontFamily:'inherit',outline:'none'}}/>
           <button onClick={()=>{if(newColName.trim()){persist({...board,columns:[...board.columns,{id:makeColId(),title:newColName.trim(),cards:[]}]});setNewColName('');setAddingCol(false)}}}
-            style={{padding:'7px 16px',borderRadius:8,border:'none',background:'var(--accent)',color:'#fff',fontSize:13,fontWeight:700,cursor:'pointer'}}>Add</button>
+            style={{padding:'7px 16px',borderRadius:8,border:'none',background:'var(--accent)',color:'var(--bg)',fontSize:13,fontWeight:700,cursor:'pointer'}}>Add</button>
         </div>
       )}
       <div style={{display:'flex',gap:12,overflowX:'auto',paddingBottom:8,alignItems:'flex-start'}}>
@@ -1622,7 +1622,7 @@ function ProfileModal({ onClose }) {
                 {TABS.map(([t,l])=>(
                   <button key={t} onClick={()=>setProfileTab(t)} style={{
                     height:22,padding:'0 10px',fontSize:11,fontWeight:600,borderRadius:5,border:'none',cursor:'pointer',fontFamily:'inherit',
-                    background:profileTab===t?'var(--accent)':'none',color:profileTab===t?'#fff':'var(--textDim)',transition:'all 0.15s',
+                    background:profileTab===t?'var(--accent)':'none',color:profileTab===t?'var(--bg)':'var(--textDim)',transition:'all 0.15s',
                   }}>{l}</button>
                 ))}
               </div>
@@ -1644,7 +1644,7 @@ function ProfileModal({ onClose }) {
             <div>
               <div style={{display:'flex',justifyContent:'flex-end',marginBottom:10}}>
                 <button onClick={()=>{onClose();navigate({view:'calendar'})}} style={{padding:'5px 12px',borderRadius:7,border:'1px solid var(--border)',background:'var(--surfaceAlt)',color:'var(--textDim)',fontSize:11,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',gap:6,transition:'background 0.15s,color 0.15s'}}
-                  onMouseEnter={e=>{e.currentTarget.style.background='var(--accent)';e.currentTarget.style.color='#fff';e.currentTarget.style.borderColor='var(--accent)'}}
+                  onMouseEnter={e=>{e.currentTarget.style.background='var(--accent)';e.currentTarget.style.color='var(--bg)';e.currentTarget.style.borderColor='var(--accent)'}}
                   onMouseLeave={e=>{e.currentTarget.style.background='var(--surfaceAlt)';e.currentTarget.style.color='var(--textDim)';e.currentTarget.style.borderColor='var(--border)'}}>
                   <Calendar size={12} strokeWidth={1.2} />
                   Open Calendar
@@ -1727,7 +1727,7 @@ function ProfileModal({ onClose }) {
                         }
                         return (
                           <div key={hi} onClick={()=>toggleProfileHabit(bi,hi)} style={{display:'flex',alignItems:'center',gap:10,padding:'6px 10px',borderRadius:7,cursor:'pointer',background:done?'color-mix(in srgb, var(--accent) 8%, var(--surface))':'var(--surfaceAlt)',border:`1px solid ${done?'color-mix(in srgb, var(--accent) 25%, var(--border))':'var(--borderSubtle)'}`,transition:'background 0.12s,border-color 0.12s'}}>
-                            <div style={{width:16,height:16,borderRadius:4,flexShrink:0,border:`1.5px solid ${done?'var(--accent)':'var(--border)'}`,background:done?'var(--accent)':'none',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,color:'#fff',transition:'background 0.12s,border-color 0.12s'}}>{done?'✓':''}</div>
+                            <div style={{width:16,height:16,borderRadius:4,flexShrink:0,border:`1.5px solid ${done?'var(--accent)':'var(--border)'}`,background:done?'var(--accent)':'none',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,color:'var(--bg)',transition:'background 0.12s,border-color 0.12s'}}>{done?'✓':''}</div>
                             <div style={{flex:1,minWidth:0,fontSize:12.5,color:'var(--text)',fontWeight:done?600:400,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={hName}>{hName}</div>
                             <div style={{display:'flex',gap:2,flexShrink:0}}>
                               {last7.map(({k,isToday})=>{
@@ -3115,7 +3115,7 @@ export default function LibraryView() {
                   placeholder={smartFilterField === 'format' ? 'epub' : smartFilterField === 'author' ? 'author name' : 'book'}
                   style={{ fontSize: 11, flex: 1, minWidth: 80, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', padding: '3px 7px', fontFamily: 'inherit', outline: 'none' }}
                 />
-                <button onClick={() => { updateCollection(col.id, { filter: smartFilterValue.trim() ? { field: smartFilterField, value: smartFilterValue.trim() } : undefined }); persistCollections(); setSmartFilterOpen(null) }} style={{ fontSize: 11, fontWeight: 600, background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 5, padding: '3px 10px', cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>Apply</button>
+                <button onClick={() => { updateCollection(col.id, { filter: smartFilterValue.trim() ? { field: smartFilterField, value: smartFilterValue.trim() } : undefined }); persistCollections(); setSmartFilterOpen(null) }} style={{ fontSize: 11, fontWeight: 600, background: 'var(--accent)', color: 'var(--bg)', border: 'none', borderRadius: 5, padding: '3px 10px', cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>Apply</button>
                 <button onClick={() => setSmartFilterOpen(null)} style={{ fontSize: 11, background: 'none', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--textDim)', padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}>Cancel</button>
               </div>
             )}

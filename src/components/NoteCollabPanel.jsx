@@ -48,7 +48,7 @@ function GuestRow({ id, entry, approve, deny }) {
       </span>
       {pending ? (
         <>
-          <button onClick={() => approve(id, 'editor')} style={btnStyle('var(--accent)', '#fff')}>Editor</button>
+          <button onClick={() => approve(id, 'editor')} style={btnStyle('var(--accent)', 'var(--bg)')}>Editor</button>
           <button onClick={() => approve(id, 'viewer')} style={btnStyle('var(--surfaceAlt)', 'var(--text)')}>Viewer</button>
           <button onClick={() => deny(id)} style={btnStyle('transparent', '#f85149')}>Deny</button>
         </>
