@@ -1,5 +1,61 @@
 # UI Changes — July 2026 pass
 
+## A126. FlashcardView.jsx — full pass (first real audit of this file)
+
+Per PLAN_POPUP_REVAMP.md's open-item list — this file had only ever gotten
+the A122 side-tab spot-fix, never a real pass. Checked against the standard
+bug-class list:
+
+- **Wrong red for destructive actions**: `#ef5350` → app-standard `#f85149`
+  everywhere it stood for a negative/destructive state — `.fc-rate-btn.again`
+  (+ its hover tint), `.fc-audio-remove:hover`, `.fc-list-del:hover`, and the
+  edit-mode card's inline `Delete` button. Left alone: `CARD_COLORS`'s own
+  `#ef5350` swatch — that's a literal user-chosen palette color, not a status
+  indicator, out of scope for this rule.
+- **Side-tab border → dot**: two spots A122 didn't reach (it only fixed the
+  list-mode row). Study mode's front card face had `borderLeftColor:
+  studyCard.color` on flip; the edit-mode viewport's front card face had the
+  same via inline `borderLeft`. Both replaced with a small `.fc-card-color-dot`
+  next to the Front/Back label — same pattern as A122's `.fc-list-color-dot`,
+  now shown on **both** faces (color is a whole-card attribute, not
+  front-only, so hiding it on Back was an inconsistency the original code
+  had, not a deliberate choice).
+- **Unicode glyphs standing in for icons**: 9 bare `×` buttons (image/audio
+  remove overlays in both List and Edit mode, `fc-list-del`) replaced with
+  real `lucide-react` `<X>`; the edit-mode card-nav `&larr;`/`&rarr;` HTML
+  entities replaced with `<ChevronLeft>`/`<ChevronRight>`. A few of the
+  circular remove-button inline styles didn't have flex-centering set before
+  (relying on the glyph's own baseline) — added `display:flex;
+  alignItems:center; justifyContent:center` so the icon centers properly.
+- **Stray focus ring inconsistent with A121-A125's app-wide "no focus
+  highlight" decision**: `.fc-header-title:focus` still had a hardcoded
+  `box-shadow: 0 0 0 2px var(--accent)`. Turned out to be entirely dead CSS
+  instead — `.fc-header`/`.fc-header-title` haven't been used since the
+  header was replaced by `QuickAccess` + the mobile title pill (see the
+  comment at the JSX return). Removed as dead code, which incidentally also
+  removes the inconsistency.
+- **Other dead CSS found and removed** (all confirmed zero JSX references):
+  `.fc-card-row` (+ its `.fc-num`/`.fc-fields`/`:hover` children), `.fc-del-btn`
+  (+ hover rules), `.fc-canvas-wrap` (+ its `canvas` child rule),
+  `.fc-img-preview`, `.fc-card-tools`. All leftovers from an older single-column
+  edit-list layout that predates the current List/Edit split.
+- **`broken-image` hook findings (3, same 3 lines every edit)**: false
+  positives — they're regex string literals inside `parseApkg`/`stripHtml`
+  (`<img[^>]+src=...` pattern matching for Anki import), not real JSX `<img>`
+  tags. Confirmed by reading the surrounding function each time; left
+  unchanged.
+
+**Verified live**: onboarding-bypass + `window.__appStore` to inject a test
+deck (`addDeck`/`setActiveFlashcardDeck` **and** patch the active tab's own
+`activeFlashcardDeck`/`view` — the top-level convenience setters alone don't
+stick, `navigate()` re-syncs from the tab's copy; also note the view id is
+singular `'flashcard'` not `'flashcards'`). Confirmed in the browser: Study
+mode shows the color dot on both faces and the app-standard red on Again;
+List mode's real `<X>` icon renders on the delete button; Edit mode's
+chevron nav icons render, color dot shows on both Front/Back labels, and
+the Delete button is the correct red. `npx eslint` baseline unchanged (2
+pre-existing, unrelated `no-unused-vars` errors); `npx vite build` green.
+
 ## A125. Focus highlight removed entirely, no color at all
 
 User: don't want the focus highlight at all. `--focusBorder` now equals

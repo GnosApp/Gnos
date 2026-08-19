@@ -354,11 +354,19 @@ Roughly in priority order (highest-value / most user-visible first), but
 pick whichever you actually have a good lead on — this isn't a strict
 queue.
 
-- [ ] **`FlashcardView.jsx` — full pass, not just the side-tab spot-fix.**
-      Never got a real audit like the other views did. At minimum check:
-      the add-card flow, deck settings, CSV/Anki import dialog, and the
-      card-color picker itself (whatever sets `card.color` — is it also
-      using a stripe/swatch pattern worth aligning with the new dot?).
+- [x] **`FlashcardView.jsx` — full pass** — DONE, logged as A126. Wrong red
+      (`#ef5350`→`#f85149`) on rate/delete/remove-hover states; Study mode's
+      + Edit mode's remaining color-border side-tabs (A122 only fixed List
+      mode) replaced with the same dot pattern; 9 unicode `×` + 2 HTML-entity
+      arrows replaced with real `lucide-react` icons; a chunk of dead CSS
+      (`.fc-header`/`.fc-header-title` — including a stray accent-blue focus
+      ring left over from before A121-A125 — `.fc-card-row`, `.fc-del-btn`,
+      `.fc-canvas-wrap`, `.fc-img-preview`, `.fc-card-tools`) removed. The
+      card-color picker itself (`CARD_COLORS` swatch row, List/Edit mode) was
+      already a plain dot grid, not a stripe — nothing to align there. CSV/
+      Anki import dialog is a native OS file picker (`@tauri-apps/plugin-dialog`
+      `open()`), not an in-app popup — out of scope for this plan by
+      construction, nothing to redesign.
 - [ ] **Wiki-link (`@`-mention) and slash-command (`/`) autocomplete
       menus** — `makeWikiDropdownPlugin`/`makeSlashSource` in
       `NotebookView.jsx`. Flagged since Pass 5 (A108), still zero custom

@@ -13,7 +13,7 @@ import { useIsMobile } from '@/lib/useIsMobile'
 import { saveNotebookImage } from '@/lib/storage'
 import JSZip from 'jszip'
 import initSqlJs from 'sql.js/dist/sql-asm.js'
-import { Pause, Play, Plus, Share, SquareArrowLeft, SquareArrowRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Pause, Play, Plus, Share, SquareArrowLeft, SquareArrowRight, X } from 'lucide-react'
 
 // ─── SM-2 Algorithm ──────────────────────────────────────────────────────────
 function sm2(card, quality) {
@@ -43,26 +43,11 @@ const FLASHCARD_CSS = `
     display: flex; flex-direction: column; height: 100%;
     background: var(--bg); color: var(--text); overflow: hidden;
   }
-  .fc-header {
-    display: flex; align-items: center; gap: 12px;
-    padding: 12px 18px; border-bottom: 1px solid var(--borderSubtle);
-    background: var(--headerBg);
-    flex-shrink: 0;
-  }
   .fc-footer {
     display: flex; align-items: center; gap: 8px;
     padding: 9px 18px; border-top: 1px solid var(--borderSubtle);
     background: var(--surface);
     flex-shrink: 0;
-  }
-  .fc-header-title {
-    font-size: 16px; font-weight: 700; flex: 1;
-    background: none; border: none; color: var(--text);
-    font-family: inherit; outline: none; padding: 2px 6px;
-    border-radius: 6px;
-  }
-  .fc-header-title:focus {
-    background: var(--surfaceAlt); box-shadow: 0 0 0 2px var(--accent);
   }
   .fc-mode-btn {
     padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border);
@@ -121,7 +106,9 @@ const FLASHCARD_CSS = `
     position: absolute; top: 10px; left: 14px;
     font-size: 10px; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.08em; color: var(--textDim); opacity: 0.6;
+    display: flex; align-items: center; gap: 5px;
   }
+  .fc-card-color-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; opacity: 1; }
   .fc-card-html {
     max-width: 100%; overflow-wrap: break-word; text-align: center;
     line-height: 1.5;
@@ -140,8 +127,8 @@ const FLASHCARD_CSS = `
     transition: all 0.12s; min-width: 70px;
   }
   .fc-rate-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
-  .fc-rate-btn.again { border-color: #ef5350; color: #ef5350; }
-  .fc-rate-btn.again:hover { background: rgba(239,83,80,0.1); }
+  .fc-rate-btn.again { border-color: #f85149; color: #f85149; }
+  .fc-rate-btn.again:hover { background: rgba(248,81,73,0.1); }
   .fc-rate-btn.hard { border-color: #ff9800; color: #ff9800; }
   .fc-rate-btn.hard:hover { background: rgba(255,152,0,0.1); }
   .fc-rate-btn.good { border-color: #4caf50; color: #4caf50; }
@@ -161,19 +148,6 @@ const FLASHCARD_CSS = `
   .fc-edit {
     flex: 1; overflow-y: auto; padding: 18px;
   }
-  .fc-card-row {
-    display: flex; gap: 10px; align-items: flex-start;
-    padding: 10px 12px; border-radius: 10px;
-    border: 1px solid var(--borderSubtle);
-    margin-bottom: 8px; background: var(--surface);
-    transition: border-color 0.12s;
-  }
-  .fc-card-row:hover { border-color: var(--border); }
-  .fc-card-row .fc-num {
-    font-size: 11px; color: var(--textDim); min-width: 22px;
-    text-align: right; padding-top: 6px; flex-shrink: 0;
-  }
-  .fc-card-row .fc-fields { flex: 1; display: flex; flex-direction: column; gap: 4px; }
   .fc-card-input {
     width: 100%; padding: 5px 8px; border-radius: 6px;
     border: 1px solid var(--borderSubtle); background: var(--bg);
@@ -182,13 +156,6 @@ const FLASHCARD_CSS = `
   }
   .fc-card-input:focus { border-color: var(--focusBorder); box-shadow: var(--focusRing); }
   .fc-card-input::placeholder { color: var(--textDim); opacity: 0.5; }
-  .fc-del-btn {
-    background: none; border: none; color: var(--textDim); cursor: pointer;
-    padding: 4px; border-radius: 4px; opacity: 0; transition: opacity 0.12s;
-    flex-shrink: 0; margin-top: 4px;
-  }
-  .fc-card-row:hover .fc-del-btn { opacity: 0.5; }
-  .fc-del-btn:hover { opacity: 1 !important; color: #ef5350; }
   .fc-add-btn {
     width: 100%; padding: 10px; border: 1px dashed var(--border);
     border-radius: 10px; background: none; color: var(--textDim);
@@ -197,9 +164,6 @@ const FLASHCARD_CSS = `
   }
   .fc-add-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-  .fc-card-tools {
-    display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap;
-  }
   .fc-tool-btn {
     padding: 3px 8px; border-radius: 5px; border: 1px solid var(--borderSubtle);
     background: none; color: var(--textDim); cursor: pointer; font-size: 10px;
@@ -211,15 +175,6 @@ const FLASHCARD_CSS = `
     border: 2px solid transparent; transition: border-color 0.1s;
   }
   .fc-color-dot:hover, .fc-color-dot.active { border-color: var(--text); }
-  .fc-canvas-wrap {
-    margin-top: 6px; border: 1px solid var(--border); border-radius: 8px;
-    overflow: hidden; background: var(--bg);
-  }
-  .fc-canvas-wrap canvas { display: block; cursor: crosshair; }
-  .fc-img-preview {
-    max-width: 100%; max-height: 80px; border-radius: 6px; margin-top: 4px;
-    object-fit: contain;
-  }
   .fc-audio-row {
     display: flex; align-items: center; gap: 8px; margin-top: 4px;
   }
@@ -233,9 +188,10 @@ const FLASHCARD_CSS = `
   .fc-audio-label { font-size: 10px; color: var(--textDim); }
   .fc-audio-remove {
     background: none; border: none; color: var(--textDim); cursor: pointer;
-    font-size: 11px; opacity: 0.5; padding: 2px 4px;
+    display: inline-flex; align-items: center;
+    opacity: 0.5; padding: 2px 4px;
   }
-  .fc-audio-remove:hover { opacity: 1; color: #ef5350; }
+  .fc-audio-remove:hover { opacity: 1; color: #f85149; }
 
   /* List mode */
   .fc-list {
@@ -283,10 +239,10 @@ const FLASHCARD_CSS = `
   .fc-list-del {
     background: none; border: none; color: var(--textDim); cursor: pointer;
     padding: 5px 6px; border-radius: 5px; opacity: 0; transition: opacity 0.12s;
-    flex-shrink: 0; font-size: 16px; line-height: 1;
+    flex-shrink: 0; display: flex; align-items: center; justify-content: center;
   }
   .fc-list-row:hover .fc-list-del { opacity: 0.4; }
-  .fc-list-del:hover { opacity: 1 !important; color: #ef5350; }
+  .fc-list-del:hover { opacity: 1 !important; color: #f85149; }
   .fc-list-section {
     font-size: 11px; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.08em; color: var(--textDim);
@@ -818,15 +774,15 @@ export default function FlashcardView() {
                 const aData = qFront
                   ? { text: studyCard.back,  html: studyCard.backHtml,  img: studyCard.backImageUrl,                           audio: studyCard.backAudioUrl, label: 'Back'  }
                   : { text: studyCard.front, html: studyCard.frontHtml, img: studyCard.imageUrl, sketch: studyCard.sketchUrl, audio: studyCard.audioUrl,    label: 'Front' }
-                const colorStyle = studyCard.color && studyCard.color !== 'transparent'
-                  ? { borderLeftColor: studyCard.color, borderLeftWidth: 4 }
-                  : {}
+                const cardColorDot = studyCard.color && studyCard.color !== 'transparent'
+                  ? <span className="fc-card-color-dot" style={{ background: studyCard.color }} title="Card color" />
+                  : null
                 return (
                   <div className="fc-card-wrapper" onClick={() => setFlipped(f => !f)}>
                     <div className={`fc-card-inner${flipped ? ' flipped' : ''}`}>
                       {/* Question face (always visible when not flipped) */}
-                      <div className="fc-card-face fc-card-front" style={{ flexDirection: 'column', gap: 8, ...colorStyle }}>
-                        <div className="fc-card-label">{qData.label}</div>
+                      <div className="fc-card-face fc-card-front" style={{ flexDirection: 'column', gap: 8 }}>
+                        <div className="fc-card-label">{cardColorDot}{qData.label}</div>
                         {qData.html
                           ? <div className="fc-card-html" dangerouslySetInnerHTML={{ __html: qData.html }} />
                           : qData.text || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>Empty card</span>}
@@ -836,7 +792,7 @@ export default function FlashcardView() {
                       </div>
                       {/* Answer face — hidden until flipped to prevent sneak-peek */}
                       <div className="fc-card-face fc-card-back" style={{ flexDirection: 'column', gap: 8, visibility: flipped ? 'visible' : 'hidden' }}>
-                        <div className="fc-card-label">{aData.label}</div>
+                        <div className="fc-card-label">{cardColorDot}{aData.label}</div>
                         {aData.html
                           ? <div className="fc-card-html" dangerouslySetInnerHTML={{ __html: aData.html }} />
                           : aData.text || <span style={{ color: 'var(--textDim)', fontStyle: 'italic' }}>No answer</span>}
@@ -938,14 +894,14 @@ export default function FlashcardView() {
                         <div style={{ position:'relative', display:'inline-block' }}>
                           <img className="fc-list-img" src={card.imageUrl} alt="" />
                           <button onClick={() => updateCard(card.id, { imageUrl: '' })}
-                            style={{ position:'absolute', top:2, right:2, width:16, height:16, borderRadius:8, background:'rgba(0,0,0,0.55)', border:'none', color:'#fff', cursor:'pointer', fontSize:10, lineHeight:1, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
+                            style={{ position:'absolute', top:2, right:2, width:16, height:16, borderRadius:8, background:'rgba(0,0,0,0.55)', border:'none', color:'#fff', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}><X size={9} strokeWidth={2.5} /></button>
                         </div>
                       )}
                       {card.audioUrl && (
                         <div className="fc-audio-row">
                           <AudioPlayBtn src={card.audioUrl} />
                           <span className="fc-audio-label">Front audio</span>
-                          <button className="fc-audio-remove" onClick={() => updateCard(card.id, { audioUrl: '' })}>×</button>
+                          <button className="fc-audio-remove" onClick={() => updateCard(card.id, { audioUrl: '' })}><X size={11} strokeWidth={2.2} /></button>
                         </div>
                       )}
                       <div style={{ display:'flex', gap:4, marginTop:3 }}>
@@ -966,14 +922,14 @@ export default function FlashcardView() {
                         <div style={{ position:'relative', display:'inline-block' }}>
                           <img className="fc-list-img" src={card.backImageUrl} alt="" />
                           <button onClick={() => updateCard(card.id, { backImageUrl: '' })}
-                            style={{ position:'absolute', top:2, right:2, width:16, height:16, borderRadius:8, background:'rgba(0,0,0,0.55)', border:'none', color:'#fff', cursor:'pointer', fontSize:10, lineHeight:1, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
+                            style={{ position:'absolute', top:2, right:2, width:16, height:16, borderRadius:8, background:'rgba(0,0,0,0.55)', border:'none', color:'#fff', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}><X size={9} strokeWidth={2.5} /></button>
                         </div>
                       )}
                       {card.backAudioUrl && (
                         <div className="fc-audio-row">
                           <AudioPlayBtn src={card.backAudioUrl} />
                           <span className="fc-audio-label">Back audio</span>
-                          <button className="fc-audio-remove" onClick={() => updateCard(card.id, { backAudioUrl: '' })}>×</button>
+                          <button className="fc-audio-remove" onClick={() => updateCard(card.id, { backAudioUrl: '' })}><X size={11} strokeWidth={2.2} /></button>
                         </div>
                       )}
                       <div style={{ display:'flex', gap:4, marginTop:3 }}>
@@ -990,7 +946,7 @@ export default function FlashcardView() {
                       </div>
                     </div>
                     <button className="fc-list-del" title="Delete card"
-                      onClick={() => { deleteCard(card.id) }}>×</button>
+                      onClick={() => { deleteCard(card.id) }}><X size={13} strokeWidth={2} /></button>
                   </div>
                 ))}
               </div>
@@ -1013,19 +969,21 @@ export default function FlashcardView() {
               <>
                 {/* Card navigation */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <button className="fc-mode-btn" onClick={() => setCurrentIdx(Math.max(0, editIdx - 1))} disabled={editIdx === 0}>&larr;</button>
+                  <button className="fc-mode-btn" style={{ display: 'inline-flex', alignItems: 'center' }} onClick={() => setCurrentIdx(Math.max(0, editIdx - 1))} disabled={editIdx === 0}><ChevronLeft size={13} strokeWidth={2} /></button>
                   <span style={{ fontSize: 12, color: 'var(--textDim)' }}>Card {editIdx + 1} of {cards.length}</span>
-                  <button className="fc-mode-btn" onClick={() => setCurrentIdx(Math.min(cards.length - 1, editIdx + 1))} disabled={editIdx >= cards.length - 1}>&rarr;</button>
+                  <button className="fc-mode-btn" style={{ display: 'inline-flex', alignItems: 'center' }} onClick={() => setCurrentIdx(Math.min(cards.length - 1, editIdx + 1))} disabled={editIdx >= cards.length - 1}><ChevronRight size={13} strokeWidth={2} /></button>
                 </div>
                 {/* Editable card viewport */}
                 <div style={{ width: '100%', maxWidth: 780, display: 'flex', flexDirection: 'column', gap: 16 }}>
                   {/* Front face — notecard proportions */}
                   <div className="fc-card-face fc-card-front" style={{
                     position: 'relative', minHeight: 200, aspectRatio: '5/3', flexDirection: 'column', gap: 8,
-                    borderLeft: card.color && card.color !== 'transparent' ? `4px solid ${card.color}` : undefined,
                     borderTop: '3px solid var(--accent)',
                   }}>
-                    <div className="fc-card-label">Front</div>
+                    <div className="fc-card-label">
+                      {card.color && card.color !== 'transparent' && <span className="fc-card-color-dot" style={{ background: card.color }} title="Card color" />}
+                      Front
+                    </div>
                     <textarea className="fc-card-input" placeholder="Front (question)..."
                       value={card.front} onChange={e => updateCard(card.id, { front: e.target.value })}
                       style={{ background: 'transparent', border: 'none', textAlign: 'center', fontSize: 18, fontWeight: 500, resize: 'none', minHeight: 80, fontFamily: "'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif" }} />
@@ -1033,14 +991,14 @@ export default function FlashcardView() {
                       <div style={{ position: 'relative', display: 'inline-block' }}>
                         <img src={card.imageUrl} alt="" style={{ maxWidth: '80%', maxHeight: 120, borderRadius: 8, objectFit: 'contain' }} />
                         <button onClick={() => updateCard(card.id, { imageUrl: '' })}
-                          style={{ position: 'absolute', top: 2, right: 2, width: 20, height: 20, borderRadius: 10, background: 'rgba(0,0,0,0.5)', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 11 }}>×</button>
+                          style={{ position: 'absolute', top: 2, right: 2, width: 20, height: 20, borderRadius: 10, background: 'rgba(0,0,0,0.5)', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={11} strokeWidth={2.5} /></button>
                       </div>
                     )}
                     {card.audioUrl && (
                       <div className="fc-audio-row">
                         <AudioPlayBtn src={card.audioUrl} />
                         <span className="fc-audio-label">Audio attached</span>
-                        <button className="fc-audio-remove" onClick={() => updateCard(card.id, { audioUrl: '' })}>×</button>
+                        <button className="fc-audio-remove" onClick={() => updateCard(card.id, { audioUrl: '' })}><X size={11} strokeWidth={2.2} /></button>
                       </div>
                     )}
                     <div style={{ position: 'absolute', bottom: 8, right: 8, display: 'flex', gap: 4 }}>
@@ -1053,7 +1011,10 @@ export default function FlashcardView() {
                     position: 'relative', minHeight: 200, aspectRatio: '5/3', flexDirection: 'column', gap: 8, transform: 'none',
                     borderTop: '3px solid var(--textDim)',
                   }}>
-                    <div className="fc-card-label">Back</div>
+                    <div className="fc-card-label">
+                      {card.color && card.color !== 'transparent' && <span className="fc-card-color-dot" style={{ background: card.color }} title="Card color" />}
+                      Back
+                    </div>
                     <textarea className="fc-card-input" placeholder="Back (answer)..."
                       value={card.back} onChange={e => updateCard(card.id, { back: e.target.value })}
                       style={{ background: 'transparent', border: 'none', textAlign: 'center', fontSize: 18, fontWeight: 500, resize: 'none', minHeight: 80, fontFamily: "'Stack Sans Text', 'Switzer', 'Satoshi', sans-serif" }} />
@@ -1061,14 +1022,14 @@ export default function FlashcardView() {
                       <div style={{ position: 'relative', display: 'inline-block' }}>
                         <img src={card.backImageUrl} alt="" style={{ maxWidth: '80%', maxHeight: 120, borderRadius: 8, objectFit: 'contain' }} />
                         <button onClick={() => updateCard(card.id, { backImageUrl: '' })}
-                          style={{ position: 'absolute', top: 2, right: 2, width: 20, height: 20, borderRadius: 10, background: 'rgba(0,0,0,0.5)', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 11 }}>×</button>
+                          style={{ position: 'absolute', top: 2, right: 2, width: 20, height: 20, borderRadius: 10, background: 'rgba(0,0,0,0.5)', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={11} strokeWidth={2.5} /></button>
                       </div>
                     )}
                     {card.backAudioUrl && (
                       <div className="fc-audio-row">
                         <AudioPlayBtn src={card.backAudioUrl} />
                         <span className="fc-audio-label">Audio attached</span>
-                        <button className="fc-audio-remove" onClick={() => updateCard(card.id, { backAudioUrl: '' })}>×</button>
+                        <button className="fc-audio-remove" onClick={() => updateCard(card.id, { backAudioUrl: '' })}><X size={11} strokeWidth={2.2} /></button>
                       </div>
                     )}
                     <div style={{ position: 'absolute', bottom: 8, right: 8, display: 'flex', gap: 4 }}>
@@ -1085,7 +1046,7 @@ export default function FlashcardView() {
                       onClick={() => updateCard(card.id, { color: c })} />
                   ))}
                   <span style={{ flex: 1 }} />
-                  <button className="fc-mode-btn" style={{ color: '#ef5350', borderColor: '#ef5350' }}
+                  <button className="fc-mode-btn" style={{ color: '#f85149', borderColor: '#f85149' }}
                     onClick={() => { deleteCard(card.id); setCurrentIdx(Math.max(0, editIdx - 1)) }}>Delete</button>
                 </div>
               </>
