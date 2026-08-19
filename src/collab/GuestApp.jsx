@@ -7,27 +7,61 @@
 // (useCanonicalDoc/useHostRelay never run here — a guest never applies
 // anyone's writes, it only ever proposes its own).
 //
-// Deliberately excluded, per §7's table (not partial — not started at all):
-//   - Full Gnos rendering fidelity (makeLivePlugin's widgets/decorations,
-//     mermaid, wikilink resolution, local image paths). This ships the
-//     plain CM6 markdown editor from CollabEditor.jsx — real syntax
-//     highlighting, no widgets. Wikilinks/images/mermaid in a shared note
-//     render as literal markdown text to a guest today. Closing that gap
-//     means extracting makeLivePlugin out of NotebookView.jsx into something
-//     this page can import standalone — a real, separate piece of work.
+// UPDATE (2026-08-19, §18 Phase A–E): §7's original scope note below is
+// superseded — this now renders Gnos's REAL widget zoo (makeLivePlugin and
+// everything it depends on, shared verbatim from src/lib/notebookEditor.jsx,
+// same module NotebookView.jsx's own host editor uses) in Live and Source
+// modes, and the REAL inlineToHtml/renderMarkdown (same renderer the host's
+// own PDF export uses) in Preview — not the plain CM6 markdown editor / the
+// compact renderMarkdown.js stand-in this file shipped with through Phase C.
+// `hasVault: false` throughout (no `notebooks`/`library`/`sketchbooks`/
+// `flashcardDecks` — a guest has no vault), so wikilinks render an honest
+// "not available in a shared note" state rather than resolving or falsely
+// offering to create one (§18.5). What's still genuinely not ported, on
+// purpose — see CollabEditor.jsx's own header for the current, accurate
+// list (the `/color` family's floating picker, wikilink autocomplete, full
+// per-theme CSS parity).
+//
+// §7's original scope note, kept for history — no longer describes current
+// behavior for the items it names:
 //   - Asset upload (referenced local images collected into the room) — §7's
 //     own "asset problem". This page's rendering half is done (assetsPlugin.js,
 //     via the `assets` prop below); the host-side collection/publish half
 //     lives in src/lib/collab/hostAssets.js, wired from NoteCollabPanel.jsx.
+//     (A SEPARATE guest-side upload path, for `/linkf`, was added in Phase D
+//     — see guestAssets.js.)
 //   - The §14.5 "keep a copy" download prompt — done, see SessionEndScreen
 //     below. Markdown-only when the note has no local images (no extra
 //     weight); JSZip (already a project dependency, used elsewhere) is
 //     lazy-imported only if there are assets to bundle alongside it.
-import { useEffect, useMemo, useReducer, useState } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import * as Y from 'yjs'
 import { usePeer, useAccessControl } from '@/lib/collab/engine'
 import { Editor, RelayedEditor } from '@/lib/collab/CollabEditor'
-import { PALETTE } from '@/lib/collab/ids'
-import { renderGuestMarkdown } from './renderMarkdown'
+import { openSearchPanel } from '@codemirror/search'
+import { PALETTE, AVATAR_ICONS } from '@/lib/collab/ids'
+import { renderMarkdown, hydrateMathNodes, hydrateDiagrams } from '@/lib/notebookEditor'
+
+// Light/dark toggle (issue: guest page was dark-only, no switcher at all).
+// Values match src/lib/themes.js's own BUILT_IN_THEMES.light/.dark — same
+// numbers the desktop app uses for these two themes — so a guest's page
+// doesn't invent a third, unrelated palette. Persisted per-browser
+// (localStorage), not per-room: a guest's theme preference isn't part of
+// the shared document and has no reason to be.
+const THEME_KEY = 'gnos-collab-theme'
+function getInitialTheme() {
+  try {
+    const saved = localStorage.getItem(THEME_KEY)
+    if (saved === 'light' || saved === 'dark') return saved
+  } catch { /* localStorage unavailable (private mode, etc.) — fall through */ }
+  return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+}
+
+// Squared-off icon buttons, matching gnos-settings-btn's own shape
+// (src/App.jsx: 27x27, 6px radius) rather than the fully round ones this
+// page shipped with — the ask was specifically "squared off ... to match
+// gnos branding."
+const SQUARE_RADIUS = 7
 
 /** `https://getgnos.com/join/<roomId>#key=<key>` — room id in the path
  *  (opaque, fine to be visible, matches what the signaling server sees
@@ -93,6 +127,18 @@ function QuillIcon({ size = 14 }) {
   )
 }
 
+// lucide-react's "pencil" glyph, inlined, same reasoning as the icons
+// around it. Matches NotebookView.jsx's IconSrc (Pencil, "Source mode") —
+// the 3-mode toggle's middle state (PLAN_CONCURRENCY.md §18.7 "Phase E").
+function PencilIcon({ size = 14 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />
+      <path d="m15 5 4 4" />
+    </svg>
+  )
+}
+
 // lucide-react's "eye" glyph, inlined — same reasoning as Logo()'s quill:
 // one static icon doesn't justify importing lucide-react's whole provider
 // setup into this bundle. Matches NotebookView.jsx's IconPrev (Eye,
@@ -121,12 +167,62 @@ function UsersIcon({ size = 14 }) {
   )
 }
 
-function IconButton({ onClick, title, badge, children }) {
+// lucide-react's "search" glyph, inlined — same reasoning as the icons
+// above. The new find/search toolbar button.
+function SearchIcon({ size = 14 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+    </svg>
+  )
+}
+
+// lucide-react's "sun" / "moon" glyphs, inlined — the new light/dark toggle.
+function SunIcon({ size = 14 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+    </svg>
+  )
+}
+function MoonIcon({ size = 14 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+    </svg>
+  )
+}
+
+/** Renders one AVATAR_ICONS entry (src/lib/collab/ids.js — `[tag, props][]`,
+ *  the same raw shape lucide-react's own generated icon files use) as real
+ *  SVG children. Kept generic rather than one hand-written component per
+ *  icon (unlike Logo/QuillIcon/EyeIcon/UsersIcon above, which are each used
+ *  exactly once at a fixed size) because the join screen renders the whole
+ *  AVATAR_ICONS set in a picker grid, plus whichever one a guest picked
+ *  shows again in the Users popover — a data-driven renderer is the
+ *  natural fit once there's more than a couple of call sites. */
+function Icon({ id, size = 14 }) {
+  const entry = AVATAR_ICONS.find(i => i.id === id) || AVATAR_ICONS[0]
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      {entry.node.map(([tag, props], i) => {
+        const Tag = tag
+        return <Tag key={i} {...props} />
+      })}
+    </svg>
+  )
+}
+
+function IconButton({ onClick, title, badge, active, children }) {
   return (
     <button onClick={onClick} title={title} style={{
-      position: 'relative', width: 30, height: 30, borderRadius: '50%', flexShrink: 0, padding: 0,
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', cursor: 'pointer',
+      position: 'relative', width: 32, height: 32, borderRadius: SQUARE_RADIUS, flexShrink: 0, padding: 0,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'auto',
+      background: active ? 'var(--surfaceAlt)' : 'var(--surface)',
+      border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+      color: active ? 'var(--accent)' : 'var(--text)', cursor: 'pointer',
     }}>
       {children}
       {badge > 0 && (
@@ -144,14 +240,18 @@ function IconButton({ onClick, title, badge, children }) {
 /** The expanded "live users" popover — who's actually connected right now
  *  (`status === 'approved'`, i.e. excludes anyone still pending or denied),
  *  and, per the request this was built for, "Leave the room" at the
- *  bottom rather than a separate always-visible link in the toolbar. */
-function UsersModal({ entries, myId, onClose, onLeave }) {
+ *  bottom rather than a separate always-visible link in the toolbar.
+ *  `userStates` is clientId → `awareness`'s own `user` field
+ *  (`{color, icon}` — see usePeer), keyed the same way as `entries` so a
+ *  row can show the same color/icon this guest picked on the join screen;
+ *  `access.entries` alone (a Y.Map, not awareness) never carried that. */
+function UsersModal({ entries, userStates, myId, onClose, onLeave }) {
   const rows = Object.entries(entries).filter(([, e]) => e.status === 'approved')
   return (
     <>
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 1099 }} />
       <div style={{
-        position: 'fixed', top: 52, right: 14, zIndex: 1100, width: 220,
+        position: 'fixed', top: 52, right: 14, zIndex: 1100, width: 220, maxWidth: 'calc(100vw - 28px)',
         background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10,
         boxShadow: '0 12px 40px rgba(0,0,0,.4)', overflow: 'hidden',
       }}>
@@ -159,15 +259,25 @@ function UsersModal({ entries, myId, onClose, onLeave }) {
           Connected
         </div>
         <div style={{ padding: '0 6px 6px', display: 'flex', flexDirection: 'column', gap: 1, maxHeight: 220, overflowY: 'auto' }}>
-          {rows.map(([id, e]) => (
+          {rows.map(([id, e]) => {
+            const u = userStates?.[id]
+            const color = u?.color || 'var(--accent)'
+            return (
             <div key={id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 6 }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#2eaf7d', flexShrink: 0 }} />
+              <span style={{
+                width: 20, height: 20, borderRadius: 6, flexShrink: 0, color,
+                background: `color-mix(in srgb, ${color} 16%, transparent)`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <Icon id={u?.icon || 'user'} size={12} />
+              </span>
               <span style={{ fontSize: 12.5, color: 'var(--text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {e.name}{String(id) === String(myId) ? ' (you)' : ''}
               </span>
               <span style={{ fontSize: 10.5, color: 'var(--textDim)' }}>{e.role}</span>
             </div>
-          ))}
+            )
+          })}
         </div>
         <button onClick={onLeave} style={{
           width: '100%', padding: '10px 12px', border: 'none', borderTop: '1px solid var(--border)',
@@ -182,8 +292,8 @@ function UsersModal({ entries, myId, onClose, onLeave }) {
 
 function Centered({ children }) {
   return (
-    <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, textAlign: 'center' }}>
-      <div style={{ maxWidth: 340 }}>
+    <div className="gm-vh" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, textAlign: 'center', overflowY: 'auto' }}>
+      <div style={{ maxWidth: 340, width: '100%' }}>
         <Logo />
         {children}
       </div>
@@ -191,12 +301,22 @@ function Centered({ children }) {
   )
 }
 
+/** Name + a real identity pick, not just a name — issue asked for "give
+ *  option for color picker and icon" on entry, previously a color was
+ *  auto-assigned at random (GuestSession's old `useMemo`) and there was no
+ *  icon at all. `'user'` (a plain person glyph) is the default icon per the
+ *  user's own answer to this session's clarifying question; icons are
+ *  lucide glyphs, not emoji, for the same reason (see AVATAR_ICONS's own
+ *  comment: they render in the guest's chosen color via `currentColor`,
+ *  which an emoji can't do). */
 function JoinScreen({ onJoin }) {
   const [name, setName] = useState('')
+  const [color, setColor] = useState(PALETTE[1]) // [0] is reserved for the host in NoteCollabPanel.jsx — start a guest off on a different one
+  const [icon, setIcon] = useState('user')
   return (
     <Centered>
       <form
-        onSubmit={e => { e.preventDefault(); if (name.trim()) onJoin(name.trim()) }}
+        onSubmit={e => { e.preventDefault(); if (name.trim()) onJoin(name.trim(), color, icon) }}
         style={{ display: 'flex', flexDirection: 'column', gap: 12 }}
       >
         <strong style={{ fontSize: 16 }}>Join this note</strong>
@@ -210,6 +330,39 @@ function JoinScreen({ onJoin }) {
           placeholder="Your name"
           style={{ padding: '9px 11px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 14 }}
         />
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{
+            width: 34, height: 34, borderRadius: 8, flexShrink: 0, color,
+            background: `color-mix(in srgb, ${color} 16%, transparent)`,
+            border: `1px solid color-mix(in srgb, ${color} 40%, transparent)`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <Icon id={icon} size={17} />
+          </span>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-start' }}>
+            {PALETTE.map(c => (
+              <button key={c} type="button" onClick={() => setColor(c)} title={c} style={{
+                width: 20, height: 20, borderRadius: 5, padding: 0, background: c, cursor: 'pointer',
+                border: c === color ? '2px solid var(--text)' : '2px solid transparent',
+              }} />
+            ))}
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6 }}>
+          {AVATAR_ICONS.map(({ id }) => (
+            <button key={id} type="button" onClick={() => setIcon(id)} title={id} style={{
+              aspectRatio: '1', borderRadius: 7, cursor: 'pointer', color: id === icon ? color : 'var(--textDim)',
+              background: id === icon ? `color-mix(in srgb, ${color} 16%, transparent)` : 'var(--surface)',
+              border: `1px solid ${id === icon ? color : 'var(--border)'}`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <Icon id={id} size={15} />
+            </button>
+          ))}
+        </div>
+
         <button type="submit" disabled={!name.trim()} style={{
           padding: '9px 14px', borderRadius: 7, border: 'none', background: 'var(--accent)', color: '#fff',
           fontSize: 13.5, fontWeight: 600, cursor: name.trim() ? 'pointer' : 'not-allowed', opacity: name.trim() ? 1 : 0.5,
@@ -298,12 +451,34 @@ function SessionEndScreen({ noteText, assets, reason }) {
   )
 }
 
-function GuestSession({ room, roomKey, name }) {
-  const color = useMemo(() => PALETTE[1 + Math.floor(Math.random() * (PALETTE.length - 1))], [])
-  const peer = usePeer(room, roomKey, false, name, color)
+/** clientId (string) → that peer's `awareness` `user` field
+ *  (`{name, color, colorLight, icon?}`) — awareness, NOT `access` (a
+ *  Y.Map), is where color/icon actually live (see usePeer). Used by
+ *  UsersModal to show the same color/icon a participant picked, not just
+ *  their name/role. */
+function useAwarenessUserStates(awareness) {
+  const [states, setStates] = useState({})
+  useEffect(() => {
+    if (!awareness) return
+    const onChange = () => {
+      const out = {}
+      awareness.getStates().forEach((s, clientId) => { if (s?.user) out[String(clientId)] = s.user })
+      setStates(out)
+    }
+    awareness.on('change', onChange)
+    onChange()
+    return () => awareness.off('change', onChange)
+  }, [awareness])
+  return states
+}
+
+function GuestSession({ room, roomKey, name, color, icon }) {
+  const peer = usePeer(room, roomKey, false, name, color, { icon })
   const access = useAccessControl(peer.accessMap, peer.awareness?.clientID)
+  const userStates = useAwarenessUserStates(peer.awareness)
 
   const mine = access.mine
+  const relayed = mine?.role === 'editor'
   // Stable identity across renders — `doc.getMap(name)` returns the same
   // Y.Map instance every call, but a fresh `{...}` object literal passed
   // inline as a prop would NOT be, and Editor/RelayedEditor's mount effects
@@ -311,12 +486,34 @@ function GuestSession({ room, roomKey, name }) {
   // the CM6 view on every render, not just when the peer/doc actually
   // changes.
   const assets = useMemo(() => ({ assetsMap: peer.doc.getMap('assets'), assetsMetaMap: peer.doc.getMap('assetsMeta') }), [peer.doc])
+  // RelayedEditor's local scratch doc, created here (not inside
+  // RelayedEditor itself) specifically so it survives that component
+  // unmounting — Preview mode unmounts it, and so does ending the session.
+  // Its text is "everything this guest has typed, sent to the host or
+  // not" — see the session-end snapshot below for why that's the fix for
+  // "edits are trashed on session end."
+  const [draftDoc] = useState(() => new Y.Doc())
   // Guest-initiated leave (§14.5: "same prompt if the guest leaves first") —
   // separate from `mine.status === 'denied'` (host-initiated), same
   // end screen either way.
   const [leftManually, setLeftManually] = useState(false)
-  const [mode, setMode] = useState('edit') // 'edit' | 'preview' — the quill/eye toolbar toggle
+  // 'live' | 'source' | 'preview' — matches notebookEditor.jsx's own MODE_META
+  // naming exactly (PLAN_CONCURRENCY.md §18.7 "Phase E"); click-cycles
+  // Live → Source → Preview → Live, the simpler alternative to ViewModeBtn's
+  // full long-press dropdown (asked, decided 2026-08-19 — the click-cycle).
+  const [mode, setMode] = useState('live')
   const [usersOpen, setUsersOpen] = useState(false)
+  const [theme, setTheme] = useState(getInitialTheme)
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    try { localStorage.setItem(THEME_KEY, theme) } catch { /* private-mode localStorage — theme just won't persist */ }
+  }, [theme])
+  // The live CM6 EditorView, handed up by Editor/RelayedEditor's `onView`
+  // — needed so the new search button can call `openSearchPanel(view)`.
+  // Not a ref: the view instance itself changes (role flips remount
+  // Editor, mode switches unmount/remount RelayedEditor), and the toolbar
+  // needs to re-render to know whether there's a view to search at all.
+  const [view, setView] = useState(null)
   // Preview mode reads `peer.ytext.toString()` directly rather than a
   // memo keyed on the ytext OBJECT (stable, doesn't change when its
   // CONTENT does) — this tick forces a recompute on every remote/local
@@ -329,6 +526,21 @@ function GuestSession({ room, roomKey, name }) {
     peer.ytext.observe(onChange)
     return () => peer.ytext.unobserve(onChange)
   }, [mode, peer.ytext])
+  // Math (`$…$`) and mermaid diagrams render as EMPTY placeholder spans
+  // straight out of `renderMarkdown` (`data-latex`/mermaid-source attributes,
+  // no innerHTML) — `hydrateMathNodes`/`hydrateDiagrams` are a separate,
+  // post-mount pass that fills them in (KaTeX/mermaid are both lazy-loaded,
+  // real DOM elements to attach to). `NotebookView.jsx`'s own Preview mode
+  // calls both the same way, same deps shape (§18.7 "Phase E"); skipping
+  // this wasn't a hypothetical gap — math rendered as literally nothing
+  // until this was added, caught live during verification.
+  const previewRef = useRef(null)
+  const previewHtml = mode === 'preview' ? renderMarkdown(peer.ytext.toString(), [], [], [], [], null, assets, false) : null
+  useEffect(() => {
+    if (mode !== 'preview' || !previewRef.current) return
+    hydrateMathNodes(previewRef.current)
+    hydrateDiagrams(previewRef.current)
+  }, [mode, previewHtml])
 
   if (!mine || mine.status === 'pending') {
     return <StatusScreen title="Waiting for approval…" body="Leave this tab open." />
@@ -343,7 +555,20 @@ function GuestSession({ room, roomKey, name }) {
     // (disconnecting kills the network connection, not the in-memory
     // Y.Doc, so reading it here is still safe/correct either way — this
     // ordering is about intent, not a correctness requirement).
-    const noteText = peer.ytext.toString()
+    //
+    // BUG FIXED HERE ("edits are trashed on session end"): for an editor
+    // guest, this used to read `peer.ytext` — the NETWORK doc, which only
+    // contains whatever the host has already accepted via useHostRelay.
+    // `RelayedEditor` proposes on a 150ms debounce and the host applies it
+    // asynchronously over the wire, so anything typed in roughly the last
+    // 150ms–1s before the session ended existed ONLY in `draftDoc` and was
+    // silently absent from both the host's copy AND this "keep a copy"
+    // safety net — the one place §14.5 promised nothing would be lost.
+    // `draftDoc` always has it (every keystroke lands there first, locally,
+    // synchronously), so an editor guest's snapshot now reads from there.
+    // A viewer guest never has unsent local edits (nothing they type is
+    // ever applied), so `peer.ytext` is still correct for them.
+    const noteText = relayed ? draftDoc.getText('codemirror').toString() : peer.ytext.toString()
     const assetBytes = Object.fromEntries(peer.doc.getMap('assets').entries())
     peer.disconnect()
     return (
@@ -356,28 +581,48 @@ function GuestSession({ room, roomKey, name }) {
   }
 
   const readOnly = mine.role === 'viewer'
-  const relayed = mine.role === 'editor'
   const connectedCount = Object.values(access.entries).filter(e => e.status === 'approved').length
 
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg)' }}>
-      {/* Top-right toolbar — deliberately just these two, nothing else
-          (no status text, no role label): matches a real notebook's own
-          quiet titlebar economy rather than a proof-rig status bar. */}
-      <div style={{ position: 'absolute', top: 14, right: 14, zIndex: 20, display: 'flex', gap: 8 }}>
+    <div className="gm-vh nb-root" style={{ display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg)' }}>
+      {/* `nb-root` — scopes the ported widget CSS (guest.css's own copy of
+          NotebookView.jsx's `CSS` block, PLAN_CONCURRENCY.md §18.6 "Phase D"),
+          which every `.cm-*` widget class selector is written against. */}
+      {/* Top-right toolbar — search, preview toggle, theme, participants.
+          Wraps on narrow (mobile) widths instead of overflowing off-screen
+          (`flexWrap` + a `maxWidth` that yields to the viewport). */}
+      {/* `pointerEvents: 'none'` on the wrapper + `'auto'` back on each
+          button — this row spans the FULL width (`left:14, right:14`, not
+          just as wide as its buttons) so it can right-align and still wrap
+          on narrow screens. Without the override, that full-width box
+          would swallow every click/hover on the editor's first line
+          underneath it, even in the empty space left of the buttons —
+          caught live while testing the new remote-cursor hover (§19):
+          hovering the note's own first line silently never reached the
+          editor at all. */}
+      <div style={{ position: 'absolute', top: 14, right: 14, left: 14, zIndex: 20, display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap', pointerEvents: 'none' }}>
+        {mode !== 'preview' && (
+          <IconButton onClick={() => view && openSearchPanel(view)} title="Find (⌘F)">
+            <SearchIcon />
+          </IconButton>
+        )}
         <IconButton
-          onClick={() => setMode(m => (m === 'edit' ? 'preview' : 'edit'))}
-          title={mode === 'edit' ? 'Preview' : 'Back to editing'}
+          onClick={() => setMode(m => (m === 'live' ? 'source' : m === 'source' ? 'preview' : 'live'))}
+          title={mode === 'live' ? 'Source' : mode === 'source' ? 'Preview' : 'Live'}
         >
-          {mode === 'edit' ? <QuillIcon /> : <EyeIcon />}
+          {mode === 'live' ? <QuillIcon /> : mode === 'source' ? <PencilIcon /> : <EyeIcon />}
         </IconButton>
-        <IconButton onClick={() => setUsersOpen(o => !o)} title="Live participants" badge={connectedCount}>
+        <IconButton onClick={() => setTheme(t => (t === 'light' ? 'dark' : 'light'))} title={theme === 'light' ? 'Switch to dark' : 'Switch to light'}>
+          {theme === 'light' ? <MoonIcon /> : <SunIcon />}
+        </IconButton>
+        <IconButton onClick={() => setUsersOpen(o => !o)} title="Live participants" badge={connectedCount} active={usersOpen}>
           <UsersIcon />
         </IconButton>
       </div>
       {usersOpen && (
         <UsersModal
           entries={access.entries}
+          userStates={userStates}
           myId={peer.awareness?.clientID}
           onClose={() => setUsersOpen(false)}
           onLeave={() => { setUsersOpen(false); setLeftManually(true) }}
@@ -385,12 +630,21 @@ function GuestSession({ room, roomKey, name }) {
       )}
 
       {mode === 'preview' ? (
-        <div className="gm-prose" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}
-          dangerouslySetInnerHTML={{ __html: renderGuestMarkdown(peer.ytext.toString(), assets) }} />
+        // Real renderer now (PLAN_CONCURRENCY.md §18.7 "Phase E") — same
+        // `inlineToHtml`/`renderMarkdown` NotebookView.jsx's own PDF export
+        // uses, not the compact stand-in `renderMarkdown.js` was always
+        // meant to be replaced by (see that file's own header). `notebooks`/
+        // `library`/`sketchbooks`/`flashcardDecks` all `[]`, `notebookDir`
+        // null, `assets` for the room's asset-map image fallback (§18.4),
+        // `hasVault: false` so wikilinks render the same honest "not
+        // available" state Live mode already does (§18.5) instead of a
+        // false "click to create."
+        <div ref={previewRef} className="gm-prose" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}
+          dangerouslySetInnerHTML={{ __html: previewHtml }} />
       ) : relayed ? (
-        <RelayedEditor peer={peer} assets={assets} />
+        <RelayedEditor peer={peer} draftDoc={draftDoc} assets={assets} mode={mode} onView={setView} />
       ) : (
-        <Editor ytext={peer.ytext} awareness={peer.awareness} readOnly={readOnly} assets={assets} />
+        <Editor ytext={peer.ytext} awareness={peer.awareness} readOnly={readOnly} assets={assets} mode={mode} onView={setView} />
       )}
     </div>
   )
@@ -398,7 +652,7 @@ function GuestSession({ room, roomKey, name }) {
 
 export default function GuestApp() {
   const { room, key } = useRoomFromPath()
-  const [name, setName] = useState(null)
+  const [identity, setIdentity] = useState(null) // { name, color, icon }
 
   if (typeof window !== 'undefined' && window.isSecureContext === false) {
     return <StatusScreen title="Needs a secure connection" body="Open this link with https://, not http://." />
@@ -408,7 +662,7 @@ export default function GuestApp() {
     return <StatusScreen title="This link looks incomplete" body="Ask for the full link." />
   }
 
-  if (!name) return <JoinScreen onJoin={setName} />
+  if (!identity) return <JoinScreen onJoin={(name, color, icon) => setIdentity({ name, color, icon })} />
 
-  return <GuestSession room={room} roomKey={key} name={name} />
+  return <GuestSession room={room} roomKey={key} name={identity.name} color={identity.color} icon={identity.icon} />
 }

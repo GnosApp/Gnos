@@ -33,7 +33,7 @@ export const RESEED_ORIGIN = 'gnos-reseed'
  *  anyone should treat as authoritative), the shared `access` Y.Map, and
  *  presence/status. `signaling` defaults to the public community server;
  *  pass an array of your own for anything that isn't a quick proof. */
-export function usePeer(room, key, isHost, label, color, { signaling } = {}) {
+export function usePeer(room, key, isHost, label, color, { signaling, icon } = {}) {
   // doc/ytext are safe to keep stable across remounts — nothing in their
   // own lifecycle mutates shared state on cleanup.
   const [doc] = useState(() => new Y.Doc())
@@ -62,7 +62,11 @@ export function usePeer(room, key, isHost, label, color, { signaling } = {}) {
     // local state. Scoping awareness 1:1 with its provider means mount1's
     // delayed cleanup only ever touches its own, already-discarded object.
     const aw = new awarenessProtocol.Awareness(doc)
-    aw.setLocalStateField('user', { name: label, color, colorLight: color + '33' })
+    // `icon` (a src/lib/collab/ids.js AVATAR_ICONS id) is optional — only
+    // the guest join screen collects one; the host identity (NoteCollabPanel)
+    // never passes it, and undefined here is fine, it just means "no
+    // icon field for this participant."
+    aw.setLocalStateField('user', { name: label, color, colorLight: color + '33', ...(icon ? { icon } : {}) })
 
     const provider = new WebrtcProvider(room, doc, {
       password: key,
@@ -99,7 +103,7 @@ export function usePeer(room, key, isHost, label, color, { signaling } = {}) {
     // impossible here, not just handled.
 
     return () => { provider.destroy(); providerRef.current = null }
-  }, [room, key, doc, ytext, accessMap, isHost, label, color, signaling])
+  }, [room, key, doc, ytext, accessMap, isHost, label, color, signaling, icon])
 
   const disconnect = useCallback(() => { providerRef.current?.destroy(); providerRef.current = null }, [])
 

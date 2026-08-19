@@ -16,6 +16,23 @@
          first-load weight down, which matters here specifically: unlike the
          desktop app (one download, ever), this loads fresh for every guest
          on every session. -->
+
+    <!-- Set the light/dark attribute BEFORE first paint, synchronously —
+         matches this same key/logic as GuestApp.jsx's getInitialTheme(),
+         duplicated on purpose (that function isn't reachable this early;
+         React hasn't loaded yet). Without this, a guest with 'light' saved
+         would see one dark frame flash before React's own effect corrects
+         it on mount. -->
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('gnos-collab-theme')
+          var theme = (saved === 'light' || saved === 'dark') ? saved
+            : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+          document.documentElement.dataset.theme = theme
+        } catch (e) { /* private-mode localStorage — default dark stands, matches guest.css's own :root */ }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>
