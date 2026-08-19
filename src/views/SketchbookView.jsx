@@ -923,9 +923,17 @@ export default function SketchbookView() {
   }, [scheduleSave])
 
 
-  // Mobile event bridge
+  // Mobile event bridge — NOT gated on isMobile: 'settings' is also how the
+  // native "Page Settings…" menu (⌘⌥,) reaches this view on desktop
+  // (App.jsx's page_settings handler dispatches this same event for every
+  // view, not just mobile ones — see AudioPlayerView's identical unconditional
+  // pattern). 'import'/'lock-toggle' only ever fire from the mobile bottom
+  // nav in practice (desktop already has its own QuickAccess buttons for
+  // both), so leaving the listener unconditional is harmless for them, and
+  // was the actual bug: this whole effect used to early-return `if
+  // (!isMobile) return`, which silently dropped 'settings' too — the desktop
+  // canvas-background panel below was unreachable by any real trigger.
   useEffect(() => {
-    if (!isMobile) return
     const h = e => {
       const { cmd } = e.detail || {}
       if (cmd === 'import') openPdfPicker()
@@ -934,7 +942,7 @@ export default function SketchbookView() {
     }
     window.addEventListener('gnos:mobile-sb-cmd', h)
     return () => window.removeEventListener('gnos:mobile-sb-cmd', h)
-  }, [isMobile, bgLocked, lockBackground, unlockBackground, openPdfPicker])
+  }, [bgLocked, lockBackground, unlockBackground, openPdfPicker])
 
   // Keep a ref to the latest doSave so the unmount effect can call the current version
   const doSaveRef = useRef(doSave)
@@ -1171,7 +1179,7 @@ export default function SketchbookView() {
                 <div ref={settingsBtnRef} style={{
                   position:'fixed', top:44, right:12, zIndex:9100,
                   background:'var(--surface)', border:'1px solid var(--borderSubtle)',
-                  borderRadius:10, padding:'14px 16px', minWidth:200,
+                  borderRadius:8, padding:'12px 16px', minWidth:200,
                   boxShadow:'0 0 0 1px rgba(0,0,0,0.04), 0 12px 32px rgba(0,0,0,0.3)',
                 }}>
                   <div style={{ fontSize:11, fontWeight:600, color:'var(--textDim)', letterSpacing:'0.05em', textTransform:'uppercase', marginBottom:10 }}>Canvas Background</div>
@@ -1198,7 +1206,7 @@ export default function SketchbookView() {
                       }}
                       style={{
                         display:'flex', alignItems:'center', gap:10, width:'100%',
-                        padding:'7px 10px', marginBottom:4, borderRadius:7, cursor:'pointer',
+                        padding:'8px 12px', marginBottom:4, borderRadius:8, cursor:'pointer',
                         background: sketchBgStyle === opt.value ? 'var(--accentDim, color-mix(in srgb, var(--accent) 12%, transparent))' : 'transparent',
                         border: sketchBgStyle === opt.value ? '1px solid var(--accent)' : '1px solid transparent',
                         color: sketchBgStyle === opt.value ? 'var(--accent)' : 'var(--text)',

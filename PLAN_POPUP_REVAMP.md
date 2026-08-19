@@ -376,13 +376,18 @@ queue.
       `EditorView.theme()` block — different mechanism than every other
       item on this list, budget extra time to learn the CM6 theming API
       first.
-- [ ] **`SketchbookView.jsx` settings popup** — `sbSettingsOpen` state,
-      renders around line 1170 (`position:'fixed', top:44, right:12`).
-      Never audited; this whole file was previously assumed to have no
-      popups (a 2026-08-18 name-based grep found nothing — wrong, it just
-      isn't *named* `...Modal`/`...Popup`). Check this file for other
-      inline `position:'fixed'` overlays too (4 found in an Aug 2026
-      grep) before assuming this is the only one.
+- [x] **`SketchbookView.jsx` settings popup** — DONE, logged as A131. A fresh
+      `position:'fixed'` grep found exactly 3 hits, all one feature (desktop +
+      mobile canvas-background panel) — the "4 found" note above was stale,
+      this genuinely is the only popup in the file. Style-wise already clean
+      (no unicode/wrong-red/accent-string issues); only real finding was a
+      real bug, not a style nit — the mobile-command bridge's `if (!isMobile)
+      return` guard silently dropped the `settings` cmd on desktop too, so
+      the native ⌘⌥, "Page Settings…" menu had **no way to open the desktop
+      panel at all**. Fixed by removing the guard (matches
+      `AudioPlayerView.jsx`'s identical unconditional listener). Also snapped
+      the desktop panel's radius/padding to the established 8px/4px-grid
+      family.
 - [ ] **`AudioPlayerView.jsx` fixed side panel** — around line 471
       (`position:'fixed', right:8, width:270`), likely a queue/chapters/
       lyrics panel. Never audited.

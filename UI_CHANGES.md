@@ -1,5 +1,40 @@
 # UI Changes — July 2026 pass
 
+## A131. SketchbookView.jsx — first real audit; found + fixed a real dead-button bug
+
+Per PLAN_POPUP_REVAMP.md's open item. Grepped for `position:'fixed'` overlays
+(found exactly 3, all belonging to one feature — the canvas-background settings
+panel, desktop + mobile variants — not the 4 a stale note expected; trusted the
+fresh grep). Checked against the bug-class checklist: no unicode glyphs, no
+wrong reds, no accent-alpha string-concat, no dead `[data-x]` CSS — this file
+was already clean on all of those.
+
+**Real bug found and fixed, not just a style nit**: the mobile-command bridge
+(`gnos:mobile-sb-cmd` listener) had `if (!isMobile) return` at its top. But
+`App.jsx`'s native "Page Settings…" menu (⌘⌥,) dispatches through this exact
+same event for *every* view, not just mobile ones (confirmed by reading
+`AudioPlayerView.jsx`'s identical listener, which has no such guard). Result:
+the desktop "Canvas Background" panel — real JSX, real styling, completely
+unreachable — had **no way to open on desktop at all**, keyboard shortcut or
+otherwise. `import`/`lock-toggle` cmds are genuinely mobile-only in practice
+(desktop already has its own QuickAccess buttons for both), so removing the
+guard entirely is safe — confirmed live: dispatching `settings` now opens the
+panel, selecting "None" changes the canvas and updates the QuickAccess
+cycle-button icon to match.
+
+**Minor**: border-radius on the desktop panel (10px outer / 7px row) snapped to
+the established 8px family; padding 14px/7px snapped to the 4px grid
+(12px/8px). Left the mobile panel's 14px alone — no established mobile-popup
+radius convention exists yet to violate, and a bottom-sheet running bigger than
+8px isn't obviously wrong.
+
+**Verified live**: sample "Diagrams" sketchbook, dispatched the settings cmd
+directly (same event App.jsx's real menu handler fires), confirmed the panel
+renders with the fixed radius, selecting "None" round-trips through
+`setSketchBgStyle` + Excalidraw's `updateScene` + closes the panel + updates
+the separate quick-cycle button's icon. `npx eslint`/`npx vite build` clean
+against baseline (3 pre-existing errors, 2 warnings, all unrelated).
+
 ## A130. Footer: Front-first moved before the mode toggle, rounded top corners
 
 Two small user-requested tweaks to A129's footer: `.fc-footer` order changed to
