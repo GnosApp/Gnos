@@ -1,5 +1,12 @@
 # UI Changes — July 2026 pass
 
+## A130. Footer: Front-first moved before the mode toggle, rounded top corners
+
+Two small user-requested tweaks to A129's footer: `.fc-footer` order changed to
+Front-first → Cards/Choice/Type toggle → Edit (was toggle → Front-first → Edit);
+`.fc-footer` gained `border-radius: 12px 12px 0 0` (was square). Verified live,
+build green.
+
 ## A129. Desktop footer follow-up: toggle replaces Study button, thinner icons, flip-card jump fix
 
 User feedback on A127's real desktop screenshots, three items:

@@ -51,6 +51,7 @@ const FLASHCARD_CSS = `
     display: flex; align-items: center; gap: 8px;
     padding: 9px 18px; border-top: 1px solid var(--borderSubtle);
     background: var(--surface);
+    border-radius: 12px 12px 0 0;
     flex-shrink: 0;
   }
   .fc-mode-btn {
@@ -1263,6 +1264,19 @@ export default function FlashcardView() {
             {fcStreakDots}
           </div>
           <div style={{ flex: 1 }} />
+          {mode === 'study' && (
+            <button
+              className="fc-mode-btn"
+              title={studySide === 'front' ? 'Studying Front→Back (click to flip to Back→Front)' : 'Studying Back→Front (click to flip to Front→Back)'}
+              onClick={() => { setStudySide(s => s === 'front' ? 'back' : 'front'); setFlipped(false); resetAnswerState() }}
+              style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              {studySide === 'front'
+                ? <SquareArrowRight size={13} strokeWidth={1.5} />
+                : <SquareArrowLeft size={13} strokeWidth={1.5} />}
+              {studySide === 'front' ? 'Front first' : 'Back first'}
+            </button>
+          )}
           {/* The mode toggle doubles as the "enter Study mode" control — no
               separate Study button. Picking any of the three both switches
               studyMode and switches to Study mode if not already there. */}
@@ -1277,19 +1291,6 @@ export default function FlashcardView() {
               <Keyboard size={12} strokeWidth={1.5} /> Type
             </button>
           </div>
-          {mode === 'study' && (
-            <button
-              className="fc-mode-btn"
-              title={studySide === 'front' ? 'Studying Front→Back (click to flip to Back→Front)' : 'Studying Back→Front (click to flip to Front→Back)'}
-              onClick={() => { setStudySide(s => s === 'front' ? 'back' : 'front'); setFlipped(false); resetAnswerState() }}
-              style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-            >
-              {studySide === 'front'
-                ? <SquareArrowRight size={13} strokeWidth={1.5} />
-                : <SquareArrowLeft size={13} strokeWidth={1.5} />}
-              {studySide === 'front' ? 'Front first' : 'Back first'}
-            </button>
-          )}
           <button className={`fc-mode-btn${mode === 'list' ? ' active' : ''}`} onClick={() => setMode('list')}>Edit</button>
         </div>
       )}
