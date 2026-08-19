@@ -1,5 +1,48 @@
 # UI Changes — July 2026 pass
 
+## A128. A127's mobile path — TDZ crash + missing studyMode control
+
+User asked to test A127 on mobile. `useIsMobile()` is hardcoded `return false` in
+dev (see the file's own header comment — desktop testing only), so this needed
+temporarily flipping to the file's own documented real-detection body to actually
+exercise the mobile branch, then reverting exactly (`git diff` confirmed empty on
+that file afterward) — never left changed.
+
+**Real crash caught**: mobile-viewport load threw `Cannot access 'studyMode'
+before initialization`. The mobile-command `useEffect`'s dependency array
+referenced `studyMode`, but that `const` was declared ~30 lines *below* the
+effect. Assumed (wrongly) that since the array is only *read* by the listener
+callback — which fires later, after the full render completes — it was safe;
+missed that the dependency array itself is evaluated immediately, as a plain
+argument to `useEffect()`, at the point in top-to-bottom render order where it's
+written — not deferred like the callback body. Fixed by moving `liveDeck`/
+`cards`/`studyMode` above the mobile-bridge effect instead of leaving them in
+their original "get the live deck" spot further down.
+
+**Real gap, not just a bug**: the mobile bottom nav (`App.jsx`) is a fixed
+5-icon bar with no room for A127's new 3-way Cards/Choice/Type toggle — mobile
+had no way to reach Choice/Type mode at all. Fixed by repurposing the existing
+"Study" icon: first tap enters Study mode (unchanged), a second tap while
+already there cycles Cards→Choice→Type (`fcCmd('study-cycle')` →
+`FlashcardView`'s bridge). No separate mode indicator needed — the resulting
+screen shape (flip card vs. option list vs. text input) already makes the
+current mode unambiguous, same reasoning as this app's existing click-to-cycle
+`ViewModeBtn` pattern elsewhere.
+
+**Verified live, real mobile layout** (viewport resized to 375×812 + the
+temporary real-detection flip): title pill, flip card, and 5-icon bottom nav
+all render correctly; `study-cycle` cycles `flip→choice` (confirmed via store
+read, not just visually); Choice mode renders and answers correctly on mobile
+width, including the full grade→advance→next-card cycle with no stale-reveal
+flash (A127's fix holds under the mobile layout too). Note: the `computer`
+click tool itself hung/timed out repeatedly on this specific mobile-emulated
+viewport (a touch-translation quirk in this session's preview tooling — 
+screenshots and console stayed fully responsive throughout, no app-side hang)
+— worked around by dispatching the real DOM click/CustomEvent directly via
+`javascript_tool` instead, which exercises the exact same `onClick`/listener
+code path. `npx eslint`/`npx vite build` both clean against baseline after
+reverting `useIsMobile.js`.
+
 ## A127. FlashcardView.jsx — Quizlet-inspired list redesign + choice/typed study modes
 
 User shared Quizlet create-set/Learn/Flashcards reference screenshots and asked for

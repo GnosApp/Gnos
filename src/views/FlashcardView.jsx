@@ -578,23 +578,43 @@ export default function FlashcardView() {
     if (advanceTimeoutRef.current) { clearTimeout(advanceTimeoutRef.current); advanceTimeoutRef.current = null }
   }, [])
 
-  // Mobile event bridge
+  // Get the live deck from store (in case cards have been updated) — needs
+  // to come before the mobile event bridge below, which reads `studyMode`
+  // in its dependency array (a `const` used there is in the temporal dead
+  // zone until its own declaration runs, even though the *listener callback*
+  // itself only fires later — the deps array is evaluated immediately, as
+  // a plain argument to useEffect(), not deferred like the callback body).
+  const liveDeck = flashcardDecks.find(d => d.id === deck?.id) || deck
+  const cards = liveDeck?.cards || []
+  const studyMode = liveDeck?.studyMode || 'flip' // 'flip' | 'choice' | 'type'
+
+  // Mobile event bridge — the bottom nav bar has no room for a 3-way
+  // studyMode toggle, so 'study-cycle' both enters Study mode (first tap)
+  // and cycles Cards→Choice→Type on subsequent taps while already there;
+  // `mode`/`studyMode` are read fresh via the dependency array below,
+  // not captured stale, since they're not refs.
   useEffect(() => {
     if (!isMobile) return
     const h = e => {
       const { cmd } = e.detail || {}
       if (cmd === 'studyside') { setStudySide(s => s === 'front' ? 'back' : 'front'); setFlipped(false); resetAnswerState() }
-      if (cmd === 'study') { setMode('study'); setFlipped(false); setCurrentIdx(0); resetAnswerState() }
+      if (cmd === 'study-cycle') {
+        if (mode !== 'study') { setMode('study'); setFlipped(false); setCurrentIdx(0); resetAnswerState() }
+        else {
+          const order = ['flip', 'choice', 'type']
+          setStudyMode(order[(order.indexOf(studyMode) + 1) % order.length])
+        }
+      }
       if (cmd === 'list') setMode('list')
     }
     window.addEventListener('gnos:mobile-fc-cmd', h)
     return () => window.removeEventListener('gnos:mobile-fc-cmd', h)
-  }, [isMobile, resetAnswerState])
-
-  // Get the live deck from store (in case cards have been updated)
-  const liveDeck = flashcardDecks.find(d => d.id === deck?.id) || deck
-  const cards = liveDeck?.cards || []
-  const studyMode = liveDeck?.studyMode || 'flip' // 'flip' | 'choice' | 'type'
+  // setStudyMode is a plain function recreated every render (not memoized);
+  // adding it here would just re-subscribe the listener every render for
+  // no behavioral difference, same judgment call as the keyboard handler
+  // effect below.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobile, resetAnswerState, mode, studyMode])
 
   // Due cards for study
   const now = Date.now()

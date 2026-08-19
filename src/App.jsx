@@ -1181,8 +1181,11 @@ function MobileBottomBar({ activeView, onTabsOpen, tabsOpen }) {
               <Library size={20} strokeWidth={2} />
             </button>
 
-            {/* Study mode */}
-            <button className="mobile-nav-btn" onClick={() => fcCmd('study')} title="Study">
+            {/* Study — tap to enter Study mode; tap again to cycle
+                Cards/Choice/Type (no room for a 3-way toggle in this bar,
+                so the resulting screen shape — flip card vs. option list
+                vs. text input — is the mode indicator). */}
+            <button className="mobile-nav-btn" onClick={() => fcCmd('study-cycle')} title="Study (tap again to cycle Cards/Choice/Type)">
               <div className="mobile-add-btn-inner">
                 <Layers size={13} strokeWidth={1.3} />
               </div>
