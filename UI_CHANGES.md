@@ -1,5 +1,33 @@
 # UI Changes — July 2026 pass
 
+## A135. `--textMuted` added to all 6 themes in `src/lib/themes.js`
+
+Follow-up to A134's flagged finding. `--textMuted` was never in any theme
+object — only `global.css`'s single static `#8b949e` fallback, which every
+theme switch left untouched (`applyTheme` only overrides keys a theme object
+actually defines). It happened to read fine in the *dark* theme purely by
+coincidence (the static fallback equals dark's own `--textDim`), which is
+exactly why this went unnoticed until a light-theme audit actually looked.
+
+Added one `textMuted` value per theme (`sepia`/`dark`/`light`/`cherry`/
+`sunset`/`moss`), placed as a real third tier — not equal to `--textDim`,
+positioned closer to `--text` — since `--textMuted` is used for secondary
+*body* copy app-wide (search placeholders, secondary buttons, tab labels,
+section headers, empty-state copy), not meta/caption text, so it needs to
+read more easily than `--textDim` does. Picked each as `text` blended 55%
+toward `textDim` and verified computed contrast per theme rather than
+guessing: every one lands 8.8–9.9:1 against its own `--surface` (AAA-range,
+well clear of AA), and — the actual bug this closes — light's own
+`--textMuted` moves from 3.08:1 (the old frozen fallback, below AA) to
+computed **9.84:1**.
+
+**Verified live**: cycled all 6 themes via `setTheme()`, read
+`getComputedStyle(document.documentElement)` after each — confirmed every
+theme now actually overrides `--textMuted` (previously frozen at the same
+`#8b949e` no matter which theme was active). Screenshot of the Library grid
+in Light theme shows legible secondary date text. `npx eslint` clean (zero
+output), `npx vite build` clean.
+
 ## A134. SketchbookView.jsx — light + dark theme audit, no fixes needed
 
 User asked for a dedicated light-and-dark pass on the sketchbook specifically.
