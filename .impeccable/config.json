@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "broken-image",
+        "value": "*",
+        "files": [
+          "src/views/FlashcardView.jsx"
+        ],
+        "createdAt": "2026-08-19T12:58:21.405Z",
+        "reason": "false positive: matches regex string literals in parseApkg/stripHtml (<img[^>]+src=...) used for Anki-import HTML parsing, not real JSX <img> tags"
+      }
+    ]
+  }
+}
