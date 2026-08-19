@@ -1,5 +1,32 @@
 # UI Changes — July 2026 pass
 
+## A129. Desktop footer follow-up: toggle replaces Study button, thinner icons, flip-card jump fix
+
+User feedback on A127's real desktop screenshots, three items:
+
+- **Standalone "Study" button removed** — the Cards/Choice/Type toggle now doubles
+  as the entry point into Study mode (new `enterStudyMode(next)`: sets studyMode
+  *and* switches to Study mode if not already there). Toggle is always visible in
+  the footer now (previously gated to `mode==='study'` only), highlighting the
+  active pill only while actually in Study mode. "Front first" stays gated to
+  Study mode — it's meaningless outside it.
+- **Toggle icons thinned**: `Layers`/`ListChecks`/`Keyboard` strokeWidth 2→1.5,
+  matching the already-thin `SquareArrowRight`/`Left` on "Front first" — was
+  reading heavier/muddier than the rest of the footer at 12px.
+- **Flip-card jump fixed**: flipping to the back swapped a one-line hint
+  ("Click card or press Space to flip") for the 4-button rating bar, a real
+  height difference — and `.fc-study`'s column is `justify-content: center`, so
+  the whole card visibly shifted up/down on flip as the container's total
+  content height changed. Fixed with a new `.fc-flip-action-row` wrapper
+  (`min-height: 42px`, centers whichever variant is showing) so both states
+  occupy the same reserved space.
+
+**Verified live**: footer shows toggle (no Study button) + Front first + Edit;
+clicking Choice/Type from List mode correctly jumps straight into Study mode in
+that mode; flipping a card with a long wrapped answer — card position identical
+before/after flip (previously jumped). `npx eslint`/`npx vite build` clean
+against baseline.
+
 ## A128. A127's mobile path — TDZ crash + missing studyMode control
 
 User asked to test A127 on mobile. `useIsMobile()` is hardcoded `return false` in

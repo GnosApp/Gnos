@@ -142,6 +142,12 @@ const FLASHCARD_CSS = `
   .fc-hint-text {
     font-size: 12px; color: var(--textDim); opacity: 0.7;
   }
+  /* Reserved height for the flip card's hint-text/rating-bar row, so
+     flipping doesn't change .fc-study's total content height and shift
+     the centered card up/down — see the JSX comment at its usage. */
+  .fc-flip-action-row {
+    min-height: 42px; display: flex; align-items: center; justify-content: center;
+  }
   .fc-done-msg {
     text-align: center; color: var(--textDim);
   }
@@ -655,6 +661,14 @@ export default function FlashcardView() {
     resetAnswerState()
   }
 
+  /** Footer mode-toggle click: sets studyMode, and also switches into Study
+   * mode if not already there (the toggle replaced the standalone Study
+   * button, so it has to do both jobs now). */
+  function enterStudyMode(next) {
+    setStudyMode(next)
+    if (mode !== 'study') { setMode('study'); setFlipped(false); setCurrentIdx(0) }
+  }
+
   // Keyboard: space/click to flip (flip mode), 1-4 to rate (flip mode) or
   // pick an option (choice mode), any key to continue once an answer's
   // been revealed (choice/type modes).
@@ -1069,16 +1083,24 @@ export default function FlashcardView() {
                         </div>
                       </div>
                     </div>
-                    {flipped ? (
-                      <div className="fc-rating-bar">
-                        <button className="fc-rate-btn again" onClick={() => rateCard(1)}>Again <span style={{ fontSize: 10, opacity: 0.6 }}>(1)</span></button>
-                        <button className="fc-rate-btn hard" onClick={() => rateCard(2)}>Hard <span style={{ fontSize: 10, opacity: 0.6 }}>(2)</span></button>
-                        <button className="fc-rate-btn good" onClick={() => rateCard(3)}>Good <span style={{ fontSize: 10, opacity: 0.6 }}>(3)</span></button>
-                        <button className="fc-rate-btn easy" onClick={() => rateCard(4)}>Easy <span style={{ fontSize: 10, opacity: 0.6 }}>(4)</span></button>
-                      </div>
-                    ) : (
-                      <div className="fc-hint-text">Click card or press Space to flip</div>
-                    )}
+                    {/* Fixed-height slot for both variants — the rating bar
+                        (buttons) and the hint text (one line) are different
+                        heights, and .fc-study centers its column, so without
+                        a reserved height flipping the card visibly shifted
+                        it up/down as the container's total content height
+                        changed. */}
+                    <div className="fc-flip-action-row">
+                      {flipped ? (
+                        <div className="fc-rating-bar">
+                          <button className="fc-rate-btn again" onClick={() => rateCard(1)}>Again <span style={{ fontSize: 10, opacity: 0.6 }}>(1)</span></button>
+                          <button className="fc-rate-btn hard" onClick={() => rateCard(2)}>Hard <span style={{ fontSize: 10, opacity: 0.6 }}>(2)</span></button>
+                          <button className="fc-rate-btn good" onClick={() => rateCard(3)}>Good <span style={{ fontSize: 10, opacity: 0.6 }}>(3)</span></button>
+                          <button className="fc-rate-btn easy" onClick={() => rateCard(4)}>Easy <span style={{ fontSize: 10, opacity: 0.6 }}>(4)</span></button>
+                        </div>
+                      ) : (
+                        <div className="fc-hint-text">Click card or press Space to flip</div>
+                      )}
+                    </div>
                   </>
                 )
               })()}
@@ -1241,33 +1263,33 @@ export default function FlashcardView() {
             {fcStreakDots}
           </div>
           <div style={{ flex: 1 }} />
+          {/* The mode toggle doubles as the "enter Study mode" control — no
+              separate Study button. Picking any of the three both switches
+              studyMode and switches to Study mode if not already there. */}
+          <div className="fc-study-mode-toggle">
+            <button className={`fc-study-mode-btn${mode === 'study' && studyMode === 'flip' ? ' active' : ''}`} title="Flip cards" onClick={() => enterStudyMode('flip')}>
+              <Layers size={12} strokeWidth={1.5} /> Cards
+            </button>
+            <button className={`fc-study-mode-btn${mode === 'study' && studyMode === 'choice' ? ' active' : ''}`} title="Multiple choice" onClick={() => enterStudyMode('choice')}>
+              <ListChecks size={12} strokeWidth={1.5} /> Choice
+            </button>
+            <button className={`fc-study-mode-btn${mode === 'study' && studyMode === 'type' ? ' active' : ''}`} title="Type the answer" onClick={() => enterStudyMode('type')}>
+              <Keyboard size={12} strokeWidth={1.5} /> Type
+            </button>
+          </div>
           {mode === 'study' && (
-            <>
-              <div className="fc-study-mode-toggle">
-                <button className={`fc-study-mode-btn${studyMode === 'flip' ? ' active' : ''}`} title="Flip cards" onClick={() => setStudyMode('flip')}>
-                  <Layers size={12} strokeWidth={2} /> Cards
-                </button>
-                <button className={`fc-study-mode-btn${studyMode === 'choice' ? ' active' : ''}`} title="Multiple choice" onClick={() => setStudyMode('choice')}>
-                  <ListChecks size={12} strokeWidth={2} /> Choice
-                </button>
-                <button className={`fc-study-mode-btn${studyMode === 'type' ? ' active' : ''}`} title="Type the answer" onClick={() => setStudyMode('type')}>
-                  <Keyboard size={12} strokeWidth={2} /> Type
-                </button>
-              </div>
-              <button
-                className="fc-mode-btn"
-                title={studySide === 'front' ? 'Studying Front→Back (click to flip to Back→Front)' : 'Studying Back→Front (click to flip to Front→Back)'}
-                onClick={() => { setStudySide(s => s === 'front' ? 'back' : 'front'); setFlipped(false); resetAnswerState() }}
-                style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-              >
-                {studySide === 'front'
-                  ? <SquareArrowRight size={13} strokeWidth={1.5} />
-                  : <SquareArrowLeft size={13} strokeWidth={1.5} />}
-                {studySide === 'front' ? 'Front first' : 'Back first'}
-              </button>
-            </>
+            <button
+              className="fc-mode-btn"
+              title={studySide === 'front' ? 'Studying Front→Back (click to flip to Back→Front)' : 'Studying Back→Front (click to flip to Front→Back)'}
+              onClick={() => { setStudySide(s => s === 'front' ? 'back' : 'front'); setFlipped(false); resetAnswerState() }}
+              style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              {studySide === 'front'
+                ? <SquareArrowRight size={13} strokeWidth={1.5} />
+                : <SquareArrowLeft size={13} strokeWidth={1.5} />}
+              {studySide === 'front' ? 'Front first' : 'Back first'}
+            </button>
           )}
-          <button className={`fc-mode-btn${mode === 'study' ? ' active' : ''}`} onClick={() => { setMode('study'); setFlipped(false); setCurrentIdx(0); resetAnswerState() }}>Study</button>
           <button className={`fc-mode-btn${mode === 'list' ? ' active' : ''}`} onClick={() => setMode('list')}>Edit</button>
         </div>
       )}
