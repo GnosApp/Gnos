@@ -15,11 +15,23 @@
     "directory": "./dist-collab",
     // Cloudflare's static-assets serving looks for exactly "index.html" —
     // both at the bare root AND as the SPA fallback target below — it does
-    // not know about collab.html by name. build:collab copies
+    // not know about collab.html by name. build:collab RENAMES
     // collab.html -> index.html as its last step specifically for this;
     // the file's real identity/name everywhere else in the repo stays
-    // collab.html, this copy exists only to satisfy Cloudflare's naming
-    // convention for this one deploy target.
-    "not_found_handling": "single-page-application"
+    // collab.html, this is a deploy-artifact-only rename for this one
+    // target, not a duplicate — see the html_handling note below for why
+    // that distinction mattered in practice, not just in theory.
+    "not_found_handling": "single-page-application",
+    // Learned the hard way: Cloudflare's default ("auto-trailing-slash")
+    // canonicalizes asset URLs by content hash. The first version of this
+    // config COPIED collab.html to index.html (kept both, byte-identical)
+    // — Cloudflare saw one content hash under two paths, picked one
+    // canonical URL for it, and 307-redirected every other path to that
+    // URL, including a self-redirect loop on the canonical path itself.
+    // Nothing was ever served — everything just bounced. `"none"` turns
+    // off that canonicalization entirely, which a single-page app with its
+    // own client-side path parsing (GuestApp.jsx reads
+    // window.location.pathname itself) never wanted in the first place.
+    "html_handling": "none"
   }
 }
