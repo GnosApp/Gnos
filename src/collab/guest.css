@@ -19,6 +19,15 @@
   --text: #e6edf3;
   --textDim: #6e7681;
   --accent: #388bfd;
+  /* Tells the BROWSER, not just this page's own CSS, which theme is active
+   * — native chrome this stylesheet never touches (scrollbar thumb/track,
+   * unstyled form-control defaults, the `<input type=color>` swatch below)
+   * otherwise renders using the OS's own preference, not this page's saved
+   * one. A guest whose system is dark but who has this page saved to light
+   * (or the reverse) got a jarring native-dark-scrollbar-on-a-light-page
+   * mismatch without this — the actual shape of "doesn't display normally
+   * in light mode." */
+  color-scheme: dark;
   /* Genuinely inert — never read anywhere. Exists only to change this
    * stylesheet's emitted bytes (a comment alone survives minification
    * removal and wouldn't move the content hash) so its content-hashed URL
@@ -37,6 +46,7 @@
   --text: #1f2328;
   --textDim: #636c76;
   --accent: #0969da;
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -53,6 +63,97 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   transition: background .15s, color .15s;
 }
+
+/* ── Join screen (guest login) ──────────────────────────────────────────
+ * Name → color → icon → submit, each field the same width as the one
+ * above it — no field narrower than its neighbors, no ragged trailing gap
+ * at a row's end. Color/icon pickers use `grid-template-columns:
+ * repeat(N, 1fr)` for exactly that reason: equal-width cells that share
+ * the row's full width, unlike the old `flex-wrap` swatch row, which left
+ * uneven space on the right whenever the container was wider than the
+ * swatches needed. */
+.gm-join { display: flex; flex-direction: column; gap: 22px; text-align: left; }
+.gm-join-head { display: flex; flex-direction: column; gap: 6px; text-align: center; }
+.gm-join-title { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; color: var(--text); }
+.gm-join-sub { margin: 0; font-size: 13px; line-height: 1.5; color: var(--textDim); }
+
+.gm-join-field { display: flex; flex-direction: column; gap: 8px; }
+/* Emphasized 2026-08-19 — Name/Color/Icon read as real section headers now,
+ * not a faint caption (bumped size, full weight, full-strength text color
+ * instead of the dim/muted one). */
+.gm-join-label { font-size: 13px; font-weight: 700; color: var(--text); }
+
+.gm-join-input {
+  width: 100%; box-sizing: border-box; padding: 11px 13px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  font-size: 14px; font-family: inherit; transition: border-color .12s ease, background .12s ease;
+}
+.gm-join-input::placeholder { color: var(--textDim); }
+/* No ring, by request — the border stays put. Selected state now reads as a
+ * darkened field instead: a flat mix-in of black over the resting surface
+ * color, so it darkens relative to itself in EITHER theme (a fixed token
+ * like --surfaceAlt lightens in dark mode, since "alt" there means "a step
+ * more elevated," not "darker" — this needed to hold regardless of theme). */
+.gm-join-input:focus { outline: none; background: color-mix(in srgb, var(--surface) 100%, black 8%); }
+
+/* Doubled 2026-08-19: 6→12 colors, 10→20 icons. Stacked 2026-08-19: both
+ * sections were two even rows (6 cols × 2 rows for colors, 10 cols × 2 rows
+ * for icons). Grown again 2026-08-19: colors now match the icon grid
+ * exactly — 10 cols × 2 rows, 19 presets plus one custom-hex slot, 20 cells
+ * either way — so the two pickers read as one consistent system instead of
+ * two different grid rhythms; the smaller cells this naturally produces are
+ * also the "make them smaller" ask, for free. */
+.gm-join-grid { display: grid; gap: 6px; width: 100%; }
+.gm-join-grid-color { grid-template-columns: repeat(10, 1fr); }
+.gm-join-grid-icon { grid-template-columns: repeat(10, 1fr); }
+
+.gm-join-swatch {
+  aspect-ratio: 1; width: 100%; min-width: 0; border-radius: 6px; border: none; padding: 0; cursor: pointer;
+  transition: transform .1s ease, box-shadow .12s ease;
+}
+.gm-join-swatch:hover { transform: scale(1.1); }
+.gm-join-swatch:active { transform: scale(0.92); }
+.gm-join-swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.gm-join-icon-btn {
+  aspect-ratio: 1; width: 100%; min-width: 0; border-radius: 6px; cursor: pointer; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surface); border: 1px solid var(--border); color: var(--textDim);
+  transition: background .12s ease, border-color .12s ease, color .12s ease, transform .1s ease;
+}
+.gm-join-icon-btn:hover { background: var(--surfaceAlt); color: var(--text); }
+.gm-join-icon-btn:active { transform: scale(0.94); }
+.gm-join-icon-btn.active { border-color: transparent; }
+.gm-join-icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The custom-color 20th slot — same `.gm-join-icon-btn` outer chrome as
+ * every icon button (border, background, hover, active-transform), so it
+ * matches the icon picker's own style exactly; the wheel inside is this
+ * button's "icon." A conic-gradient circle at rest (hexcode-picker
+ * shorthand: "any color"), a plain circle of the real picked color once the
+ * guest has actually chosen one — the same "this cell IS its color" language
+ * every preset swatch already uses. */
+.gm-join-color-custom { position: relative; }
+.gm-join-color-wheel {
+  width: 64%; height: 64%; border-radius: 50%;
+  background: conic-gradient(from 0deg,
+    #ef4444, #f59e0b, #eab308, #84cc16, #10b981, #06b6d4, #3b82f6, #8b5cf6, #d946ef, #ef4444);
+  border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+}
+/* The real `<input type=color>` — invisible, inert to pointer/keyboard
+ * events of its own; the wrapping button is the entire interactive surface,
+ * clicking it opens the native color picker via a ref. */
+.gm-join-color-input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; pointer-events: none; }
+
+.gm-join-submit {
+  width: 100%; box-sizing: border-box; padding: 11px 16px; border-radius: 8px; border: none;
+  background: var(--accent); color: #fff; font-size: 14px; font-weight: 600; font-family: inherit;
+  cursor: pointer; transition: filter .12s ease, background .12s ease, color .12s ease;
+}
+.gm-join-submit:hover:not(:disabled) { filter: brightness(1.08); }
+.gm-join-submit:active:not(:disabled) { filter: brightness(0.94); }
+.gm-join-submit:disabled { background: var(--surfaceAlt); color: var(--textDim); cursor: not-allowed; }
+.gm-join-submit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* Preview mode (renderMarkdown.js) — same centered-column rhythm as
  * CollabEditor.jsx's own `notebookTheme()`, so switching Edit ⇄ Preview

@@ -293,7 +293,7 @@ function UsersModal({ entries, userStates, myId, onClose, onLeave }) {
 function Centered({ children }) {
   return (
     <div className="gm-vh" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, textAlign: 'center', overflowY: 'auto' }}>
-      <div style={{ maxWidth: 340, width: '100%' }}>
+      <div style={{ maxWidth: 360, width: '100%' }}>
         <Logo />
         {children}
       </div>
@@ -313,60 +313,93 @@ function JoinScreen({ onJoin }) {
   const [name, setName] = useState('')
   const [color, setColor] = useState(PALETTE[1]) // [0] is reserved for the host in NoteCollabPanel.jsx — start a guest off on a different one
   const [icon, setIcon] = useState('user')
+  // The 20th color slot, matching the icon picker's own count (2026-08-19) —
+  // not a 20th preset (PALETTE stops at 19), a genuine custom hex-code
+  // picker. `customColor` is `null` until the guest actually picks one, so
+  // the swatch can show a neutral "pick anything" gradient wheel at rest
+  // and the guest's own real pick once they've made it, rather than
+  // defaulting to some arbitrary 20th preset hue.
+  const [customColor, setCustomColor] = useState(null)
+  const customColorInputRef = useRef(null)
+  const isCustomActive = customColor !== null && color === customColor
+  const canJoin = name.trim().length > 0
   return (
     <Centered>
       <form
-        onSubmit={e => { e.preventDefault(); if (name.trim()) onJoin(name.trim(), color, icon) }}
-        style={{ display: 'flex', flexDirection: 'column', gap: 12 }}
+        onSubmit={e => { e.preventDefault(); if (canJoin) onJoin(name.trim(), color, icon) }}
+        className="gm-join"
       >
-        <strong style={{ fontSize: 16 }}>Join this note</strong>
-        <p style={{ opacity: 0.7, fontSize: 12.5, margin: 0, lineHeight: 1.5 }}>
-          The host will approve you before you can see it.
-        </p>
-        <input
-          autoFocus
-          value={name}
-          onChange={e => setName(e.target.value)}
-          placeholder="Your name"
-          style={{ padding: '9px 11px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 14 }}
-        />
+        <div className="gm-join-head">
+          <strong className="gm-join-title">Join this note</strong>
+          <p className="gm-join-sub">The host will approve you before you can see it.</p>
+        </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{
-            width: 34, height: 34, borderRadius: 8, flexShrink: 0, color,
-            background: `color-mix(in srgb, ${color} 16%, transparent)`,
-            border: `1px solid color-mix(in srgb, ${color} 40%, transparent)`,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Icon id={icon} size={17} />
-          </span>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-start' }}>
+        <div className="gm-join-field">
+          <label className="gm-join-label" htmlFor="gm-join-name">Name</label>
+          <input
+            id="gm-join-name"
+            autoFocus
+            value={name}
+            onChange={e => setName(e.target.value)}
+            className="gm-join-input"
+            autoComplete="off"
+          />
+        </div>
+
+        <div className="gm-join-field">
+          <span className="gm-join-label">Color</span>
+          <div className="gm-join-grid gm-join-grid-color">
             {PALETTE.map(c => (
-              <button key={c} type="button" onClick={() => setColor(c)} title={c} style={{
-                width: 20, height: 20, borderRadius: 5, padding: 0, background: c, cursor: 'pointer',
-                border: c === color ? '2px solid var(--text)' : '2px solid transparent',
-              }} />
+              <button
+                key={c} type="button" onClick={() => setColor(c)} title={c} aria-label={c} aria-pressed={c === color}
+                className="gm-join-swatch"
+                style={{ background: c, boxShadow: c === color ? `0 0 0 2px var(--surface), 0 0 0 4px ${c}` : 'none' }}
+              />
+            ))}
+            {/* The 20th slot — a real hex-code picker, not a 20th preset.
+                Same outer chrome as an icon button (border/background/hover,
+                `gm-join-icon-btn`) so it visually matches the icon picker
+                exactly, per the ask; the wheel inside is its own "icon" —
+                a conic-gradient circle until a color's been picked, then a
+                plain circle of that real color, same as every other swatch
+                showing its own color as a solid fill. */}
+            <button
+              type="button"
+              onClick={() => customColorInputRef.current?.click()}
+              title="Custom color" aria-label="Custom color" aria-pressed={isCustomActive}
+              className={`gm-join-icon-btn gm-join-color-custom${isCustomActive ? ' active' : ''}`}
+              style={isCustomActive ? { background: `color-mix(in srgb, ${customColor} 14%, transparent)`, boxShadow: `inset 0 0 0 1.5px ${customColor}` } : undefined}
+            >
+              <span className="gm-join-color-wheel" style={isCustomActive ? { background: customColor } : undefined} />
+              <input
+                ref={customColorInputRef}
+                type="color"
+                value={customColor || '#888888'}
+                onChange={e => { setCustomColor(e.target.value); setColor(e.target.value) }}
+                className="gm-join-color-input"
+                aria-hidden="true"
+                tabIndex={-1}
+              />
+            </button>
+          </div>
+        </div>
+
+        <div className="gm-join-field">
+          <span className="gm-join-label">Icon</span>
+          <div className="gm-join-grid gm-join-grid-icon">
+            {AVATAR_ICONS.map(({ id }) => (
+              <button
+                key={id} type="button" onClick={() => setIcon(id)} title={id} aria-label={id} aria-pressed={id === icon}
+                className={`gm-join-icon-btn${id === icon ? ' active' : ''}`}
+                style={id === icon ? { color, background: `color-mix(in srgb, ${color} 14%, transparent)`, boxShadow: `inset 0 0 0 1.5px ${color}` } : undefined}
+              >
+                <Icon id={id} size={16} />
+              </button>
             ))}
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6 }}>
-          {AVATAR_ICONS.map(({ id }) => (
-            <button key={id} type="button" onClick={() => setIcon(id)} title={id} style={{
-              aspectRatio: '1', borderRadius: 7, cursor: 'pointer', color: id === icon ? color : 'var(--textDim)',
-              background: id === icon ? `color-mix(in srgb, ${color} 16%, transparent)` : 'var(--surface)',
-              border: `1px solid ${id === icon ? color : 'var(--border)'}`,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
-              <Icon id={id} size={15} />
-            </button>
-          ))}
-        </div>
-
-        <button type="submit" disabled={!name.trim()} style={{
-          padding: '9px 14px', borderRadius: 7, border: 'none', background: 'var(--accent)', color: '#fff',
-          fontSize: 13.5, fontWeight: 600, cursor: name.trim() ? 'pointer' : 'not-allowed', opacity: name.trim() ? 1 : 0.5,
-        }}>
+        <button type="submit" disabled={!canJoin} className="gm-join-submit">
           Ask to join
         </button>
       </form>
