@@ -58,7 +58,7 @@ import { collabAssetsFacet, collabImagePlugin } from './assetsPlugin'
 import { publishGuestAsset } from './guestAssets'
 import {
   makeSafeExt, makeTheme, makeHighlight, makeFormatKeys, makeTableCommand, makeLinkCommands,
-  makeSmartEnter, makePairInputHandler, makeGhostHintPlugin, makeMathCalcPlugin, makeSlashSource,
+  makeSmartEnter, makePairInputHandler, makeGhostHintPlugin, makeMathCalcPlugin,
   makeLivePlugin, makeCheckboxHandler, makeStatusHandler, makeHeadingFoldHandler, makeWikiHandler,
   makeMathClickHandler, makeTodoHandler, makeTaskHandler, makeLinkHandler, makeSourcePlugin,
 } from '@/lib/notebookEditor'
@@ -300,6 +300,14 @@ export function Editor({ ytext, awareness, readOnly, assets, mode = 'live', onVi
           // for e.g. the harness's own throwaway proof room, which never
           // has an asset map to look anything up in.
           ...(assets ? [collabAssetsFacet.of(assets), collabImagePlugin()] : []),
+          // Missing entirely until now — NotebookView.jsx's own extensions
+          // array has always had this. Without it CM6 defaults to NO line
+          // wrapping at all: a heading or a long word just extends past the
+          // viewport, silently, with no visible scrollbar — the exact "text
+          // cut off at the edge" symptom this had on narrow/mobile widths
+          // (worse there, but not actually mobile-specific: any line longer
+          // than the editor's width did this, on any viewport).
+          EditorView.lineWrapping,
           notebookTheme(),
         ],
       }),
@@ -415,6 +423,14 @@ export function RelayedEditor({ peer, draftDoc, assets, mode = 'live', onView })
           // cursor sharing work here at all.
           ...yCollabSync(draftText, peer.awareness, { undoManager }),
           ...(assets ? [collabAssetsFacet.of(assets), collabImagePlugin()] : []),
+          // Missing entirely until now — NotebookView.jsx's own extensions
+          // array has always had this. Without it CM6 defaults to NO line
+          // wrapping at all: a heading or a long word just extends past the
+          // viewport, silently, with no visible scrollbar — the exact "text
+          // cut off at the edge" symptom this had on narrow/mobile widths
+          // (worse there, but not actually mobile-specific: any line longer
+          // than the editor's width did this, on any viewport).
+          EditorView.lineWrapping,
           notebookTheme(),
         ],
       }),
